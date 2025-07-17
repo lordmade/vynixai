@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vynix AI Chatbot</title>
-    <!-- Load TensorFlow.js -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -58,7 +56,12 @@
             cursor: pointer;
         }
 
-        button:hover {
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        button:hover:not(:disabled) {
             background: linear-gradient(45deg, #0056b3, #0096cc);
         }
 
@@ -74,18 +77,23 @@
         <div class="chat-box" id="chatBox"></div>
         <div class="input-container">
             <input type="text" id="userInput" placeholder="Ask Vynix AI something..." />
-            <button onclick="sendMessage()">Send</button>
+            <button id="sendButton" onclick="sendMessage()" disabled>Send</button>
         </div>
-        <p id="status">Loading model...</p>
+        <p id="status">Initializing Vynix AI...</p>
     </div>
     <script>
-        // Enable WebGL for performance
-        tf.setBackend('webgl').then(() => console.log('WebGL backend enabled'));
+        // Lazy load TensorFlow.js
+        const tfScript = document.createElement('script');
+        tfScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js';
+        tfScript.onload = initialize;
+        tfScript.onerror = () => {
+            document.getElementById('status').innerText = 'Error: Failed to load TensorFlow.js';
+            console.error('Failed to load TensorFlow.js');
+        };
+        document.head.appendChild(tfScript);
 
         // Global variables
-        let qaModel; // Question-answering model
-        let textGenModel; // Text generation model
-        let chatHistory = [];
+        let qaModel, textGenModel, chatHistory = [], modelsLoaded = false;
 
         // Custom dataset
         const customDataset = {
@@ -120,9 +128,10 @@
             customDataset.qa.flatMap(item => item.question.toLowerCase().split(/\s+/))
                 .concat(customDataset.qa.flatMap(item => item.answer.toLowerCase().split(/\s+/)))
         )];
-        const charVocab = 'abcdefghijklmnopqrstuvwxyz .!?'; // Characters for text generation
+        const charVocab = 'abcdefghijklmnopqrstuvwxyz .!?';
         const maxLength = 10; // Max input length for Q&A
         const maxGenLength = 20; // Max input length for text generation
+        const confidenceThreshold = 0.7; // Lowered for better sensitivity
 
         // Preprocess Q&A input
         function preprocessQA(text) {
@@ -140,21 +149,21 @@
             return tf.tensor2d([sequence], [1, maxGenLength], 'int32');
         }
 
-        // Create Q&A model
+        // Create Q&A model (simplified)
         function createQAModel(vocabSize) {
             const model = tf.sequential();
-            model.add(tf.layers.embedding({ inputDim: vocabSize, outputDim: 16, inputLength: maxLength }));
-            model.add(tf.layers.lstm({ units: 32 }));
+            model.add(tf.layers.embedding({ inputDim: vocabSize, outputDim: 4, inputLength: maxLength }));
+            model.add(tf.layers.lstm({ units: 8 }));
             model.add(tf.layers.dense({ units: customDataset.qa.length, activation: 'softmax' }));
             model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
             return model;
         }
 
-        // Create text generation model
+        // Create text generation model (simplified)
         function createTextGenModel(charVocabSize) {
             const model = tf.sequential();
-            model.add(tf.layers.embedding({ inputDim: charVocabSize, outputDim: 16, inputLength: maxGenLength }));
-            model.add(tf.layers.lstm({ units: 64 }));
+            model.add(tf.layers.embedding({ inputDim: charVocabSize, outputDim: 4, inputLength: maxGenLength }));
+            model.add(tf.layers.lstm({ units: 16 }));
             model.add(tf.layers.dense({ units: charVocabSize, activation: 'softmax' }));
             model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
             return model;
@@ -162,46 +171,53 @@
 
         // Train models
         async function trainModels() {
-            // Train Q&A model
-            qaModel = createQAModel(vocab.length + 1);
-            const qaInputs = tf.concat(customDataset.qa.map(item => preprocessQA(item.question)));
-            const qaOutputs = tf.tensor1d(customDataset.qa.map((_, i) => i));
-            document.getElementById('status').innerText = 'Training Q&A model...';
-            await qaModel.fit(qaInputs, qaOutputs, {
-                epochs: 50,
-                batchSize: 1,
-                shuffle: true,
-                callbacks: {
-                    onEpochEnd: (epoch, logs) => {
-                        document.getElementById('status').innerText = `Q&A Epoch ${epoch + 1}: Loss = ${logs.loss.toFixed(4)}`;
+            try {
+                // Train Q&A model
+                qaModel = createQAModel(vocab.length + 1);
+                const qaInputs = tf.concat(customDataset.qa.map(item => preprocessQA(item.question)));
+                const qaOutputs = tf.tensor1d(customDataset.qa.map((_, i) => i));
+                document.getElementById('status').innerText = 'Training Q&A model...';
+                await qaModel.fit(qaInputs, qaOutputs, {
+                    epochs: 20, // Reduced for speed
+                    batchSize: 2,
+                    shuffle: true,
+                    callbacks: {
+                        onEpochEnd: (epoch, logs) => {
+                            document.getElementById('status').innerText = `Q&A Epoch ${epoch + 1}: Loss = ${logs.loss.toFixed(4)}`;
+                        }
                     }
-                }
-            });
-            await qaModel.save('localstorage://vynix-qa-model');
+                });
+                await qaModel.save('localstorage://vynix-qa-model');
 
-            // Train text generation model
-            textGenModel = createTextGenModel(charVocab.length + 1);
-            const textInputs = tf.concat(customDataset.textGen.map(text => preprocessTextGen(text)));
-            const textOutputs = tf.tensor1d(
-                customDataset.textGen.map(text => {
-                    const chars = text.toLowerCase().split('').slice(1).concat(' ');
-                    return chars.map(c => charVocab.indexOf(c) + 1)[0] || 0;
-                })
-            );
-            document.getElementById('status').innerText = 'Training text generation model...';
-            await textGenModel.fit(textInputs, textOutputs, {
-                epochs: 50,
-                batchSize: 1,
-                shuffle: true,
-                callbacks: {
-                    onEpochEnd: (epoch, logs) => {
-                        document.getElementById('status').innerText = `Text Gen Epoch ${epoch + 1}: Loss = ${logs.loss.toFixed(4)}`;
+                // Train text generation model
+                textGenModel = createTextGenModel(charVocab.length + 1);
+                const textInputs = tf.concat(customDataset.textGen.map(text => preprocessTextGen(text)));
+                const textOutputs = tf.tensor1d(
+                    customDataset.textGen.map(text => {
+                        const chars = text.toLowerCase().split('').slice(1).concat(' ');
+                        return chars.map(c => charVocab.indexOf(c) + 1)[0] || 0;
+                    })
+                );
+                document.getElementById('status').innerText = 'Training text generation model...';
+                await textGenModel.fit(textInputs, textOutputs, {
+                    epochs: 20, // Reduced for speed
+                    batchSize: 2,
+                    shuffle: true,
+                    callbacks: {
+                        onEpochEnd: (epoch, logs) => {
+                            document.getElementById('status').innerText = `Text Gen Epoch ${epoch + 1}: Loss = ${logs.loss.toFixed(4)}`;
+                        }
                     }
-                }
-            });
-            await textGenModel.save('localstorage://vynix-textgen-model');
+                });
+                await textGenModel.save('localstorage://vynix-textgen-model');
 
-            document.getElementById('status').innerText = 'Models trained and saved!';
+                modelsLoaded = true;
+                document.getElementById('sendButton').disabled = false;
+                document.getElementById('status').innerText = 'Models trained and ready!';
+            } catch (error) {
+                console.error('Training error:', error);
+                document.getElementById('status').innerText = 'Error training models. Please refresh.';
+            }
         }
 
         // Load models
@@ -209,55 +225,91 @@
             try {
                 qaModel = await tf.loadLayersModel('localstorage://vynix-qa-model');
                 textGenModel = await tf.loadLayersModel('localstorage://vynix-textgen-model');
-                document.getElementById('status').innerText = 'Models loaded!';
+                modelsLoaded = true;
+                document.getElementById('sendButton').disabled = false;
+                document.getElementById('status').innerText = 'Models loaded and ready!';
             } catch (error) {
-                console.log('No saved models, training new ones...');
+                console.log('No saved models, training new ones...', error);
                 await trainModels();
             }
         }
 
         // Generate text
         async function generateText(input, maxTokens = 10) {
-            let currentInput = input.slice(0, maxGenLength);
-            let generated = '';
-            for (let i = 0; i < maxTokens; i++) {
-                const inputTensor = preprocessTextGen(currentInput);
-                const prediction = textGenModel.predict(inputTensor);
-                const nextCharIndex = prediction.argMax(-1).dataSync()[0];
-                if (nextCharIndex === 0) break;
-                const nextChar = charVocab[nextCharIndex - 1];
-                generated += nextChar;
-                currentInput = (currentInput + nextChar).slice(1);
+            try {
+                let currentInput = input.slice(0, maxGenLength);
+                let generated = '';
+                for (let i = 0; i < maxTokens; i++) {
+                    const inputTensor = preprocessTextGen(currentInput);
+                    const prediction = textGenModel.predict(inputTensor);
+                    const nextCharIndex = prediction.argMax(-1).dataSync()[0];
+                    if (nextCharIndex === 0) break;
+                    const nextChar = charVocab[nextCharIndex - 1];
+                    generated += nextChar;
+                    currentInput = (currentInput + nextChar).slice(1);
+                }
+                return generated.trim();
+            } catch (error) {
+                console.error('Text generation error:', error);
+                return '';
             }
-            return generated.trim();
+        }
+
+        // Keyword-based fallback for unseen questions
+        function keywordFallback(input) {
+            const keywords = input.toLowerCase().split(/\s+/);
+            if (keywords.includes('capital')) return 'Try asking about the capital of a country I know, like France or Japan!';
+            if (keywords.includes('who')) return 'Try asking about someone famous, like Shakespeare or da Vinci!';
+            if (keywords.includes('where')) return 'Try asking about a famous place, like the Great Wall or Machu Picchu!';
+            return 'Try a question like "What is the capital of France?" or type a phrase to continue!';
         }
 
         // Send user message and get AI response
         async function sendMessage() {
-            const userInput = document.getElementById('userInput').value;
-            if (!userInput || !qaModel || !textGenModel) return;
+            if (!modelsLoaded) {
+                document.getElementById('status').innerText = 'Please wait, models are loading...';
+                return;
+            }
+
+            const userInput = document.getElementById('userInput').value.trim();
+            if (!userInput) {
+                document.getElementById('status').innerText = 'Please enter a message.';
+                return;
+            }
 
             chatHistory.push({ role: 'user', content: userInput });
             updateChatBox();
-
             document.getElementById('status').innerText = 'Vynix AI is thinking...';
-            let response;
 
-            // Detect if input is a question
-            if (userInput.toLowerCase().match(/\b(what|where|who)\b/)) {
-                const inputTensor = preprocessQA(userInput);
-                const prediction = qaModel.predict(inputTensor);
-                const answerIndex = prediction.argMax(-1).dataSync()[0];
-                response = `Vynix AI: ${customDataset.qa[answerIndex]?.answer || 'I don’t know that one!'}`;
-            } else {
-                const generated = await generateText(userInput);
-                response = `Vynix AI: ${generated || 'Let me think... Try a question!'}`;
+            try {
+                let response;
+                if (userInput.toLowerCase().match(/\b(what|where|who)\b/)) {
+                    const inputTensor = preprocessQA(userInput);
+                    const prediction = qaModel.predict(inputTensor);
+                    const probabilities = prediction.dataSync();
+                    const answerIndex = prediction.argMax(-1).dataSync()[0];
+                    const confidence = probabilities[answerIndex];
+
+                    if (confidence > confidenceThreshold) {
+                        response = `Vynix AI: ${customDataset.qa[answerIndex]?.answer || 'I don’t know that one!'}`;
+                    } else {
+                        response = `Vynix AI: Sorry, I'm not sure about that. ${keywordFallback(userInput)}`;
+                    }
+                } else {
+                    const generated = await generateText(userInput);
+                    response = `Vynix AI: ${generated || 'Let me think... Try a question!'}`;
+                }
+
+                chatHistory.push({ role: 'ai', content: response });
+                updateChatBox();
+                document.getElementById('status').innerText = 'Ready.';
+                document.getElementById('userInput').value = '';
+            } catch (error) {
+                console.error('Inference error:', error);
+                document.getElementById('status').innerText = 'Error processing request. Please try again.';
+                chatHistory.push({ role: 'ai', content: 'Vynix AI: Sorry, something went wrong. Try again!' });
+                updateChatBox();
             }
-
-            chatHistory.push({ role: 'ai', content: response });
-            updateChatBox();
-            document.getElementById('status').innerText = 'Ready.';
-            document.getElementById('userInput').value = '';
         }
 
         // Update chat box UI
@@ -279,10 +331,19 @@
         }
 
         // Initialize
+        async function initialize() {
+            try {
+                await tf.ready();
+                await loadModels();
+            } catch (error) {
+                console.error('Initialization error:', error);
+                document.getElementById('status').innerText = 'Error initializing Vynix AI. Please refresh.';
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
-            loadModels();
             document.getElementById('userInput').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') sendMessage();
+                if (e.key === 'Enter' && modelsLoaded) sendMessage();
             });
         });
     </script>
