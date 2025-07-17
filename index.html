@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vynix AI Chatbot</title>
+    <!-- Load TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+
+        .container {
+            text-align: center;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 600px;
+        }
+
+        .chat-box {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: #f9f9f9;
+        }
+
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+
+        input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: linear-gradient(45deg, #007bff, #00d4ff);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: linear-gradient(45deg, #0056b3, #0096cc);
+        }
+
+        #status {
+            font-style: italic;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Vynix AI - Powered by BanterBox</h1>
+        <div class="chat-box" id="chatBox"></div>
+        <div class="input-container">
+            <input type="text" id="userInput" placeholder="Ask Vynix AI something..." />
+            <button onclick="sendMessage()">Send</button>
+        </div>
+        <p id="status">Loading model...</p>
+    </div>
+    <script>
+        // Enable WebGL for performance
+        tf.setBackend('webgl').then(() => console.log('WebGL backend enabled'));
+
+        // Global variables
+        let qaModel; // Question-answering model
+        let textGenModel; // Text generation model
+        let chatHistory = [];
+
+        // Custom dataset
+        const customDataset = {
+            qa: [
+                { question: "What is the capital of France?", answer: "Paris" },
+                { question: "Who wrote Romeo and Juliet?", answer: "William Shakespeare" },
+                { question: "What is the largest planet?", answer: "Jupiter" },
+                { question: "Where is the Great Wall?", answer: "China" },
+                { question: "What is 2 + 2?", answer: "4" },
+                { question: "Who painted the Mona Lisa?", answer: "Leonardo da Vinci" },
+                { question: "What is the chemical symbol for water?", answer: "H2O" },
+                { question: "What is the tallest mammal?", answer: "Blue Whale" },
+                { question: "Where is Machu Picchu?", answer: "Peru" },
+                { question: "What is the currency of Japan?", answer: "Yen" }
+            ],
+            textGen: [
+                "The sun sets slowly behind the mountain.",
+                "A curious cat explored the garden.",
+                "Let's meet at the park tomorrow!",
+                "Stars twinkled brightly in the night sky.",
+                "The old house creaked in the wind.",
+                "I found a shiny coin on the path.",
+                "The river flowed gently through the valley.",
+                "A bird sang a sweet melody.",
+                "We laughed and shared stories by the fire.",
+                "The moon glowed softly above the trees."
+            ]
+        };
+
+        // Vocabulary for Q&A
+        const vocab = [...new Set(
+            customDataset.qa.flatMap(item => item.question.toLowerCase().split(/\s+/))
+                .concat(customDataset.qa.flatMap(item => item.answer.toLowerCase().split(/\s+/)))
+        )];
+        const charVocab = 'abcdefghijklmnopqrstuvwxyz .!?'; // Characters for text generation
+        const maxLength = 10; // Max input length for Q&A
+        const maxGenLength = 20; // Max input length for text generation
+
+        // Preprocess Q&A input
+        function preprocessQA(text) {
+            const tokens = text.toLowerCase().split(/\s+/).filter(word => vocab.includes(word));
+            const sequence = tokens.map(word => vocab.indexOf(word) + 1).slice(0, maxLength);
+            while (sequence.length < maxLength) sequence.push(0);
+            return tf.tensor2d([sequence], [1, maxLength], 'int32');
+        }
+
+        // Preprocess text generation input
+        function preprocessTextGen(text) {
+            const chars = text.toLowerCase().split('');
+            const sequence = chars.map(c => charVocab.indexOf(c) + 1).slice(0, maxGenLength);
+            while (sequence.length < maxGenLength) sequence.push(0);
+            return tf.tensor2d([sequence], [1, maxGenLength], 'int32');
+        }
+
+        // Create Q&A model
+        function createQAModel(vocabSize) {
+            const model = tf.sequential();
+            model.add(tf.layers.embedding({ inputDim: vocabSize, outputDim: 16, inputLength: maxLength }));
+            model.add(tf.layers.lstm({ units: 32 }));
+            model.add(tf.layers.dense({ units: customDataset.qa.length, activation: 'softmax' }));
+            model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
+            return model;
+        }
+
+        // Create text generation model
+        function createTextGenModel(charVocabSize) {
+            const model = tf.sequential();
+            model.add(tf.layers.embedding({ inputDim: charVocabSize, outputDim: 16, inputLength: maxGenLength }));
+            model.add(tf.layers.lstm({ units: 64 }));
+            model.add(tf.layers.dense({ units: charVocabSize, activation: 'softmax' }));
+            model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
+            return model;
+        }
+
+        // Train models
+        async function trainModels() {
+            // Train Q&A model
+            qaModel = createQAModel(vocab.length + 1);
+            const qaInputs = tf.concat(customDataset.qa.map(item => preprocessQA(item.question)));
+            const qaOutputs = tf.tensor1d(customDataset.qa.map((_, i) => i));
+            document.getElementById('status').innerText = 'Training Q&A model...';
+            await qaModel.fit(qaInputs, qaOutputs, {
+                epochs: 50,
+                batchSize: 1,
+                shuffle: true,
+                callbacks: {
+                    onEpochEnd: (epoch, logs) => {
+                        document.getElementById('status').innerText = `Q&A Epoch ${epoch + 1}: Loss = ${logs.loss.toFixed(4)}`;
+                    }
+                }
+            });
+            await qaModel.save('localstorage://vynix-qa-model');
+
+            // Train text generation model
+            textGenModel = createTextGenModel(charVocab.length + 1);
+            const textInputs = tf.concat(customDataset.textGen.map(text => preprocessTextGen(text)));
+            const textOutputs = tf.tensor1d(
+                customDataset.textGen.map(text => {
+                    const chars = text.toLowerCase().split('').slice(1).concat(' ');
+                    return chars.map(c => charVocab.indexOf(c) + 1)[0] || 0;
+                })
+            );
+            document.getElementById('status').innerText = 'Training text generation model...';
+            await textGenModel.fit(textInputs, textOutputs, {
+                epochs: 50,
+                batchSize: 1,
+                shuffle: true,
+                callbacks: {
+                    onEpochEnd: (epoch, logs) => {
+                        document.getElementById('status').innerText = `Text Gen Epoch ${epoch + 1}: Loss = ${logs.loss.toFixed(4)}`;
+                    }
+                }
+            });
+            await textGenModel.save('localstorage://vynix-textgen-model');
+
+            document.getElementById('status').innerText = 'Models trained and saved!';
+        }
+
+        // Load models
+        async function loadModels() {
+            try {
+                qaModel = await tf.loadLayersModel('localstorage://vynix-qa-model');
+                textGenModel = await tf.loadLayersModel('localstorage://vynix-textgen-model');
+                document.getElementById('status').innerText = 'Models loaded!';
+            } catch (error) {
+                console.log('No saved models, training new ones...');
+                await trainModels();
+            }
+        }
+
+        // Generate text
+        async function generateText(input, maxTokens = 10) {
+            let currentInput = input.slice(0, maxGenLength);
+            let generated = '';
+            for (let i = 0; i < maxTokens; i++) {
+                const inputTensor = preprocessTextGen(currentInput);
+                const prediction = textGenModel.predict(inputTensor);
+                const nextCharIndex = prediction.argMax(-1).dataSync()[0];
+                if (nextCharIndex === 0) break;
+                const nextChar = charVocab[nextCharIndex - 1];
+                generated += nextChar;
+                currentInput = (currentInput + nextChar).slice(1);
+            }
+            return generated.trim();
+        }
+
+        // Send user message and get AI response
+        async function sendMessage() {
+            const userInput = document.getElementById('userInput').value;
+            if (!userInput || !qaModel || !textGenModel) return;
+
+            chatHistory.push({ role: 'user', content: userInput });
+            updateChatBox();
+
+            document.getElementById('status').innerText = 'Vynix AI is thinking...';
+            let response;
+
+            // Detect if input is a question
+            if (userInput.toLowerCase().match(/\b(what|where|who)\b/)) {
+                const inputTensor = preprocessQA(userInput);
+                const prediction = qaModel.predict(inputTensor);
+                const answerIndex = prediction.argMax(-1).dataSync()[0];
+                response = `Vynix AI: ${customDataset.qa[answerIndex]?.answer || 'I don’t know that one!'}`;
+            } else {
+                const generated = await generateText(userInput);
+                response = `Vynix AI: ${generated || 'Let me think... Try a question!'}`;
+            }
+
+            chatHistory.push({ role: 'ai', content: response });
+            updateChatBox();
+            document.getElementById('status').innerText = 'Ready.';
+            document.getElementById('userInput').value = '';
+        }
+
+        // Update chat box UI
+        function updateChatBox() {
+            const chatBox = document.getElementById('chatBox');
+            chatBox.innerHTML = '';
+            chatHistory.forEach(msg => {
+                const div = document.createElement('div');
+                div.style.textAlign = msg.role === 'user' ? 'right' : 'left';
+                div.style.margin = '5px';
+                div.style.padding = '10px';
+                div.style.backgroundColor = msg.role === 'user' ? '#007bff' : '#e0e0e0';
+                div.style.color = msg.role === 'user' ? 'white' : 'black';
+                div.style.borderRadius = '8px';
+                div.innerText = `${msg.role === 'user' ? 'You' : 'Vynix AI'}: ${msg.content}`;
+                chatBox.appendChild(div);
+            });
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadModels();
+            document.getElementById('userInput').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendMessage();
+            });
+        });
+    </script>
+</body>
+</html>
