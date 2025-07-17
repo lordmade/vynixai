@@ -79,7 +79,7 @@
             <input type="text" id="userInput" placeholder="Ask Vynix AI something..." />
             <button id="sendButton" onclick="sendMessage()" disabled>Send</button>
         </div>
-        <p id="status">Initializing Vynix AI...</p>
+        <p id="status">Checking environment...</p>
     </div>
     <script>
         // Lazy load TensorFlow.js
@@ -87,7 +87,7 @@
         tfScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js';
         tfScript.onload = initialize;
         tfScript.onerror = () => {
-            document.getElementById('status').innerText = 'Error: Failed to load TensorFlow.js';
+            document.getElementById('status').innerText = 'Error: Failed to load TensorFlow.js. Please refresh.';
             console.error('Failed to load TensorFlow.js');
         };
         document.head.appendChild(tfScript);
@@ -131,7 +131,7 @@
         const charVocab = 'abcdefghijklmnopqrstuvwxyz .!?';
         const maxLength = 10; // Max input length for Q&A
         const maxGenLength = 20; // Max input length for text generation
-        const confidenceThreshold = 0.7; // Lowered for better sensitivity
+        const confidenceThreshold = 0.7;
 
         // Preprocess Q&A input
         function preprocessQA(text) {
@@ -149,21 +149,21 @@
             return tf.tensor2d([sequence], [1, maxGenLength], 'int32');
         }
 
-        // Create Q&A model (simplified)
+        // Create Q&A model (ultra-small)
         function createQAModel(vocabSize) {
             const model = tf.sequential();
-            model.add(tf.layers.embedding({ inputDim: vocabSize, outputDim: 4, inputLength: maxLength }));
-            model.add(tf.layers.lstm({ units: 8 }));
+            model.add(tf.layers.embedding({ inputDim: vocabSize, outputDim: 1, inputLength: maxLength }));
+            model.add(tf.layers.lstm({ units: 2 }));
             model.add(tf.layers.dense({ units: customDataset.qa.length, activation: 'softmax' }));
             model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
             return model;
         }
 
-        // Create text generation model (simplified)
+        // Create text generation model (ultra-small)
         function createTextGenModel(charVocabSize) {
             const model = tf.sequential();
-            model.add(tf.layers.embedding({ inputDim: charVocabSize, outputDim: 4, inputLength: maxGenLength }));
-            model.add(tf.layers.lstm({ units: 16 }));
+            model.add(tf.layers.embedding({ inputDim: charVocabSize, outputDim: 1, inputLength: maxGenLength }));
+            model.add(tf.layers.lstm({ units: 4 }));
             model.add(tf.layers.dense({ units: charVocabSize, activation: 'softmax' }));
             model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
             return model;
@@ -172,14 +172,19 @@
         // Train models
         async function trainModels() {
             try {
+                // Check localStorage availability
+                if (!window.localStorage) {
+                    throw new Error('localStorage is not available');
+                }
+
                 // Train Q&A model
+                document.getElementById('status').innerText = 'Training Q&A model...';
                 qaModel = createQAModel(vocab.length + 1);
                 const qaInputs = tf.concat(customDataset.qa.map(item => preprocessQA(item.question)));
                 const qaOutputs = tf.tensor1d(customDataset.qa.map((_, i) => i));
-                document.getElementById('status').innerText = 'Training Q&A model...';
                 await qaModel.fit(qaInputs, qaOutputs, {
-                    epochs: 20, // Reduced for speed
-                    batchSize: 2,
+                    epochs: 5, // Minimal epochs
+                    batchSize: 1,
                     shuffle: true,
                     callbacks: {
                         onEpochEnd: (epoch, logs) => {
@@ -190,6 +195,7 @@
                 await qaModel.save('localstorage://vynix-qa-model');
 
                 // Train text generation model
+                document.getElementById('status').innerText = 'Training text generation model...';
                 textGenModel = createTextGenModel(charVocab.length + 1);
                 const textInputs = tf.concat(customDataset.textGen.map(text => preprocessTextGen(text)));
                 const textOutputs = tf.tensor1d(
@@ -198,10 +204,9 @@
                         return chars.map(c => charVocab.indexOf(c) + 1)[0] || 0;
                     })
                 );
-                document.getElementById('status').innerText = 'Training text generation model...';
                 await textGenModel.fit(textInputs, textOutputs, {
-                    epochs: 20, // Reduced for speed
-                    batchSize: 2,
+                    epochs: 5, // Minimal epochs
+                    batchSize: 1,
                     shuffle: true,
                     callbacks: {
                         onEpochEnd: (epoch, logs) => {
@@ -216,13 +221,14 @@
                 document.getElementById('status').innerText = 'Models trained and ready!';
             } catch (error) {
                 console.error('Training error:', error);
-                document.getElementById('status').innerText = 'Error training models. Please refresh.';
+                document.getElementById('status').innerText = 'Error training models. Please refresh or check console.';
             }
         }
 
         // Load models
         async function loadModels() {
             try {
+                document.getElementById('status').innerText = 'Loading models...';
                 qaModel = await tf.loadLayersModel('localstorage://vynix-qa-model');
                 textGenModel = await tf.loadLayersModel('localstorage://vynix-textgen-model');
                 modelsLoaded = true;
@@ -230,6 +236,7 @@
                 document.getElementById('status').innerText = 'Models loaded and ready!';
             } catch (error) {
                 console.log('No saved models, training new ones...', error);
+                document.getElementById('status').innerText = 'No saved models, training new ones...';
                 await trainModels();
             }
         }
@@ -333,11 +340,26 @@
         // Initialize
         async function initialize() {
             try {
+                // Check WebGL support
+                document.getElementById('status').innerText = 'Checking WebGL support...';
+                if (!tf.getBackend() || tf.getBackend() !== 'webgl') {
+                    await tf.setBackend('webgl');
+                    if (!tf.getBackend()) {
+                        throw new Error('WebGL not supported');
+                    }
+                }
+
+                // Check localStorage
+                if (!window.localStorage) {
+                    throw new Error('localStorage not available');
+                }
+
+                document.getElementById('status').innerText = 'TensorFlow.js loaded, loading models...';
                 await tf.ready();
                 await loadModels();
             } catch (error) {
                 console.error('Initialization error:', error);
-                document.getElementById('status').innerText = 'Error initializing Vynix AI. Please refresh.';
+                document.getElementById('status').innerText = 'Error initializing Vynix AI. Please refresh or check console.';
             }
         }
 
