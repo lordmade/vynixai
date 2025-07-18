@@ -186,7 +186,25 @@
         <button id="sendButton" onclick="sendMessage()" disabled><span class="send-icon"></span></button>
     </div>
     <p id="status" class="loading">Checking environment...</p>
-    <script>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
+        import { getDatabase, ref, get, push } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-database.js';
+
+        // Firebase configuration (replace with your Firebase project config)
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_AUTH_DOMAIN",
+            databaseURL: "YOUR_DATABASE_URL",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+
         // Lazy load TensorFlow.js
         const tfScript = document.createElement('script');
         tfScript.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.21.0/dist/tf.min.js';
@@ -198,48 +216,88 @@
         document.head.appendChild(tfScript);
 
         // Global variables
-        let qaModel, textGenModel, chatHistory = [], modelsLoaded = false;
+        let qaModel, textGenModel, chatHistory = [], modelsLoaded = false, userId = 'anonymous_' + Math.random().toString(36).substr(2, 9);
 
-        // Custom dataset
-        const customDataset = {
-            qa: [
-                { question: "What is the capital of France?", answer: "Paris" },
-                { question: "Who wrote Romeo and Juliet?", answer: "William Shakespeare" },
-                { question: "What is the largest planet?", answer: "Jupiter" },
-                { question: "Where is the Great Wall?", answer: "China" },
-                { question: "What is 2 + 2?", answer: "4" },
-                { question: "Who painted the Mona Lisa?", answer: "Leonardo da Vinci" },
-                { question: "What is the chemical symbol for water?", answer: "H2O" },
-                { question: "What is the tallest mammal?", answer: "Blue Whale" },
-                { question: "Where is Machu Picchu?", answer: "Peru" },
-                { question: "What is the currency of Japan?", answer: "Yen" }
-            ],
-            textGen: [
-                "The sun sets slowly behind the mountain.",
-                "A curious cat explored the garden.",
-                "Let's meet at the park tomorrow!",
-                "Stars twinkled brightly in the night sky.",
-                "The old house creaked in the wind.",
-                "I found a shiny coin on the path.",
-                "The river flowed gently through the valley.",
-                "A bird sang a sweet melody.",
-                "We laughed and shared stories by the fire.",
-                "The moon glowed softly above the trees."
-            ]
-        };
+        // Fetch dataset from Firebase
+        async function fetchDataset() {
+            try {
+                document.getElementById('status').innerText = 'Fetching dataset from Firebase...';
+                document.getElementById('status').classList.add('loading');
+                const snapshot = await get(ref(database, 'dataset'));
+                const data = snapshot.val() || { qa: [], textGen: [] };
+                return {
+                    qa: data.qa || [
+                        { question: "What is the capital of France?", answer: "Paris" },
+                        { question: "Who wrote Romeo and Juliet?", answer: "William Shakespeare" },
+                        { question: "What is the largest planet?", answer: "Jupiter" },
+                        { question: "Where is the Great Wall?", answer: "China" },
+                        { question: "What is 2 + 2?", answer: "4" }
+                    ],
+                    textGen: data.textGen || [
+                        "The sun sets slowly behind the mountain.",
+                        "A curious cat explored the garden.",
+                        "Let's meet at the park tomorrow!"
+                    ]
+                };
+            } catch (error) {
+                console.error('Firebase dataset fetch error:', error);
+                document.getElementById('status').innerText = 'Error fetching dataset. Using default dataset.';
+                document.getElementById('status').classList.remove('loading');
+                return {
+                    qa: [
+                        { question: "What is the capital of France?", answer: "Paris" },
+                        { question: "Who wrote Romeo and Juliet?", answer: "William Shakespeare" },
+                        { question: "What is the largest planet?", answer: "Jupiter" },
+                        { question: "Where is the Great Wall?", answer: "China" },
+                        { question: "What is 2 + 2?", answer: "4" }
+                    ],
+                    textGen: [
+                        "The sun sets slowly behind the mountain.",
+                        "A curious cat explored the garden.",
+                        "Let's meet at the park tomorrow!"
+                    ]
+                };
+            }
+        }
+
+        // Load chat history from Firebase
+        async function loadChatHistory() {
+            try {
+                const snapshot = await get(ref(database, `chats/${userId}/messages`));
+                const messages = snapshot.val() || {};
+                chatHistory = Object.values(messages).filter(msg => msg && msg.content && msg.timestamp);
+                updateChatBox();
+            } catch (error) {
+                console.error('Firebase chat load error:', error);
+                document.getElementById('status').innerText = 'Error loading chat history.';
+            }
+        }
+
+        // Save message to Firebase
+        async function saveMessageToFirebase(message) {
+            try {
+                await push(ref(database, `chats/${userId}/messages`), message);
+            } catch (error) {
+                console.error('Firebase save message error:', error);
+                document.getElementById('status').innerText = 'Error saving message to Firebase.';
+            }
+        }
 
         // Vocabulary for Q&A
-        const vocab = [...new Set(
-            customDataset.qa.flatMap(item => item.question.toLowerCase().split(/\s+/))
-                .concat(customDataset.qa.flatMap(item => item.answer.toLowerCase().split(/\s+/)))
-        )];
+        async function getVocab(dataset) {
+            return [...new Set(
+                dataset.qa.flatMap(item => item.question.toLowerCase().split(/\s+/))
+                    .concat(dataset.qa.flatMap(item => item.answer.toLowerCase().split(/\s+/)))
+            )];
+        }
+
         const charVocab = 'abcdefghijklmnopqrstuvwxyz .!?';
         const maxLength = 10; // Max input length for Q&A
         const maxGenLength = 20; // Max input length for text generation
         const confidenceThreshold = 0.7;
 
         // Preprocess Q&A input
-        function preprocessQA(text) {
+        function preprocessQA(text, vocab) {
             const tokens = text.toLowerCase().split(/\s+/).filter(word => vocab.includes(word));
             const sequence = tokens.map(word => vocab.indexOf(word) + 1).slice(0, maxLength);
             while (sequence.length < maxLength) sequence.push(0);
@@ -255,11 +313,11 @@
         }
 
         // Create Q&A model (ultra-small)
-        function createQAModel(vocabSize) {
+        function createQAModel(vocabSize, qaLength) {
             const model = tf.sequential();
             model.add(tf.layers.embedding({ inputDim: vocabSize, outputDim: 1, inputLength: maxLength }));
             model.add(tf.layers.lstm({ units: 2 }));
-            model.add(tf.layers.dense({ units: customDataset.qa.length, activation: 'softmax' }));
+            model.add(tf.layers.dense({ units: qaLength, activation: 'softmax' }));
             model.compile({ optimizer: 'adam', loss: 'sparseCategoricalCrossentropy', metrics: ['accuracy'] });
             return model;
         }
@@ -275,19 +333,21 @@
         }
 
         // Train models
-        async function trainModels() {
+        async function trainModels(dataset) {
             try {
                 // Check localStorage
                 if (!window.localStorage) {
                     throw new Error('localStorage is not available');
                 }
 
+                const vocab = await getVocab(dataset);
+
                 // Train Q&A model
                 document.getElementById('status').innerText = 'Training Q&A model...';
                 document.getElementById('status').classList.add('loading');
-                qaModel = createQAModel(vocab.length + 1);
-                const qaInputs = tf.concat(customDataset.qa.map(item => preprocessQA(item.question)));
-                const qaOutputs = tf.tensor1d(customDataset.qa.map((_, i) => i));
+                qaModel = createQAModel(vocab.length + 1, dataset.qa.length);
+                const qaInputs = tf.concat(dataset.qa.map(item => preprocessQA(item.question, vocab)));
+                const qaOutputs = tf.tensor1d(dataset.qa.map((_, i) => i));
                 await qaModel.fit(qaInputs, qaOutputs, {
                     epochs: 5,
                     batchSize: 1,
@@ -303,9 +363,9 @@
                 // Train text generation model
                 document.getElementById('status').innerText = 'Training text generation model...';
                 textGenModel = createTextGenModel(charVocab.length + 1);
-                const textInputs = tf.concat(customDataset.textGen.map(text => preprocessTextGen(text)));
+                const textInputs = tf.concat(dataset.textGen.map(text => preprocessTextGen(text)));
                 const textOutputs = tf.tensor1d(
-                    customDataset.textGen.map(text => {
+                    dataset.textGen.map(text => {
                         const chars = text.toLowerCase().split('').slice(1).concat(' ');
                         return chars.map(c => charVocab.indexOf(c) + 1)[0] || 0;
                     })
@@ -334,7 +394,7 @@
         }
 
         // Load models
-        async function loadModels() {
+        async function loadModels(dataset) {
             try {
                 document.getElementById('status').innerText = 'Loading models...';
                 document.getElementById('status').classList.add('loading');
@@ -347,7 +407,7 @@
             } catch (error) {
                 console.log('No saved models, training new ones...', error);
                 document.getElementById('status').innerText = 'No saved models, training new ones...';
-                await trainModels();
+                await trainModels(dataset);
             }
         }
 
@@ -405,22 +465,26 @@
                 return;
             }
 
-            chatHistory.push({ role: 'user', content: userInput, timestamp: getTimestamp() });
+            const userMessage = { role: 'user', content: userInput, timestamp: getTimestamp() };
+            chatHistory.push(userMessage);
+            await saveMessageToFirebase(userMessage);
             updateChatBox();
             document.getElementById('status').innerText = 'Vynix AI is thinking...';
             document.getElementById('status').classList.add('loading');
 
             try {
+                const dataset = await fetchDataset();
+                const vocab = await getVocab(dataset);
                 let response;
                 if (userInput.toLowerCase().match(/\b(what|where|who)\b/)) {
-                    const inputTensor = preprocessQA(userInput);
+                    const inputTensor = preprocessQA(userInput, vocab);
                     const prediction = qaModel.predict(inputTensor);
                     const probabilities = prediction.dataSync();
                     const answerIndex = prediction.argMax(-1).dataSync()[0];
                     const confidence = probabilities[answerIndex];
 
                     if (confidence > confidenceThreshold) {
-                        response = `Vynix AI: ${customDataset.qa[answerIndex]?.answer || 'I don’t know that one!'}`;
+                        response = `Vynix AI: ${dataset.qa[answerIndex]?.answer || 'I don’t know that one!'}`;
                     } else {
                         response = `Vynix AI: Sorry, I'm not sure about that. ${keywordFallback(userInput)}`;
                     }
@@ -429,7 +493,9 @@
                     response = `Vynix AI: ${generated || 'Let me think... Try a question!'}`;
                 }
 
-                chatHistory.push({ role: 'ai', content: response, timestamp: getTimestamp() });
+                const aiMessage = { role: 'ai', content: response, timestamp: getTimestamp() };
+                chatHistory.push(aiMessage);
+                await saveMessageToFirebase(aiMessage);
                 updateChatBox();
                 document.getElementById('status').innerText = 'Ready.';
                 document.getElementById('status').classList.remove('loading');
@@ -438,7 +504,9 @@
                 console.error('Inference error:', error);
                 document.getElementById('status').innerText = 'Error processing request. Please try again.';
                 document.getElementById('status').classList.remove('loading');
-                chatHistory.push({ role: 'ai', content: 'Vynix AI: Sorry, something went wrong. Try again!', timestamp: getTimestamp() });
+                const errorMessage = { role: 'ai', content: 'Vynix AI: Sorry, something went wrong. Try again!', timestamp: getTimestamp() };
+                chatHistory.push(errorMessage);
+                await saveMessageToFirebase(errorMessage);
                 updateChatBox();
             }
         }
@@ -475,9 +543,14 @@
                     throw new Error('localStorage not available. Please use HTTPS or localhost.');
                 }
 
+                // Load chat history
+                await loadChatHistory();
+
+                // Fetch dataset and initialize models
                 document.getElementById('status').innerText = 'TensorFlow.js loaded, loading models...';
                 await tf.ready();
-                await loadModels();
+                const dataset = await fetchDataset();
+                await loadModels(dataset);
             } catch (error) {
                 console.error('Initialization error:', error);
                 document.getElementById('status').innerText = 'Error initializing Vynix AI. Please refresh or check console.';
