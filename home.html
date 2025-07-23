@@ -20,7 +20,7 @@
       --dark-text: #E2E8F0;
       --input-bg-light: linear-gradient(180deg, #FFFFFF 0%, #F1F5F9 100%);
       --input-bg-dark: linear-gradient(180deg, #2D3748 0%, #1A202C 100%);
-      --modal-bg: #000000; /* Changed to solid black */
+      --modal-bg: #000000;
     }
 
     [data-theme="dark"] {
@@ -28,7 +28,7 @@
       --border: var(--dark-border);
       --white: var(--dark-bg);
       --background: #2D3748;
-      --modal-bg: #000000; /* Ensure modal remains black in dark mode */
+      --modal-bg: #000000;
     }
 
     body {
@@ -439,7 +439,7 @@
     .modal-btn {
       padding: 0.75rem 1.5rem;
       border: none;
-      border-radius: 9999px; /* Increased for pill shape */
+      border-radius: 9999px;
       font-size: 1rem;
       font-weight: 500;
       cursor: pointer;
@@ -570,7 +570,7 @@
       .modal-btn {
         padding: 0.5rem 1rem;
         font-size: 0.9rem;
-        border-radius: 9999px; /* Maintain pill shape in mobile */
+        border-radius: 9999px;
       }
     }
   </style>
@@ -628,10 +628,10 @@
   </div>
 
   <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-    import { getAuth, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-    import { getDatabase, ref, push, get, set } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js';
-    import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-remote-config.js';
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
+    import { getAuth, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
+    import { getDatabase, ref, push, get, set } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-database.js';
+    import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-remote-config.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -670,7 +670,7 @@
 
     // Initialize Firebase Remote Config
     remoteConfig.settings = {
-      minimumFetchIntervalMillis: 3600000, // Fetch every hour
+      minimumFetchIntervalMillis: 0, // Set to 0 for development, 3600000 for production
       fetchTimeoutMillis: 60000 // 60 seconds timeout
     };
 
@@ -679,21 +679,33 @@
       anthropic_api_key: ""
     };
 
-    // Fetch and activate Remote Config
+    // Fetch and activate Remote Config with retry logic
     async function initializeRemoteConfig() {
-      try {
-        console.log("Fetching Remote Config...");
-        await fetchAndActivate(remoteConfig);
-        anthropicApiKey = getString(remoteConfig, 'anthropic_api_key');
-        if (!anthropicApiKey) {
-          throw new Error("Anthropic API key is empty or not set in Remote Config.");
+      const maxRetries = 3;
+      let attempt = 1;
+
+      while (attempt <= maxRetries) {
+        try {
+          console.log(`Fetching Remote Config (Attempt ${attempt}/${maxRetries})...`);
+          await fetchAndActivate(remoteConfig);
+          anthropicApiKey = getString(remoteConfig, 'anthropic_api_key');
+          if (!anthropicApiKey) {
+            throw new Error("Anthropic API key is empty or not set in Remote Config.");
+          }
+          console.log("Remote Config fetched successfully. Anthropic API key retrieved.");
+          return true;
+        } catch (error) {
+          console.error(`Remote Config fetch attempt ${attempt} failed:`, error.message);
+          if (attempt === maxRetries) {
+            console.error("All Remote Config fetch attempts failed.");
+            showAlert(`Failed to initialize configuration: ${error.message}. AI features disabled.`, false);
+            return false;
+          }
+          attempt++;
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
         }
-        console.log("Remote Config fetched successfully. Anthropic API key retrieved.");
-      } catch (error) {
-        console.error("Error initializing Remote Config:", error);
-        showAlert("Failed to initialize configuration. Please try again later.", false);
-        throw error; // Prevent further execution if Remote Config fails
       }
+      return false;
     }
 
     async function answerQuestion(query) {
@@ -861,8 +873,8 @@
     function hideFormSpinner() {
       console.log("Hiding form spinner");
       formSpinner.classList.remove("active");
-      messageInput.disabled = currentUser?.isGuest || false;
-      sendButton.disabled = currentUser?.isGuest || !messageInput.value.trim();
+      messageInput.disabled = currentUser?.isGuest || !anthropicApiKey;
+      sendButton.disabled = currentUser?.isGuest || !messageInput.value.trim() || !anthropicApiKey;
     }
 
     function showAlert(message, isSuccess) {
@@ -870,7 +882,7 @@
       alertMessage.textContent = message;
       alert.style.background = isSuccess ? "rgba(29, 161, 242, 0.1)" : "rgba(255, 0, 0, 0.1)";
       alert.classList.add("active");
-      setTimeout(() => alert.classList.remove("active"), 3000);
+      setTimeout(() => alert.classList.remove("active"), 5000); // Increased to 5s for visibility
     }
 
     function formatTimestamp(timestamp) {
@@ -936,6 +948,10 @@
       }
       if (currentUser && currentUser.isGuest) {
         showAlert("Guests cannot interact with Vynix.", false);
+        return;
+      }
+      if (!anthropicApiKey) {
+        showAlert("AI functionality is currently unavailable. Please try again later.", false);
         return;
       }
 
@@ -1012,8 +1028,9 @@
 
     // Initialize Remote Config before authentication
     async function initializeAppWithConfig() {
+      showLoading();
       try {
-        await initializeRemoteConfig();
+        const configSuccess = await initializeRemoteConfig();
         onAuthStateChanged(auth, async (user) => {
           if (!user) {
             console.log("No user authenticated, redirecting to signup");
@@ -1023,14 +1040,13 @@
           }
 
           currentUser = user;
-          showLoading();
           try {
             const userData = await fetchUserProfile(user);
             currentUser.isGuest = userData.isGuest || false;
             container.classList.add("authenticated");
-            messageInput.disabled = currentUser.isGuest;
-            sendButton.disabled = currentUser.isGuest || !messageInput.value.trim();
-            messageInput.placeholder = currentUser.isGuest ? "Guests cannot interact with Vynix." : "Ask Vynix a question (e.g., 'What is the capital of France?' or 'Explain quantum mechanics')...";
+            messageInput.disabled = currentUser.isGuest || !anthropicApiKey;
+            sendButton.disabled = currentUser.isGuest || !messageInput.value.trim() || !anthropicApiKey;
+            messageInput.placeholder = currentUser.isGuest ? "Guests cannot interact with Vynix." : !anthropicApiKey ? "AI functionality unavailable. Please try again later." : "Ask Vynix a question (e.g., 'What is the capital of France?' or 'Explain quantum mechanics')...";
 
             const chatRef = ref(db, `chat_history/${user.uid}`);
             const snapshot = await get(chatRef);
@@ -1047,7 +1063,7 @@
 
             if (!isInitialMessageAdded) {
               const initialMessage = {
-                text: "Greetings! I am Vynix, your intelligent assistant. I can answer a wide range of questions, from general knowledge to complex topics. Ask me anything.",
+                text: !anthropicApiKey ? "Greetings! I am Vynix, your intelligent assistant. AI functionality is currently unavailable due to configuration issues. You can still view your chat history or sign out." : "Greetings! I am Vynix, your intelligent assistant. I can answer a wide range of questions, from general knowledge to complex topics. Ask me anything.",
                 createdAt: Date.now(),
                 isUser: false
               };
@@ -1064,8 +1080,56 @@
         });
       } catch (error) {
         console.error("App initialization error:", error);
-        showAlert("Failed to initialize application. Please try again later.", false);
+        showAlert(`Failed to initialize application: ${error.message}. You can still sign in, but AI features are disabled.`, false);
         hideLoading();
+        // Proceed with authentication even if Remote Config fails
+        onAuthStateChanged(auth, async (user) => {
+          if (!user) {
+            console.log("No user authenticated, redirecting to signup");
+            document.body.classList.add("fade-out");
+            window.location.href = "signup.html?redirect=vynix";
+            return;
+          }
+
+          currentUser = user;
+          try {
+            const userData = await fetchUserProfile(user);
+            currentUser.isGuest = userData.isGuest || false;
+            container.classList.add("authenticated");
+            messageInput.disabled = true;
+            sendButton.disabled = true;
+            messageInput.placeholder = "AI functionality unavailable. Please try again later.";
+
+            const chatRef = ref(db, `chat_history/${user.uid}`);
+            const snapshot = await get(chatRef);
+            aiChat.innerHTML = "";
+            chatHistory = [];
+            if (snapshot.exists()) {
+              const messages = Object.values(snapshot.val()).sort((a, b) => a.createdAt - b.createdAt);
+              messages.forEach((message) => {
+                renderMessage(message, message.isUser, userData);
+                chatHistory.push(message);
+              });
+              scrollToBottom();
+            }
+
+            if (!isInitialMessageAdded) {
+              const initialMessage = {
+                text: "Greetings! I am Vynix, your intelligent assistant. AI functionality is currently unavailable due to configuration issues. You can still view your chat history or sign out.",
+                createdAt: Date.now(),
+                isUser: false
+              };
+              renderMessage(initialMessage, false);
+              chatHistory.push(initialMessage);
+              isInitialMessageAdded = true;
+            }
+          } catch (error) {
+            console.error("Authentication setup error:", error);
+            showAlert(`Failed to load user data: ${error.message}`, false);
+          } finally {
+            hideLoading();
+          }
+        });
       }
     }
 
@@ -1074,8 +1138,8 @@
 
     messageInput.addEventListener("input", () => {
       console.log("Input event triggered, text:", maxLength(messageInput.value, 50));
-      sendButton.disabled = !messageInput.value.trim() || (currentUser && currentUser.isGuest);
-      sendButton.classList.toggle("active", messageInput.value.trim() && !(currentUser && currentUser.isGuest));
+      sendButton.disabled = !messageInput.value.trim() || (currentUser && currentUser.isGuest) || !anthropicApiKey;
+      sendButton.classList.toggle("active", messageInput.value.trim() && !(currentUser && currentUser.isGuest) && anthropicApiKey);
     });
 
     messageInput.addEventListener("keypress", async (e) => {
