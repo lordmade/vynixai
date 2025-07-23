@@ -668,6 +668,9 @@
     let currentUtterance = null;
     let anthropicApiKey = null;
 
+    // Hardcoded API key for testing (REMOVE IN PRODUCTION)
+    // const HARDCODED_ANTHROPIC_API_KEY = "your-anthropic-api-key-here";
+
     // Initialize Firebase Remote Config
     remoteConfig.settings = {
       minimumFetchIntervalMillis: 0, // Set to 0 for development, 3600000 for production
@@ -689,15 +692,24 @@
           console.log(`Fetching Remote Config (Attempt ${attempt}/${maxRetries})...`);
           await fetchAndActivate(remoteConfig);
           anthropicApiKey = getString(remoteConfig, 'anthropic_api_key');
-          if (!anthropicApiKey) {
+          if (!anthropicApiKey && !HARDCODED_ANTHROPIC_API_KEY) {
             throw new Error("Anthropic API key is empty or not set in Remote Config.");
           }
-          console.log("Remote Config fetched successfully. Anthropic API key retrieved.");
+          if (!anthropicApiKey && HARDCODED_ANTHROPIC_API_KEY) {
+            console.warn("Using hardcoded Anthropic API key for testing.");
+            anthropicApiKey = HARDCODED_ANTHROPIC_API_KEY;
+          }
+          console.log("Remote Config fetched successfully. Anthropic API key retrieved:", anthropicApiKey ? "Set" : "Using hardcoded key");
           return true;
         } catch (error) {
           console.error(`Remote Config fetch attempt ${attempt} failed:`, error.message);
           if (attempt === maxRetries) {
             console.error("All Remote Config fetch attempts failed.");
+            if (HARDCODED_ANTHROPIC_API_KEY) {
+              console.warn("Falling back to hardcoded Anthropic API key.");
+              anthropicApiKey = HARDCODED_ANTHROPIC_API_KEY;
+              return true;
+            }
             showAlert(`Failed to initialize configuration: ${error.message}. AI features disabled.`, false);
             return false;
           }
@@ -714,40 +726,61 @@
         throw new Error("Anthropic API key not initialized.");
       }
       const systemPrompt = `You are VynixAI, a professional and knowledgeable AI assistant. Provide a clear, concise, and accurate response to the following question: "${query}". Respond in a professional tone, avoiding informal language or emojis. If the query is a mathematical problem, solve it step-by-step and conclude with 'Final Answer:'. Otherwise, provide a direct and informative response. Avoid LaTeX and keep explanations simple.`;
-      try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': anthropicApiKey,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: 'claude-3-5-sonnet-20241022',
-            max_tokens: 500,
-            temperature: 0.2,
-            system: systemPrompt,
-            messages: [
-              {
-                role: 'user',
-                content: query
-              }
-            ]
-          })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error?.message || 'Anthropic API request failed');
+      
+      const maxRetries = 3;
+      let attempt = 1;
+      let lastError = null;
+
+      while (attempt <= maxRetries) {
+        try {
+          console.log(`Attempting Anthropic API call (Attempt ${attempt}/${maxRetries})...`);
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': anthropicApiKey,
+              'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+              model: 'claude-3-5-sonnet-20241022',
+              max_tokens: 500,
+              temperature: 0.2,
+              system: systemPrompt,
+              messages: [
+                {
+                  role: 'user',
+                  content: query
+                }
+              ]
+            })
+          });
+
+          const data = await response.json();
+          console.log("Anthropic API response:", JSON.stringify(data, null, 2));
+
+          if (!response.ok) {
+            throw new Error(data.error?.message || `HTTP ${response.status}: Anthropic API request failed`);
+          }
+
+          const text = data.content?.[0]?.text?.trim();
+          if (!text) {
+            throw new Error("Empty or invalid response from Anthropic API.");
+          }
+
+          console.log("Query processed successfully, response:", maxLength(text, 50));
+          return text;
+        } catch (error) {
+          console.error(`Anthropic API attempt ${attempt} failed:`, error.message);
+          lastError = error;
+          if (attempt === maxRetries) {
+            console.error("All Anthropic API attempts failed.");
+            throw new Error(`Failed to process query after ${maxRetries} attempts: ${error.message}`);
+          }
+          attempt++;
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
         }
-        const text = data.content?.[0]?.text?.trim();
-        if (!text) {
-          throw new Error("Empty response from Anthropic API.");
-        }
-        return text;
-      } catch (error) {
-        console.error("Anthropic API error:", error);
-        throw new Error(`Failed to process query: ${error.message}`);
       }
+      throw lastError; // Ensure the last error is thrown if all retries fail
     }
 
     function speakText(text, messageElement) {
@@ -882,7 +915,7 @@
       alertMessage.textContent = message;
       alert.style.background = isSuccess ? "rgba(29, 161, 242, 0.1)" : "rgba(255, 0, 0, 0.1)";
       alert.classList.add("active");
-      setTimeout(() => alert.classList.remove("active"), 5000); // Increased to 5s for visibility
+      setTimeout(() => alert.classList.remove("active"), 5000);
     }
 
     function formatTimestamp(timestamp) {
@@ -951,7 +984,7 @@
         return;
       }
       if (!anthropicApiKey) {
-        showAlert("AI functionality is currently unavailable. Please try again later.", false);
+        showAlert("AI functionality is currently unavailable due to configuration issues.", false);
         return;
       }
 
@@ -971,7 +1004,26 @@
         renderMessage(userMessage, true, userData);
         chatHistory.push(userMessage);
 
-        const aiResponseText = await answerQuestion(query);
+        let aiResponseText;
+        try {
+          aiResponseText = await answerQuestion(query);
+        } catch (error) {
+          console.error("Detailed Anthropic error:", error.message);
+          if (error.message.includes("authentication_error")) {
+            showAlert("Invalid Anthropic API key. Please contact support.", false);
+            aiResponseText = "Sorry, I couldn't process your question due to an authentication issue. Please try again later.";
+          } else if (error.message.includes("rate_limit_error")) {
+            showAlert("Rate limit exceeded. Please try again later.", false);
+            aiResponseText = "Sorry, I've reached my query limit for now. Please try again in a few minutes.";
+          } else if (error.message.includes("Empty or invalid response")) {
+            showAlert("Received an empty response from the AI. Please try rephrasing your question.", false);
+            aiResponseText = "Sorry, I couldn't generate a response. Please try rephrasing or ask something else.";
+          } else {
+            showAlert(`Failed to process question: ${error.message}`, false);
+            aiResponseText = "Sorry, I couldn't process your question. Please try rephrasing or ask something else.";
+          }
+        }
+
         const aiMessage = {
           text: aiResponseText,
           createdAt: Date.now(),
@@ -991,7 +1043,9 @@
         messageInput.value = "";
         sendButton.classList.remove("active");
         sendButton.disabled = true;
-        showAlert("Question answered successfully.", true);
+        if (!aiResponseText.startsWith("Sorry")) {
+          showAlert("Question answered successfully.", true);
+        }
       } catch (error) {
         console.error("Send message error:", error);
         showAlert(`Failed to process question: ${error.message}`, false);
