@@ -44,7 +44,7 @@
       max-width: 400px;
       z-index: 10;
       background: var(--white);
-      border-radius: 50px; /* Pill shape */
+      border-radius: 50px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
       display: flex;
       align-items: center;
@@ -147,6 +147,20 @@
       transform: scale(1.05);
     }
 
+    #loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+
+    #loading-overlay.active {
+      display: flex;
+    }
+
     @media (max-width: 640px) {
       .search-container {
         width: 95%;
@@ -176,9 +190,12 @@
   </style>
 </head>
 <body>
+  <div id="loading-overlay" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div class="text-white text-lg font-semibold">Fetching your location...</div>
+  </div>
   <div id="map"></div>
   <div class="search-container">
-    <input id="search-input" type="text" placeholder="Search for emergency services, schools, or malls..." />
+    <input id="search-input" type="text" placeholders="Search for emergency services, schools, or malls..." />
     <button id="search-btn">Search</button>
   </div>
   <div id="custom-alert" class="custom-alert">
@@ -211,6 +228,7 @@
     const auth = getAuth(app);
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
+    let map, userMarker;
 
     function showAlert(message, showRetry = false, autoHide = true) {
       alertMessage.textContent = message;
@@ -226,66 +244,78 @@
 
     // Mapbox setup
     mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
-    let map;
 
-    // Initialize map after getting user location
     function initializeMap(lng, lat) {
+      const loadingOverlay = document.getElementById('loading-overlay');
+      loadingOverlay.classList.add('active');
+
       map = new mapboxgl.Map({
         container: 'map',
         style: 'mapbox://styles/mapbox/streets-v12',
         center: [lng, lat],
-        zoom: 14 // Initial zoom to user's location
+        zoom: 14
       });
 
-      // Add navigation control
-      map.addControl(new mapboxgl.NavigationControl());
+      map.on('load', () => {
+        userMarker = new mapboxgl.Marker({ color: '#1DA1F2' })
+          .setLngLat([lng, lat])
+          .setPopup(new mapboxgl.Popup().setHTML('<h3>Your Location</h3>'))
+          .addTo(map);
 
-      // Add user location marker
-      new mapboxgl.Marker({ color: '#1DA1F2' })
-        .setLngLat([lng, lat])
-        .setPopup(new mapboxgl.Popup().setHTML('<h3>Your Location</h3>'))
-        .addTo(map);
-
-      // Search for nearby places
-      searchNearbyPlaces(lng, lat);
+        map.addControl(new mapboxgl.NavigationControl());
+        searchNearbyPlaces(lng, lat);
+        loadingOverlay.classList.remove('active');
+      });
     }
 
-    // Get user's location and zoom in
-    function getUserLocation() {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const { latitude, longitude } = position.coords;
-            initializeMap(longitude, latitude);
-          },
-          (error) => {
-            let message = 'Unable to retrieve your location. Please enable location services.';
-            if (error.code === error.PERMISSION_DENIED) {
-              message = 'Location access denied. Please enable location services in your device settings.';
-            } else if (error.code === error.POSITION_UNAVAILABLE) {
-              message = 'Location information is unavailable. Please try again.';
-            } else if (error.code === error.TIMEOUT) {
-              message = 'Location request timed out. Please try again.';
-            }
-            showAlert(message, true, false);
-            // Initialize map with default view if location fails
-            initializeMap(0, 0);
-          },
-          { timeout: 10000 } // 10-second timeout for geolocation
-        );
-      } else {
-        showAlert('Geolocation is not supported by your browser.', true, false);
-        initializeMap(0, 0);
+    function updateUserLocation(lng, lat) {
+      if (userMarker) {
+        userMarker.setLngLat([lng, lat]);
+        map.flyTo({ center: [lng, lat], zoom: 14, essential: true });
       }
     }
 
-    // Retry location access
-    function retryLocation() {
-      hideAlert();
-      getUserLocation();
+    function watchUserLocation(attempt = 1, maxAttempts = 3) {
+      if (navigator.geolocation) {
+        navigator.geolocation.watchPosition(
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            if (!map) {
+              initializeMap(longitude, latitude);
+            } else {
+              updateUserLocation(longitude, latitude);
+            }
+          },
+          (error) => {
+            let message = 'Unable to retrieve your location.';
+            if (error.code === error.PERMISSION_DENIED) {
+              message = 'Location access denied. Please enable location services in your browser or device settings.';
+            } else if (error.code === error.POSITION_UNAVAILABLE) {
+              message = 'Location information is unavailable. Retrying...';
+            } else if (error.code === error.TIMEOUT) {
+              message = 'Location request timed out. Retrying...';
+            }
+            showAlert(message, attempt < maxAttempts, attempt >= maxAttempts);
+            if (attempt < maxAttempts) {
+              setTimeout(() => watchUserLocation(attempt + 1, maxAttempts), 2000);
+            } else if (!map) {
+              initializeMap(-74.0060, 40.7128);
+              showAlert('Using default location (New York City).', false, true);
+            }
+          },
+          { timeout: 10000, enableHighAccuracy: true, maximumAge: 0 }
+        );
+      } else {
+        showAlert('Geolocation is not supported by your browser.', false, true);
+        initializeMap(-74.0060, 40.7128);
+      }
     }
 
-    // Search nearby places (police, hospitals, fire stations)
+    function retryLocation() {
+      hideAlert();
+      watchUserLocation();
+    }
+
     async function searchNearbyPlaces(lng, lat) {
       const categories = ['police', 'hospital', 'fire_station'];
       for (const category of categories) {
@@ -310,7 +340,6 @@
       }
     }
 
-    // Search bar functionality
     document.getElementById('search-btn').addEventListener('click', async () => {
       const query = document.getElementById('search-input').value.trim();
       if (!query) return showAlert('Please enter a search term.', false, true);
@@ -339,12 +368,14 @@
       }
     });
 
-    // Authentication check
     onAuthStateChanged(auth, (user) => {
       if (!user) {
-        window.location.href = 'signup.html';
+        showAlert('Please sign in to access location services.', false, true);
+        setTimeout(() => {
+          window.location.href = 'signup.html';
+        }, 3000);
       } else {
-        getUserLocation();
+        watchUserLocation();
       }
     });
   </script>
