@@ -161,6 +161,15 @@
       display: flex;
     }
 
+    .current-location-marker {
+      background: var(--vynix-blue);
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid var(--white);
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.3);
+    }
+
     @media (max-width: 640px) {
       .search-container {
         width: 95%;
@@ -195,7 +204,7 @@
   </div>
   <div id="map"></div>
   <div class="search-container">
-    <input id="search-input" type="text" placeholders="Search for emergency services, schools, or malls..." />
+    <input id="search-input" type="text" placeholder="Enter a location..." />
     <button id="search-btn">Search</button>
   </div>
   <div id="custom-alert" class="custom-alert">
@@ -228,7 +237,7 @@
     const auth = getAuth(app);
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
-    let map, userMarker;
+    let map, currentLocationMarker;
 
     function showAlert(message, showRetry = false, autoHide = true) {
       alertMessage.textContent = message;
@@ -245,7 +254,13 @@
     // Mapbox setup
     mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
 
-    function initializeMap(lng, lat) {
+    function createMarkerElement() {
+      const el = document.createElement('div');
+      el.className = 'current-location-marker';
+      return el;
+    }
+
+    function initializeMap(lng, lat, placeName = null) {
       const loadingOverlay = document.getElementById('loading-overlay');
       loadingOverlay.classList.add('active');
 
@@ -257,63 +272,83 @@
       });
 
       map.on('load', () => {
-        userMarker = new mapboxgl.Marker({ color: '#1DA1F2' })
+        // Add user location marker
+        currentLocationMarker = new mapboxgl.Marker({ element: createMarkerElement() })
           .setLngLat([lng, lat])
           .setPopup(new mapboxgl.Popup().setHTML('<h3>Your Location</h3>'))
           .addTo(map);
 
+        // Add navigation control
         map.addControl(new mapboxgl.NavigationControl());
+
+        // Populate search input with reverse geocoded place name
+        if (placeName) {
+          document.getElementById('search-input').value = placeName;
+        }
+
+        // Search for nearby places
         searchNearbyPlaces(lng, lat);
+
+        // Hide loading overlay
         loadingOverlay.classList.remove('active');
       });
     }
 
-    function updateUserLocation(lng, lat) {
-      if (userMarker) {
-        userMarker.setLngLat([lng, lat]);
-        map.flyTo({ center: [lng, lat], zoom: 14, essential: true });
-      }
-    }
+    function showCurrentLocation(attempt = 1, maxAttempts = 3) {
+      const loadingOverlay = document.getElementById('loading-overlay');
+      loadingOverlay.classList.add('active');
 
-    function watchUserLocation(attempt = 1, maxAttempts = 3) {
-      if (navigator.geolocation) {
-        navigator.geolocation.watchPosition(
-          (position) => {
-            const { latitude, longitude } = position.coords;
-            if (!map) {
-              initializeMap(longitude, latitude);
-            } else {
-              updateUserLocation(longitude, latitude);
-            }
-          },
-          (error) => {
-            let message = 'Unable to retrieve your location.';
-            if (error.code === error.PERMISSION_DENIED) {
-              message = 'Location access denied. Please enable location services in your browser or device settings.';
-            } else if (error.code === error.POSITION_UNAVAILABLE) {
-              message = 'Location information is unavailable. Retrying...';
-            } else if (error.code === error.TIMEOUT) {
-              message = 'Location request timed out. Retrying...';
-            }
-            showAlert(message, attempt < maxAttempts, attempt >= maxAttempts);
-            if (attempt < maxAttempts) {
-              setTimeout(() => watchUserLocation(attempt + 1, maxAttempts), 2000);
-            } else if (!map) {
-              initializeMap(-74.0060, 40.7128);
-              showAlert('Using default location (New York City).', false, true);
-            }
-          },
-          { timeout: 10000, enableHighAccuracy: true, maximumAge: 0 }
-        );
-      } else {
+      if (!navigator.geolocation) {
         showAlert('Geolocation is not supported by your browser.', false, true);
-        initializeMap(-74.0060, 40.7128);
+        initializeMap(-74.0060, 40.7128); // Default to New York City
+        loadingOverlay.classList.remove('active');
+        return;
       }
+
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const { longitude, latitude } = position.coords;
+          try {
+            // Reverse geocode to get place name
+            const res = await fetch(
+              `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${mapboxgl.accessToken}`
+            );
+            const data = await res.json();
+            const placeName = data.features && data.features.length ? data.features[0].place_name : null;
+
+            // Initialize map with user's location
+            initializeMap(longitude, latitude, placeName);
+          } catch (e) {
+            console.error('Reverse geocoding error:', e);
+            showAlert('Failed to retrieve location name. Using coordinates.', false, true);
+            initializeMap(longitude, latitude);
+          }
+        },
+        (error) => {
+          let message = 'Unable to retrieve your location.';
+          if (error.code === error.PERMISSION_DENIED) {
+            message = 'Location access denied. Please enable location services in your browser or device settings.';
+          } else if (error.code === error.POSITION_UNAVAILABLE) {
+            message = 'Location information is unavailable. Retrying...';
+          } else if (error.code === error.TIMEOUT) {
+            message = 'Location request timed out. Retrying...';
+          }
+          showAlert(message, attempt < maxAttempts, attempt >= maxAttempts);
+          if (attempt < maxAttempts) {
+            setTimeout(() => showCurrentLocation(attempt + 1, maxAttempts), 2000);
+          } else {
+            initializeMap(-74.0060, 40.7128); // Default to New York City
+            showAlert('Using default location (New York City).', false, true);
+            loadingOverlay.classList.remove('active');
+          }
+        },
+        { timeout: 10000, enableHighAccuracy: true, maximumAge: 0 }
+      );
     }
 
     function retryLocation() {
       hideAlert();
-      watchUserLocation();
+      showCurrentLocation();
     }
 
     async function searchNearbyPlaces(lng, lat) {
@@ -375,7 +410,7 @@
           window.location.href = 'signup.html';
         }, 3000);
       } else {
-        watchUserLocation();
+        showCurrentLocation();
       }
     });
   </script>
