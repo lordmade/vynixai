@@ -80,12 +80,16 @@
       overflow-y: auto;
       margin-top: 0.5rem;
       box-shadow: 0 2px 8px var(--shadow);
+      position: absolute;
+      width: calc(100% - 2rem);
+      z-index: 20;
     }
 
     .search-result-item {
       padding: 0.75rem;
       cursor: pointer;
       border-bottom: 1px solid var(--text-light);
+      font-size: 0.9rem;
     }
 
     .search-result-item:hover {
@@ -124,6 +128,31 @@
       border: 2px solid var(--bolt-white);
       box-shadow: 0 0 8px rgba(0, 0, 0, 0.3);
       cursor: pointer;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      50% {
+        transform: scale(1.5);
+        opacity: 0.7;
+      }
+      100% {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+
+    .place-marker {
+      background: #FF5733;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid var(--bolt-white);
+      box-shadow: 0 0 8px rgba(0, 0, 0, 0.3);
     }
 
     @media (max-width: 640px) {
@@ -141,6 +170,11 @@
         max-height: 150px;
       }
 
+      .search-result-item {
+        font-size: 0.8rem;
+        padding: 0.5rem;
+      }
+
       .user-menu {
         width: 36px;
         height: 36px;
@@ -155,6 +189,11 @@
         width: 12px;
         height: 12px;
       }
+
+      .place-marker {
+        width: 10px;
+        height: 10px;
+      }
     }
   </style>
 </head>
@@ -167,18 +206,18 @@
       </svg>
     </div>
     <div class="search-container">
-      <input type="text" class="search-input" id="search" placeholder="Search for police stations, malls, hospitals" oninput="searchPlaces(this.value)" />
+      <input type="text" class="search-input" id="search" placeholder="Search for police stations, malls, hospitals" oninput="debouncedSearch(this.value)" />
       <div class="search-results" id="search-results" style="display: none;"></div>
     </div>
   </div>
 
   <script>
-    // Replace with your actual Mapbox access token
+    // Mapbox access token
     mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
 
     // Validate access token
     if (!mapboxgl.accessToken || mapboxgl.accessToken === 'YOUR_MAPBOX_ACCESS_TOKEN') {
-      alert('Error: Invalid Mapbox access token. Please replace "YOUR_MAPBOX_ACCESS_TOKEN" with a valid token from mapbox.com.');
+      alert('Error: Invalid Mapbox access token. Please replace with a valid token from mapbox.com.');
       throw new Error('Invalid Mapbox access token');
     }
 
@@ -187,7 +226,7 @@
     try {
       map = new mapboxgl.Map({
         container: 'map',
-        style: 'mapbox://styles/mapbox/standard',
+        style: 'mapbox://styles/mapbox/streets-v12', // Enhanced map style
         zoom: 14,
         center: [28.0473, -26.2041] // Fallback center (Johannesburg)
       });
@@ -205,6 +244,9 @@
     // Add navigation controls
     map.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
+    // Add scale control
+    map.addControl(new mapboxgl.ScaleControl({ maxWidth: 80, unit: 'metric' }), 'bottom-right');
+
     // Add geolocation control
     const geolocate = new mapboxgl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
@@ -213,19 +255,29 @@
     });
     map.addControl(geolocate, 'top-right');
 
+    // Check for geolocation support
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser. Please enter locations manually.');
+      console.error('Geolocation not supported');
+      map.setCenter([28.0473, -26.2041]);
+    }
+
     // Trigger geolocation on map load
     let userLocation = null;
+    let currentMarker = null;
     map.on('load', () => {
-      try {
-        geolocate.trigger();
-      } catch (error) {
-        console.error('Geolocation trigger error:', error);
-        alert('Error: Unable to request location. Please enable location services.');
+      if (navigator.geolocation) {
+        try {
+          geolocate.trigger();
+        } catch (error) {
+          console.error('Geolocation trigger error:', error);
+          alert('Error: Unable to request location. Please enable location services.');
+          map.setCenter([28.0473, -26.2041]);
+        }
       }
     });
 
     // Handle geolocation success
-    let currentMarker = null;
     geolocate.on('geolocate', (e) => {
       const lon = e.coords.longitude;
       const lat = e.coords.latitude;
@@ -239,7 +291,7 @@
         currentMarker.remove();
       }
 
-      // Add new marker
+      // Add new pulsating marker
       const markerEl = document.createElement('div');
       markerEl.className = 'user-location-marker';
       currentMarker = new mapboxgl.Marker({
@@ -252,12 +304,35 @@
 
     // Handle geolocation errors
     geolocate.on('error', (e) => {
-      console.error('Geolocation error:', e);
-      alert('Unable to access your location. Please enable location services.');
-      map.setCenter([28.0473, -26.2041]); // Fallback to Johannesburg
+      let errorMessage;
+      switch (e.code) {
+        case e.PERMISSION_DENIED:
+          errorMessage = 'Location access denied. Please enable location services in your browser settings.';
+          break;
+        case e.POSITION_UNAVAILABLE:
+          errorMessage = 'Location information is unavailable. Please check your network or GPS.';
+          break;
+        case e.TIMEOUT:
+          errorMessage = 'Location request timed out. Please try again.';
+          break;
+        default:
+          errorMessage = 'An unknown error occurred while accessing your location.';
+      }
+      console.error('Geolocation error:', e.message || e);
+      alert(errorMessage);
+      map.setCenter([28.0473, -26.2041]);
     });
 
-    // Search for places
+    // Debounce function to limit API calls
+    function debounce(func, wait) {
+      let timeout;
+      return function (...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+      };
+    }
+
+    // Search for places with autocomplete
     let markers = [];
     async function searchPlaces(query) {
       const searchResults = document.getElementById('search-results');
@@ -269,7 +344,7 @@
       }
 
       if (!userLocation) {
-        alert('Location not available. Please enable location services.');
+        alert('Location not available. Please enable location services or wait for location to load.');
         return;
       }
 
@@ -279,9 +354,12 @@
         for (const type of types) {
           const response = await fetch(
             `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?` +
-            `types=${type}&proximity=${userLocation[0]},${userLocation[1]}&access_token=${mapboxgl.accessToken}`
+            `types=${type}&proximity=${userLocation[0]},${userLocation[1]}&limit=5&access_token=${mapboxgl.accessToken}`
           );
-          if (!response.ok) continue;
+          if (!response.ok) {
+            console.warn(`Geocoding API error for type ${type}: ${response.status}`);
+            continue;
+          }
           const data = await response.json();
           if (data.features && data.features.length > 0) {
             results.push(...data.features);
@@ -301,12 +379,13 @@
           item.textContent = feature.place_name;
           item.onclick = () => {
             map.setCenter(feature.center);
+            document.getElementById('search').value = feature.place_name;
             searchResults.style.display = 'none';
             searchResults.innerHTML = '';
 
             // Add marker for selected place
             const markerEl = document.createElement('div');
-            markerEl.className = 'user-location-marker';
+            markerEl.className = 'place-marker';
             const marker = new mapboxgl.Marker({
               element: markerEl,
               anchor: 'center'
@@ -320,8 +399,13 @@
       } catch (error) {
         console.error('Search error:', error);
         alert('Error searching for places. Please try again.');
+        searchResults.style.display = 'none';
+        searchResults.innerHTML = '';
       }
     }
+
+    // Debounced search function
+    const debouncedSearch = debounce(searchPlaces, 300);
 
     // Clear markers from map
     function clearMarkers() {
