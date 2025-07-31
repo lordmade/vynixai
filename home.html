@@ -7,6 +7,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-directions/v4.1.1/mapbox-gl-directions.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-directions/v4.1.1/mapbox-gl-directions.css" rel="stylesheet" />
   <style>
     :root {
       --vynix-blue: #1DA1F2;
@@ -26,7 +28,7 @@
       padding: 0;
       height: 100vh;
       overflow: hidden;
-      touch-action: manipulation; /* Improves touch responsiveness */
+      touch-action: manipulation;
     }
 
     #map {
@@ -49,12 +51,12 @@
       gap: 0.75rem;
       max-width: 90%;
       overflow-x: auto;
-      -webkit-overflow-scrolling: touch; /* Smooth touch scrolling */
-      scrollbar-width: none; /* Firefox */
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
     }
 
     .emergency-card::-webkit-scrollbar {
-      display: none; /* Chrome, Safari */
+      display: none;
     }
 
     .emergency-item {
@@ -68,6 +70,7 @@
       font-size: 0.85rem;
       box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
       transition: transform 0.2s ease, box-shadow 0.2s ease;
+      cursor: pointer;
     }
 
     .emergency-item:hover {
@@ -250,6 +253,15 @@
     const emergencyCard = document.getElementById('emergency-card');
     let userLocation = null;
 
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/dark-v10',
+      zoom: 14,
+      center: [0, 0]
+    });
+
+    map.addControl(new mapboxgl.NavigationControl());
+
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
       customAlert.classList.add('active');
@@ -262,25 +274,13 @@
       customAlert.classList.remove('active');
     }
 
-    const map = new mapboxgl.Map({
-      container: 'map',
-      style: 'mapbox://styles/mapbox/dark-v10',
-      zoom: 14,
-      center: [0, 0]
-    });
-
-    // Add navigation control (zoom and rotation) for desktop
-    map.addControl(new mapboxgl.NavigationControl());
-
     async function fetchEmergencyLocations(lng, lat) {
       const types = ['hospital', 'police', 'fire_station'];
       let locations = [];
 
       for (const type of types) {
         try {
-          const response = await fetch(
-            `https://api.mapbox.com/geocoding/v5/mapbox.places/${type}.json?proximity=${lng},${lat}&limit=1&access_token=${mapboxgl.accessToken}`
-          );
+          const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${type}.json?proximity=${lng},${lat}&limit=1&access_token=${mapboxgl.accessToken}`);
           const data = await response.json();
           if (data.features && data.features.length > 0) {
             const feature = data.features[0];
@@ -296,7 +296,7 @@
       }
 
       emergencyCard.innerHTML = locations.map(loc => `
-        <div class="emergency-item">
+        <div class="emergency-item" onclick="routeTo([${loc.lngLat}], '${loc.name}', '${loc.address}')">
           <h3>${loc.name}</h3>
           <p>${loc.address}</p>
         </div>
@@ -331,13 +331,63 @@
       showAlert('Emergency locations near you. Tap markers for details.', true);
     }
 
+    let currentRoute = null;
+
+    function routeTo(destination, name, address) {
+      if (!userLocation) {
+        showAlert('User location not available.', true);
+        return;
+      }
+
+      if (map.getSource('route')) {
+        map.removeLayer('route');
+        map.removeSource('route');
+      }
+
+      const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${userLocation[0]},${userLocation[1]};${destination[0]},${destination[1]}?steps=true&geometries=geojson&access_token=${mapboxgl.accessToken}`;
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          const route = data.routes[0].geometry;
+          map.addSource('route', {
+            type: 'geojson',
+            data: {
+              type: 'Feature',
+              geometry: route
+            }
+          });
+
+          map.addLayer({
+            id: 'route',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round'
+            },
+            paint: {
+              'line-color': '#10B981',
+              'line-width': 4
+            }
+          });
+
+          map.fitBounds([userLocation, destination], { padding: 50 });
+          showAlert(`Route to ${name} displayed.`, true);
+        })
+        .catch(error => {
+          console.error('Error fetching directions:', error);
+          showAlert('Could not fetch directions.', true);
+        });
+    }
+
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { longitude, latitude } = position.coords;
           userLocation = [longitude, latitude];
           map.setCenter(userLocation);
-          
+
           new mapboxgl.Marker({ color: '#1DA1F2' })
             .setLngLat(userLocation)
             .setPopup(new mapboxgl.Popup().setHTML('<h3>Your Location</h3>'))
