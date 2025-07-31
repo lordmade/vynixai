@@ -16,7 +16,7 @@
       --border: #E9ECEF;
       --header-bg: #1DA1F2;
       --accent: #E6F3FA;
-      --message-bg: #DCF8C6; /* WhatsApp-like green for sent messages */
+      --message-bg: #1DA1F2; /* Twitter blue for sent messages */
       --received-bg: #FFFFFF; /* White for received messages */
       --context-menu-bg: #FFFFFF;
       --context-menu-shadow: rgba(0, 0, 0, 0.15);
@@ -71,6 +71,13 @@
       display: flex;
       align-items: center;
       flex: 1;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .chat-header:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
     }
 
     .chat-avatar {
@@ -109,6 +116,7 @@
       display: flex;
       flex-direction: column;
       gap: 0.75rem;
+      scroll-behavior: smooth;
     }
 
     .message {
@@ -123,6 +131,7 @@
       align-items: flex-end;
       gap: 0.5rem;
       transition: background 0.2s ease;
+      color: var(--text-primary); /* Ensure text is readable on Twitter blue */
     }
 
     .message.sent {
@@ -130,6 +139,7 @@
       align-self: flex-end;
       border-bottom-right-radius: 4px;
       box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      color: #FFFFFF; /* White text for readability on Twitter blue */
     }
 
     .message.received {
@@ -389,7 +399,7 @@
         <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
       </svg>
     </div>
-    <div class="chat-header">
+    <div class="chat-header" onclick="window.location.href='profile.html?userId=' + encodeURIComponent(window.friendId)">
       <div class="chat-avatar" id="friend-avatar"></div>
       <h1 class="chat-name" id="friend-name">Loading...</h1>
     </div>
@@ -447,7 +457,7 @@
     // Encryption key (for demo; use secure key management in production)
     const ENCRYPTION_KEY = "my-secret-key-123";
     let currentUserId = null;
-    let friendId = null;
+    window.friendId = null; // Exposed globally for profile redirect
 
     window.hideAlert = function () {
       customAlert.classList.remove("active");
@@ -484,6 +494,10 @@
       return userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
     }
 
+    function scrollToBottom() {
+      chatArea.scrollTop = chatArea.scrollHeight;
+    }
+
     function loadAvatar(userId, callback) {
       const userRef = ref(db, `users/${userId}`);
       onValue(userRef, (snapshot) => {
@@ -499,9 +513,11 @@
     }
 
     function renderMessages(messages, userId) {
+      const wasAtBottom = chatArea.scrollTop + chatArea.clientHeight >= chatArea.scrollHeight - 10;
       chatArea.innerHTML = '';
       if (!messages) {
         chatArea.innerHTML = '<p style="text-align: center; padding: 1rem;">No messages yet.</p>';
+        scrollToBottom();
         return;
       }
       Object.entries(messages).forEach(([messageId, msg]) => {
@@ -518,15 +534,18 @@
               <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
             </div>
             <div class="context-menu" id="context-menu-${messageId}">
-              <div class="context-menu-item" onclick="window.replyToMessage('${messageId}', '${decryptedText}')">Reply</div>
+              <div class="context-menu-item" onclick="window.replyToMessage('${messageId}', '${decryptedText.replace(/'/g, "\\'")}')">Reply</div>
               ${isSent ? `<div class="context-menu-item" onclick="window.deleteMessage('${messageId}')">Delete</div>` : ''}
             </div>
           `;
           chatArea.appendChild(messageDiv);
           setupLongPress(messageDiv, `context-menu-${messageId}`);
+          if (wasAtBottom) {
+            scrollToBottom();
+          }
         });
       });
-      chatArea.scrollTop = chatArea.scrollHeight;
+      setTimeout(scrollToBottom, 0);
     }
 
     function setupLongPress(element, contextMenuId) {
@@ -535,17 +554,15 @@
         pressTimer = setTimeout(() => {
           const contextMenu = document.getElementById(contextMenuId);
           if (contextMenu) {
-            // Close any open context menus
             document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
             contextMenu.classList.add('active');
             contextMenu.style.top = `${e.clientY}px`;
             contextMenu.style.left = `${e.clientX}px`;
           }
-        }, 500); // 500ms for long press
+        }, 500);
       });
       element.addEventListener('mouseup', () => clearTimeout(pressTimer));
       element.addEventListener('mouseleave', () => clearTimeout(pressTimer));
-      // Handle touch for mobile
       element.addEventListener('touchstart', (e) => {
         pressTimer = setTimeout(() => {
           const contextMenu = document.getElementById(contextMenuId);
@@ -562,7 +579,6 @@
       element.addEventListener('touchmove', () => clearTimeout(pressTimer));
     }
 
-    // Close context menu when clicking outside
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.message') && !e.target.closest('.context-menu')) {
         document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
@@ -593,7 +609,6 @@
       onValue(chatRef, (snapshot) => {
         const messages = snapshot.exists() ? snapshot.val() : null;
         renderMessages(messages, userId);
-        // Reset unread count for the current user
         if (messages) {
           update(ref(db, `chats/${chatId}/unreadCount`), {
             [userId]: 0
@@ -608,12 +623,12 @@
     window.sendMessage = async function () {
       const messageText = messageInput.value.trim();
       if (!messageText) return;
-      if (!currentUserId || !friendId) {
+      if (!currentUserId || !window.friendId) {
         window.showAlert("Please sign in and select a friend.", false);
         return;
       }
       try {
-        const chatId = getChatId(currentUserId, friendId);
+        const chatId = getChatId(currentUserId, window.friendId);
         const encryptedText = encryptMessage(messageText);
         const messageData = {
           senderId: currentUserId,
@@ -625,10 +640,11 @@
           lastMessage: encryptedText,
           timestamp: Date.now(),
           unreadCount: {
-            [friendId]: incrementUnreadCount(currentUserId, friendId)
+            [window.friendId]: incrementUnreadCount(currentUserId, window.friendId)
           }
         });
         messageInput.value = '';
+        scrollToBottom();
       } catch (error) {
         console.error("Error sending message:", error);
         window.showAlert("Failed to send message.", false);
@@ -643,15 +659,14 @@
 
     window.deleteMessage = async function (messageId) {
       document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
-      if (!currentUserId || !friendId) {
+      if (!currentUserId || !window.friendId) {
         window.showAlert("Please sign in to delete messages.", false);
         return;
       }
       try {
-        const chatId = getChatId(currentUserId, friendId);
+        const chatId = getChatId(currentUserId, window.friendId);
         await remove(ref(db, `chats/${chatId}/messages/${messageId}`));
         window.showAlert("Message deleted.", true);
-        // Update last message and timestamp if necessary
         const messagesRef = ref(db, `chats/${chatId}/messages`);
         onValue(messagesRef, (snapshot) => {
           if (snapshot.exists()) {
@@ -688,11 +703,11 @@
 
     document.addEventListener("DOMContentLoaded", () => {
       onAuthStateChanged(auth, (user) => {
-        friendId = new URLSearchParams(window.location.search).get('friendId');
-        if (user && friendId) {
+        window.friendId = new URLSearchParams(window.location.search).get('friendId');
+        if (user && window.friendId) {
           currentUserId = user.uid;
-          loadFriendProfile(friendId);
-          loadMessages(user.uid, friendId);
+          loadFriendProfile(window.friendId);
+          loadMessages(user.uid, window.friendId);
           messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
