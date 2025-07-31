@@ -8,7 +8,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
   <style>
     :root {
-      --primary: #1DA1F2; /* Twitter blue */
+      --primary: #1DA1F2;
       --primary-dark: #1A91DA;
       --background: #F0F2F5;
       --chat-bg: #FFFFFF;
@@ -255,6 +255,14 @@
       font-weight: 400;
     }
 
+    .message-image {
+      max-width: 100%;
+      max-height: 300px;
+      border-radius: 8px;
+      object-fit: cover;
+      margin-top: 0.5rem;
+    }
+
     .message-meta {
       display: flex;
       align-items: center;
@@ -386,7 +394,7 @@
       transform: scale(1.2);
     }
 
-    .message.replied .message-text {
+    .message.replied .message-text, .message.replied .message-image {
       border-left: 3px solid var(--primary);
       padding-left: 0.75rem;
       background: rgba(29, 161, 242, 0.05);
@@ -432,7 +440,7 @@
       box-shadow: inset 0 0 0 2px var(--primary);
     }
 
-    .send-btn {
+    .send-btn, .image-upload-btn {
       width: 44px;
       height: 44px;
       background: var(--primary);
@@ -446,15 +454,23 @@
       box-shadow: var(--shadow-neumorphic);
     }
 
-    .send-btn:hover {
+    .image-upload-btn {
+      background: var(--primary-dark);
+    }
+
+    .send-btn:hover, .image-upload-btn:hover {
       background: var(--primary-dark);
       transform: scale(1.1);
     }
 
-    .send-btn svg {
+    .send-btn svg, .image-upload-btn svg {
       width: 22px;
       height: 22px;
       fill: #FFFFFF;
+    }
+
+    .image-upload-input {
+      display: none;
     }
 
     .custom-alert {
@@ -563,6 +579,10 @@
         font-size: 0.8rem;
       }
 
+      .message-image {
+        max-height: 200px;
+      }
+
       .message-time {
         font-size: 0.65rem;
       }
@@ -598,12 +618,12 @@
         padding: 0.5rem 1rem;
       }
 
-      .send-btn {
+      .send-btn, .image-upload-btn {
         width: 40px;
         height: 40px;
       }
 
-      .send-btn svg {
+      .send-btn svg, .image-upload-btn svg {
         width: 18px;
         height: 18px;
       }
@@ -650,6 +670,12 @@
   </div>
 
   <div class="input-area">
+    <input type="file" accept="image/*" class="image-upload-input" id="image-upload-input" />
+    <div class="image-upload-btn" onclick="document.getElementById('image-upload-input').click()">
+      <svg viewBox="0 0 24 24">
+        <path d="M4 4h16v16H4V4zm2 2v12h12V6H6zm2 2h8v8H8V8zm2 2v4h4v-4h-4z" />
+      </svg>
+    </div>
     <textarea class="message-input" id="message-input" placeholder="Type a message..."></textarea>
     <div class="send-btn" onclick="window.sendMessage()">
       <svg viewBox="0 0 24 24">
@@ -674,14 +700,14 @@
     import { getDatabase, ref, onValue, push, update, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     const firebaseConfig = {
-      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
-      authDomain: "fire-b-a8878.firebaseapp.com",
-      databaseURL: "https://fire-b-a8878.firebaseio.com",
-      projectId: "fire-b-a8878",
-      storageBucket: "fire-b-a8878.firebasestorage.app",
-      messagingSenderId: "658673187627",
-      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
-      measurementId: "G-V4W97VMSKL"
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_AUTH_DOMAIN",
+      databaseURL: "YOUR_DATABASE_URL",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_STORAGE_BUCKET",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID",
+      measurementId: "YOUR_MEASUREMENT_ID"
     };
 
     const app = initializeApp(firebaseConfig);
@@ -691,11 +717,14 @@
     const alertMessage = document.getElementById("alert-message");
     const chatArea = document.getElementById("chat-area");
     const messageInput = document.getElementById("message-input");
+    const imageUploadInput = document.getElementById("image-upload-input");
     const friendAvatar = document.getElementById("friend-avatar");
     const friendName = document.getElementById("friend-name");
     const kebabMenu = document.getElementById("kebab-menu");
     const wallpaperOptions = document.getElementById("wallpaper-options");
     const ENCRYPTION_KEY = "my-secret-key-123";
+    const CLOUDINARY_CLOUD_NAME = "dqkujefxj"; // Replace with your Cloudinary cloud name
+    const CLOUDINARY_UPLOAD_PRESET = "banter_box"; // Replace with your unsigned upload preset
     let replyingTo = null;
     let userProfile = {};
     let friendProfile = {};
@@ -759,18 +788,69 @@
       }
     }
 
+    async function uploadImageToCloudinary(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+      try {
+        const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        if (data.secure_url) {
+          return data.secure_url;
+        } else {
+          throw new Error(data.error?.message || 'Image upload failed');
+        }
+      } catch (error) {
+        console.error("Error uploading image:", error);
+        throw error;
+      }
+    }
+
+    async function sendImageMessage(imageUrl) {
+      if (!userId || !friendId) {
+        window.showAlert("Please sign in and select a chat.", false);
+        return;
+      }
+      try {
+        const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
+        const messagesRef = ref(db, `chats/${chatId}/messages`);
+        await push(messagesRef, {
+          sender: userId,
+          url: imageUrl,
+          type: 'image',
+          timestamp: Date.now(),
+          read: false,
+          replyTo: replyingTo || null
+        });
+        await update(ref(db, `chats/${chatId}`), {
+          lastMessage: imageUrl,
+          timestamp: Date.now(),
+          [`unreadCount/${friendId}`]: increment(1)
+        });
+        replyingTo = null;
+        messageInput.placeholder = 'Type a message...';
+      } catch (error) {
+        console.error("Error sending image message:", error);
+        window.showAlert("Failed to send image.", false);
+      }
+    }
+
     function renderMessages(messages, userId) {
       chatArea.innerHTML = '';
-      Object.entries(messages || {}).forEach(([key, { sender, text, timestamp, read, replyTo, reaction }]) => {
+      Object.entries(messages || {}).forEach(([key, { sender, text, url, type, timestamp, read, replyTo, reaction }]) => {
         const message = document.createElement('div');
         const isSelf = sender === userId;
         message.className = `message ${isSelf ? 'self' : 'other'} ${replyTo ? 'replied' : ''}`;
         message.setAttribute('data-message-id', key);
-        const decryptedText = decryptMessage(text);
+        const content = type === 'image' ? `<img src="${url}" class="message-image" alt="Chat image" />` : `<span class="message-text">${decryptMessage(text)}</span>`;
         const readStatus = isSelf && read ? 'read' : '';
         let replyContent = '';
         if (replyTo && messages[replyTo]) {
-          const replyText = decryptMessage(messages[replyTo].text);
+          const replyText = messages[replyTo].type === 'image' ? '[Image]' : decryptMessage(messages[replyTo].text);
           const replySender = messages[replyTo].sender === userId ? 'You' : friendName.textContent;
           replyContent = `<div class="replied-to">${replySender}: ${replyText}</div>`;
         }
@@ -782,7 +862,7 @@
           ${replyContent}
           <div class="message-content">
             <div class="message-avatar">${avatarContent}</div>
-            <span class="message-text">${decryptedText}</span>
+            ${content}
           </div>
           <div class="message-meta">
             <span class="message-time">
@@ -826,7 +906,7 @@
         chatArea.appendChild(message);
       });
       setupMessageInteractions();
-      scrollToBottom();
+      scrollToBottom(); // Auto-scroll after rendering
     }
 
     function setupMessageInteractions() {
@@ -845,15 +925,12 @@
           const viewportTop = window.scrollY;
           const viewportBottom = viewportTop + window.innerHeight;
 
-          // Default: popup at top-left of message
           popup.style.top = '0';
           popup.style.bottom = 'auto';
           popup.style.left = '0';
           popup.style.transform = 'translate(0, -100%)';
 
-          // Check if popup would be out of viewport at top
           if (rect.top - popupHeight - 10 < viewportTop) {
-            // Flip to bottom-left of message
             popup.style.top = 'auto';
             popup.style.bottom = '0';
             popup.style.transform = 'translate(0, 100%)';
@@ -982,7 +1059,7 @@
             opt.classList.toggle('selected', opt.getAttribute('data-color') === snapshot.val().wallpaper);
           });
         } else {
-          chatArea.style.background = '#F0F2F5'; // Default
+          chatArea.style.background = '#F0F2F5';
         }
       }, (error) => {
         console.error("Error fetching wallpaper:", error);
@@ -1014,6 +1091,7 @@
         await push(messagesRef, {
           sender: userId,
           text: encryptedText,
+          type: 'text',
           timestamp: Date.now(),
           read: false,
           replyTo: replyingTo || null
@@ -1032,6 +1110,21 @@
         window.showAlert("Failed to send message. Please try again.", false);
       }
     };
+
+    imageUploadInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        window.showAlert("Uploading image...", false);
+        const imageUrl = await uploadImageToCloudinary(file);
+        await sendImageMessage(imageUrl);
+        window.hideAlert();
+        window.showAlert("Image sent.", true);
+        imageUploadInput.value = ''; // Clear input
+      } catch (error) {
+        window.showAlert("Failed to upload image.", false);
+      }
+    });
 
     function increment(n) {
       return n + 1;
