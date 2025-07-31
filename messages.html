@@ -34,6 +34,7 @@
       -moz-user-select: none;
       -ms-user-select: none;
       user-select: none;
+      touch-action: manipulation; /* Improve touch responsiveness */
     }
 
     .header {
@@ -132,6 +133,8 @@
       position: relative;
       display: flex;
       flex-direction: column;
+      cursor: pointer;
+      transition: background 0.2s ease;
     }
 
     .message.self {
@@ -147,15 +150,24 @@
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     }
 
+    .message:hover {
+      background: var(--accent);
+    }
+
     .message-text {
       word-break: break-word;
+    }
+
+    .message-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.25rem;
     }
 
     .message-time {
       font-size: 0.7rem;
       color: var(--text-secondary);
-      text-align: right;
-      margin-top: 0.25rem;
     }
 
     .message-check {
@@ -172,6 +184,78 @@
 
     .message-check.read svg {
       fill: #4FC3F7;
+    }
+
+    .message-actions {
+      display: none;
+      margin-top: 0.25rem;
+      gap: 0.5rem;
+    }
+
+    .message.active .message-actions {
+      display: flex;
+    }
+
+    .action-btn {
+      width: 20px;
+      height: 20px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+
+    .action-btn svg {
+      width: 100%;
+      height: 100%;
+      fill: var(--text-secondary);
+    }
+
+    .action-btn:hover svg {
+      fill: var(--twitter-blue);
+      transform: scale(1.1);
+    }
+
+    .reaction-popup {
+      display: none;
+      position: absolute;
+      background: var(--chat-bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 0.5rem;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      z-index: 1000;
+      bottom: 100%;
+      transform: translateX(-50%);
+      animation: fadeIn 0.2s ease-out forwards;
+    }
+
+    .reaction-popup.active {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .reaction-btn {
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 0.25rem;
+      transition: transform 0.2s ease;
+    }
+
+    .reaction-btn:hover {
+      transform: scale(1.2);
+    }
+
+    .message.replied .message-text {
+      border-left: 3px solid var(--twitter-blue);
+      padding-left: 0.5rem;
+    }
+
+    .replied-to {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.25rem;
+      font-style: italic;
     }
 
     .input-area {
@@ -321,6 +405,19 @@
         height: 10px;
       }
 
+      .action-btn {
+        width: 18px;
+        height: 18px;
+      }
+
+      .reaction-popup {
+        padding: 0.4rem;
+      }
+
+      .reaction-btn {
+        font-size: 1rem;
+      }
+
       .input-area {
         padding: 0.5rem;
       }
@@ -391,7 +488,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getDatabase, ref, onValue, push, update } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getDatabase, ref, onValue, push, update, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -414,6 +511,7 @@
     const friendAvatar = document.getElementById("friend-avatar");
     const friendName = document.getElementById("friend-name");
     const ENCRYPTION_KEY = "my-secret-key-123";
+    let replyingTo = null;
 
     window.hideAlert = function () {
       customAlert.classList.remove("active");
@@ -452,31 +550,152 @@
 
     function renderMessages(messages, userId) {
       chatArea.innerHTML = '';
-      Object.entries(messages || {}).forEach(([key, { sender, text, timestamp, read }]) => {
+      Object.entries(messages || {}).forEach(([key, { sender, text, timestamp, read, replyTo, reaction }]) => {
         const message = document.createElement('div');
         const isSelf = sender === userId;
-        message.className = `message ${isSelf ? 'self' : 'other'}`;
+        message.className = `message ${isSelf ? 'self' : 'other'} ${replyTo ? 'replied' : ''}`;
+        message.setAttribute('data-message-id', key);
         const decryptedText = decryptMessage(text);
         const readStatus = isSelf && read ? 'read' : '';
+        let replyContent = '';
+        if (replyTo && messages[replyTo]) {
+          const replyText = decryptMessage(messages[replyTo].text);
+          const replySender = messages[replyTo].sender === userId ? 'You' : friendName.textContent;
+          replyContent = `<div class="replied-to">${replySender}: ${replyText}</div>`;
+        }
+        const reactionContent = reaction ? `<div class="reaction">${reaction}</div>` : '';
         message.innerHTML = `
+          ${replyContent}
           <span class="message-text">${decryptedText}</span>
-          <div class="message-time">
-            ${formatTimestamp(timestamp)}
-            ${isSelf ? `
-              <span class="message-check ${readStatus}">
-                <svg viewBox="0 0 16 16">
-                  <path d="M11.71 5.67l-5.66 5.66-2.83-2.83L2 9.72l4.24 4.24 6.89-6.89z" />
+          <div class="message-meta">
+            <span class="message-time">
+              ${formatTimestamp(timestamp)}
+              ${isSelf ? `
+                <span class="message-check ${readStatus}">
+                  <svg viewBox="0 0 16 16">
+                    <path d="M11.71 5.67l-5.66 5.66-2.83-2.83L2 9.72l4.24 4.24 6.89-6.89z" />
+                  </svg>
+                  <svg viewBox="0 0 16 16">
+                    <path d="M11.71 5.67l-5.66 5.66-2.83-2.83L2 9.72l4.24 4.24 6.89-6.89z" />
+                  </svg>
+                </span>
+              ` : ''}
+            </span>
+            <div class="message-actions">
+              <button class="action-btn reply-btn" data-message-id="${key}">
+                <svg viewBox="0 0 24 24">
+                  <path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" />
                 </svg>
-                <svg viewBox="0 0 16 16">
-                  <path d="M11.71 5.67l-5.66 5.66-2.83-2.83L2 9.72l4.24 4.24 6.89-6.89z" />
-                </svg>
-              </span>
-            ` : ''}
+              </button>
+              ${isSelf ? `
+                <button class="action-btn delete-btn" data-message-id="${key}">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+                  </svg>
+                </button>
+              ` : ''}
+            </div>
+          </div>
+          ${reactionContent}
+          <div class="reaction-popup" data-message-id="${key}">
+            <span class="reaction-btn" data-reaction="👍">👍</span>
+            <span class="reaction-btn" data-reaction="❤️">❤️</span>
+            <span class="reaction-btn" data-reaction="😂">😂</span>
+            <span class="reaction-btn" data-reaction="😮">😮</span>
+            <span class="reaction-btn" data-reaction="😢">😢</span>
+            <span class="reaction-btn" data-reaction="🙏">🙏</span>
           </div>
         `;
         chatArea.appendChild(message);
       });
+      setupMessageInteractions();
       scrollToBottom();
+    }
+
+    function setupMessageInteractions() {
+      const messages = document.querySelectorAll('.message');
+      let longPressTimeout;
+      const longPressDuration = 500; // 500ms for long press
+
+      messages.forEach(message => {
+        const messageId = message.getAttribute('data-message-id');
+
+        // Click to toggle actions
+        message.addEventListener('click', (e) => {
+          e.stopPropagation();
+          messages.forEach(m => m.classList.remove('active'));
+          message.classList.toggle('active');
+        });
+
+        // Long press for reaction popup
+        const startLongPress = () => {
+          longPressTimeout = setTimeout(() => {
+            const popup = message.querySelector('.reaction-popup');
+            messages.forEach(m => m.querySelector('.reaction-popup').classList.remove('active'));
+            popup.classList.add('active');
+          }, longPressDuration);
+        };
+
+        const cancelLongPress = () => {
+          clearTimeout(longPressTimeout);
+        };
+
+        message.addEventListener('mousedown', startLongPress);
+        message.addEventListener('touchstart', startLongPress);
+        message.addEventListener('mouseup', cancelLongPress);
+        message.addEventListener('touchend', cancelLongPress);
+        message.addEventListener('mouseleave', cancelLongPress);
+        message.addEventListener('touchcancel', cancelLongPress);
+
+        // Reply button
+        const replyBtn = message.querySelector('.reply-btn');
+        if (replyBtn) {
+          replyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            replyingTo = messageId;
+            messageInput.placeholder = `Replying to message...`;
+            messageInput.focus();
+          });
+        }
+
+        // Delete button
+        const deleteBtn = message.querySelector('.delete-btn');
+        if (deleteBtn) {
+          deleteBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
+            try {
+              await remove(ref(db, `chats/${chatId}/messages/${messageId}`));
+              window.showAlert("Message deleted.", true);
+            } catch (error) {
+              console.error("Error deleting message:", error);
+              window.showAlert("Failed to delete message.", false);
+            }
+          });
+        }
+
+        // Reaction buttons
+        const reactionButtons = message.querySelectorAll('.reaction-btn');
+        reactionButtons.forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const reaction = btn.getAttribute('data-reaction');
+            const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
+            try {
+              await update(ref(db, `chats/${chatId}/messages/${messageId}`), { reaction });
+              message.querySelector('.reaction-popup').classList.remove('active');
+            } catch (error) {
+              console.error("Error adding reaction:", error);
+              window.showAlert("Failed to add reaction.", false);
+            }
+          });
+        });
+      });
+
+      // Close reaction popups when clicking outside
+      document.addEventListener('click', () => {
+        messages.forEach(m => m.querySelector('.reaction-popup').classList.remove('active'));
+      });
     }
 
     function loadFriendProfile(friendId) {
@@ -497,9 +716,11 @@
       });
     }
 
+    let userId, friendId; // Declare globally for use in functions
+
     window.sendMessage = async function () {
-      const userId = auth.currentUser?.uid;
-      const friendId = new URLSearchParams(window.location.search).get('friendId');
+      userId = auth.currentUser?.uid;
+      friendId = new URLSearchParams(window.location.search).get('friendId');
       const messageText = messageInput.value.trim();
       if (!userId) {
         window.showAlert("Please sign in to send messages.", false);
@@ -520,7 +741,8 @@
           sender: userId,
           text: encryptedText,
           timestamp: Date.now(),
-          read: false
+          read: false,
+          replyTo: replyingTo || null
         });
         await update(ref(db, `chats/${chatId}`), {
           lastMessage: encryptedText,
@@ -528,6 +750,8 @@
           [`unreadCount/${friendId}`]: increment(1)
         });
         messageInput.value = '';
+        replyingTo = null;
+        messageInput.placeholder = 'Type a message...';
       } catch (error) {
         console.error("Error sending message:", error);
         window.showAlert("Failed to send message. Please try again.", false);
@@ -541,7 +765,8 @@
     document.addEventListener("DOMContentLoaded", () => {
       onAuthStateChanged(auth, (user) => {
         if (user) {
-          const friendId = new URLSearchParams(window.location.search).get('friendId');
+          userId = user.uid;
+          friendId = new URLSearchParams(window.location.search).get('friendId');
           if (!friendId) {
             window.showAlert("Invalid chat.", false);
             window.location.href = 'index.html';
