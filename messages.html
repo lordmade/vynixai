@@ -18,6 +18,8 @@
       --accent: #E6F3FA;
       --message-bg: #DCF8C6; /* WhatsApp-like green for sent messages */
       --received-bg: #FFFFFF; /* White for received messages */
+      --context-menu-bg: #FFFFFF;
+      --context-menu-shadow: rgba(0, 0, 0, 0.15);
     }
 
     body {
@@ -106,30 +108,69 @@
       padding: 1rem;
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
+      gap: 0.75rem;
     }
 
     .message {
       max-width: 70%;
       padding: 0.75rem 1rem;
-      border-radius: 8px;
+      border-radius: 12px;
       font-size: 0.95rem;
       line-height: 1.4;
       position: relative;
       word-wrap: break-word;
+      display: flex;
+      align-items: flex-end;
+      gap: 0.5rem;
+      transition: background 0.2s ease;
     }
 
     .message.sent {
       background: var(--message-bg);
       align-self: flex-end;
-      border-bottom-right-radius: 2px;
+      border-bottom-right-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
 
     .message.received {
       background: var(--received-bg);
       align-self: flex-start;
-      border-bottom-left-radius: 2px;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .message:hover {
+      filter: brightness(0.95);
+    }
+
+    .message-avatar {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--twitter-blue);
+      color: #FFFFFF;
+      font-weight: 500;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .message-avatar img {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+
+    .message-content {
+      flex: 1;
+    }
+
+    .message-text {
+      margin: 0;
     }
 
     .message-time {
@@ -137,6 +178,33 @@
       color: var(--text-secondary);
       text-align: right;
       margin-top: 0.25rem;
+    }
+
+    .context-menu {
+      display: none;
+      position: absolute;
+      background: var(--context-menu-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px var(--context-menu-shadow);
+      z-index: 1000;
+      min-width: 120px;
+    }
+
+    .context-menu.active {
+      display: block;
+    }
+
+    .context-menu-item {
+      padding: 0.75rem 1rem;
+      color: var(--text-primary);
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .context-menu-item:hover {
+      background: var(--accent);
     }
 
     .input-area {
@@ -269,6 +337,12 @@
         padding: 0.6rem 0.8rem;
       }
 
+      .message-avatar {
+        width: 20px;
+        height: 20px;
+        font-size: 0.7rem;
+      }
+
       .message-time {
         font-size: 0.65rem;
       }
@@ -295,6 +369,15 @@
       .custom-alert {
         width: 85%;
         padding: 1rem;
+      }
+
+      .context-menu {
+        min-width: 100px;
+      }
+
+      .context-menu-item {
+        font-size: 0.9rem;
+        padding: 0.6rem 0.8rem;
       }
     }
   </style>
@@ -338,7 +421,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getDatabase, ref, push, onValue, update } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getDatabase, ref, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -363,6 +446,8 @@
 
     // Encryption key (for demo; use secure key management in production)
     const ENCRYPTION_KEY = "my-secret-key-123";
+    let currentUserId = null;
+    let friendId = null;
 
     window.hideAlert = function () {
       customAlert.classList.remove("active");
@@ -399,25 +484,90 @@
       return userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
     }
 
+    function loadAvatar(userId, callback) {
+      const userRef = ref(db, `users/${userId}`);
+      onValue(userRef, (snapshot) => {
+        if (snapshot.exists()) {
+          const user = snapshot.val();
+          const firstLetter = user.name ? user.name.charAt(0) : 'U';
+          const avatarContent = user.avatar ? `<img src="${user.avatar}" alt="Avatar" />` : firstLetter;
+          callback(avatarContent);
+        } else {
+          callback('U');
+        }
+      }, { onlyOnce: true });
+    }
+
     function renderMessages(messages, userId) {
       chatArea.innerHTML = '';
       if (!messages) {
         chatArea.innerHTML = '<p style="text-align: center; padding: 1rem;">No messages yet.</p>';
         return;
       }
-      Object.entries(messages).forEach(([key, msg]) => {
-        const messageDiv = document.createElement('div');
+      Object.entries(messages).forEach(([messageId, msg]) => {
         const isSent = msg.senderId === userId;
         const decryptedText = decryptMessage(msg.text);
-        messageDiv.className = `message ${isSent ? 'sent' : 'received'}`;
-        messageDiv.innerHTML = `
-          <p>${decryptedText}</p>
-          <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
-        `;
-        chatArea.appendChild(messageDiv);
+        loadAvatar(msg.senderId, (avatarContent) => {
+          const messageDiv = document.createElement('div');
+          messageDiv.className = `message ${isSent ? 'sent' : 'received'}`;
+          messageDiv.setAttribute('data-message-id', messageId);
+          messageDiv.innerHTML = `
+            <div class="message-avatar">${avatarContent}</div>
+            <div class="message-content">
+              <p class="message-text">${decryptedText}</p>
+              <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
+            </div>
+            <div class="context-menu" id="context-menu-${messageId}">
+              <div class="context-menu-item" onclick="window.replyToMessage('${messageId}', '${decryptedText}')">Reply</div>
+              ${isSent ? `<div class="context-menu-item" onclick="window.deleteMessage('${messageId}')">Delete</div>` : ''}
+            </div>
+          `;
+          chatArea.appendChild(messageDiv);
+          setupLongPress(messageDiv, `context-menu-${messageId}`);
+        });
       });
       chatArea.scrollTop = chatArea.scrollHeight;
     }
+
+    function setupLongPress(element, contextMenuId) {
+      let pressTimer;
+      element.addEventListener('mousedown', (e) => {
+        pressTimer = setTimeout(() => {
+          const contextMenu = document.getElementById(contextMenuId);
+          if (contextMenu) {
+            // Close any open context menus
+            document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
+            contextMenu.classList.add('active');
+            contextMenu.style.top = `${e.clientY}px`;
+            contextMenu.style.left = `${e.clientX}px`;
+          }
+        }, 500); // 500ms for long press
+      });
+      element.addEventListener('mouseup', () => clearTimeout(pressTimer));
+      element.addEventListener('mouseleave', () => clearTimeout(pressTimer));
+      // Handle touch for mobile
+      element.addEventListener('touchstart', (e) => {
+        pressTimer = setTimeout(() => {
+          const contextMenu = document.getElementById(contextMenuId);
+          if (contextMenu) {
+            document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
+            contextMenu.classList.add('active');
+            const touch = e.touches[0];
+            contextMenu.style.top = `${touch.clientY}px`;
+            contextMenu.style.left = `${touch.clientX}px`;
+          }
+        }, 500);
+      });
+      element.addEventListener('touchend', () => clearTimeout(pressTimer));
+      element.addEventListener('touchmove', () => clearTimeout(pressTimer));
+    }
+
+    // Close context menu when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.message') && !e.target.closest('.context-menu')) {
+        document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
+      }
+    });
 
     function loadFriendProfile(friendId) {
       const userRef = ref(db, `users/${friendId}`);
@@ -458,17 +608,15 @@
     window.sendMessage = async function () {
       const messageText = messageInput.value.trim();
       if (!messageText) return;
-      const userId = auth.currentUser?.uid;
-      const friendId = new URLSearchParams(window.location.search).get('friendId');
-      if (!userId || !friendId) {
+      if (!currentUserId || !friendId) {
         window.showAlert("Please sign in and select a friend.", false);
         return;
       }
       try {
-        const chatId = getChatId(userId, friendId);
+        const chatId = getChatId(currentUserId, friendId);
         const encryptedText = encryptMessage(messageText);
         const messageData = {
-          senderId: userId,
+          senderId: currentUserId,
           text: encryptedText,
           timestamp: Date.now()
         };
@@ -477,13 +625,54 @@
           lastMessage: encryptedText,
           timestamp: Date.now(),
           unreadCount: {
-            [friendId]: incrementUnreadCount(userId, friendId)
+            [friendId]: incrementUnreadCount(currentUserId, friendId)
           }
         });
         messageInput.value = '';
       } catch (error) {
         console.error("Error sending message:", error);
         window.showAlert("Failed to send message.", false);
+      }
+    };
+
+    window.replyToMessage = function (messageId, originalText) {
+      document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
+      messageInput.value = `Replying to: "${originalText.slice(0, 20)}${originalText.length > 20 ? '...' : ''}"\n`;
+      messageInput.focus();
+    };
+
+    window.deleteMessage = async function (messageId) {
+      document.querySelectorAll('.context-menu.active').forEach(menu => menu.classList.remove('active'));
+      if (!currentUserId || !friendId) {
+        window.showAlert("Please sign in to delete messages.", false);
+        return;
+      }
+      try {
+        const chatId = getChatId(currentUserId, friendId);
+        await remove(ref(db, `chats/${chatId}/messages/${messageId}`));
+        window.showAlert("Message deleted.", true);
+        // Update last message and timestamp if necessary
+        const messagesRef = ref(db, `chats/${chatId}/messages`);
+        onValue(messagesRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const messages = snapshot.val();
+            const lastMessageEntry = Object.entries(messages).sort((a, b) => b[1].timestamp - a[1].timestamp)[0];
+            if (lastMessageEntry) {
+              update(ref(db, `chats/${chatId}`), {
+                lastMessage: lastMessageEntry[1].text,
+                timestamp: lastMessageEntry[1].timestamp
+              });
+            } else {
+              update(ref(db, `chats/${chatId}`), {
+                lastMessage: null,
+                timestamp: null
+              });
+            }
+          }
+        }, { onlyOnce: true });
+      } catch (error) {
+        console.error("Error deleting message:", error);
+        window.showAlert("Failed to delete message.", false);
       }
     };
 
@@ -499,8 +688,9 @@
 
     document.addEventListener("DOMContentLoaded", () => {
       onAuthStateChanged(auth, (user) => {
-        const friendId = new URLSearchParams(window.location.search).get('friendId');
+        friendId = new URLSearchParams(window.location.search).get('friendId');
         if (user && friendId) {
+          currentUserId = user.uid;
           loadFriendProfile(friendId);
           loadMessages(user.uid, friendId);
           messageInput.addEventListener('keypress', (e) => {
