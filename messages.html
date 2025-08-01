@@ -98,6 +98,12 @@
       margin: 0;
     }
 
+    .header .friend-status {
+      font-size: 0.8rem;
+      color: rgba(255, 255, 255, 0.8);
+      margin-top: 0.2rem;
+    }
+
     .message-list {
       flex: 1;
       overflow-y: auto;
@@ -106,6 +112,18 @@
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
+    }
+
+    .date-separator {
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      background: var(--chat-bg);
+      padding: 0.5rem;
+      border-radius: 12px;
+      margin: 0.5rem 0;
+      align-self: center;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     }
 
     .message {
@@ -144,6 +162,33 @@
       color: var(--text-secondary);
       margin-top: 0.25rem;
       text-align: right;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.25rem;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      fill: var(--text-secondary);
+    }
+
+    .status-indicator.read {
+      fill: var(--twitter-blue);
+    }
+
+    .typing-indicator {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      padding: 0.5rem 1rem;
+      align-self: flex-start;
+      display: none;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    .typing-indicator.active {
+      display: block;
     }
 
     .message-input-container {
@@ -426,6 +471,16 @@
       .progress-text {
         font-size: 0.8rem;
       }
+
+      .date-separator {
+        font-size: 0.75rem;
+        padding: 0.4rem;
+      }
+
+      .typing-indicator {
+        font-size: 0.75rem;
+        padding: 0.4rem 0.8rem;
+      }
     }
   </style>
 </head>
@@ -438,11 +493,15 @@
     </button>
     <div class="friend-info">
       <div class="friend-avatar" id="friend-avatar"></div>
-      <h1 class="friend-name" id="friend-name">Loading...</h1>
+      <div>
+        <h1 class="friend-name" id="friend-name">Loading...</h1>
+        <div class="friend-status" id="friend-status">Offline</div>
+      </div>
     </div>
   </header>
 
   <div class="message-list" id="message-list">
+    <div class="typing-indicator" id="typing-indicator">Typing...</div>
     <!-- Messages will be dynamically populated -->
   </div>
 
@@ -527,6 +586,8 @@
     const mediaUpload = document.getElementById("media-upload");
     const friendAvatar = document.getElementById("friend-avatar");
     const friendName = document.getElementById("friend-name");
+    const friendStatus = document.getElementById("friend-status");
+    const typingIndicator = document.getElementById("typing-indicator");
     const spinnerOverlay = document.getElementById("spinner-overlay");
     const progressContainer = document.getElementById("progress-container");
     const progressBarUpload = document.getElementById("progress-bar-upload");
@@ -544,6 +605,7 @@
     let userId = null;
     let authListener = null;
     let alertResolve = null;
+    let typingTimeout = null;
 
     /**
      * Hides the custom alert
@@ -645,6 +707,24 @@
     }
 
     /**
+     * Formats a date for separator
+     * @param {number} timestamp
+     * @returns {string}
+     */
+    function formatDateSeparator(timestamp) {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      if (diffDays === 0) {
+        return 'Today';
+      } else if (diffDays === 1) {
+        return 'Yesterday';
+      } else {
+        return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+      }
+    }
+
+    /**
      * Uploads a file to Cloudinary
      * @param {File} file
      * @param {Function} onProgress
@@ -713,6 +793,7 @@
       const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
       const encryptedMessage = type === 'text' ? encryptMessage(message) : '';
       try {
+        const messageRef = await push(ref(db, `chats/${chatId}/messages`));
         const messageData = {
           sender: userId,
           message: encryptedMessage,
@@ -720,8 +801,9 @@
           url,
           caption,
           timestamp: Date.now(),
+          status: 'sent'
         };
-        await push(ref(db, `chats/${chatId}/messages`), messageData);
+        await set(messageRef, messageData);
         await update(ref(db, `chats/${chatId}`), {
           lastMessage: encryptedMessage || caption || 'Media',
           timestamp: Date.now(),
@@ -815,6 +897,20 @@
           friendAvatar.innerHTML = 'U';
           friendName.textContent = 'Unknown';
         }
+        // Load last seen status
+        const statusRef = ref(db, `users/${friendId}/status`);
+        onValue(statusRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const { online, lastSeen } = snapshot.val();
+            if (online) {
+              friendStatus.textContent = 'Online';
+            } else {
+              friendStatus.textContent = `Last seen ${formatTimestamp(lastSeen)}`;
+            }
+          } else {
+              friendStatus.textContent = 'Offline';
+          }
+        });
       } catch (error) {
         console.error("Error fetching friend profile:", error);
         window.showAlert("Failed to load friend profile.", false);
@@ -830,9 +926,19 @@
       const messagesRef = ref(db, `chats/${chatId}/messages`);
       onValue(messagesRef, (snapshot) => {
         messageList.innerHTML = '';
+        messageList.appendChild(typingIndicator); // Re-append typing indicator
         if (snapshot.exists()) {
           const messages = snapshot.val();
-          Object.values(messages).forEach(msg => {
+          let lastDate = null;
+          Object.entries(messages).forEach(([messageId, msg]) => {
+            const messageDate = new Date(msg.timestamp).toDateString();
+            if (lastDate !== messageDate) {
+              const separator = document.createElement('div');
+              separator.className = 'date-separator';
+              separator.textContent = formatDateSeparator(msg.timestamp);
+              messageList.appendChild(separator);
+              lastDate = messageDate;
+            }
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${msg.sender === userId ? 'sent' : 'received'}`;
             let content = '';
@@ -846,11 +952,27 @@
             if (msg.caption) {
               content = `${msg.caption}<br>${content}`;
             }
+            const statusIcon = msg.sender === userId ? `
+              <svg class="status-indicator ${msg.status === 'read' ? 'read' : ''}" viewBox="0 0 24 24">
+                ${msg.status === 'sent' ? '<path d="M9 16.2l-3.5-3.5L4 14.1l5 5 9-9-1.4-1.4L9 16.2z" />' :
+                  msg.status === 'delivered' ? '<path d="M9 16.2l-3.5-3.5L4 14.1l5 5 9-9-1.4-1.4L9 16.2z" /><path d="M9 16.2l-3.5-3.5L4 14.1l5 5 9-9-1.4-1.4L9 16.2z" transform="translate(4, 0)" />' :
+                  '<path d="M9 16.2l-3.5-3.5L4 14.1l5 5 9-9-1.4-1.4L9 16.2z" /><path d="M9 16.2l-3.5-3.5L4 14.1l5 5 9-9-1.4-1.4L9 16.2z" transform="translate(4, 0)" />'}
+              </svg>
+            ` : '';
             messageDiv.innerHTML = `
               ${content}
-              <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
+              <div class="message-time">${formatTimestamp(msg.timestamp)}${statusIcon}</div>
             `;
             messageList.appendChild(messageDiv);
+            // Update message status to delivered/read
+            if (msg.sender !== userId && msg.status !== 'read') {
+              update(ref(db, `chats/${chatId}/messages/${messageId}`), { status: 'delivered' });
+              if (document.visibilityState === 'visible') {
+                setTimeout(() => {
+                  update(ref(db, `chats/${chatId}/messages/${messageId}`), { status: 'read' });
+                }, 1000);
+              }
+            }
           });
           messageList.scrollTop = messageList.scrollHeight;
           // Reset unread count for current user
@@ -859,10 +981,33 @@
           });
         } else {
           messageList.innerHTML = '<p style="text-align: center; padding: 1rem;">No messages yet.</p>';
+          messageList.appendChild(typingIndicator);
         }
       }, (error) => {
         console.error("Error fetching messages:", error);
         window.showAlert(MESSAGES.LOAD_CHAT_FAIL, false);
+      });
+    }
+
+    /**
+     * Handles typing indicator
+     */
+    function handleTyping() {
+      if (!userId || !friendId) return;
+      const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
+      const typingRef = ref(db, `chats/${chatId}/typing/${userId}`);
+      clearTimeout(typingTimeout);
+      set(typingRef, true);
+      typingTimeout = setTimeout(() => {
+        set(typingRef, false);
+      }, 3000);
+
+      const friendTypingRef = ref(db, `chats/${chatId}/typing/${friendId}`);
+      onValue(friendTypingRef, (snapshot) => {
+        typingIndicator.classList.toggle('active', snapshot.val() === true);
+        if (snapshot.val()) {
+          messageList.scrollTop = messageList.scrollHeight;
+        }
       });
     }
 
@@ -901,6 +1046,9 @@
             }
           });
 
+          // Handle typing indicator
+          messageInput.addEventListener('input', handleTyping);
+
           // Handle media upload
           mediaBtn.addEventListener('click', () => {
             mediaUpload.click();
@@ -911,6 +1059,30 @@
             if (file) {
               uploadMedia(file);
             }
+          });
+
+          // Update message status to read when page is visible
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && userId && friendId) {
+              const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
+              get(ref(db, `chats/${chatId}/messages`)).then(snapshot => {
+                if (snapshot.exists()) {
+                  const messages = snapshot.val();
+                  Object.entries(messages).forEach(([messageId, msg]) => {
+                    if (msg.sender !== userId && msg.status !== 'read') {
+                      update(ref(db, `chats/${chatId}/messages/${messageId}`), { status: 'read' });
+                    }
+                  });
+                }
+              });
+            }
+          });
+
+          // Update user online status
+          const userStatusRef = ref(db, `users/${userId}/status`);
+          set(userStatusRef, { online: true, lastSeen: Date.now() });
+          window.addEventListener('beforeunload', () => {
+            set(userStatusRef, { online: false, lastSeen: Date.now() });
           });
         } else {
           window.showAlert(MESSAGES.SIGN_IN_REQUIRED, false);
@@ -923,6 +1095,9 @@
       // Cleanup listener on page unload
       window.addEventListener('unload', () => {
         if (authListener) authListener();
+        if (userId) {
+          set(ref(db, `users/${userId}/status`), { online: false, lastSeen: Date.now() });
+        }
       });
     });
   </script>
