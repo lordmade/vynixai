@@ -696,42 +696,16 @@
       font-weight: 500;
     }
 
-    .status-viewer .reaction-container {
+    .status-viewer .view-count {
       position: absolute;
       bottom: 1rem;
       right: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .status-viewer .reaction-btn {
-      width: 32px;
-      height: 32px;
-      background: none;
-      border: none;
-      color: #FFFFFF;
-      cursor: pointer;
-      transition: transform 0.2s ease;
-    }
-
-    .status-viewer .reaction-btn:hover {
-      transform: scale(1.2);
-    }
-
-    .status-viewer .reaction-btn svg {
-      width: 100%;
-      height: 100%;
-    }
-
-    .status-viewer .reaction-btn.reacted {
-      color: #FF4D4F;
-    }
-
-    .status-viewer .reaction-count {
       color: #FFFFFF;
       font-size: 0.9rem;
       font-weight: 500;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 0.4rem 0.8rem;
+      border-radius: 12px;
     }
 
     .status-viewer .tap-area {
@@ -791,7 +765,7 @@
       width: 80%;
     }
 
-    /* Overlay Spinner */
+    /* Overlay Spinner and Progress Bar */
     .spinner-overlay {
       display: none;
       position: fixed;
@@ -801,7 +775,7 @@
       height: 100%;
       background: rgba(0, 0, 0, 0.5);
       z-index: 4000;
-      display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
     }
@@ -817,6 +791,39 @@
       border-top: 4px solid var(--twitter-blue);
       border-radius: 50%;
       animation: spin 1s linear infinite;
+    }
+
+    .progress-container {
+      display: none;
+      width: 200px;
+      height: 20px;
+      background: #FFFFFF;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 1rem;
+      position: relative;
+    }
+
+    .progress-container.active {
+      display: block;
+    }
+
+    .progress-bar-upload {
+      height: 100%;
+      width: 0%;
+      background: var(--twitter-blue);
+      transition: width 0.2s ease;
+    }
+
+    .progress-text {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #FFFFFF;
+      font-size: 0.9rem;
+      font-weight: 500;
+      text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
     }
 
     @keyframes spin {
@@ -981,12 +988,7 @@
         font-size: 0.8rem;
       }
 
-      .status-viewer .reaction-btn {
-        width: 28px;
-        height: 28px;
-      }
-
-      .status-viewer .reaction-count {
+      .status-viewer .view-count {
         font-size: 0.8rem;
       }
 
@@ -997,6 +999,15 @@
 
       .shimmer-line {
         height: 14px;
+      }
+
+      .progress-container {
+        width: 150px;
+        height: 16px;
+      }
+
+      .progress-text {
+        font-size: 0.8rem;
       }
     }
 
@@ -1089,14 +1100,21 @@
         <line x1="6" y1="6" x2="18" y2="18"></line>
       </svg>
     </button>
+    <div id="view-count" class="view-count">0 views</div>
   </div>
 
-  
+  <div id="spinner-overlay" class="spinner-overlay">
+    <div class="spinner"></div>
+    <div id="progress-container" class="progress-container">
+      <div id="progress-bar-upload" class="progress-bar-upload"></div>
+      <span id="progress-text" class="progress-text">0%</span>
+    </div>
+  </div>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getDatabase, ref, onValue, set, push, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getDatabase, ref, onValue, set, push, remove, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -1134,6 +1152,9 @@
     const fabIcon = document.getElementById("fab-icon");
     const statusUpload = document.getElementById("status-upload");
     const spinnerOverlay = document.getElementById("spinner-overlay");
+    const progressContainer = document.getElementById("progress-container");
+    const progressBarUpload = document.getElementById("progress-bar-upload");
+    const progressText = document.getElementById("progress-text");
     let friendsData = [];
     let suggestedFriends = [];
     let statusTimer;
@@ -1233,7 +1254,7 @@
       statusViewer.querySelector('.progress-bar-container')?.remove();
       statusViewer.querySelector('.tap-area-left')?.remove();
       statusViewer.querySelector('.tap-area-right')?.remove();
-      statusViewer.querySelector('.reaction-container')?.remove();
+      statusViewer.querySelector('#view-count')?.remove();
       clearInterval(statusTimer);
       isPaused = false;
     };
@@ -1281,33 +1302,52 @@
       }
     }
 
-    async function uploadToCloudinary(file) {
+    async function uploadToCloudinary(file, onProgress) {
       if (file.size > 10 * 1024 * 1024) {
         throw new Error("File size exceeds 10MB limit.");
       }
       const formData = new FormData();
       formData.append("file", file);
       formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-      try {
-        const response = await fetch(CLOUDINARY_API_URL, {
-          method: "POST",
-          body: formData,
-        });
-        const data = await response.json();
-        console.log("Cloudinary response:", data);
-        if (data.secure_url) {
-          return {
-            url: data.secure_url,
-            resource_type: data.resource_type,
-            public_id: data.public_id,
-          };
-        } else {
-          throw new Error(data.error?.message || "Upload failed");
-        }
-      } catch (error) {
-        console.error("Cloudinary upload error:", error);
-        throw error;
-      }
+
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", CLOUDINARY_API_URL, true);
+
+        // Track upload progress
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            if (onProgress) {
+              onProgress(percentComplete);
+            }
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            console.log("Cloudinary response:", data);
+            if (data.secure_url) {
+              resolve({
+                url: data.secure_url,
+                resource_type: data.resource_type,
+                public_id: data.public_id,
+              });
+            } else {
+              reject(new Error(data.error?.message || "Upload failed"));
+            }
+          } else {
+            reject(new Error(`Upload failed with status ${xhr.status}`));
+          }
+        };
+
+        xhr.onerror = () => {
+          reject(new Error("Network error during upload"));
+        };
+
+        xhr.send(formData);
+      });
     }
 
     async function uploadStatus(file, userId, userProfile) {
@@ -1338,14 +1378,21 @@
         return;
       }
       spinnerOverlay.classList.add("active");
+      progressContainer.classList.add("active");
+      spinnerOverlay.querySelector('.spinner').style.display = 'none';
+      progressBarUpload.style.width = '0%';
+      progressText.textContent = '0%';
       try {
-        const uploadResult = await uploadToCloudinary(file);
+        const uploadResult = await uploadToCloudinary(file, (percent) => {
+          progressBarUpload.style.width = `${percent}%`;
+          progressText.textContent = `${percent}%`;
+        });
         const statusData = {
           url: uploadResult.url,
           resource_type: uploadResult.resource_type,
           timestamp: Date.now(),
           caption: caption || "",
-          reactions: {}
+          views: {}
         };
         await push(ref(db, `statuses/${userId}`), statusData);
         window.showAlert("Status uploaded successfully!", true);
@@ -1355,6 +1402,10 @@
         window.showAlert(`Failed to upload status: ${error.message}`, false);
       } finally {
         spinnerOverlay.classList.remove("active");
+        progressContainer.classList.remove("active");
+        spinnerOverlay.querySelector('.spinner').style.display = 'block';
+        progressBarUpload.style.width = '0%';
+        progressText.textContent = '0%';
         statusUpload.value = '';
       }
     }
@@ -1543,14 +1594,14 @@
       if (!statusArray || statusArray.length === 0) return;
       let currentIndex = 0;
       const duration = 5000; // 5 seconds per status
-      let currentUserId = auth.currentUser?.uid;
+      const currentUserId = auth.currentUser?.uid;
 
       // Clear previous viewer elements
       statusViewer.querySelector('.status-user')?.remove();
       statusViewer.querySelector('.progress-bar-container')?.remove();
       statusViewer.querySelector('.tap-area-left')?.remove();
       statusViewer.querySelector('.tap-area-right')?.remove();
-      statusViewer.querySelector('.reaction-container')?.remove();
+      statusViewer.querySelector('#view-count')?.remove();
 
       // Add user info
       const userDiv = document.createElement('div');
@@ -1577,50 +1628,32 @@
       statusViewer.appendChild(tapLeft);
       statusViewer.appendChild(tapRight);
 
-      // Add reaction button and count
-      const reactionContainer = document.createElement('div');
-      reactionContainer.className = 'reaction-container';
-      statusViewer.appendChild(reactionContainer);
+      // Add view count element
+      const viewCountDiv = document.createElement('div');
+      viewCountDiv.id = 'view-count';
+      viewCountDiv.className = 'view-count';
+      viewCountDiv.textContent = '0 views';
+      statusViewer.appendChild(viewCountDiv);
 
-      function updateReactionButton(status) {
-        reactionContainer.innerHTML = '';
-        const reactionCount = status.reactions ? Object.keys(status.reactions).length : 0;
-        const hasReacted = currentUserId && status.reactions && status.reactions[currentUserId];
-        reactionContainer.innerHTML = `
-          <button class="reaction-btn ${hasReacted ? 'reacted' : ''}" data-status-id="${status.statusId}">
-            <svg viewBox="0 0 24 24" fill="${hasReacted ? '#FF4D4F' : 'none'}" stroke="currentColor" stroke-width="2">
-              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-            </svg>
-          </button>
-          <span class="reaction-count">${reactionCount}</span>
-        `;
-        const reactionBtn = reactionContainer.querySelector('.reaction-btn');
-        reactionBtn.onclick = async (e) => {
-          e.stopPropagation();
-          if (!currentUserId) {
-            window.showAlert("Please sign in to react to statuses.", false);
-            return;
-          }
-          try {
-            const statusRef = ref(db, `statuses/${userId}/${status.statusId}/reactions/${currentUserId}`);
-            if (hasReacted) {
-              await remove(statusRef);
-            } else {
-              await set(statusRef, true);
+      async function updateViewCount(status) {
+        if (currentUserId && userId !== currentUserId) { // Don't count views for the user's own status
+          const viewRef = ref(db, `statuses/${userId}/${status.statusId}/views/${currentUserId}`);
+          const viewSnapshot = await get(ref(db, `statuses/${userId}/${status.statusId}/views`)).then(snapshot => snapshot.val() || {});
+          if (!viewSnapshot[currentUserId]) {
+            try {
+              await set(viewRef, true);
+              const updatedViews = { ...viewSnapshot, [currentUserId]: true };
+              viewCountDiv.textContent = `${Object.keys(updatedViews).length} ${Object.keys(updatedViews).length === 1 ? 'view' : 'views'}`;
+            } catch (error) {
+              console.error("Error updating view count:", error);
             }
-            // Refresh status to update reaction count
-            const updatedStatusRef = ref(db, `statuses/${userId}/${status.statusId}`);
-            onValue(updatedStatusRef, (snapshot) => {
-              if (snapshot.exists()) {
-                const updatedStatus = snapshot.val();
-                updateReactionButton({ ...status, reactions: updatedStatus.reactions });
-              }
-            }, { onlyOnce: true });
-          } catch (error) {
-            console.error("Error updating reaction:", error);
-            window.showAlert("Failed to update reaction. Please try again.", false);
+          } else {
+            viewCountDiv.textContent = `${Object.keys(viewSnapshot).length} ${Object.keys(viewSnapshot).length === 1 ? 'view' : 'views'}`;
           }
-        };
+        } else {
+          const viewSnapshot = await get(ref(db, `statuses/${userId}/${status.statusId}/views`)).then(snapshot => snapshot.val() || {});
+          viewCountDiv.textContent = `${Object.keys(viewSnapshot).length} ${Object.keys(viewSnapshot).length === 1 ? 'view' : 'views'}`;
+        }
       }
 
       function showStatus(index) {
@@ -1656,8 +1689,8 @@
           currentProgress.style.width = '100%';
         }
 
-        // Update reaction button
-        updateReactionButton(status);
+        // Update view count
+        updateViewCount(status);
 
         clearInterval(statusTimer);
         if (!isPaused) {
