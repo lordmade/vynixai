@@ -75,8 +75,8 @@
     }
 
     .icon-btn svg {
-      width: 24px;
-      height: 24px;
+      width: 20px;
+      height: 20px;
     }
 
     .message-list {
@@ -108,6 +108,27 @@
       color: var(--text-primary);
       align-self: flex-start;
       border-bottom-left-radius: 2px;
+    }
+
+    .message.media {
+      padding: 0.25rem;
+      background: var(--chat-bg);
+    }
+
+    .message.sent.media {
+      background: var(--accent);
+    }
+
+    .message img, .message video {
+      max-width: 100%;
+      max-height: 200px;
+      border-radius: 8px;
+      display: block;
+    }
+
+    .message audio {
+      width: 100%;
+      max-width: 200px;
     }
 
     .message-time {
@@ -310,14 +331,6 @@
       border-bottom: 1px solid var(--border);
     }
 
-    .shimmer-avatar {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: var(--border);
-      margin-right: 0.75rem;
-    }
-
     .shimmer-text {
       flex: 1;
     }
@@ -348,12 +361,15 @@
       .avatar { width: 32px; height: 32px; }
       .message-list { padding: 0.5rem; }
       .message { font-size: 0.9rem; max-width: 80%; }
+      .message img, .message video { max-height: 150px; }
+      .message audio { max-width: 150px; }
       .message-input { font-size: 0.9rem; padding: 0.5rem; }
       .fab { width: 70px; height: 36px; bottom: 0.75rem; right: 0.75rem; }
       .fab svg { width: 18px; height: 18px; }
       .fab-tooltip { font-size: 0.8rem; padding: 0.4rem 0.8rem; right: 80px; bottom: 8px; }
       .menu-dropdown { top: 50px; }
       .menu-item { font-size: 0.8rem; padding: 0.5rem 1rem; }
+      .icon-btn svg { width: 18px; height: 18px; }
     }
   </style>
 </head>
@@ -368,6 +384,7 @@
       <div id="friend-avatar" class="avatar"></div>
       <div>
         <span id="friend-name">Loading...</span>
+        <p id="friend-status" class="text-sm text-[var(--text-secondary)] mt-1">Offline</p>
       </div>
     </div>
     <div class="header-actions">
@@ -387,7 +404,21 @@
   </div>
   <div id="message-list" class="message-list"></div>
   <div class="message-input-container">
+    <button id="attachment-btn" class="icon-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+      </svg>
+    </button>
+    <input id="media-upload" type="file" accept="image/jpeg,image/png,video/mp4,video/mov" style="display: none;" />
     <input id="message-input" class="message-input" type="text" placeholder="Type a message..." />
+    <button id="mic-btn" class="icon-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
+      </svg>
+    </button>
   </div>
   <div id="fab" class="fab">
     <svg id="fab-icon" viewBox="0 0 24 24">
@@ -433,8 +464,8 @@
     const MESSAGES = {
       SIGN_IN_REQUIRED: 'Please sign in to view this chat.',
       FRIEND_NOT_FOUND: 'Friend not found.',
-      MESSAGE_SEND_FAIL: 'Failed to send message.',
-      FRIEND_NOT_FRIEND: 'This user is not your friend.'
+      CHAT_NOT_FOUND: 'Chat not found.',
+      MESSAGE_SEND_FAIL: 'Failed to send message.'
     };
 
     const app = initializeApp(firebaseConfig);
@@ -448,12 +479,15 @@
     const messageList = document.getElementById("message-list");
     const friendAvatar = document.getElementById("friend-avatar");
     const friendName = document.getElementById("friend-name");
+    const friendStatus = document.getElementById("friend-status");
     const messageInput = document.getElementById("message-input");
     const fab = document.getElementById("fab");
     const menuDropdown = document.getElementById("menu-dropdown");
     const spinnerOverlay = document.getElementById("spinner-overlay");
     let alertResolve = null;
     const ENCRYPTION_KEY = "my-secret-key-123";
+    const currentContext = 'chat';
+    let lastMessageTimestamp = 0;
 
     window.showAlert = function (message, autoHide = true, input = false, confirmCallback = null, cancelCallback = null) {
       return new Promise((resolve) => {
@@ -542,68 +576,146 @@
       }
     }
 
+    async function uploadMedia(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', 'ml_default');
+      try {
+        spinnerOverlay.classList.add('active');
+        const response = await fetch('https://api.cloudinary.com/v1_1/vynix/auto/upload', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        spinnerOverlay.classList.remove('active');
+        if (data.secure_url) {
+          return { url: data.secure_url, type: file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'voice' };
+        } else {
+          throw new Error('Upload failed');
+        }
+      } catch (error) {
+        spinnerOverlay.classList.remove('active');
+        console.error('Error uploading media:', error);
+        window.showAlert('Failed to upload media.', false);
+        return null;
+      }
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+        recorder.ondataavailable = (e) => chunks.push(e.data);
+        recorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: 'audio/mp3' });
+          const file = new File([blob], `voice_note_${Date.now()}.mp3`, { type: 'audio/mp3' });
+          const media = await uploadMedia(file);
+          if (media) {
+            const userId = auth.currentUser?.uid;
+            const friendId = new URLSearchParams(window.location.search).get('friendId');
+            if (userId && friendId) {
+              sendMessage(userId, friendId, media.url, media.type);
+            }
+          }
+          stream.getTracks().forEach(track => track.stop());
+        };
+        recorder.start();
+        window.showAlert('Recording... Click OK to stop.', false, false, () => recorder.stop());
+      } catch (error) {
+        console.error('Error recording voice note:', error);
+        window.showAlert('Failed to record voice note.', false);
+      }
+    }
+
     async function loadChat(userId, friendId) {
       showShimmer();
-      const friendRef = ref(db, `users/${friendId}`);
-      const friendSnapshot = await get(friendRef);
-      if (!friendSnapshot.exists()) {
+      const userRef = ref(db, `users/${friendId}`);
+      const userSnapshot = await get(userRef);
+      if (!userSnapshot.exists()) {
         window.showAlert(MESSAGES.FRIEND_NOT_FOUND, false);
         window.location.href = ROUTES.INDEX;
         return;
       }
-      const friend = friendSnapshot.val();
-      const friendsRef = ref(db, `friends/${userId}`);
-      const friendsSnapshot = await get(friendsRef);
-      if (!friendsSnapshot.exists() || !friendsSnapshot.val()[friendId]) {
-        window.showAlert(MESSAGES.FRIEND_NOT_FRIEND, false);
-        window.location.href = ROUTES.INDEX;
-        return;
-      }
-      friendAvatar.innerHTML = friend.avatar ? `<img src="${friend.avatar}" alt="Avatar" />` : friend.name?.charAt(0) || 'U';
+      const friend = userSnapshot.val();
+      friendAvatar.innerHTML = friend.name.charAt(0);
       friendName.textContent = friend.name || 'Unknown';
+      friendStatus.textContent = friend.status || 'Offline';
 
       const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
       const messagesRef = ref(db, `chats/${chatId}/messages`);
-      onValue(messagesRef, (snapshot) => {
+      onValue(messagesRef, async (snapshot) => {
         messageList.innerHTML = '';
         if (!snapshot.exists()) {
           messageList.innerHTML = '<p style="text-align: center; padding: 1rem;">No messages yet.</p>';
           return;
         }
         const messages = snapshot.val();
+        const usersRef = ref(db, 'users');
+        const userSnapshot = await get(usersRef);
+        const users = userSnapshot.val() || {};
+        let latestTimestamp = 0;
         Object.entries(messages).forEach(([messageId, message]) => {
+          if (message.timestamp > lastMessageTimestamp && message.senderId !== userId) {
+            if ('vibrate' in navigator) {
+              navigator.vibrate(200);
+            }
+            if (!message.read) {
+              update(ref(db, `chats/${chatId}/messages/${messageId}`), { read: true });
+            }
+          }
+          if (message.timestamp > latestTimestamp) {
+            latestTimestamp = message.timestamp;
+          }
+          const sender = users[message.senderId] || { name: 'Unknown' };
           const messageItem = document.createElement('div');
-          messageItem.className = `message ${message.senderId === userId ? 'sent' : 'received'}`;
-          const decryptedContent = decryptMessage(message.content);
-          messageItem.innerHTML = `
-            <div>${decryptedContent}</div>
-            <div class="message-time">${formatTimestamp(message.timestamp)}</div>
-          `;
+          messageItem.className = `message ${message.senderId === userId ? 'sent' : 'received'} ${message.type !== 'text' ? 'media' : ''}`;
+          let content;
+          if (message.type === 'text') {
+            content = decryptMessage(message.content);
+            messageItem.innerHTML = `
+              <div>${content}</div>
+              <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+            `;
+          } else if (message.type === 'image') {
+            content = decryptMessage(message.content);
+            messageItem.innerHTML = `
+              <img src="${content}" alt="Shared image" />
+              <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+            `;
+          } else if (message.type === 'video') {
+            content = decryptMessage(message.content);
+            messageItem.innerHTML = `
+              <video src="${content}" controls></video>
+              <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+            `;
+          } else if (message.type === 'voice') {
+            content = decryptMessage(message.content);
+            messageItem.innerHTML = `
+              <audio src="${content}" controls></audio>
+              <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+            `;
+          }
           messageList.appendChild(messageItem);
         });
+        lastMessageTimestamp = latestTimestamp;
         messageList.scrollTop = messageList.scrollHeight;
-        // Mark messages as read
-        Object.entries(messages).forEach(([messageId, message]) => {
-          if (message.senderId !== userId && !message.read) {
-            update(ref(db, `chats/${chatId}/messages/${messageId}`), { read: true });
-          }
-        });
       });
     }
 
-    async function sendMessage(userId, friendId) {
-      const content = messageInput.value.trim();
-      if (!content) return;
+    async function sendMessage(userId, friendId, content = messageInput.value.trim(), type = 'text') {
+      if (!content && type === 'text') return;
       try {
         const chatId = userId < friendId ? `${userId}_${friendId}` : `${friendId}_${userId}`;
         const encryptedContent = CryptoJS.AES.encrypt(content, ENCRYPTION_KEY).toString();
         await push(ref(db, `chats/${chatId}/messages`), {
           senderId: userId,
           content: encryptedContent,
+          type,
           timestamp: Date.now(),
           read: false
         });
-        messageInput.value = '';
+        if (type === 'text') messageInput.value = '';
       } catch (error) {
         console.error('Error sending message:', error);
         window.showAlert(MESSAGES.MESSAGE_SEND_FAIL, false);
@@ -644,6 +756,27 @@
         }
       }
     });
+
+    document.getElementById('attachment-btn').addEventListener('click', () => {
+      document.getElementById('media-upload').click();
+    });
+
+    document.getElementById('media-upload').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const media = await uploadMedia(file);
+        if (media) {
+          const userId = auth.currentUser?.uid;
+          const friendId = new URLSearchParams(window.location.search).get('friendId');
+          if (userId && friendId) {
+            sendMessage(userId, friendId, media.url, media.type);
+          }
+        }
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('mic-btn').addEventListener('click', startRecording);
   </script>
 </body>
 </html>
