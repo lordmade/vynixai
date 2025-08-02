@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vynix - Live TV</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js"></script>
+  <style>
+    :root {
+      --background: #FFFFFF;
+      --chat-bg: #F5F7FB;
+      --text-primary: #111B21;
+      --text-secondary: #667781;
+      --border: #E9ECEF;
+      --accent: #00A884;
+      --status-bar: #D9D9D9;
+    }
+
+    body {
+      background: var(--background);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      margin: 0;
+      overscroll-behavior: none;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #live-tv-container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    #video-wrapper {
+      flex: 1;
+      background: black;
+      position: relative;
+    }
+
+    #live-stream {
+      width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    #program-info {
+      position: absolute;
+      top: 1rem;
+      left: 1rem;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      padding: 0.5rem;
+      border-radius: 0.5rem;
+    }
+
+    #exit-fullscreen {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+    }
+
+    #live-interaction {
+      background: var(--chat-bg);
+      padding: 1rem;
+      max-height: 40vh;
+      overflow: hidden;
+      transition: max-height 0.3s ease;
+    }
+
+    #live-interaction.hidden {
+      max-height: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    #live-chat {
+      border: 1px solid var(--border);
+      padding: 1rem;
+      background: var(--chat-bg);
+      max-height: 12rem;
+      overflow-y: auto;
+    }
+
+    .program-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    #preview-overlay {
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.75);
+    }
+
+    .blur-sm {
+      filter: blur(4px);
+    }
+
+    .spinner-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.3);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .spinner-overlay.active {
+      display: flex;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      color: #FFFFFF;
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem;
+      border: none;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .btn.primary:disabled {
+      background: var(--border);
+      cursor: not-allowed;
+    }
+
+    .input-group {
+      margin-bottom: 1rem;
+    }
+
+    .input-group input {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.95rem;
+      background: var(--chat-bg);
+      color: var(--text-primary);
+      outline: none;
+    }
+
+    .input-group input:focus {
+      border-color: var(--accent);
+    }
+
+    @media (max-width: 640px) {
+      #program-info { padding: 0.4rem; }
+      #exit-fullscreen { padding: 0.4rem; }
+      #live-interaction { padding: 0.5rem; }
+      #live-chat { max-height: 10rem; padding: 0.5rem; }
+      .program-item { padding: 0.5rem; }
+      .btn.primary { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+      .input-group input { padding: 0.5rem; font-size: 0.9rem; }
+    }
+  </style>
+</head>
+<body>
+  <div id="live-tv-container" class="fixed inset-0 flex flex-col">
+    <div id="video-wrapper" class="flex-1 relative">
+      <video id="live-stream" class="w-full h-full object-contain" controls playsinline autoplay muted aria-label="Live TV stream"></video>
+      <div id="program-info" class="absolute top-4 left-4 bg-black bg-opacity-50 text-white p-2 rounded">
+        <h2 id="program-title" class="text-lg font-semibold"></h2>
+        <p id="program-description"></p>
+      </div>
+      <button id="exit-fullscreen" class="btn primary" aria-label="Exit Live TV">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6">
+          <path d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <div id="live-interaction" class="bg-white p-4 max-h-[40vh] overflow-hidden">
+      <div class="flex justify-between items-center mb-2">
+        <h3 class="text-lg font-semibold">Live Chat</h3>
+        <button id="toggle-chat" class="btn primary">Hide Chat</button>
+      </div>
+      <div id="live-chat" class="flex flex-col gap-2 h-48 overflow-y-auto mb-2"></div>
+      <div class="flex items-center gap-2">
+        <input id="chat-input" type="text" placeholder="Type a message..." class="input-group input flex-1 p-2 rounded bg-gray-100" aria-label="Live chat input" />
+        <button id="send-chat" class="btn primary">Send</button>
+      </div>
+      <div id="live-polls" class="flex flex-col gap-2 mt-2"></div>
+      <div id="gift-section" class="flex gap-2 mt-2">
+        <button class="btn primary" onclick="window.sendGift('star', 1.99)" aria-label="Send Star gift">Star ($1.99)</button>
+        <button class="btn primary" onclick="window.sendGift('heart', 2.99)" aria-label="Send Heart gift">Heart ($2.99)</button>
+      </div>
+    </div>
+  </div>
+  <div id="upcoming-programs" class="p-4 bg-white hidden">
+    <h2 class="text-lg font-semibold mb-2">Upcoming Programs</h2>
+    <div id="program-list" class="flex flex-col gap-2"></div>
+  </div>
+  <div id="preview-overlay" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center hidden">
+    <div class="text-center text-white">
+      <h2 class="text-xl font-semibold mb-2">No Live Program</h2>
+      <p class="mb-4">Check out upcoming programs or enjoy this preview!</p>
+      <button class="btn primary mb-4" onclick="window.showUpcomingPrograms()">View Schedule</button>
+    </div>
+  </div>
+  <div id="spinner-overlay" class="spinner-overlay">
+    <div class="spinner"></div>
+  </div>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getDatabase, ref, onValue, set, push, get, update } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    // Firebase configuration from provided index.html
+    const firebaseConfig = {
+      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
+      authDomain: "fire-b-a8878.firebaseapp.com",
+      databaseURL: "https://fire-b-a8878.firebaseio.com",
+      projectId: "fire-b-a8878",
+      storageBucket: "fire-b-a8878.firebasestorage.app",
+      messagingSenderId: "658673187627",
+      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
+      measurementId: "G-V4W97VMSKL"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+
+    // Cloudinary configuration from provided index.html
+    const CLOUDINARY_CLOUD_NAME = "dqkujefxj";
+    const CLOUDINARY_UPLOAD_PRESET = "banter_box";
+
+    // Reused functions from index.html
+    function formatTimestamp(timestamp) {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      if (diffDays === 0) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } else if (diffDays === 1) {
+        return 'Yesterday';
+      } else {
+        return date.toLocaleDateString();
+      }
+    }
+
+    async function checkSubscription(userId) {
+      const subRef = ref(db, `users/${userId}/subscription`);
+      const snapshot = await get(subRef);
+      return snapshot.exists() && snapshot.val().status === 'active';
+    }
+
+    function showAlert(message, autoHide = true, input = false, confirmCallback = null, cancelCallback = null) {
+      return new Promise((resolve) => {
+        const customAlert = document.createElement('div');
+        customAlert.className = 'custom-alert active';
+        customAlert.innerHTML = `
+          <div class="alert-content">
+            <p id="alert-message">${message}</p>
+            <input id="alert-input" type="text" style="display: ${input ? 'block' : 'none'};" />
+            <div class="alert-buttons">
+              <button id="alert-confirm" style="display: ${confirmCallback ? 'block' : 'none'};" class="btn primary">OK</button>
+              <button id="alert-cancel" style="display: ${cancelCallback ? 'block' : 'none'};" class="btn primary">Cancel</button>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(customAlert);
+        const alertInput = customAlert.querySelector('#alert-input');
+        const alertConfirm = customAlert.querySelector('#alert-confirm');
+        const alertCancel = customAlert.querySelector('#alert-cancel');
+        let alertResolve = resolve;
+
+        if (input) {
+          alertInput.focus();
+        }
+
+        if (autoHide && !confirmCallback && !cancelCallback) {
+          setTimeout(() => {
+            customAlert.remove();
+            alertResolve(null);
+          }, 5000);
+        }
+
+        alertConfirm.onclick = () => {
+          if (confirmCallback) {
+            confirmCallback(input ? alertInput.value : true);
+          }
+          alertResolve(input ? alertInput.value : true);
+          customAlert.remove();
+        };
+
+        alertCancel.onclick = () => {
+          if (cancelCallback) {
+            cancelCallback();
+          }
+          alertResolve(false);
+          customAlert.remove();
+        };
+      });
+    }
+
+    // Apply theme from user settings
+    async function applyTheme(userId) {
+      const settingsRef = ref(db, `users/${userId}/settings`);
+      const snapshot = await get(settingsRef);
+      const root = document.documentElement;
+      if (snapshot.exists()) {
+        const settings = snapshot.val();
+        if (settings.theme === 'dark') {
+          root.style.setProperty('--background', '#111B21');
+          root.style.setProperty('--chat-bg', '#202C33');
+          root.style.setProperty('--text-primary', '#E9ECEF');
+          root.style.setProperty('--text-secondary', '#8696A0');
+          root.style.setProperty('--border', '#2A3942');
+          root.style.setProperty('--accent', '#00A884');
+          root.style.setProperty('--status-bar', '#374248');
+        } else {
+          root.style.setProperty('--background', '#FFFFFF');
+          root.style.setProperty('--chat-bg', '#F5F7FB');
+          root.style.setProperty('--text-primary', '#111B21');
+          root.style.setProperty('--text-secondary', '#667781');
+          root.style.setProperty('--border', '#E9ECEF');
+          root.style.setProperty('--accent', '#00A884');
+          root.style.setProperty('--status-bar', '#D9D9D9');
+        }
+      }
+    }
+
+    // Cache preview video
+    async function cachePreviewVideo(url) {
+      const cache = await caches.open('vynix-previews');
+      await cache.add(url);
+    }
+
+    // Load Live TV page
+    async function loadLiveTV() {
+      const userId = auth.currentUser?.uid;
+      const video = document.getElementById('live-stream');
+      const programInfo = document.getElementById('program-info');
+      const programTitle = document.getElementById('program-title');
+      const programDescription = document.getElementById('program-description');
+      const liveChat = document.getElementById('live-chat');
+      const livePolls = document.getElementById('live-polls');
+      const previewOverlay = document.getElementById('preview-overlay');
+      const spinner = document.getElementById('spinner-overlay');
+      spinner.classList.add('active');
+
+      if (!userId) {
+        showAlert('Please sign in to access Live TV.', false);
+        window.location.href = 'signup.html';
+        return;
+      }
+
+      await applyTheme(userId);
+
+      if (!(await checkSubscription(userId))) {
+        video.src = `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/v1234567890/previews/teaser.mp4?q_auto:low`;
+        video.loop = true;
+        video.play();
+        document.getElementById('live-tv-container').classList.add('blur-sm');
+        previewOverlay.classList.remove('hidden');
+        previewOverlay.innerHTML = `
+          <div class="text-center text-white">
+            <h2 class="text-xl font-semibold mb-2">SuperVynix Live TV</h2>
+            <p class="mb-4">Unlock exclusive live programs with a subscription!</p>
+            <button class="btn primary" onclick="window.location.href='https://x.ai/grok'">Subscribe Now</button>
+          </div>
+        `;
+        spinner.classList.remove('active');
+        return;
+      }
+
+      try {
+        const snapshot = await get(ref(db, 'liveTV'));
+        const programs = snapshot.val() || {};
+        const now = Date.now();
+        const activeProgram = Object.entries(programs).find(([_, program]) => 
+          program.isActive && program.startTime <= now && now <= program.endTime
+        );
+
+        if (activeProgram) {
+          const [programId, program] = activeProgram;
+          programTitle.textContent = program.title;
+          programTitle.dataset.programId = programId;
+          programDescription.textContent = program.description;
+          video.src = `${program.streamUrl}?q_auto:low`;
+          video.play();
+          programInfo.classList.remove('hidden');
+          previewOverlay.classList.add('hidden');
+          await loadLiveInteraction(programId);
+          cachePreviewVideo(program.previewUrl);
+        } else {
+          const previewProgram = Object.values(programs)[0] || {
+            previewUrl: `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/video/upload/v1234567890/previews/default_trailer.mp4?q_auto:low`
+          };
+          video.src = previewProgram.previewUrl;
+          video.loop = true;
+          video.play();
+          programInfo.classList.add('hidden');
+          previewOverlay.classList.remove('hidden');
+          await loadUpcomingPrograms();
+        }
+      } catch (error) {
+        console.error('Error loading Live TV:', error);
+        showAlert('Failed to load Live TV.', false);
+      } finally {
+        spinner.classList.remove('active');
+      }
+    }
+
+    // Load live interaction (chat, polls, gifts)
+    async function loadLiveInteraction(programId) {
+      const liveChat = document.getElementById('live-chat');
+      const livePolls = document.getElementById('live-polls');
+
+      onValue(ref(db, `liveTV/${programId}/chat`), (snapshot) => {
+        liveChat.innerHTML = '';
+        const messages = snapshot.val() || {};
+        Object.entries(messages).forEach(([_, message]) => {
+          const messageDiv = document.createElement('div');
+          messageDiv.textContent = `${message.senderId}: ${message.content}`;
+          liveChat.appendChild(messageDiv);
+          liveChat.scrollTop = liveChat.scrollHeight;
+        });
+      });
+
+      onValue(ref(db, `liveTV/${programId}/polls`), (snapshot) => {
+        livePolls.innerHTML = '';
+        const polls = snapshot.val() || {};
+        Object.entries(polls).forEach(([pollId, poll]) => {
+          const pollDiv = document.createElement('div');
+          pollDiv.className = 'poll p-2 border';
+          pollDiv.innerHTML = `<h3>${poll.question}</h3>`;
+          poll.options.forEach(option => {
+            const optionBtn = document.createElement('button');
+            optionBtn.className = 'btn primary';
+            optionBtn.textContent = option;
+            optionBtn.setAttribute('aria-label', `Vote for ${option}`);
+            optionBtn.onclick = () => voteInPoll(programId, pollId, option);
+            pollDiv.appendChild(optionBtn);
+          });
+          livePolls.appendChild(pollDiv);
+        });
+      });
+
+      document.getElementById('send-chat').onclick = async () => {
+        const input = document.getElementById('chat-input');
+        const content = input.value.trim();
+        if (content) {
+          await push(ref(db, `liveTV/${programId}/chat`), {
+            content,
+            senderId: auth.currentUser.uid,
+            timestamp: Date.now()
+          });
+          input.value = '';
+        }
+      };
+
+      document.getElementById('toggle-chat').onclick = () => {
+        const interaction = document.getElementById('live-interaction');
+        interaction.classList.toggle('hidden');
+        document.getElementById('toggle-chat').textContent = interaction.classList.contains('hidden') ? 'Show Chat' : 'Hide Chat';
+      };
+    }
+
+    // Vote in poll
+    async function voteInPoll(programId, pollId, option) {
+      const userId = auth.currentUser?.uid;
+      await set(ref(db, `liveTV/${programId}/polls/${pollId}/votes/${userId}`), option);
+      showAlert('Voted!', true);
+    }
+
+    // Send virtual gift
+    window.sendGift = async (type, value) => {
+      const userId = auth.currentUser?.uid;
+      const programId = document.getElementById('program-title').dataset.programId;
+      if (!(await checkSubscription(userId))) {
+        showAlert('Gifts are a SuperVynix feature. Upgrade now?', false, false,
+          () => window.location.href = 'https://x.ai/grok',
+          () => {}
+        );
+        return;
+      }
+      const coinsRef = ref(db, `users/${userId}/vynixCoins`);
+      const snapshot = await get(coinsRef);
+      const coins = snapshot.val() || 0;
+      if (coins < value) {
+        showAlert('Not enough Vynix Coins. Purchase more?', false, false,
+          () => window.location.href = 'settings.html#store',
+          () => {}
+        );
+        return;
+      }
+      await update(coinsRef, { vynixCoins: coins - value });
+      await push(ref(db, `liveTV/${programId}/gifts`), {
+        type,
+        value,
+        senderId: userId,
+        timestamp: Date.now()
+      });
+      showAlert(`Sent ${type} gift!`, true);
+    };
+
+    // Load upcoming programs
+    async function loadUpcomingPrograms() {
+      const programList = document.getElementById('program-list');
+      const snapshot = await get(ref(db, 'liveTV'));
+      const programs = snapshot.val() || {};
+      const now = Date.now();
+      programList.innerHTML = '';
+      Object.entries(programs).forEach(([programId, program]) => {
+        if (!program.isActive && program.startTime > now) {
+          const programItem = document.createElement('div');
+          programItem.className = 'program-item';
+          programItem.innerHTML = `
+            <div>
+              <h3>${program.title}</h3>
+              <p>${program.description}</p>
+              <p>Starts: ${formatTimestamp(program.startTime)}</p>
+            </div>
+            <button class="btn primary" onclick="window.setReminder('${programId}')">Set Reminder</button>
+          `;
+          programList.appendChild(programItem);
+        }
+      });
+    }
+
+    // Show upcoming programs
+    window.showUpcomingPrograms = () => {
+      document.getElementById('live-tv-container').classList.add('hidden');
+      document.getElementById('upcoming-programs').classList.remove('hidden');
+    };
+
+    // Set reminder
+    window.setReminder = async (programId) => {
+      const userId = auth.currentUser?.uid;
+      await set(ref(db, `users/${userId}/reminders/${programId}`), { timestamp: Date.now() });
+      showAlert('Reminder set!', true);
+    };
+
+    // Full-screen toggle
+    document.getElementById('live-stream').onclick = () => {
+      const video = document.getElementById('live-stream');
+      if (video.requestFullscreen) {
+        video.requestFullscreen();
+      }
+    };
+
+    // Exit Live TV
+    document.getElementById('exit-fullscreen').onclick = () => {
+      window.location.href = 'home.html';
+    };
+
+    // Initialize on page load
+    onAuthStateChanged(auth, user => {
+      if (user) {
+        loadLiveTV();
+      } else {
+        showAlert('Please sign in to access Live TV.', false);
+        window.location.href = 'signup.html';
+      }
+    });
+  </script>
+</body>
+</html>
