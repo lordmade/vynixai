@@ -2024,59 +2024,95 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
     }
 
     async function loadChats(userId) {
-  if (!userId) return;
+  console.log("loadChats: Starting for userId:", userId);
+  if (!userId) {
+    console.warn("loadChats: No user ID provided, exiting.");
+    chatList.setAttribute('aria-busy', 'false');
+    chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Please sign in to view chats.</p>';
+    return;
+  }
   showShimmer(chatList);
   const friendsRef = ref(db, `friends/${userId}`);
-  // Use off() to remove previous listeners
-  off(friendsRef); // Ensure no duplicate listeners
-  onValue(friendsRef, async (snapshot) => {
-    friendsData = []; // Clear the array
-    if (snapshot.exists()) {
-      const friendIds = Object.keys(snapshot.val());
-      const usersRef = ref(db, 'users');
-      const usersSnapshot = await get(usersRef);
-      const users = usersSnapshot.val() || {};
-      // Use Set to avoid duplicate friend IDs
-      const uniqueFriendIds = [...new Set(friendIds)];
-      for (const friendId of uniqueFriendIds) {
-        const user = users[friendId] || { name: 'Unknown', avatar: null, isOnline: false };
-        const chatRef = ref(db, `chats/${userId}_${friendId}`);
-        const chatSnapshot = await get(chatRef);
-        let lastMessage = null;
-        let messageType = null;
-        let timestamp = null;
-        let unreadCount = 0;
-        if (chatSnapshot.exists()) {
-          const messages = Object.values(chatSnapshot.val());
-          const lastMsg = messages[messages.length - 1];
-          lastMessage = lastMsg.content;
-          messageType = lastMsg.type || 'text';
-          timestamp = lastMsg.timestamp;
-          unreadCount = messages.filter(msg => !msg.read && msg.senderId !== userId).length;
+  off(friendsRef); // Remove any existing listeners
+  try {
+    onValue(friendsRef, async (snapshot) => {
+      console.log("loadChats: Friends snapshot received, exists:", snapshot.exists());
+      friendsData = []; // Clear the array
+      chatList.setAttribute('aria-busy', 'false');
+      if (snapshot.exists()) {
+        const friendIds = [...new Set(Object.keys(snapshot.val()))];
+        console.log("loadChats: Friend IDs:", friendIds);
+        const usersRef = ref(db, 'users');
+        let usersSnapshot;
+        try {
+          usersSnapshot = await get(usersRef);
+          console.log("loadChats: Users snapshot fetched, exists:", usersSnapshot.exists());
+        } catch (error) {
+          console.error("loadChats: Error fetching users:", error.message, error.stack);
+          chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load users. Please try again.</p>';
+          window.showAlert(MESSAGES.USER_FAIL, false);
+          return;
         }
-        friendsData.push({
-          uid: friendId,
-          name: user.name,
-          avatar: user.avatar,
-          lastMessage,
-          messageType,
-          timestamp,
-          unreadCount,
-          isOnline: user.isOnline || false
-        });
+        const users = usersSnapshot.val() || {};
+        for (const friendId of friendIds) {
+          const user = users[friendId] || { name: 'Unknown', avatar: null, isOnline: false };
+          const chatRef = ref(db, `chats/${userId}_${friendId}`);
+          let chatSnapshot;
+          try {
+            chatSnapshot = await get(chatRef);
+            console.log(`loadChats: Chat snapshot for ${friendId}, exists:`, chatSnapshot.exists());
+          } catch (error) {
+            console.error(`loadChats: Error fetching chats for ${friendId}:`, error.message, error.stack);
+            continue; // Skip this friend if chat fetch fails
+          }
+          let lastMessage = null;
+          let messageType = null;
+          let timestamp = null;
+          let unreadCount = 0;
+          if (chatSnapshot.exists()) {
+            const messages = Object.values(chatSnapshot.val());
+            const lastMsg = messages[messages.length - 1];
+            lastMessage = lastMsg.content;
+            messageType = lastMsg.type || 'text';
+            timestamp = lastMsg.timestamp;
+            unreadCount = messages.filter(msg => !msg.read && msg.senderId !== userId).length;
+          }
+          friendsData.push({
+            uid: friendId,
+            name: user.name,
+            avatar: user.avatar,
+            lastMessage,
+            messageType,
+            timestamp,
+            unreadCount,
+            isOnline: user.isOnline || false
+          });
+        }
+        console.log("loadChats: friendsData populated:", friendsData);
+        if (currentTab === 'chats') {
+          console.log("loadChats: Rendering chats");
+          renderChats(friendsData);
+        } else {
+          console.log("loadChats: Skipping render, currentTab is:", currentTab);
+        }
+      } else {
+        console.log("loadChats: No friends found");
+        if (currentTab === 'chats') {
+          chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found. Add some friends to start chatting!</p>';
+        }
       }
-      if (currentTab === 'chats') {
-        renderChats(friendsData);
-      }
-    } else {
-      if (currentTab === 'chats') {
-        chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found. Add some friends to start chatting!</p>';
-      }
-    }
-  }, (error) => {
-    console.error("Error loading chats:", error);
+    }, (error) => {
+      console.error("loadChats: onValue error:", error.message, error.stack);
+      chatList.setAttribute('aria-busy', 'false');
+      chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Error loading chats. Please try again.</p>';
+      window.showAlert(MESSAGES.CHAT_FAIL, false);
+    });
+  } catch (error) {
+    console.error("loadChats: Unexpected error:", error.message, error.stack);
+    chatList.setAttribute('aria-busy', 'false');
+    chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Error loading chats. Please try again.</p>';
     window.showAlert(MESSAGES.CHAT_FAIL, false);
-  });
+  }
 }
 
 async function loadSuggestedFriends(userId) {
