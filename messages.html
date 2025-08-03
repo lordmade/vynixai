@@ -54,7 +54,7 @@
       flex-direction: column;
     }
 
-    .user-bio {
+    .user-status {
       font-size: 0.85rem;
       color: var(--text-secondary);
       max-width: 200px;
@@ -113,6 +113,35 @@
       display: flex;
       flex-direction: column;
       gap: 0.75rem;
+      position: relative;
+    }
+
+    .typing-indicator {
+      position: sticky;
+      top: 0;
+      background: var(--chat-bg);
+      padding: 0.5rem;
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      display: none;
+      z-index: 5;
+    }
+
+    .typing-indicator.active {
+      display: block;
+    }
+
+    .blocked-message {
+      text-align: center;
+      padding: 1rem;
+      font-size: 1rem;
+      color: var(--text-secondary);
+      display: none;
+    }
+
+    .blocked-message.active {
+      display: block;
     }
 
     .message {
@@ -163,6 +192,10 @@
       border-top: 1px solid var(--border);
       background: var(--background);
       gap: 0.5rem;
+    }
+
+    .input-container.hidden {
+      display: none;
     }
 
     .message-input {
@@ -405,7 +438,9 @@
       .message-input { font-size: 0.9rem; }
       .send-btn svg, .attach-btn svg { width: 20px; height: 20px; }
       .icon-btn svg { width: 20px; height: 20px; }
-      .user-bio { max-width: 150px; }
+      .user-status { max-width: 150px; }
+      .typing-indicator { font-size: 0.8rem; }
+      .blocked-message { font-size: 0.9rem; }
     }
 
     .online-dot {
@@ -439,7 +474,7 @@
       <div id="chat-avatar" class="avatar">U</div>
       <div class="user-info">
         <span id="chat-name">Loading...</span>
-        <span id="user-bio" class="user-bio"></span>
+        <span id="user-status" class="user-status">No status set</span>
       </div>
     </div>
     <div class="header-actions">
@@ -461,8 +496,11 @@
     <div class="menu-item" onclick="window.clearChat()">Clear Chat</div>
     <div class="menu-item" onclick="window.blockUser()">Block User</div>
   </div>
-  <div id="chat-container" class="chat-container"></div>
-  <div class="input-container">
+  <div id="chat-container" class="chat-container">
+    <div id="typing-indicator" class="typing-indicator">User is typing...</div>
+    <div id="blocked-message" class="blocked-message">This user is blocked.</div>
+  </div>
+  <div id="input-container" class="input-container">
     <button class="attach-btn" onclick="document.getElementById('file-upload').click()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
@@ -531,7 +569,7 @@
     const fileUpload = document.getElementById("file-upload");
     const chatAvatar = document.getElementById("chat-avatar");
     const chatName = document.getElementById("chat-name");
-    const userBio = document.getElementById("user-bio");
+    const userStatus = document.getElementById("user-status");
     const userProfile = document.getElementById("user-profile");
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
@@ -544,9 +582,13 @@
     const mediaModal = document.getElementById("media-modal");
     const modalMediaImage = document.getElementById("modal-media-image");
     const modalMediaVideo = document.getElementById("modal-media-video");
+    const typingIndicator = document.getElementById("typing-indicator");
+    const blockedMessage = document.getElementById("blocked-message");
+    const inputContainer = document.getElementById("input-container");
     let alertResolve = null;
     let currentTargetId = null;
     let currentChatType = null;
+    let typingTimeout = null;
 
     // Cloudinary configuration
     const CLOUDINARY_CLOUD_NAME = "dqkujefxj";
@@ -745,6 +787,8 @@
         if (type === 'text') {
           messageInput.value = '';
           messageInput.style.height = 'auto';
+          // Clear typing status after sending
+          await set(ref(db, `users/${userId}/isTyping`), false);
         }
       } catch (error) {
         console.error("Error sending message:", error);
@@ -754,8 +798,10 @@
 
     function renderMessages(messages, userId, targetProfile) {
       chatContainer.innerHTML = '';
+      chatContainer.appendChild(typingIndicator);
+      chatContainer.appendChild(blockedMessage);
       if (messages.length === 0) {
-        chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
+        chatContainer.innerHTML += '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
         return;
       }
       messages.forEach(message => {
@@ -859,17 +905,51 @@
         currentTargetId = targetId;
         currentChatType = chatType;
 
+        // Check if user is blocked (only for friend chats)
+        let isBlocked = false;
+        if (chatType === 'friend') {
+          const blockRef = ref(db, `users/${user.uid}/blocked/${targetId}`);
+          const blockSnapshot = await get(blockRef);
+          isBlocked = blockSnapshot.exists() && blockSnapshot.val();
+          if (isBlocked) {
+            inputContainer.classList.add('hidden');
+            blockedMessage.classList.add('active');
+          } else {
+            inputContainer.classList.remove('hidden');
+            blockedMessage.classList.remove('active');
+          }
+        } else {
+          inputContainer.classList.remove('hidden');
+          blockedMessage.classList.remove('active');
+        }
+
+        // Handle typing indicator for friend chats
+        if (chatType === 'friend' && !isBlocked) {
+          const typingRef = ref(db, `users/${targetId}/isTyping`);
+          onValue(typingRef, (snap) => {
+            typingIndicator.classList.toggle('active', snap.exists() && snap.val());
+          });
+
+          messageInput.addEventListener('input', () => {
+            clearTimeout(typingTimeout);
+            set(ref(db, `users/${user.uid}/isTyping`), true);
+            typingTimeout = setTimeout(() => {
+              set(ref(db, `users/${user.uid}/isTyping`), false);
+            }, 2000);
+          });
+        }
+
         try {
           const snapshot = await get(targetRef);
           if (snapshot.exists()) {
             const data = snapshot.val();
             chatName.textContent = data.name || 'Unknown';
-            userBio.textContent = data.bio || 'No bio available';
+            userStatus.textContent = data.status || 'No status set';
             chatAvatar.textContent = data.avatar ? '' : data.name?.charAt(0).toUpperCase() || 'U';
             if (data.avatar) {
               chatAvatar.innerHTML = `<img src="${data.avatar}" alt="Avatar" onerror="this.parentElement.textContent='${data.name?.charAt(0).toUpperCase() || 'U'}'" />`;
             }
-            if (chatType === 'friend') {
+            if (chatType === 'friend' && !isBlocked) {
               const onlineRef = ref(db, `users/${friendId}/isOnline`);
               onValue(onlineRef, (snap) => {
                 const existingDot = chatAvatar.querySelector('.online-dot');
@@ -893,49 +973,51 @@
           window.showAlert('Failed to load chat. Please try again.', false);
         }
 
-        sendBtn.addEventListener('click', async () => {
-          const content = messageInput.value.trim();
-          if (content) {
-            await sendMessage(user.uid, targetId, content, 'text', chatType);
-          }
-        });
-
-        messageInput.addEventListener('keypress', async (e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
+        if (!isBlocked) {
+          sendBtn.addEventListener('click', async () => {
             const content = messageInput.value.trim();
             if (content) {
               await sendMessage(user.uid, targetId, content, 'text', chatType);
             }
-          }
-        });
+          });
 
-        messageInput.addEventListener('input', autoResizeTextarea);
+          messageInput.addEventListener('keypress', async (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              const content = messageInput.value.trim();
+              if (content) {
+                await sendMessage(user.uid, targetId, content, 'text', chatType);
+              }
+            }
+          });
 
-        fileUpload.addEventListener('change', async (event) => {
-          const file = event.target.files[0];
-          if (!file) return;
-          spinnerOverlay.classList.add("active");
-          progressContainer.classList.add("active");
-          spinnerOverlay.querySelector('.spinner').style.display = 'none';
-          progressBarUpload.querySelector('div').style.width = '0%';
-          progressText.textContent = '0%';
-          try {
-            const uploadResult = await uploadToCloudinary(file, (percent) => {
-              progressBarUpload.querySelector('div').style.width = `${percent}%`;
-              progressText.textContent = `${percent}%`;
-            });
-            await sendMessage(user.uid, targetId, uploadResult.url, uploadResult.resource_type, chatType);
-          } catch (error) {
-            console.error("Error uploading file:", error);
-            window.showAlert(`Failed to upload file: ${error.message}`, false);
-          } finally {
-            spinnerOverlay.classList.remove("active");
-            progressContainer.classList.remove("active");
-            spinnerOverlay.querySelector('.spinner').style.display = 'block';
-            fileUpload.value = '';
-          }
-        });
+          messageInput.addEventListener('input', autoResizeTextarea);
+
+          fileUpload.addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            spinnerOverlay.classList.add("active");
+            progressContainer.classList.add("active");
+            spinnerOverlay.querySelector('.spinner').style.display = 'none';
+            progressBarUpload.querySelector('div').style.width = '0%';
+            progressText.textContent = '0%';
+            try {
+              const uploadResult = await uploadToCloudinary(file, (percent) => {
+                progressBarUpload.querySelector('div').style.width = `${percent}%`;
+                progressText.textContent = `${percent}%`;
+              });
+              await sendMessage(user.uid, targetId, uploadResult.url, uploadResult.resource_type, chatType);
+            } catch (error) {
+              console.error("Error uploading file:", error);
+              window.showAlert(`Failed to upload file: ${error.message}`, false);
+            } finally {
+              spinnerOverlay.classList.remove("active");
+              progressContainer.classList.remove("active");
+              spinnerOverlay.querySelector('.spinner').style.display = 'block';
+              fileUpload.value = '';
+            }
+          });
+        }
       } else {
         window.location.href = 'login.html';
       }
