@@ -145,6 +145,18 @@
       margin-bottom: 0.25rem;
     }
 
+    .admin-badge {
+      position: absolute;
+      top: -10px;
+      left: 10px;
+      background: var(--accent);
+      color: #FFFFFF;
+      font-size: 0.65rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
     .message-input-container {
       padding: 0.75rem;
       border-top: 1px solid var(--border);
@@ -321,10 +333,70 @@
       animation: spin 1s linear infinite;
     }
 
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
+    .add-friends-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.3);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .add-friends-modal.active {
+      display: flex;
+    }
+
+    .add-friends-content {
+      background: var(--background);
+      border-radius: 12px;
+      padding: 1.5rem;
+      max-width: 400px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .friend-item {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+
+    .friend-item:hover {
+      background: var(--chat-bg);
+    }
+
+    .friend-item img {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      margin-right: 0.75rem;
+    }
+
+    .friend-item span {
+      flex: 1;
+      font-size: 0.95rem;
+    }
+
+    .friend-item button {
+      background: var(--accent);
+      color: #FFFFFF;
+      border: none;
+      border-radius: 8px;
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+
+    .friend-item button:disabled {
+      background: var(--border);
+      cursor: not-allowed;
     }
 
     .shimmer {
@@ -377,6 +449,10 @@
       .menu-dropdown { top: 50px; }
       .menu-item { font-size: 0.8rem; padding: 0.5rem 1rem; }
       .icon-btn svg { width: 18px; height: 18px; }
+      .admin-badge { font-size: 0.6rem; padding: 0.15rem 0.4rem; }
+      .friend-item img { width: 28px; height: 28px; }
+      .friend-item span { font-size: 0.9rem; }
+      .friend-item button { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
     }
   </style>
 </head>
@@ -407,6 +483,7 @@
   <div id="menu-dropdown" class="menu-dropdown">
     <div class="menu-item" onclick="window.location.href='profile.html'">Profile</div>
     <div class="menu-item" onclick="window.location.href='settings.html'">Settings</div>
+    <div class="menu-item" id="add-friends-menu" onclick="window.showAddFriendsModal()">Add Friends</div>
     <div class="menu-item" onclick="firebase.auth().signOut()">Sign Out</div>
   </div>
   <div id="message-list" class="message-list"></div>
@@ -446,10 +523,19 @@
   <div id="spinner-overlay" class="spinner-overlay">
     <div class="spinner"></div>
   </div>
+  <div id="add-friends-modal" class="add-friends-modal">
+    <div class="add-friends-content">
+      <h2>Add Friends to Group</h2>
+      <div id="friends-list"></div>
+      <div class="alert-buttons">
+        <button id="add-friends-close" onclick="window.closeAddFriendsModal()">Close</button>
+      </div>
+    </div>
+  </div>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getDatabase, ref, onValue, push, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getDatabase, ref, onValue, push, get, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -472,7 +558,10 @@
       SIGN_IN_REQUIRED: 'Please sign in to view this group.',
       GROUP_NOT_FOUND: 'Group not found.',
       GROUP_ACCESS_DENIED: 'You are not a member of this group.',
-      MESSAGE_SEND_FAIL: 'Failed to send message.'
+      MESSAGE_SEND_FAIL: 'Failed to send message.',
+      NO_FRIENDS: 'No friends to add.',
+      INVITE_SENT: 'Invitation sent successfully.',
+      INVITE_FAILED: 'Failed to send invitation.'
     };
 
     const app = initializeApp(firebaseConfig);
@@ -491,17 +580,21 @@
     const fab = document.getElementById("fab");
     const menuDropdown = document.getElementById("menu-dropdown");
     const spinnerOverlay = document.getElementById("spinner-overlay");
+    const addFriendsModal = document.getElementById("add-friends-modal");
+    const friendsList = document.getElementById("friends-list");
+    const addFriendsMenu = document.getElementById("add-friends-menu");
     let alertResolve = null;
     const ENCRYPTION_KEY = "my-secret-key-123";
     const currentContext = 'group';
     let lastMessageTimestamp = 0;
+    let isAdmin = false;
 
     window.showAlert = function (message, autoHide = true, input = false, confirmCallback = null, cancelCallback = null) {
       return new Promise((resolve) => {
         alertMessage.textContent = message;
         alertInput.style.display = input ? "block" : "none";
         alertConfirm.style.display = confirmCallback ? "block" : "none";
-        alertCancel.style.display = cancelCallback ? "none" : "none";
+        alertCancel.style.display = cancelCallback ? "block" : "none";
         customAlert.classList.add("active");
         alertResolve = resolve;
 
@@ -542,6 +635,76 @@
 
     window.toggleMenu = function () {
       menuDropdown.classList.toggle("active");
+    };
+
+    window.showAddFriendsModal = async function () {
+      if (!isAdmin) {
+        window.showAlert('Only group admins can add friends.', true);
+        return;
+      }
+      try {
+        const userId = auth.currentUser.uid;
+        const groupId = new URLSearchParams(window.location.search).get('groupId');
+        const friendsRef = ref(db, `users/${userId}/friends`);
+        const groupRef = ref(db, `groups/${groupId}/members`);
+        const [friendsSnapshot, groupSnapshot] = await Promise.all([get(friendsRef), get(groupRef)]);
+        const friends = friendsSnapshot.exists() ? Object.keys(friendsSnapshot.val()) : [];
+        const members = groupSnapshot.exists() ? Object.keys(groupSnapshot.val()) : [];
+
+        friendsList.innerHTML = '<p>Loading friends...</p>';
+        addFriendsModal.classList.add('active');
+
+        if (friends.length === 0) {
+          friendsList.innerHTML = '<p>No friends to add.</p>';
+          return;
+        }
+
+        friendsList.innerHTML = '';
+        for (const friendId of friends) {
+          const friendRef = ref(db, `users/${friendId}`);
+          const friendSnapshot = await get(friendRef);
+          const friendData = friendSnapshot.exists() ? friendSnapshot.val() : { name: 'Unknown', avatar: null };
+          const isMember = members.includes(friendId);
+          const friendItem = document.createElement('div');
+          friendItem.className = 'friend-item';
+          friendItem.innerHTML = `
+            <img src="${friendData.avatar || 'https://via.placeholder.com/32'}" alt="Avatar" onerror="this.src='https://via.placeholder.com/32'" />
+            <span>${friendData.name || 'Unknown'}</span>
+            <button ${isMember ? 'disabled' : ''} onclick="window.inviteFriend('${friendId}')">${isMember ? 'Added' : 'Add'}</button>
+          `;
+          friendsList.appendChild(friendItem);
+        }
+      } catch (error) {
+        console.error("Error loading friends:", error);
+        window.showAlert(MESSAGES.NO_FRIENDS, false);
+      }
+    };
+
+    window.closeAddFriendsModal = function () {
+      addFriendsModal.classList.remove('active');
+      friendsList.innerHTML = '';
+    };
+
+    window.inviteFriend = async function (friendId) {
+      try {
+        const userId = auth.currentUser.uid;
+        const groupId = new URLSearchParams(window.location.search).get('groupId');
+        const invitationRef = ref(db, `invitations/${friendId}/${groupId}`);
+        await set(invitationRef, {
+          groupId: groupId,
+          inviterId: userId,
+          timestamp: Date.now()
+        });
+        window.showAlert(MESSAGES.INVITE_SENT, true);
+        const button = friendsList.querySelector(`button[onclick="window.inviteFriend('${friendId}')"]`);
+        if (button) {
+          button.textContent = 'Invited';
+          button.disabled = true;
+        }
+      } catch (error) {
+        console.error("Error sending invitation:", error);
+        window.showAlert(MESSAGES.INVITE_FAILED, false);
+      }
     };
 
     function showShimmer(count = 5) {
@@ -654,6 +817,11 @@
       groupName.textContent = group.name || 'Unnamed Group';
       groupMembers.textContent = `${Object.keys(group.members || {}).length} members`;
 
+      const adminsRef = ref(db, `groups/${groupId}/admins`);
+      const adminsSnapshot = await get(adminsRef);
+      isAdmin = adminsSnapshot.exists() && Object.keys(adminsSnapshot.val()).includes(userId);
+      addFriendsMenu.style.display = isAdmin ? 'block' : 'none';
+
       const messagesRef = ref(db, `groups/${groupId}/messages`);
       onValue(messagesRef, async (snapshot) => {
         messageList.innerHTML = '';
@@ -665,6 +833,7 @@
         const usersRef = ref(db, 'users');
         const userSnapshot = await get(usersRef);
         const users = userSnapshot.val() || {};
+        const admins = adminsSnapshot.exists() ? Object.keys(adminsSnapshot.val()) : [];
         let latestTimestamp = 0;
         Object.entries(messages).forEach(([messageId, message]) => {
           if (message.timestamp > lastMessageTimestamp && message.senderId !== userId) {
@@ -676,12 +845,14 @@
             latestTimestamp = message.timestamp;
           }
           const sender = users[message.senderId] || { name: 'Unknown' };
+          const isAdminMessage = admins.includes(message.senderId);
           const messageItem = document.createElement('div');
           messageItem.className = `message ${message.senderId === userId ? 'sent' : 'received'} ${message.type !== 'text' ? 'media' : ''}`;
           let content;
           if (message.type === 'text') {
             content = decryptMessage(message.content);
             messageItem.innerHTML = `
+              ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
               ${message.senderId !== userId ? `<div class="message-sender">${sender.name}</div>` : ''}
               <div>${content}</div>
               <div class="message-time">${formatTimestamp(message.timestamp)}</div>
@@ -689,6 +860,7 @@
           } else if (message.type === 'image') {
             content = decryptMessage(message.content);
             messageItem.innerHTML = `
+              ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
               ${message.senderId !== userId ? `<div class="message-sender">${sender.name}</div>` : ''}
               <img src="${content}" alt="Shared image" />
               <div class="message-time">${formatTimestamp(message.timestamp)}</div>
@@ -696,6 +868,7 @@
           } else if (message.type === 'video') {
             content = decryptMessage(message.content);
             messageItem.innerHTML = `
+              ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
               ${message.senderId !== userId ? `<div class="message-sender">${sender.name}</div>` : ''}
               <video src="${content}" controls></video>
               <div class="message-time">${formatTimestamp(message.timestamp)}</div>
@@ -703,6 +876,7 @@
           } else if (message.type === 'voice') {
             content = decryptMessage(message.content);
             messageItem.innerHTML = `
+              ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
               ${message.senderId !== userId ? `<div class="message-sender">${sender.name}</div>` : ''}
               <audio src="${content}" controls></audio>
               <div class="message-time">${formatTimestamp(message.timestamp)}</div>
