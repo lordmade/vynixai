@@ -1442,39 +1442,51 @@ createGroupSheet.addEventListener('click', (event) => {
         console.error("Error setting online status:", error);
       }
     }
+    // Listener management
+const listeners = [];
+function addListener(ref, callback) {
+  onValue(ref, callback);
+  listeners.push({ ref, callback });
+}
+function cleanupListeners() {
+  listeners.forEach(({ ref, callback }) => off(ref, 'value', callback));
+  listeners.length = 0;
+}
 
     // Listen for online status changes of friends
-    function listenForFriendStatus(userId) {
-      const friendsRef = ref(db, `friends/${userId}`);
-      onValue(friendsRef, async (snapshot) => {
-        if (snapshot.exists()) {
-          const friendIds = Object.keys(snapshot.val());
-          friendIds.forEach(friendId => {
-            const friendStatusRef = ref(db, `users/${friendId}/isOnline`);
-            onValue(friendStatusRef, (statusSnapshot) => {
-              const isOnline = statusSnapshot.val();
-              const friendData = friendsData.find(f => f.uid === friendId);
-              if (friendData && isOnline !== undefined) {
-                friendData.isOnline = isOnline;
-                if (isOnline && currentTab === 'chats') {
-                  const usersRef = ref(db, `users/${friendId}`);
-                  get(usersRef).then(userSnapshot => {
-                    const user = userSnapshot.val() || { name: 'Unknown' };
-                    window.showNotification(user.name, 'is now online');
-                  });
-                }
-                if (currentTab === 'chats') {
-                  renderChats(friendsData);
-                }
-              }
-            });
-          });
-        }
+    // Listen for friend status changes
+function listenForFriendStatus(userId) {
+  const friendsRef = ref(db, `friends/${userId}`);
+  addListener(friendsRef, async (snapshot) => {
+    if (snapshot.exists()) {
+      const friendIds = [...new Set(Object.keys(snapshot.val()))];
+      friendIds.forEach(friendId => {
+        const friendStatusRef = ref(db, `users/${friendId}/isOnline`);
+        addListener(friendStatusRef, (statusSnapshot) => {
+          const isOnline = statusSnapshot.val() || false;
+          const friendData = friendsData.find(f => f.uid === friendId);
+          if (friendData && friendData.isOnline !== isOnline) {
+            friendData.isOnline = isOnline;
+            if (isOnline && currentTab === 'chats') {
+              const usersRef = ref(db, `users/${friendId}`);
+              get(usersRef).then(userSnapshot => {
+                const user = userSnapshot.val() || { name: 'Unknown' };
+                window.showNotification(user.name, 'is now online');
+              });
+            }
+            if (currentTab === 'chats') {
+              renderChats(friendsData); // Re-render to update online status
+            }
+          }
+        });
       });
     }
+  });
+}
 
 
-    function renderChats(friends) {
+    // Render chats in the UI
+function renderChats(friends) {
   chatList.setAttribute('aria-busy', 'false');
   chatList.innerHTML = ''; // Clear the DOM
   if (friends.length === 0) {
@@ -1493,30 +1505,31 @@ createGroupSheet.addEventListener('click', (event) => {
   uniqueFriends.forEach(({ uid, name, avatar, lastMessage, messageType, timestamp, unreadCount, isOnline }) => {
     const chatItem = document.createElement('div');
     chatItem.className = 'chat-item';
+    chatItem.setAttribute('role', 'button');
+    chatItem.setAttribute('aria-label', `Chat with ${name || 'Unknown'}`);
     const firstLetter = name ? name.charAt(0).toUpperCase() : 'U';
-    const avatarContent = avatar ? `<img src="${avatar}" alt="Avatar" onerror="this.parentElement.textContent='${firstLetter}'" />` : firstLetter;
-    const onlineDot = isOnline ? '<span class="online-dot"></span>' : '';
-    let messagePreview = '';
+    const avatarContent = avatar ? `<img src="${avatar}" alt="Avatar of ${name || 'Unknown'}" onerror="this.parentElement.textContent='${firstLetter}'" />` : firstLetter;
+    const onlineDot = isOnline ? '<span class="online-dot" aria-label="Online"></span>' : '';
+    let messagePreview = 'No messages yet';
     if (lastMessage) {
       if (messageType === 'image') {
-        messagePreview = `<span class="media-icon image-icon"></span> Photo`;
+        messagePreview = `<span class="media-icon image-icon" aria-hidden="true"></span> Photo`;
       } else if (messageType === 'video') {
-        messagePreview = `<span class="media-icon video-icon"></span> Video`;
+        messagePreview = `<span class="media-icon video-icon" aria-hidden="true"></span> Video`;
       } else {
         messagePreview = decryptMessage(lastMessage);
       }
-    } else {
-      messagePreview = 'No messages yet';
     }
-    const unreadBadge = unreadCount > 0 ? `<span class="unread-count">${unreadCount}</span>` : '';
+    const unreadBadge = unreadCount > 0 ? `<span class="unread-count" aria-label="${unreadCount} unread messages">${unreadCount}</span>` : '';
+    const formattedTime = timestamp ? formatTimestamp(timestamp) : '';
     chatItem.innerHTML = `
-      <a href="${ROUTES.MESSAGES}?friendId=${uid}" class="chat-avatar">${avatarContent}${onlineDot}</a>
+      <a href="${ROUTES.MESSAGES}?friendId=${uid}" class="chat-avatar" aria-hidden="true">${avatarContent}${onlineDot}</a>
       <div class="chat-info">
         <h3 class="chat-name">${name || 'Unknown'}</h3>
         <p class="chat-preview">${messagePreview}</p>
       </div>
       <div class="flex flex-col items-end">
-        <span class="chat-time">${formatTimestamp(timestamp || Date.now())}</span>
+        <span class="chat-time" aria-label="Last message time">${formattedTime}</span>
         ${unreadBadge}
       </div>
     `;
@@ -2061,7 +2074,9 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
       }
     }
 
-    async function loadChats(userId) {
+
+// Load chats for the current user
+async function loadChats(userId) {
   console.log("loadChats: Starting for userId:", userId);
   if (!userId) {
     console.warn("loadChats: No user ID provided, exiting.");
@@ -2070,12 +2085,12 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
     return;
   }
   showShimmer(chatList);
+  cleanupListeners(); // Clean up previous listeners
   const friendsRef = ref(db, `friends/${userId}`);
-  off(friendsRef); // Remove any existing listeners
   try {
-    onValue(friendsRef, async (snapshot) => {
+    addListener(friendsRef, async (snapshot) => {
       console.log("loadChats: Friends snapshot received, exists:", snapshot.exists());
-      friendsData = []; // Clear the array
+      friendsData = [];
       chatList.setAttribute('aria-busy', 'false');
       if (snapshot.exists()) {
         const friendIds = [...new Set(Object.keys(snapshot.val()))];
@@ -2101,7 +2116,18 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
             console.log(`loadChats: Chat snapshot for ${friendId}, exists:`, chatSnapshot.exists());
           } catch (error) {
             console.error(`loadChats: Error fetching chats for ${friendId}:`, error.message, error.stack);
-            continue; // Skip this friend if chat fetch fails
+            // Continue with default values for this friend
+            friendsData.push({
+              uid: friendId,
+              name: user.name,
+              avatar: user.avatar,
+              lastMessage: null,
+              messageType: null,
+              timestamp: null,
+              unreadCount: 0,
+              isOnline: user.isOnline || false
+            });
+            continue;
           }
           let lastMessage = null;
           let messageType = null;
@@ -2139,11 +2165,6 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
           chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found. Add some friends to start chatting!</p>';
         }
       }
-    }, (error) => {
-      console.error("loadChats: onValue error:", error.message, error.stack);
-      chatList.setAttribute('aria-busy', 'false');
-      chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Error loading chats. Please try again.</p>';
-      window.showAlert(MESSAGES.CHAT_FAIL, false);
     });
   } catch (error) {
     console.error("loadChats: Unexpected error:", error.message, error.stack);
@@ -2244,36 +2265,38 @@ async function loadSuggestedFriends(userId) {
 
     // Initialize
     onAuthStateChanged(auth, (user) => {
-      if (user) {
-        const userRef = ref(db, `users/${user.uid}`);
-        get(userRef).then((snapshot) => {
-          if (snapshot.exists()) {
-            const userData = snapshot.val();
-            userName.textContent = userData.name || 'User';
-            userAvatar.textContent = userData.avatar ? '' : userData.name?.charAt(0).toUpperCase() || 'U';
-            if (userData.avatar) {
-              userAvatar.innerHTML = `<img src="${userData.avatar}" alt="Avatar" onerror="this.parentElement.textContent='${userData.name?.charAt(0).toUpperCase() || 'U'}'" />`;
-            }
-            setOnlineStatus(user.uid, true);
-            loadChats(user.uid);
-            loadSuggestedFriends(user.uid);
-            loadStatuses(user.uid, { name: userData.name });
-            listenForFriendStatus(user.uid);
-          } else {
-            window.showAlert(MESSAGES.PROFILE_FAIL, false);
-          }
-        }).catch((error) => {
-          console.error("Error loading profile:", error);
-          window.showAlert(MESSAGES.PROFILE_FAIL, false);
-        });
-
-        window.addEventListener('beforeunload', () => {
-          setOnlineStatus(user.uid, false);
-        });
+  if (user) {
+    const userRef = ref(db, `users/${user.uid}`);
+    get(userRef).then((snapshot) => {
+      if (snapshot.exists()) {
+        const userData = snapshot.val();
+        userName.textContent = userData.name || 'User';
+        userAvatar.textContent = userData.avatar ? '' : userData.name?.charAt(0).toUpperCase() || 'U';
+        if (userData.avatar) {
+          userAvatar.innerHTML = `<img src="${userData.avatar}" alt="Avatar" onerror="this.parentElement.textContent='${userData.name?.charAt(0).toUpperCase() || 'U'}'" />`;
+        }
+        setOnlineStatus(user.uid, true);
+        loadChats(user.uid);
+        loadSuggestedFriends(user.uid);
+        loadStatuses(user.uid, { name: userData.name });
+        listenForFriendStatus(user.uid);
       } else {
-        window.location.href = 'login.html';
+        window.showAlert(MESSAGES.PROFILE_FAIL, false);
       }
+    }).catch((error) => {
+      console.error("Error loading profile:", error);
+      window.showAlert(MESSAGES.PROFILE_FAIL, false);
     });
+
+    window.addEventListener('beforeunload', () => {
+      setOnlineStatus(user.uid, false);
+      cleanupListeners();
+    });
+  } else {
+    cleanupListeners();
+    window.location.href = 'login.html';
+  }
+});
 
  tabItems.forEach(tab => {
   tab.addEventListener('click', async () => {
