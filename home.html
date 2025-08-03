@@ -6,6 +6,10 @@
   <title>Vynix</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+  <script src="https://hammerjs.github.io/dist/hammer.min.js"></script>
+  
   <style>
     :root {
       --background: #FFFFFF;
@@ -810,6 +814,31 @@
       background: url('data:image/svg+xml;utf8,<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>') no-repeat center;
       background-size: contain;
     }
+    .chat-item {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  position: relative; /* Ensure proper positioning for animations */
+  transition: transform 0.3s ease, background-color 0.3s ease;
+}
+
+.chat-item.swiping-left {
+  transform: translateX(-100px); /* Slide left for remove */
+  background-color: #f8d7da; /* Light red background for delete */
+}
+
+.chat-item.swiping-right {
+  transform: translateX(100px); /* Slide right for block */
+  background-color: #fff3cd; /* Light yellow background for block */
+}
+
+.chat-item.removed {
+  transform: translateX(-100%); /* Slide off-screen */
+  opacity: 0;
+  transition: transform 0.5s ease, opacity 0.5s ease;
+}
   </style>
 </head>
 <body>
@@ -1473,56 +1502,146 @@ document.addEventListener('click', (event) => {
       });
     }
 
+
+// Helper function to remove a friend and delete chats
+async function removeFriend(userId, friendId) {
+  try {
+    // Remove friend relationship
+    await remove(ref(db, `friends/${userId}/${friendId}`));
+    // Delete chats in both directions
+    await remove(ref(db, `chats/${userId}_${friendId}`));
+    await remove(ref(db, `chats/${friendId}_${userId}`));
+    window.showNotification('Friend Removed', `Friend and associated chats deleted.`);
+    // Reload chats to reflect changes
+    loadChats(userId);
+    return true;
+  } catch (error) {
+    console.error('Error removing friend:', error);
+    window.showAlert('Failed to remove friend. Please try again.', false);
+    return false;
+  }
+}
+
+// Helper function to block a user
+async function blockUser(userId, friendId) {
+  try {
+    // Add to blocked list
+    await set(ref(db, `blocked/${userId}/${friendId}`), true);
+    // Remove friend and chats (optional, depending on desired behavior)
+    await removeFriend(userId, friendId);
+    window.showNotification('User Blocked', `User has been blocked from texting.`);
+    return true;
+  } catch (error) {
+    console.error('Error blocking user:', error);
+    window.showAlert('Failed to block user. Please try again.', false);
+    return false;
+  }
+}
+
+
+
+
+
+  
+
     function renderChats(friends) {
-      chatList.setAttribute('aria-busy', 'false');
-      chatList.innerHTML = '';
-      if (friends.length === 0) {
-        chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found.</p>';
-        return;
+  chatList.setAttribute('aria-busy', 'false');
+  chatList.innerHTML = '';
+  if (friends.length === 0) {
+    chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found.</p>';
+    return;
+  }
+  friends.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const totalUnread = friends.reduce((sum, friend) => sum + (friend.unreadCount || 0), 0);
+  const chatsUnreadBadge = document.getElementById('chats-unread-count');
+  if (chatsUnreadBadge) {
+    chatsUnreadBadge.textContent = totalUnread;
+    chatsUnreadBadge.style.display = totalUnread > 0 ? 'inline-flex' : 'none';
+  }
+  friends.forEach(({ uid, name, avatar, lastMessage, messageType, timestamp, unreadCount, isOnline }) => {
+    const chatItem = document.createElement('div');
+    chatItem.className = 'chat-item';
+    const firstLetter = name ? name.charAt(0).toUpperCase() : 'U';
+    const avatarContent = avatar ? `<img src="${avatar}" alt="Avatar" onerror="this.parentElement.textContent='${firstLetter}'" />` : firstLetter;
+    const onlineDot = isOnline ? '<span class="online-dot"></span>' : '';
+    let messagePreview = '';
+    if (lastMessage) {
+      if (messageType === 'image') {
+        messagePreview = `<span class="media-icon image-icon"></span> Photo`;
+      } else if (messageType === 'video') {
+        messagePreview = `<span class="media-icon video-icon"></span> Video`;
+      } else {
+        const decrypted = decryptMessage(lastMessage);
+        messagePreview = decrypted.length > 50 ? decrypted.substring(0, 47) + '...' : decrypted;
       }
-      friends.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      const totalUnread = friends.reduce((sum, friend) => sum + (friend.unreadCount || 0), 0);
-      const chatsUnreadBadge = document.getElementById('chats-unread-count');
-      if (chatsUnreadBadge) {
-        chatsUnreadBadge.textContent = totalUnread;
-        chatsUnreadBadge.style.display = totalUnread > 0 ? 'inline-flex' : 'none';
-      }
-      friends.forEach(({ uid, name, avatar, lastMessage, messageType, timestamp, unreadCount, isOnline }) => {
-        const chatItem = document.createElement('div');
-        chatItem.className = 'chat-item';
-        const firstLetter = name ? name.charAt(0).toUpperCase() : 'U';
-        const avatarContent = avatar ? `<img src="${avatar}" alt="Avatar" onerror="this.parentElement.textContent='${firstLetter}'" />` : firstLetter;
-        const onlineDot = isOnline ? '<span class="online-dot"></span>' : '';
-        let messagePreview = '';
-        if (lastMessage) {
-          if (messageType === 'image') {
-            messagePreview = `<span class="media-icon image-icon"></span> Photo`;
-          } else if (messageType === 'video') {
-            messagePreview = `<span class="media-icon video-icon"></span> Video`;
-          } else {
-            messagePreview = decryptMessage(lastMessage);
-          }
-        } else {
-          messagePreview = '';
-        }
-        const unreadBadge = unreadCount > 0 ? `<span class="unread-count">${unreadCount}</span>` : '';
-        chatItem.innerHTML = `
-          <a href="${ROUTES.MESSAGES}?friendId=${uid}" class="chat-avatar">${avatarContent}${onlineDot}</a>
-          <div class="chat-info">
-            <h3 class="chat-name">${name || 'Unknown'}</h3>
-            <p class="chat-preview">${messagePreview}</p>
-          </div>
-          <div class="flex flex-col items-end">
-            <span class="chat-time">${formatTimestamp(timestamp || Date.now())}</span>
-            ${unreadBadge}
-          </div>
-        `;
-        chatItem.onclick = () => {
-          window.location.href = `${ROUTES.MESSAGES}?friendId=${uid}`;
-        };
-        chatList.appendChild(chatItem);
-      });
+    } else {
+      messagePreview = 'No messages yet';
     }
+    const unreadBadge = unreadCount > 0 ? `<span class="unread-count">${unreadCount}</span>` : '';
+    chatItem.innerHTML = `
+      <a href="${ROUTES.MESSAGES}?friendId=${uid}" class="chat-avatar">${avatarContent}${onlineDot}</a>
+      <div class="chat-info">
+        <h3 class="chat-name">${name || 'Unknown'}</h3>
+        <p class="chat-preview">${messagePreview}</p>
+      </div>
+      <div class="flex flex-col items-end">
+        <span class="chat-time">${timestamp ? formatTimestamp(timestamp) : ''}</span>
+        ${unreadBadge}
+      </div>
+    `;
+    // Handle click to navigate
+    chatItem.onclick = (e) => {
+      if (!e.target.closest('.chat-avatar')) {
+        window.location.href = `${ROUTES.MESSAGES}?friendId=${uid}`;
+      }
+    };
+    // Add swipe gestures using Hammer.js
+    const hammer = new Hammer(chatItem);
+    hammer.get('swipe').set({ direction: Hammer.DIRECTION_HORIZONTAL, threshold: 50 });
+    
+    hammer.on('swipeleft', async (e) => {
+      e.preventDefault();
+      chatItem.classList.add('swiping-left');
+      const confirmed = await window.showAlert(
+        `Are you sure you want to remove ${name} as a friend? This will delete all chats.`,
+        false,
+        false,
+        () => {},
+        () => {}
+      );
+      if (confirmed) {
+        chatItem.classList.add('removed');
+        setTimeout(() => {
+          removeFriend(auth.currentUser?.uid, uid);
+        }, 500); // Wait for animation to complete
+      } else {
+        chatItem.classList.remove('swiping-left');
+      }
+    });
+
+    hammer.on('swiperight', async (e) => {
+      e.preventDefault();
+      chatItem.classList.add('swiping-right');
+      const confirmed = await window.showAlert(
+        `Are you sure you want to block ${name}? This will prevent them from texting you.`,
+        false,
+        false,
+        () => {},
+        () => {}
+      );
+      if (confirmed) {
+        chatItem.classList.add('removed');
+        setTimeout(() => {
+          blockUser(auth.currentUser?.uid, uid);
+        }, 500); // Wait for animation to complete
+      } else {
+        chatItem.classList.remove('swiping-right');
+      }
+    });
+
+    chatList.appendChild(chatItem);
+  });
+}
 
     function renderSuggestedFriends(users) {
       userList.setAttribute('aria-busy', 'false');
@@ -2018,56 +2137,61 @@ document.addEventListener('click', (event) => {
     }
 
     async function loadChats(userId) {
-      if (!userId) return;
-      showShimmer(chatList);
-      const friendsRef = ref(db, `friends/${userId}`);
-      onValue(friendsRef, async (snapshot) => {
-        friendsData = [];
-        if (snapshot.exists()) {
-          const friendIds = Object.keys(snapshot.val());
-          const usersRef = ref(db, 'users');
-          const usersSnapshot = await get(usersRef);
-          const users = usersSnapshot.val() || {};
-          for (const friendId of friendIds) {
-            const user = users[friendId] || { name: 'Unknown', avatar: null, isOnline: false };
-            const chatRef = ref(db, `chats/${userId}_${friendId}`);
-            const chatSnapshot = await get(chatRef);
-            let lastMessage = null;
-            let messageType = null;
-            let timestamp = null;
-            let unreadCount = 0;
-            if (chatSnapshot.exists()) {
-              const messages = Object.values(chatSnapshot.val());
-              const lastMsg = messages[messages.length - 1];
-              lastMessage = lastMsg.content;
-              messageType = lastMsg.type || 'text';
-              timestamp = lastMsg.timestamp;
-              unreadCount = messages.filter(msg => !msg.read && msg.senderId !== userId).length;
-            }
-            friendsData.push({
-              uid: friendId,
-              name: user.name,
-              avatar: user.avatar,
-              lastMessage,
-              messageType,
-              timestamp,
-              unreadCount,
-              isOnline: user.isOnline || false
-            });
-          }
-          if (currentTab === 'chats') {
-            renderChats(friendsData);
-          }
-        } else {
-          if (currentTab === 'chats') {
-            chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found. Add some friends to start chatting!</p>';
-          }
+  if (!userId) return;
+  showShimmer(chatList);
+  const friendsRef = ref(db, `friends/${userId}`);
+  const blockedRef = ref(db, `blocked/${userId}`);
+  onValue(friendsRef, async (snapshot) => {
+    friendsData = [];
+    if (snapshot.exists()) {
+      const friendIds = Object.keys(snapshot.val());
+      // Fetch blocked users
+      const blockedSnapshot = await get(blockedRef);
+      const blockedUsers = blockedSnapshot.val() || {};
+      const validFriendIds = friendIds.filter(friendId => !blockedUsers[friendId]);
+      const usersRef = ref(db, 'users');
+      const usersSnapshot = await get(usersRef);
+      const users = usersSnapshot.val() || {};
+      for (const friendId of validFriendIds) {
+        const user = users[friendId] || { name: 'Unknown', avatar: null, isOnline: false };
+        const chatRef = ref(db, `chats/${userId}_${friendId}`);
+        const chatSnapshot = await get(chatRef);
+        let lastMessage = null;
+        let messageType = null;
+        let timestamp = null;
+        let unreadCount = 0;
+        if (chatSnapshot.exists()) {
+          const messages = Object.values(chatSnapshot.val());
+          const lastMsg = messages[messages.length - 1];
+          lastMessage = lastMsg.content;
+          messageType = lastMsg.type || 'text';
+          timestamp = lastMsg.timestamp;
+          unreadCount = messages.filter(msg => !msg.read && msg.senderId !== userId).length;
         }
-      }, (error) => {
-        console.error("Error loading chats:", error);
-        window.showAlert(MESSAGES.CHAT_FAIL, false);
-      });
+        friendsData.push({
+          uid: friendId,
+          name: user.name,
+          avatar: user.avatar,
+          lastMessage,
+          messageType,
+          timestamp,
+          unreadCount,
+          isOnline: user.isOnline || false
+        });
+      }
+      if (currentTab === 'chats') {
+        renderChats(friendsData);
+      }
+    } else {
+      if (currentTab === 'chats') {
+        chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found. Add some friends to start chatting!</p>';
+      }
     }
+  }, (error) => {
+    console.error("Error loading chats:", error);
+    window.showAlert(MESSAGES.CHAT_FAIL, false);
+  });
+}
 
     async function loadSuggestedFriends(userId) {
       if (!userId) return;
