@@ -1852,6 +1852,8 @@ function renderSuggestedFriends(users) {
   const usersRef = ref(db, 'users');
   const userSnapshot = await get(usersRef);
   const users = userSnapshot.val() || {};
+  const currentUserId = auth.currentUser?.uid;
+
   // Ensure unique rooms by roomId
   const uniqueRooms = [...new Map(Object.entries(rooms).map(([roomId, room]) => [roomId, room])).entries()];
   uniqueRooms
@@ -1873,22 +1875,50 @@ function renderSuggestedFriends(users) {
         }
       }
       const roomAvatar = room.name ? room.name.charAt(0).toUpperCase() : 'R';
+      
+      // Conditionally add delete button for creator
+      const deleteButton = currentUserId === room.creatorId ? `
+        <button class="delete-btn" data-room-id="${roomId}" aria-label="Delete room">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-10 4v10a2 2 0 002 2h6a2 2 0 002-2V10m-9 0v10m4-10v10m-4-10h8" />
+          </svg>
+        </button>
+      ` : '';
+
       roomItem.innerHTML = `
         <div class="room-avatar">${roomAvatar}</div>
         <div class="room-info">
           <h3 class="room-name">${room.name}</h3>
           <p class="room-preview">${messagePreview}</p>
         </div>
-        <div class="room-members">${memberCount} members</div>
+        <div class="flex flex-col items-end">
+          <div class="room-members">${memberCount} members</div>
+          ${deleteButton}
+        </div>
       `;
-      roomItem.onclick = async () => {
+      roomItem.onclick = async (e) => {
+        // Prevent navigation if clicking the delete button
+        if (e.target.closest('.delete-btn')) {
+          return;
+        }
         const userId = auth.currentUser?.uid;
         if (!userId) {
           window.showAlert(MESSAGES.SIGN_IN_REQUIRED, false);
           return;
         }
         if (room.type === 'private' && !room.members[userId]) {
-          const inviteCode = await window.showAlert('Enter invite code:', false, true);
+          const inviteCode = await window.showAlert(
+            'Enter the 6-digit invite code:',
+            false,
+            true,
+            (code) => {
+              if (!/^\d{6}$/.test(code)) {
+                window.showAlert('Invite code must be a 6-digit number.', false);
+                return false;
+              }
+            },
+            () => {}
+          );
           if (inviteCode && (await joinRoom(userId, roomId, inviteCode))) {
             window.location.href = `${ROUTES.ROOM}?roomId=${roomId}`;
           }
@@ -1902,33 +1932,47 @@ function renderSuggestedFriends(users) {
       };
       chatList.appendChild(roomItem);
     });
+
+  // Add event listeners for delete buttons
+  document.querySelectorAll('.delete-btn').forEach(button => {
+    button.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const roomId = button.getAttribute('data-room-id');
+      const confirmed = await window.showAlert(
+        'Are you sure you want to delete this room? This action cannot be undone.',
+        false,
+        false,
+        () => {},
+        () => {}
+      );
+      if (confirmed) {
+        try {
+          // Remove the room from chatrooms
+          await remove(ref(db, `chatrooms/${roomId}`));
+          
+          // Remove the room from all users' joinedRooms
+          const roomSnapshot = await get(ref(db, `chatrooms/${roomId}/members`));
+          if (roomSnapshot.exists()) {
+            const members = Object.keys(roomSnapshot.val());
+            for (const memberId of members) {
+              await remove(ref(db, `users/${memberId}/joinedRooms/${roomId}`));
+            }
+          }
+          
+          window.showAlert('Room deleted successfully!', true);
+          // Refresh the rooms list
+          const roomsRef = ref(db, 'chatrooms');
+          const roomsSnapshot = await get(roomsRef);
+          renderRooms(roomsSnapshot.val() || {});
+        } catch (error) {
+          console.error('Error deleting room:', error);
+          window.showAlert('Failed to delete room. Please try again.', false);
+        }
+      }
+    });
+  });
 }
-    // Create room handler with debouncing
-let isCreatingRoom = false;
-document.getElementById('create-room-btn').addEventListener('click', async () => {
-  if (isCreatingRoom) return; // Prevent multiple clicks
-  isCreatingRoom = true;
-  const createRoomBtn = document.getElementById('create-room-btn');
-  createRoomBtn.disabled = true;
-  const userId = auth.currentUser?.uid;
-  if (!userId) {
-    window.showAlert(MESSAGES.SIGN_IN_REQUIRED, false);
-    isCreatingRoom = false;
-    createRoomBtn.disabled = false;
-    return;
-  }
-  const name = document.getElementById('room-name-input').value.trim();
-  const type = document.getElementById('room-type').value;
-  const description = document.getElementById('room-description').value.trim();
-  const roomId = await createRoom(userId, name, type, description);
-  if (roomId) {
-    window.showAlert(MESSAGES.ROOM_CREATE_SUCCESS, true);
-    window.hideRoomSheet();
-    window.location.href = `${ROUTES.ROOM}?roomId=${roomId}`;
-  }
-  isCreatingRoom = false;
-  createRoomBtn.disabled = false;
-});
+
     
     async function renderGroups(groups, query = '') {
       chatList.setAttribute('aria-busy', 'false');
@@ -1977,24 +2021,46 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
         });
     }
 
-    async function createRoom(userId, name, type, description) {
+    async function generateUniqueInviteCode() {
+  const roomsRef = ref(db, 'chatrooms');
+  const roomsSnapshot = await get(roomsRef);
+  const rooms = roomsSnapshot.val() || {};
+  const existingCodes = Object.values(rooms)
+    .filter(room => room.type === 'private' && room.inviteCode)
+    .map(room => room.inviteCode);
+
+  let inviteCode;
+  do {
+    inviteCode = Math.floor(100000 + Math.random() * 900000).toString(); // Generate 6-digit code
+  } while (existingCodes.includes(inviteCode));
+
+  return inviteCode;
+}
+
+async function createRoom(userId, name, type, description) {
   if (!name.trim()) {
     window.showAlert(MESSAGES.ROOM_NAME_REQUIRED, false);
     return null;
   }
   try {
+    // Normalize room name for comparison (trim and lowercase)
+    const normalizedName = name.trim().toLowerCase();
+    
     // Check if room with the same name already exists for the user
     const roomsRef = ref(db, 'chatrooms');
     const roomsSnapshot = await get(roomsRef);
     const rooms = roomsSnapshot.val() || {};
-    const existingRoom = Object.entries(rooms).find(([_, room]) => room.name === name && room.creatorId === userId);
+    const existingRoom = Object.entries(rooms).find(([_, room]) => 
+      room.name.trim().toLowerCase() === normalizedName && room.creatorId === userId
+    );
+    
     if (existingRoom) {
       window.showAlert('A room with this name already exists.', false);
       return null;
     }
 
     const roomData = {
-      name,
+      name: name.trim(),
       type,
       description,
       creatorId: userId,
@@ -2002,13 +2068,15 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
       members: { [userId]: true },
       moderators: { [userId]: true }
     };
+    
     if (type === 'private') {
-      roomData.inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+      roomData.inviteCode = await generateUniqueInviteCode();
     }
+    
     const newRoomRef = push(ref(db, 'chatrooms'));
     await set(newRoomRef, roomData);
     await set(ref(db, `users/${userId}/joinedRooms/${newRoomRef.key}`), true);
-    window.showNotification(name, 'You created the room');
+    window.showNotification(name, `You created the room. Invite code: ${roomData.inviteCode || 'N/A'}`);
     return newRoomRef.key;
   } catch (error) {
     console.error('Error creating room:', error);
@@ -2019,28 +2087,28 @@ document.getElementById('create-room-btn').addEventListener('click', async () =>
 
 
     async function joinRoom(userId, roomId, inviteCode = null) {
-      try {
-        const roomRef = ref(db, `chatrooms/${roomId}`);
-        const roomSnapshot = await get(roomRef);
-        if (!roomSnapshot.exists()) {
-          window.showAlert(MESSAGES.ROOM_NOT_FOUND, false);
-          return false;
-        }
-        const room = roomSnapshot.val();
-        if (room.type === 'private' && inviteCode !== room.inviteCode) {
-          window.showAlert('Invalid invite code.', false);
-          return false;
-        }
-        await update(ref(db, `chatrooms/${roomId}/members`), { [userId]: true });
-        await set(ref(db, `users/${userId}/joinedRooms/${roomId}`), true);
-        window.showNotification(room.name, `You joined the room`);
-        return true;
-      } catch (error) {
-        console.error("Error joining room:", error);
-        window.showAlert(MESSAGES.ROOM_JOIN_FAIL, false);
-        return false;
-      }
+  try {
+    const roomRef = ref(db, `chatrooms/${roomId}`);
+    const roomSnapshot = await get(roomRef);
+    if (!roomSnapshot.exists()) {
+      window.showAlert(MESSAGES.ROOM_NOT_FOUND, false);
+      return false;
     }
+    const room = roomSnapshot.val();
+    if (room.type === 'private' && inviteCode !== room.inviteCode) {
+      window.showAlert('Invalid invite code.', false);
+      return false;
+    }
+    await update(ref(db, `chatrooms/${roomId}/members`), { [userId]: true });
+    await set(ref(db, `users/${userId}/joinedRooms/${roomId}`), true);
+    window.showNotification(room.name, `You joined the room`);
+    return true;
+  } catch (error) {
+    console.error('Error joining room:', error);
+    window.showAlert(MESSAGES.ROOM_JOIN_FAIL, false);
+    return false;
+  }
+}
 
     async function createGroup(userId, name, members) {
       if (!name.trim()) {
