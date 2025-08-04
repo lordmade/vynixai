@@ -152,6 +152,9 @@
       line-height: 1.4;
       position: relative;
       word-break: break-word;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
     }
 
     .message.sent {
@@ -197,6 +200,49 @@
       font-weight: 500;
     }
 
+    .message .message-avatar {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 500;
+      overflow: hidden;
+    }
+
+    .message .message-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .message .message-content-wrapper {
+      flex: 1;
+    }
+
+    .message .username {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+      display: none;
+    }
+
+    .message.group .username,
+    .message.room .username {
+      display: block;
+    }
+
+    .message.sent .message-avatar {
+      order: 2;
+    }
+
+    .message.received .message-avatar {
+      order: -1;
+    }
+
     .input-container {
       display: flex;
       align-items: center;
@@ -226,7 +272,7 @@
       border-color: var(--accent);
     }
 
-    .send-btn, .attach-btn {
+    .send-btn, .attach-btn, .sticker-btn {
       background: none;
       border: none;
       cursor: pointer;
@@ -235,13 +281,31 @@
       transition: color 0.2s ease;
     }
 
-    .send-btn:hover, .attach-btn:hover {
+    .send-btn:hover, .attach-btn:hover, .sticker-btn:hover {
       color: var(--accent);
     }
 
-    .send-btn svg, .attach-btn svg {
+    .send-btn svg, .attach-btn svg, .sticker-btn svg {
       width: 24px;
       height: 24px;
+    }
+
+    .sticker-picker {
+      display: none;
+      position: absolute;
+      bottom: 60px;
+      background: var(--chat-bg);
+      padding: 1rem;
+      border-radius: 8px;
+      z-index: 10;
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .sticker-picker img {
+      width: 40px;
+      cursor: pointer;
     }
 
     .spinner-overlay {
@@ -561,7 +625,7 @@
       .chat-container { padding: 0.5rem; }
       .message { max-width: 90%; font-size: 0.9rem; }
       .message-input { font-size: 0.9rem; }
-      .send-btn svg, .attach-btn svg { width: 20px; height: 20px; }
+      .send-btn svg, .attach-btn svg, .sticker-btn svg { width: 20px; height: 20px; }
       .icon-btn svg { width: 20px; height: 20px; }
       .user-status { max-width: 150px; }
       .typing-indicator { font-size: 0.8rem; }
@@ -572,6 +636,8 @@
       .friend-item img { width: 28px; height: 28px; }
       .friend-item span { font-size: 0.9rem; }
       .friend-item button { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+      .message .message-avatar { width: 20px; height: 20px; }
+      .message .username { font-size: 0.8rem; }
     }
 
     .online-dot {
@@ -638,6 +704,11 @@
         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
       </svg>
     </button>
+    <button class="sticker-btn" onclick="toggleStickerPicker()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a10 10 0 0 0-10 10c0 2.76 1.12 5.26 2.93 7.07L12 22l7.07-2.93A10 10 0 0 0 22 12 10 10 0 0 0 12 2z"></path>
+      </svg>
+    </button>
     <textarea id="message-input" class="message-input" placeholder="Type a message..." rows="1"></textarea>
     <button id="send-btn" class="send-btn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -647,6 +718,10 @@
     </button>
   </div>
   <input type="file" id="file-upload" accept="image/*,video/*" style="display: none;" />
+  <div id="sticker-picker" class="sticker-picker">
+    <img src="/stickers/springboks.png" onclick="sendSticker('springboks.png')" />
+    <img src="/stickers/shisa-nyama.png" onclick="sendSticker('shisa-nyama.png')" />
+  </div>
   <div id="custom-alert" class="custom-alert">
     <div class="alert-content">
       <p id="alert-message"></p>
@@ -690,6 +765,56 @@
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getDatabase, ref, onValue, set, push, update, get, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
+    // Service Worker inline code
+    const serviceWorkerCode = `
+      const CACHE_NAME = 'vynix-chat-v1';
+      const urlsToCache = [
+        '/',
+        '/index.html',
+        '/messages.html',
+        'https://cdn.tailwindcss.com',
+        'https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js',
+        'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js',
+        'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js',
+        'https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js'
+      ];
+
+      self.addEventListener('install', event => {
+        event.waitUntil(
+          caches.open(CACHE_NAME).then(cache => {
+            return cache.addAll(urlsToCache);
+          })
+        );
+      });
+
+      self.addEventListener('fetch', event => {
+        event.respondWith(
+          caches.match(event.request).then(response => {
+            return response || fetch(event.request).catch(() => {
+              return caches.match('/index.html');
+            });
+          })
+        );
+      });
+    `;
+
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        const blob = new Blob([serviceWorkerCode], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        navigator.serviceWorker.register(url)
+          .then(registration => {
+            console.log('Service Worker registered:', registration);
+            URL.revokeObjectURL(url);
+          })
+          .catch(error => {
+            console.error('Service Worker registration failed:', error);
+          });
+      });
+    }
+
+    // Firebase configuration
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -742,6 +867,50 @@
 
     // Encryption key
     const ENCRYPTION_KEY = "my-secret-key-123";
+
+    // IndexedDB setup
+    const dbPromise = indexedDB.open('vynix-chat-db', 1);
+
+    dbPromise.onupgradeneeded = event => {
+      const db = event.target.result;
+      db.createObjectStore('pendingMessages', { keyPath: 'id', autoIncrement: true });
+    };
+
+    async function savePendingMessage(messageData) {
+      const db = await dbPromise;
+      const tx = db.transaction('pendingMessages', 'readwrite');
+      const store = tx.objectStore('pendingMessages');
+      await store.add(messageData);
+      return tx.complete;
+    }
+
+    async function getPendingMessages() {
+      const db = await dbPromise;
+      const tx = db.transaction('pendingMessages', 'readonly');
+      const store = tx.objectStore('pendingMessages');
+      return store.getAll();
+    }
+
+    async function clearPendingMessage(id) {
+      const db = await dbPromise;
+      const tx = db.transaction('pendingMessages', 'readwrite');
+      const store = tx.objectStore('pendingMessages');
+      await store.delete(id);
+      return tx.complete;
+    }
+
+    async function syncPendingMessages(userId, targetId, chatType) {
+      if (!navigator.onLine) return;
+      const pendingMessages = await getPendingMessages();
+      for (const message of pendingMessages) {
+        try {
+          await sendMessage(userId, targetId, message.content, message.type, chatType);
+          await clearPendingMessage(message.id);
+        } catch (error) {
+          console.error('Error syncing message:', error);
+        }
+      }
+    }
 
     // Window functions
     window.hideAlert = function () {
@@ -900,7 +1069,6 @@
           timestamp: Date.now()
         });
         window.showAlert('Invitation sent successfully.', true);
-        // Update button to reflect invited status
         const button = friendsList.querySelector(`button[onclick="window.inviteFriend('${friendId}')"]`);
         if (button) {
           button.textContent = 'Invited';
@@ -911,6 +1079,16 @@
         window.showAlert('Failed to send invitation. Please try again.', false);
       }
     };
+
+    function toggleStickerPicker() {
+      document.getElementById('sticker-picker').style.display = document.getElementById('sticker-picker').style.display === 'none' ? 'block' : 'none';
+    }
+
+    async function sendSticker(stickerName) {
+      const stickerUrl = `/stickers/${stickerName}`;
+      await sendMessage(auth.currentUser.uid, currentTargetId, stickerUrl, 'image', currentChatType);
+      toggleStickerPicker();
+    }
 
     // Helper functions
     function encryptMessage(message) {
@@ -1001,6 +1179,29 @@
         messageData.replyContent = messageInput.dataset.replyContent;
       }
 
+      if (!navigator.onLine) {
+        await savePendingMessage({
+          ...messageData,
+          targetId,
+          chatType,
+          content: type === 'text' ? content : messageData.content
+        });
+        const messages = [{
+          id: `pending-${timestamp}`,
+          ...messageData,
+          content: type === 'text' ? content : messageData.content
+        }];
+        renderMessages(messages, userId, { name: chatName.textContent }, false, []);
+        window.showAlert('Message queued. It will be sent when online.', true);
+        if (type === 'text') {
+          messageInput.value = '';
+          messageInput.style.height = 'auto';
+          delete messageInput.dataset.replyTo;
+          delete messageInput.dataset.replyContent;
+        }
+        return;
+      }
+
       try {
         await push(ref(db, `chats/${chatId}`), messageData);
         if (type === 'text') {
@@ -1055,14 +1256,27 @@
         chatContainer.innerHTML += '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
         return;
       }
-      messages.forEach(message => {
+
+      const userCache = {};
+      const fetchUserData = async (senderId) => {
+        if (userCache[senderId]) return userCache[senderId];
+        const userRef = ref(db, `users/${senderId}`);
+        const userSnapshot = await get(userRef);
+        const userData = userSnapshot.exists() ? userSnapshot.val() : { name: 'Unknown', avatar: null };
+        userCache[senderId] = userData;
+        return userData;
+      };
+
+      for (const message of messages) {
         const messageDiv = document.createElement('div');
         const isSent = message.senderId === userId;
         const isAdminMessage = admins.includes(message.senderId);
-        messageDiv.className = `message ${isSent ? 'sent' : 'received'}${message.replyTo ? ' reply' : ''}`;
+        const chatTypeClass = currentChatType === 'room' ? 'room' : currentChatType === 'group' ? 'group' : 'friend';
+        messageDiv.className = `message ${isSent ? 'sent' : 'received'} ${chatTypeClass}${message.replyTo ? ' reply' : ''}`;
         if (message.replyTo) {
           messageDiv.setAttribute('data-reply', message.replyContent || '[Original message not found]');
         }
+
         let content;
         if (message.type === 'image') {
           content = `<img src="${message.content}" alt="Sent image" onclick="window.openMediaModal('${message.content}', 'image')" />`;
@@ -1071,10 +1285,20 @@
         } else {
           content = `<p class="message-content">${decryptMessage(message.content)}</p>`;
         }
+
+        const senderData = await fetchUserData(message.senderId);
+        const avatarContent = senderData.avatar
+          ? `<img src="${senderData.avatar}" alt="Avatar" onerror="this.parentElement.textContent='${senderData.name?.charAt(0).toUpperCase() || 'U'}'" />`
+          : senderData.name?.charAt(0).toUpperCase() || 'U';
+
         messageDiv.innerHTML = `
-          ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
-          ${content}
-          <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+          <div class="message-avatar">${avatarContent}</div>
+          <div class="message-content-wrapper">
+            <div class="username">${senderData.name || 'Unknown'}</div>
+            ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
+            ${content}
+            <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+          </div>
           ${isBlocked ? '' : `
           <div class="message-actions" data-message-id="${message.id}">
             <button class="message-action-btn reply-btn" title="Reply">
@@ -1108,10 +1332,10 @@
             actions.classList.toggle('active');
           });
           messageDiv.querySelector('.reply-btn')?.addEventListener('click', () => handleReply(message));
-          messageDiv.querySelector('.delete-btn')?.addEventListener('click', () => handleDelete(message.id, chatType));
+          messageDiv.querySelector('.delete-btn')?.addEventListener('click', () => handleDelete(message.id, currentChatType));
         }
         chatContainer.appendChild(messageDiv);
-      });
+      }
       chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
@@ -1121,6 +1345,7 @@
         return;
       }
       chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Loading...</p>';
+
       let chatRef;
       let admins = [];
       if (chatType === 'friend') {
@@ -1132,6 +1357,17 @@
         const adminsRef = ref(db, `groups/${targetId}/admins`);
         const adminsSnapshot = await get(adminsRef);
         admins = adminsSnapshot.exists() ? Object.keys(adminsSnapshot.val()) : [];
+      }
+
+      if (!navigator.onLine) {
+        const pendingMessages = await getPendingMessages();
+        const relevantMessages = pendingMessages.filter(msg => msg.targetId === targetId && msg.chatType === chatType);
+        renderMessages(relevantMessages.map(msg => ({
+          id: `pending-${msg.timestamp}`,
+          ...msg
+        })), userId, { name: chatName.textContent }, isBlocked, admins);
+        window.showAlert('You are offline. Showing queued messages.', true);
+        return;
       }
 
       onValue(chatRef, async (snapshot) => {
@@ -1157,6 +1393,7 @@
           }
         }
         renderMessages(messages, userId, { name: chatName.textContent }, isBlocked, admins);
+        await syncPendingMessages(userId, targetId, chatType);
       }, (error) => {
         console.error("Error loading messages:", error);
         chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load messages.</p>';
@@ -1298,6 +1535,10 @@
           fileUpload.addEventListener('change', async (event) => {
             const file = event.target.files[0];
             if (!file) return;
+            if (!navigator.onLine) {
+              window.showAlert('File uploads are not available offline.', true);
+              return;
+            }
             spinnerOverlay.classList.add("active");
             progressContainer.classList.add("active");
             spinnerOverlay.querySelector('.spinner').style.display = 'none';
@@ -1320,6 +1561,17 @@
             }
           });
         }
+
+        window.addEventListener('online', async () => {
+          if (currentTargetId && currentChatType) {
+            await syncPendingMessages(user.uid, currentTargetId, currentChatType);
+            window.showAlert('Back online. Messages synced.', true);
+          }
+        });
+
+        window.addEventListener('offline', () => {
+          window.showAlert('You are offline. Messages will be queued.', true);
+        });
       } else {
         window.location.href = 'login.html';
       }
