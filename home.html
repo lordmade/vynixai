@@ -811,6 +811,10 @@
       background-size: contain;
     }
   </style>
+  .chat-preview.typing {
+  font-style: italic;
+  color: var(--accent); /* Use the accent color for visibility */
+}
 </head>
 <body>
   <div class="header">
@@ -1488,7 +1492,33 @@ function listenForFriendStatus(userId) {
 }
 
 
-    // Render chats in the UI
+ // Listen for typing status changes
+function listenForTypingStatus(userId, friendId, chatItem, chatPreview) {
+  const typingRef = ref(db, `users/${friendId}/isTyping`);
+  addListener(typingRef, (snap) => {
+    const isTyping = snap.exists() && snap.val();
+    chatPreview.classList.toggle('typing', isTyping);
+    if (isTyping) {
+      chatPreview.textContent = 'Typing...';
+    } else {
+      // Restore the last message preview when not typing
+      const friendData = friendsData.find(f => f.uid === friendId);
+      if (friendData && friendData.lastMessage) {
+        if (friendData.messageType === 'image') {
+          chatPreview.innerHTML = `<span class="media-icon image-icon" aria-hidden="true"></span> Photo`;
+        } else if (friendData.messageType === 'video') {
+          chatPreview.innerHTML = `<span class="media-icon video-icon" aria-hidden="true"></span> Video`;
+        } else {
+          chatPreview.textContent = decryptMessage(friendData.lastMessage);
+        }
+      } else {
+        chatPreview.textContent = 'No messages yet';
+      }
+    }
+  });
+}
+
+// Render chats in the UI
 function renderChats(friends) {
   chatList.setAttribute('aria-busy', 'false');
   chatList.innerHTML = ''; // Clear the DOM
@@ -1540,6 +1570,10 @@ function renderChats(friends) {
       window.location.href = `${ROUTES.MESSAGES}?friendId=${uid}`;
     };
     chatList.appendChild(chatItem);
+
+    // Listen for typing status
+    const chatPreview = chatItem.querySelector('.chat-preview');
+    listenForTypingStatus(auth.currentUser?.uid, uid, chatItem, chatPreview);
   });
 }
 
@@ -2196,14 +2230,45 @@ async function loadChats(userId) {
         for (const friendId of friendIds) {
           const user = users[friendId] || { name: 'Unknown', avatar: null, isOnline: false };
           const chatRef = ref(db, `chats/${userId}_${friendId}`);
-          let chatSnapshot;
-          try {
-            chatSnapshot = await get(chatRef);
-            console.log(`loadChats: Chat snapshot for ${friendId}, exists:`, chatSnapshot.exists());
-          } catch (error) {
-            console.error(`loadChats: Error fetching chats for ${friendId}:`, error.message, error.stack);
-            // Continue with default values for this friend
-            friendsData.push({
+          addListener(chatRef, (chatSnapshot) => {
+            let lastMessage = null;
+            let messageType = null;
+            let timestamp = null;
+            let unreadCount = 0;
+            if (chatSnapshot.exists()) {
+              const messages = Object.values(chatSnapshot.val());
+              const lastMsg = messages[messages.length - 1];
+              lastMessage = lastMsg.content;
+              messageType = lastMsg.type || 'text';
+              timestamp = lastMsg.timestamp;
+              unreadCount = messages.filter(msg => !msg.read && msg.senderId !== userId).length;
+            }
+            const existingFriendIndex = friendsData.findIndex(f => f.uid === friendId);
+            const friendData = {
+              uid: friendId,
+              name: user.name,
+              avatar: user.avatar,
+              lastMessage,
+              messageType,
+              timestamp,
+              unreadCount,
+              isOnline: user.isOnline || false
+            };
+            if (existingFriendIndex >= 0) {
+              friendsData[existingFriendIndex] = friendData;
+            } else {
+              friendsData.push(friendData);
+            }
+            if (currentTab === 'chats') {
+              console.log("loadChats: Rendering chats");
+              renderChats(friendsData);
+            } else {
+              console.log("loadChats: Skipping render, currentTab is:", currentTab);
+            }
+          }, (error) => {
+            console.error(`loadChats: Error listening to chats for ${friendId}:`, error.message, error.stack);
+            // Ensure friend is still added even if chat data fails
+            const friendData = {
               uid: friendId,
               name: user.name,
               avatar: user.avatar,
@@ -2212,45 +2277,27 @@ async function loadChats(userId) {
               timestamp: null,
               unreadCount: 0,
               isOnline: user.isOnline || false
-            });
-            continue;
-          }
-          let lastMessage = null;
-          let messageType = null;
-          let timestamp = null;
-          let unreadCount = 0;
-          if (chatSnapshot.exists()) {
-            const messages = Object.values(chatSnapshot.val());
-            const lastMsg = messages[messages.length - 1];
-            lastMessage = lastMsg.content;
-            messageType = lastMsg.type || 'text';
-            timestamp = lastMsg.timestamp;
-            unreadCount = messages.filter(msg => !msg.read && msg.senderId !== userId).length;
-          }
-          friendsData.push({
-            uid: friendId,
-            name: user.name,
-            avatar: user.avatar,
-            lastMessage,
-            messageType,
-            timestamp,
-            unreadCount,
-            isOnline: user.isOnline || false
+            };
+            if (!friendsData.some(f => f.uid === friendId)) {
+              friendsData.push(friendData);
+            }
+            if (currentTab === 'chats') {
+              renderChats(friendsData);
+            }
           });
         }
         console.log("loadChats: friendsData populated:", friendsData);
-        if (currentTab === 'chats') {
-          console.log("loadChats: Rendering chats");
-          renderChats(friendsData);
-        } else {
-          console.log("loadChats: Skipping render, currentTab is:", currentTab);
-        }
       } else {
         console.log("loadChats: No friends found");
         if (currentTab === 'chats') {
           chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No friends found. Add some friends to start chatting!</p>';
         }
       }
+    }, (error) => {
+      console.error("loadChats: Error listening to friends:", error.message, error.stack);
+      chatList.setAttribute('aria-busy', 'false');
+      chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Error loading friends. Please try again.</p>';
+      window.showAlert(MESSAGES.CHAT_FAIL, false);
     });
   } catch (error) {
     console.error("loadChats: Unexpected error:", error.message, error.stack);
