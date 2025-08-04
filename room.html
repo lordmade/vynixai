@@ -874,31 +874,54 @@
     };
 
     async function savePendingMessage(messageData) {
-      const db = await dbPromise;
-      const tx = db.transaction('pendingMessages', 'readwrite');
-      const store = tx.objectStore('pendingMessages');
-      await store.add(messageData);
-      return tx.complete;
+      try {
+        const db = await dbPromise;
+        const tx = db.transaction('pendingMessages', 'readwrite');
+        const store = tx.objectStore('pendingMessages');
+        await store.add(messageData);
+        console.log('Pending message saved:', messageData);
+        return tx.complete;
+      } catch (error) {
+        console.error('Error saving pending message:', error);
+        throw error;
+      }
     }
 
     async function getPendingMessages() {
-      const db = await dbPromise;
-      const tx = db.transaction('pendingMessages', 'readonly');
-      const store = tx.objectStore('pendingMessages');
-      return store.getAll();
+      try {
+        const db = await dbPromise;
+        const tx = db.transaction('pendingMessages', 'readonly');
+        const store = tx.objectStore('pendingMessages');
+        const messages = await store.getAll();
+        console.log('Retrieved pending messages:', messages);
+        return messages;
+      } catch (error) {
+        console.error('Error retrieving pending messages:', error);
+        return [];
+      }
     }
 
     async function clearPendingMessage(id) {
-      const db = await dbPromise;
-      const tx = db.transaction('pendingMessages', 'readwrite');
-      const store = tx.objectStore('pendingMessages');
-      await store.delete(id);
-      return tx.complete;
+      try {
+        const db = await dbPromise;
+        const tx = db.transaction('pendingMessages', 'readwrite');
+        const store = tx.objectStore('pendingMessages');
+        await store.delete(id);
+        console.log('Cleared pending message:', id);
+        return tx.complete;
+      } catch (error) {
+        console.error('Error clearing pending message:', error);
+        throw error;
+      }
     }
 
     async function syncPendingMessages(userId, targetId, chatType) {
-      if (!navigator.onLine) return;
+      if (!navigator.onLine) {
+        console.log('Offline, cannot sync pending messages');
+        return;
+      }
       const pendingMessages = await getPendingMessages();
+      console.log('Syncing pending messages:', pendingMessages);
       for (const message of pendingMessages) {
         try {
           await sendMessage(userId, targetId, message.content, message.type, chatType);
@@ -1022,6 +1045,7 @@
         const friends = friendsSnapshot.exists() ? Object.keys(friendsSnapshot.val()) : [];
         const members = groupSnapshot.exists() ? Object.keys(groupSnapshot.val()) : [];
 
+        console.log('Fetched friends:', friends, 'Members:', members);
         friendsList.innerHTML = '<p>Loading friends...</p>';
         addFriendsModal.classList.add('active');
 
@@ -1035,6 +1059,7 @@
           const friendRef = ref(db, `users/${friendId}`);
           const friendSnapshot = await get(friendRef);
           const friendData = friendSnapshot.exists() ? friendSnapshot.val() : { name: 'Unknown', avatar: null };
+          console.log('Friend data:', friendId, friendData);
           const isMember = members.includes(friendId);
           const friendItem = document.createElement('div');
           friendItem.className = 'friend-item';
@@ -1060,6 +1085,7 @@
           inviterId: userId,
           timestamp: Date.now()
         });
+        console.log('Invitation sent to:', friendId);
         window.showAlert('Invitation sent successfully.', true);
         const button = friendsList.querySelector(`button[onclick="window.inviteFriend('${friendId}')"]`);
         if (button) {
@@ -1074,13 +1100,22 @@
 
     // Helper functions
     function encryptMessage(message) {
-      return CryptoJS.AES.encrypt(message, ENCRYPTION_KEY).toString();
+      try {
+        const encrypted = CryptoJS.AES.encrypt(message, ENCRYPTION_KEY).toString();
+        console.log('Encrypted message:', encrypted);
+        return encrypted;
+      } catch (error) {
+        console.error('Encryption error:', error);
+        return message;
+      }
     }
 
     function decryptMessage(ciphertext) {
       try {
         const bytes = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
-        return bytes.toString(CryptoJS.enc.Utf8) || '[Decryption Failed]';
+        const decrypted = bytes.toString(CryptoJS.enc.Utf8) || '[Decryption Failed]';
+        console.log('Decrypted message:', decrypted);
+        return decrypted;
       } catch (error) {
         console.error("Decryption error:", error);
         return '[Decryption Failed]';
@@ -1122,22 +1157,30 @@
         xhr.onload = () => {
           if (xhr.status === 200) {
             const data = JSON.parse(xhr.responseText);
+            console.log('Cloudinary upload success:', data);
             resolve({
               url: data.secure_url,
               resource_type: data.resource_type
             });
           } else {
+            console.error('Cloudinary upload failed:', xhr.status);
             reject(new Error(`Upload failed with status ${xhr.status}`));
           }
         };
 
-        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.onerror = () => {
+          console.error('Cloudinary upload network error');
+          reject(new Error("Network error during upload"));
+        };
         xhr.send(formData);
       });
     }
 
     async function sendMessage(userId, targetId, content, type = 'text', chatType = 'friend') {
-      if (!content && type === 'text') return;
+      if (!content && type === 'text') {
+        console.log('Empty text message, skipping send');
+        return;
+      }
       const timestamp = Date.now();
       let chatId;
       if (chatType === 'friend') {
@@ -1186,6 +1229,7 @@
 
       try {
         await push(ref(db, `chats/${chatId}`), messageData);
+        console.log('Message sent:', messageData);
         if (type === 'text') {
           messageInput.value = '';
           messageInput.style.height = 'auto';
@@ -1223,6 +1267,7 @@
           chatRef = ref(db, `groups/${currentTargetId}/messages/${messageId}`);
         }
         await remove(chatRef);
+        console.log('Message deleted:', messageId);
         window.showAlert('Message deleted successfully.', true);
       } catch (error) {
         console.error("Error deleting message:", error);
@@ -1231,30 +1276,38 @@
     }
 
     async function getTopParticipants(chatType, targetId) {
-      let chatRef;
-      if (chatType === 'room') {
-        chatRef = ref(db, `chatrooms/${targetId}/messages`);
-      } else if (chatType === 'group') {
-        chatRef = ref(db, `groups/${targetId}/messages`);
-      } else {
+      try {
+        let chatRef;
+        if (chatType === 'room') {
+          chatRef = ref(db, `chatrooms/${targetId}/messages`);
+        } else if (chatType === 'group') {
+          chatRef = ref(db, `groups/${targetId}/messages`);
+        } else {
+          return [];
+        }
+
+        const snapshot = await get(chatRef);
+        const messageCounts = {};
+        if (snapshot.exists()) {
+          snapshot.forEach(child => {
+            const msg = child.val();
+            messageCounts[msg.senderId] = (messageCounts[msg.senderId] || 0) + 1;
+          });
+        } else {
+          console.log('No messages found for:', chatType, targetId);
+        }
+
+        const sortedUsers = Object.entries(messageCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, Math.max(1, Math.ceil(Object.keys(messageCounts).length * 0.05))) // Top 5%, at least 1
+          .map(([userId]) => userId);
+
+        console.log('Top participants:', sortedUsers);
+        return sortedUsers;
+      } catch (error) {
+        console.error('Error fetching top participants:', error);
         return [];
       }
-
-      const snapshot = await get(chatRef);
-      const messageCounts = {};
-      if (snapshot.exists()) {
-        snapshot.forEach(child => {
-          const msg = child.val();
-          messageCounts[msg.senderId] = (messageCounts[msg.senderId] || 0) + 1;
-        });
-      }
-
-      const sortedUsers = Object.entries(messageCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, Math.ceil(Object.keys(messageCounts).length * 0.05)) // Top 5%
-        .map(([userId]) => userId);
-
-      return sortedUsers;
     }
 
     async function renderMessages(messages, userId, targetProfile, isBlocked = false, admins = []) {
@@ -1269,12 +1322,21 @@
       const userCache = {};
       const topParticipants = (currentChatType === 'room' || currentChatType === 'group') ? await getTopParticipants(currentChatType, currentTargetId) : [];
       const fetchUserData = async (senderId) => {
-        if (userCache[senderId]) return userCache[senderId];
-        const userRef = ref(db, `users/${senderId}`);
-        const userSnapshot = await get(userRef);
-        const userData = userSnapshot.exists() ? userSnapshot.val() : { name: 'Unknown', avatar: null, joinDate: Date.now() };
-        userCache[senderId] = userData;
-        return userData;
+        if (userCache[senderId]) {
+          console.log('Using cached user data for:', senderId);
+          return userCache[senderId];
+        }
+        try {
+          const userRef = ref(db, `users/${senderId}`);
+          const userSnapshot = await get(userRef);
+          const userData = userSnapshot.exists() ? userSnapshot.val() : { name: 'Unknown', avatar: null, joinDate: null };
+          console.log('Fetched user data for:', senderId, userData);
+          userCache[senderId] = userData;
+          return userData;
+        } catch (error) {
+          console.error('Error fetching user data for:', senderId, error);
+          return { name: 'Unknown', avatar: null, joinDate: null };
+        }
       };
 
       for (const message of messages) {
@@ -1300,9 +1362,7 @@
         const senderData = await fetchUserData(message.senderId);
         const avatarContent = senderData.avatar
           ? `<img src="${senderData.avatar}" alt="Avatar" onerror="this.parentElement.textContent='${senderData.name?.charAt(0).toUpperCase() || 'U'}'" />`
-          : senderData.name?.charAt(0).toUpperCase() || '
-
-U';
+          : senderData.name?.charAt(0).toUpperCase() || 'U';
 
         const isNewUser = senderData.joinDate && (Date.now() - senderData.joinDate) < 7 * 24 * 60 * 60 * 1000; // Within 7 days
         let badgeContent = '';
@@ -1382,6 +1442,7 @@ U';
 
     async function loadMessages(userId, targetId, chatType = 'friend', isBlocked = false) {
       if (!userId || !targetId) {
+        console.error('Invalid userId or targetId:', userId, targetId);
         chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Invalid chat.</p>';
         return;
       }
@@ -1395,14 +1456,20 @@ U';
         chatRef = ref(db, `chatrooms/${targetId}/messages`);
       } else if (chatType === 'group') {
         chatRef = ref(db, `groups/${targetId}/messages`);
-        const adminsRef = ref(db, `groups/${targetId}/admins`);
-        const adminsSnapshot = await get(adminsRef);
-        admins = adminsSnapshot.exists() ? Object.keys(adminsSnapshot.val()) : [];
+        try {
+          const adminsRef = ref(db, `groups/${targetId}/admins`);
+          const adminsSnapshot = await get(adminsRef);
+          admins = adminsSnapshot.exists() ? Object.keys(adminsSnapshot.val()) : [];
+          console.log('Group admins:', admins);
+        } catch (error) {
+          console.error('Error fetching group admins:', error);
+        }
       }
 
       if (!navigator.onLine) {
         const pendingMessages = await getPendingMessages();
         const relevantMessages = pendingMessages.filter(msg => msg.targetId === targetId && msg.chatType === chatType);
+        console.log('Offline, rendering pending messages:', relevantMessages);
         renderMessages(relevantMessages.map(msg => ({
           id: `pending-${msg.timestamp}`,
           ...msg
@@ -1417,6 +1484,7 @@ U';
           snapshot.forEach(child => {
             messages.push({ id: child.key, ...child.val() });
           });
+          console.log('Fetched messages:', messages);
           if (chatType === 'friend') {
             const updates = {};
             messages.forEach(msg => {
@@ -1427,11 +1495,14 @@ U';
             if (Object.keys(updates).length > 0) {
               try {
                 await update(chatRef, updates);
+                console.log('Messages marked as read:', updates);
               } catch (error) {
                 console.error("Error marking messages as read:", error);
               }
             }
           }
+        } else {
+          console.log('No messages found for:', chatType, targetId);
         }
         renderMessages(messages, userId, { name: chatName.textContent }, isBlocked, admins);
         await syncPendingMessages(userId, targetId, chatType);
@@ -1469,6 +1540,7 @@ U';
           targetId = groupId;
           targetRef = ref(db, `groups/${groupId}`);
         } else {
+          console.error('Invalid chat parameters:', friendId, roomId, groupId);
           window.showAlert('Invalid chat. Returning to home.', false);
           setTimeout(() => window.location.href = 'index.html', 2000);
           return;
@@ -1476,26 +1548,37 @@ U';
 
         currentTargetId = targetId;
         currentChatType = chatType;
+        console.log('Chat initialized:', { userId: user.uid, targetId, chatType });
 
         let isBlocked = false;
         if (chatType === 'friend') {
-          const blockRef = ref(db, `users/${user.uid}/blocked/${targetId}`);
-          const blockSnapshot = await get(blockRef);
-          isBlocked = blockSnapshot.exists() && blockSnapshot.val();
-          if (isBlocked) {
-            inputContainer.classList.add('hidden');
-            blockedMessage.classList.add('active');
-          } else {
-            inputContainer.classList.remove('hidden');
-            blockedMessage.classList.remove('active');
+          try {
+            const blockRef = ref(db, `users/${user.uid}/blocked/${targetId}`);
+            const blockSnapshot = await get(blockRef);
+            isBlocked = blockSnapshot.exists() && blockSnapshot.val();
+            console.log('Block status for target:', targetId, isBlocked);
+            if (isBlocked) {
+              inputContainer.classList.add('hidden');
+              blockedMessage.classList.add('active');
+            } else {
+              inputContainer.classList.remove('hidden');
+              blockedMessage.classList.remove('active');
+            }
+          } catch (error) {
+            console.error('Error checking block status:', error);
           }
         } else if (chatType === 'group') {
-          const adminsRef = ref(db, `groups/${targetId}/admins`);
-          const adminsSnapshot = await get(adminsRef);
-          isAdmin = adminsSnapshot.exists() && Object.keys(adminsSnapshot.val()).includes(user.uid);
-          addFriendsMenu.style.display = isAdmin ? 'block' : 'none';
-          inputContainer.classList.remove('hidden');
-          blockedMessage.classList.remove('active');
+          try {
+            const adminsRef = ref(db, `groups/${targetId}/admins`);
+            const adminsSnapshot = await get(adminsRef);
+            isAdmin = adminsSnapshot.exists() && Object.keys(adminsSnapshot.val()).includes(user.uid);
+            console.log('User is admin:', isAdmin);
+            addFriendsMenu.style.display = isAdmin ? 'block' : 'none';
+            inputContainer.classList.remove('hidden');
+            blockedMessage.classList.remove('active');
+          } catch (error) {
+            console.error('Error checking admin status:', error);
+          }
         } else {
           inputContainer.classList.remove('hidden');
           blockedMessage.classList.remove('active');
@@ -1505,19 +1588,7 @@ U';
           const typingRef = ref(db, `users/${targetId}/isTyping`);
           onValue(typingRef, (snap) => {
             typingIndicator.classList.toggle('active', snap.exists() && snap.val());
-          });
-
-          messageInput.addEventListener('input', () => {
-            if (!messageInput.value) {
-              delete messageInput.dataset.replyTo;
-              delete messageInput.dataset.replyContent;
-            }
-            clearTimeout(typingTimeout);
-            set(ref(db, `users/${user.uid}/isTyping`), true);
-            typingTimeout = setTimeout(() => {
-              set(ref(db, `users/${user.uid}/isTyping`), false);
-            }, 2000);
-            autoResizeTextarea();
+            console.log('Typing status updated:', snap.exists() && snap.val());
           });
         }
 
@@ -1525,6 +1596,7 @@ U';
           const snapshot = await get(targetRef);
           if (snapshot.exists()) {
             const data = snapshot.val();
+            console.log('Target data fetched:', data);
             chatName.textContent = data.name || 'Unknown';
             userStatus.textContent = data.status || 'No status set';
             chatAvatar.textContent = data.avatar ? '' : data.name?.charAt(0).toUpperCase() || 'U';
@@ -1537,8 +1609,10 @@ U';
                 const existingDot = chatAvatar.querySelector('.online-dot');
                 if (snap.exists() && snap.val() && !existingDot) {
                   chatAvatar.innerHTML += '<span class="online-dot"></span>';
+                  console.log('User online:', friendId);
                 } else if (existingDot && (!snap.exists() || !snap.val())) {
                   existingDot.remove();
+                  console.log('User offline:', friendId);
                 }
               });
               userProfile.onclick = () => {
@@ -1547,6 +1621,7 @@ U';
             }
             loadMessages(user.uid, targetId, chatType, isBlocked);
           } else {
+            console.error('Chat not found:', targetRef.path);
             window.showAlert('Chat not found. Returning to home.', false);
             setTimeout(() => window.location.href = 'index.html', 2000);
           }
@@ -1571,6 +1646,21 @@ U';
                 await sendMessage(user.uid, targetId, content, 'text', chatType);
               }
             }
+          });
+
+          messageInput.addEventListener('input', () => {
+            if (!messageInput.value) {
+              delete messageInput.dataset.replyTo;
+              delete messageInput.dataset.replyContent;
+            }
+            if (chatType === 'friend' && !isBlocked) {
+              clearTimeout(typingTimeout);
+              set(ref(db, `users/${user.uid}/isTyping`), true);
+              typingTimeout = setTimeout(() => {
+                set(ref(db, `users/${user.uid}/isTyping`), false);
+              }, 2000);
+            }
+            autoResizeTextarea();
           });
 
           fileUpload.addEventListener('change', async (event) => {
@@ -1614,6 +1704,7 @@ U';
           window.showAlert('You are offline. Messages will be queued.', true);
         });
       } else {
+        console.error('User not authenticated');
         window.location.href = 'login.html';
       }
     });
