@@ -847,6 +847,18 @@
         border: 1px solid var(--background);
       }
     }
+    .sender-name {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+}
+
+@media (max-width: 640px) {
+  .sender-name {
+    font-size: 0.8rem;
+  }
+}
   </style>
 </head>
 <body>
@@ -1651,44 +1663,49 @@
     }
 
     async function sendMessage(userId, targetId, content, type = 'text', chatType = 'friend') {
-      if (!content && type === 'text') return;
-      const timestamp = Date.now();
-      let chatId;
+  if (!content && type === 'text') return;
+  const timestamp = Date.now();
+  let chatRef;
+
+  // Determine the correct Firebase path based on chat type
+  if (chatType === 'friend') {
+    const chatId = userId < targetId ? `${userId}_${targetId}` : `${targetId}_${userId}`;
+    chatRef = ref(db, `chats/${chatId}`);
+  } else if (chatType === 'room') {
+    chatRef = ref(db, `chatrooms/${targetId}/messages`);
+  } else if (chatType === 'group') {
+    chatRef = ref(db, `groups/${targetId}/messages`);
+  }
+
+  const messageData = {
+    senderId: userId,
+    content: type === 'text' ? encryptMessage(content) : content,
+    type,
+    timestamp,
+    read: chatType === 'friend' ? false : true // Mark as read for rooms/groups
+  };
+
+  if (messageInput.dataset.replyTo) {
+    messageData.replyTo = messageInput.dataset.replyTo;
+    messageData.replyContent = messageInput.dataset.replyContent;
+  }
+
+  try {
+    await push(chatRef, messageData);
+    if (type === 'text') {
+      messageInput.value = '';
+      messageInput.style.height = 'auto';
+      delete messageInput.dataset.replyTo;
+      delete messageInput.dataset.replyContent;
       if (chatType === 'friend') {
-        chatId = userId < targetId ? `${userId}_${targetId}` : `${targetId}_${userId}`;
-      } else if (chatType === 'room') {
-        chatId = `chatrooms/${targetId}/messages`;
-      } else if (chatType === 'group') {
-        chatId = `groups/${targetId}/messages`;
-      }
-
-      const messageData = {
-        senderId: userId,
-        content: type === 'text' ? encryptMessage(content) : content,
-        type,
-        timestamp,
-        read: chatType === 'friend' ? false : true
-      };
-
-      if (messageInput.dataset.replyTo) {
-        messageData.replyTo = messageInput.dataset.replyTo;
-        messageData.replyContent = messageInput.dataset.replyContent;
-      }
-
-      try {
-        await push(ref(db, `chats/${chatId}`), messageData);
-        if (type === 'text') {
-          messageInput.value = '';
-          messageInput.style.height = 'auto';
-          delete messageInput.dataset.replyTo;
-          delete messageInput.dataset.replyContent;
-          await set(ref(db, `users/${userId}/isTyping`), false);
-        }
-      } catch (error) {
-        console.error("Error sending message:", error);
-        window.showAlert('Failed to send message. Please try again.', false);
+        await set(ref(db, `users/${userId}/isTyping`), false);
       }
     }
+  } catch (error) {
+    console.error("Error sending message:", error);
+    window.showAlert('Failed to send message. Please try again.', false);
+  }
+}
 
     async function handleReply(message) {
       const decryptedContent = message.type === 'text' ? decryptMessage(message.content) : `[${message.type}]`;
@@ -1721,123 +1738,166 @@
       }
     }
 
-    async function renderMessages(messages, userId, targetProfile, isBlocked = false, admins = []) {
-      chatContainer.innerHTML = '';
-      chatContainer.appendChild(typingIndicator);
-      chatContainer.appendChild(blockedMessage);
-      if (messages.length === 0) {
-        chatContainer.innerHTML += '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
-        return;
-      }
-      messages.forEach(message => {
-        const messageDiv = document.createElement('div');
-        const isSent = message.senderId === userId;
-        const isAdminMessage = admins.includes(message.senderId);
-        messageDiv.className = `message ${isSent ? 'sent' : 'received'}${message.replyTo ? ' reply' : ''}`;
-        if (message.replyTo) {
-          messageDiv.setAttribute('data-reply', message.replyContent || '[Original message not found]');
-        }
-        let content;
-        if (message.type === 'image') {
-          content = `<img src="${message.content}" alt="Sent image" onclick="window.openMediaModal('${message.content}', 'image')" />`;
-        } else if (message.type === 'video') {
-          content = `<video src="${message.content}" controls playsinline onclick="window.openMediaModal('${message.content}', 'video')"></video>`;
-        } else {
-          content = `<p class="message-content">${decryptMessage(message.content)}</p>`;
-        }
-        messageDiv.innerHTML = `
-          ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
-          ${content}
-          <div class="message-time">${formatTimestamp(message.timestamp)}</div>
-          ${isBlocked ? '' : `
-          <div class="message-actions" data-message-id="${message.id}">
-            <button class="message-action-btn reply-btn" title="Reply">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 12h-6l-3 3-3-3H3"></path>
-                <path d="M3 6h18"></path>
-                <path d="M3 18h6"></path>
-              </svg>
-            </button>
-            ${isSent ? `
-            <button class="message-action-btn delete-btn" title="Delete">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 6h18"></path>
-                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                <path d="M10 11v6"></path>
-                <path d="M14 11v6"></path>
-                <path d="M6 6h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6"></path>
-              </svg>
-            </button>
-            ` : ''}
-          </div>
-          `}
-        `;
-        if (!isBlocked) {
-          messageDiv.addEventListener('click', (e) => {
-            if (e.target.tagName === 'IMG' || e.target.tagName === 'VIDEO' || e.target.closest('.message-action-btn')) return;
-            const actions = messageDiv.querySelector('.message-actions');
-            document.querySelectorAll('.message-actions.active').forEach(action => {
-              if (action !== actions) action.classList.remove('active');
-            });
-            actions.classList.toggle('active');
-          });
-          messageDiv.querySelector('.reply-btn')?.addEventListener('click', () => handleReply(message));
-          messageDiv.querySelector('.delete-btn')?.addEventListener('click', () => handleDelete(message.id, currentChatType));
-        }
-        chatContainer.appendChild(messageDiv);
-      });
-      chatContainer.scrollTop = chatContainer.scrollHeight;
+    async function renderMessages(messages, userId, users, isBlocked = false, admins = [], chatType = 'friend') {
+  chatContainer.innerHTML = '';
+  chatContainer.appendChild(typingIndicator);
+  chatContainer.appendChild(blockedMessage);
+
+  if (messages.length === 0) {
+    chatContainer.innerHTML += '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+
+  messages.forEach(message => {
+    const messageDiv = document.createElement('div');
+    const isSent = message.senderId === userId;
+    const isAdminMessage = admins.includes(message.senderId);
+    messageDiv.className = `message ${isSent ? 'sent' : 'received'}${message.replyTo ? ' reply' : ''}`;
+    if (message.replyTo) {
+      messageDiv.setAttribute('data-reply', message.replyContent || '[Original message not found]');
     }
 
-    async function loadMessages(userId, targetId, chatType = 'friend', isBlocked = false) {
-      if (!userId || !targetId) {
-        chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Invalid chat.</p>';
-        return;
-      }
-      chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Loading...</p>';
-      let chatRef;
-      let admins = [];
-      if (chatType === 'friend') {
-        chatRef = ref(db, `chats/${userId < targetId ? `${userId}_${targetId}` : `${targetId}_${userId}`}`);
-      } else if (chatType === 'room') {
-        chatRef = ref(db, `chatrooms/${targetId}/messages`);
-      } else if (chatType === 'group') {
-        chatRef = ref(db, `groups/${targetId}/messages`);
-        const adminsRef = ref(db, `groups/${targetId}/admins`);
-        const adminsSnapshot = await get(adminsRef);
-        admins = adminsSnapshot.exists() ? Object.keys(adminsSnapshot.val()) : [];
-      }
+    // Get sender name for room/group chats
+    const senderName = chatType !== 'friend' ? (users[message.senderId]?.name || 'Unknown') : '';
 
-      onValue(chatRef, async (snapshot) => {
-        const messages = [];
-        if (snapshot.exists()) {
-          snapshot.forEach(child => {
-            messages.push({ id: child.key, ...child.val() });
+    // Render message content
+    let content;
+    if (message.type === 'image') {
+      content = `<img src="${message.content}" alt="Sent image" onclick="window.openMediaModal('${message.content}', 'image')" />`;
+    } else if (message.type === 'video') {
+      content = `<video src="${message.content}" controls playsinline onclick="window.openMediaModal('${message.content}', 'video')"></video>`;
+    } else {
+      content = `<p class="message-content">${decryptMessage(message.content)}</p>`;
+    }
+
+    messageDiv.innerHTML = `
+      ${chatType !== 'friend' && !isSent ? `<span class="sender-name" style="font-size: 0.85rem; color: var(--text-secondary);">${senderName}</span>` : ''}
+      ${isAdminMessage ? '<span class="admin-badge">Admin</span>' : ''}
+      ${content}
+      <div class="message-time">${formatTimestamp(message.timestamp)}</div>
+      ${isBlocked ? '' : `
+      <div class="message-actions" data-message-id="${message.id}">
+        <button class="message-action-btn reply-btn" title="Reply">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12h-6l-3 3-3-3H3"></path>
+            <path d="M3 6h18"></path>
+            <path d="M3 18h6"></path>
+          </svg>
+        </button>
+        ${(isSent || (chatType === 'group' && isAdmin)) ? `
+        <button class="message-action-btn delete-btn" title="Delete">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h18"></path>
+            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <path d="M10 11v6"></path>
+            <path d="M14 11v6"></path>
+            <path d="M6 6h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6"></path>
+          </svg>
+        </button>
+        ` : ''}
+      </div>
+      `}
+    `;
+
+    if (!isBlocked) {
+      messageDiv.addEventListener('click', (e) => {
+        if (e.target.tagName === 'IMG' || e.target.tagName === 'VIDEO' || e.target.closest('.message-action-btn')) return;
+        const actions = messageDiv.querySelector('.message-actions');
+        document.querySelectorAll('.message-actions.active').forEach(action => {
+          if (action !== actions) action.classList.remove('active');
+        });
+        actions.classList.toggle('active');
+      });
+
+      messageDiv.querySelector('.reply-btn')?.addEventListener('click', () => handleReply(message));
+      messageDiv.querySelector('.delete-btn')?.addEventListener('click', () => handleDelete(message.id, chatType));
+    }
+
+    fragment.appendChild(messageDiv);
+  });
+
+  chatContainer.appendChild(fragment);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+    async function loadMessages(userId, targetId, chatType = 'friend', isBlocked = false) {
+  if (!userId || !targetId) {
+    chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Invalid chat.</p>';
+    return;
+  }
+
+  chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Loading...</p>';
+  let chatRef;
+  let admins = [];
+
+  try {
+    // Determine chat reference and fetch admins if needed
+    if (chatType === 'friend') {
+      chatRef = ref(db, `chats/${userId < targetId ? `${userId}_${targetId}` : `${targetId}_${userId}`}`);
+    } else if (chatType === 'room') {
+      chatRef = ref(db, `chatrooms/${targetId}/messages`);
+    } else if (chatType === 'group') {
+      chatRef = ref(db, `groups/${targetId}/messages`);
+      const adminsRef = ref(db, `groups/${targetId}/admins`);
+      const adminsSnapshot = await get(adminsRef);
+      admins = adminsSnapshot.exists() ? Object.keys(adminsSnapshot.val()) : [];
+    }
+
+    // Fetch all user profiles for room/group chats
+    let users = {};
+    if (chatType !== 'friend') {
+      const userRef = ref(db, 'users');
+      const userSnapshot = await get(userRef);
+      if (userSnapshot.exists()) {
+        users = userSnapshot.val();
+      }
+    } else {
+      const targetSnapshot = await get(ref(db, `users/${targetId}`));
+      users[targetId] = targetSnapshot.exists() ? targetSnapshot.val() : { name: 'Unknown' };
+    }
+
+    onValue(chatRef, async (snapshot) => {
+      const messages = [];
+      if (snapshot.exists()) {
+        snapshot.forEach(child => {
+          messages.push({ id: child.key, ...child.val() });
+        });
+        messages.sort((a, b) => a.timestamp - b.timestamp);
+
+        // Mark messages as read for friend chats
+        if (chatType === 'friend' && !isBlocked) {
+          const updates = {};
+          messages.forEach(msg => {
+            if (!msg.read && msg.senderId !== userId) {
+              updates[`${msg.id}/read`] = true;
+            }
           });
-          if (chatType === 'friend') {
-            const updates = {};
-            messages.forEach(msg => {
-              if (!msg.read && msg.senderId !== userId) {
-                updates[`${msg.id}/read`] = true;
-              }
-            });
-            if (Object.keys(updates).length > 0) {
-              try {
-                await update(chatRef, updates);
-              } catch (error) {
-                console.error("Error marking messages as read:", error);
-              }
+          if (Object.keys(updates).length > 0) {
+            try {
+              await update(chatRef, updates);
+            } catch (error) {
+              console.error("Error marking messages as read:", error);
             }
           }
         }
-        await renderMessages(messages, userId, { name: chatName.textContent }, isBlocked, admins);
-      }, (error) => {
-        console.error("Error loading messages:", error);
-        chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load messages.</p>';
-        window.showAlert('Failed to load messages. Please try again.', false);
-      });
-    }
 
+        await renderMessages(messages, userId, users, isBlocked, admins, chatType);
+      } else {
+        chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
+      }
+    }, (error) => {
+      console.error("Error loading messages:", error);
+      chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load messages.</p>';
+      window.showAlert('Failed to load messages. Please try again.', false);
+    });
+  } catch (error) {
+    console.error("Error loading messages:", error);
+    chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load messages.</p>';
+    window.showAlert('Failed to load messages. Please try again.', false);
+  }
+}
     function autoResizeTextarea() {
       messageInput.style.height = 'auto';
       messageInput.style.height = `${Math.min(messageInput.scrollHeight, 100)}px`;
