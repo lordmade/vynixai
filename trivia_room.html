@@ -496,20 +496,20 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, push, update, get, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue, push, update, get, set, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
     import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
-    // Replace with your actual Firebase project configuration
-   const firebaseConfig = {
-  apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
-  authDomain: "fire-b-a8878.firebaseapp.com",
-  databaseURL: "https://fire-b-a8878.firebaseio.com",
-  projectId: "fire-b-a8878",
-  storageBucket: "fire-b-a8878.firebasestorage.app",
-  messagingSenderId: "658673187627",
-  appId: "1:658673187627:web:6e4c29af661785f0afa36e",
-  measurementId: "G-V4W97VMSKL"
-};
+    // Firebase configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
+      authDomain: "fire-b-a8878.firebaseapp.com",
+      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com",
+      projectId: "fire-b-a8878",
+      storageBucket: "fire-b-a8878.appspot.com",
+      messagingSenderId: "658673187627",
+      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
+      measurementId: "G-V4W97VMSKL"
+    };
 
     try {
       const app = initializeApp(firebaseConfig);
@@ -685,9 +685,11 @@
 
       async function joinRoom(userId) {
         try {
+          console.log("Attempting to join/create room:", TRIVIA_ROOM_ID);
           const roomRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}`);
           const roomSnapshot = await get(roomRef);
           if (!roomSnapshot.exists()) {
+            console.log("Room does not exist, creating new room...");
             await set(roomRef, {
               name: "Trivia Room",
               creatorId: userId,
@@ -695,15 +697,18 @@
               members: { [userId]: true },
               createdAt: Date.now()
             });
+            console.log("Room created successfully.");
           } else {
+            console.log("Room exists, joining...");
             await update(roomRef, {
               [`members.${userId}`]: true
             });
+            console.log("User joined room successfully.");
           }
           await set(ref(db, `users/${userId}/joinedRooms/${TRIVIA_ROOM_ID}`), true);
         } catch (error) {
-          console.error("Error joining room:", error);
-          showAlert("Failed to join Trivia Room.", false);
+          console.error("Error joining/creating room:", error);
+          showAlert(`Failed to join Trivia Room: ${error.message}`, false);
         }
       }
 
@@ -744,6 +749,7 @@
           const apiKey = await fetchGeminiApiKey();
           if (!apiKey) return;
 
+          console.log("Generating quiz with Gemini API...");
           const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent', {
             method: 'POST',
             headers: {
@@ -788,6 +794,7 @@
           const messagesRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages`);
           const newMessageRef = await push(messagesRef, messageData);
           currentQuizMessageId = newMessageRef.key;
+          console.log("Quiz generated and sent to database.");
         } catch (error) {
           console.error("Error generating quiz:", error);
           showAlert("Failed to generate quiz. Please try again.", false);
@@ -815,6 +822,7 @@
           const userSnapshot = await get(userRef);
           const currentCoins = userSnapshot.val()?.vynixCoins || 0;
           await update(userRef, { vynixCoins: currentCoins + amount });
+          console.log(`Updated Vynix coins for user ${userId}: +${amount}`);
         } catch (error) {
           console.error("Error updating Vynix coins:", error);
           showAlert("Failed to update Vynix coins.", false);
@@ -835,6 +843,7 @@
           await push(ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages`), messageData);
           messageInput.value = '';
           messageInput.style.height = 'auto';
+          console.log("Message sent successfully.");
         } catch (error) {
           console.error("Error sending message:", error);
           showAlert("Failed to send message.", false);
@@ -993,35 +1002,37 @@
       onAuthStateChanged(auth, async (user) => {
         if (user) {
           try {
+            console.log("User authenticated:", user.uid);
             await loadTheme(user.uid);
             const urlParams = new URLSearchParams(window.location.search);
             const roomId = urlParams.get('roomId');
             if (roomId !== TRIVIA_ROOM_ID) {
+              console.error("Invalid room ID:", roomId);
               showAlert('Invalid room. Returning to home.', false);
               setTimeout(() => window.location.href = 'home.html', 2000);
               return;
             }
 
             await joinRoom(user.uid);
-            await loadMessages(user.uid);
-
             const roomRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}`);
             const roomSnapshot = await get(roomRef);
-            let chatData = null;
-            let users = {};
-            if (roomSnapshot.exists()) {
-              chatData = roomSnapshot.val();
-              const userRef = ref(db, 'users');
-              const userSnapshot = await get(userRef);
-              users = userSnapshot.exists() ? userSnapshot.val() : {};
-              chatName.textContent = chatData.name || 'Trivia Room';
-              userStatus.textContent = `Public Room: ${Object.keys(chatData.members || {}).length} members`;
-              chatAvatar.textContent = 'T';
-            } else {
-              showAlert('Room not found. Returning to home.', false);
+            if (!roomSnapshot.exists()) {
+              console.error("Room still not found after join attempt.");
+              showAlert('Failed to create or access Trivia Room. Please try again.', false);
               setTimeout(() => window.location.href = 'home.html', 2000);
               return;
             }
+
+            await loadMessages(user.uid);
+
+            let chatData = roomSnapshot.val();
+            let users = {};
+            const userRef = ref(db, 'users');
+            const userSnapshot = await get(userRef);
+            users = userSnapshot.exists() ? userSnapshot.val() : {};
+            chatName.textContent = chatData.name || 'Trivia Room';
+            userStatus.textContent = `Public Room: ${Object.keys(chatData.members || {}).length} members`;
+            chatAvatar.textContent = 'T';
 
             userProfile.onclick = () => {
               renderRoomInfo(chatData, users, user.uid);
@@ -1051,13 +1062,15 @@
             const messagesSnapshot = await get(messagesRef);
             const hasQuiz = messagesSnapshot.exists() && Object.values(messagesSnapshot.val()).some(msg => msg.type === 'quiz');
             if (!hasQuiz) {
+              console.log("No quiz found, generating new quiz...");
               await generateQuiz();
             }
           } catch (error) {
             console.error("Initialization error:", error);
-            showAlert("Failed to initialize Trivia Room.", false);
+            showAlert(`Failed to initialize Trivia Room: ${error.message}`, false);
           }
         } else {
+          console.error("User not authenticated.");
           showAlert('Please log in to continue.', false);
           setTimeout(() => window.location.href = 'signup.html', 2000);
         }
@@ -1066,7 +1079,7 @@
       window.submitAnswer = submitAnswer;
     } catch (error) {
       console.error("Script initialization error:", error);
-      showAlert("Failed to initialize application. Please check Firebase configuration.", false);
+      showAlert(`Failed to initialize application: ${error.message}`, false);
     }
   </script>
 </body>
