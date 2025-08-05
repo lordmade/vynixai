@@ -172,6 +172,7 @@
       border-radius: 12px;
       border-bottom-left-radius: 4px;
       padding: 0.75rem 1rem;
+      min-width: 300px;
     }
 
     .message.quiz .option {
@@ -413,6 +414,7 @@
       .avatar { width: 32px; height: 32px; }
       .chat-container { padding: 0.5rem; }
       .message { max-width: 90%; font-size: 0.9rem; }
+      .message.quiz { min-width: 90%; }
       .message-input { font-size: 0.9rem; }
       .send-btn svg { width: 20px; height: 20px; }
       .icon-btn svg { width: 20px; height: 20px; }
@@ -504,7 +506,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.15.0/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.15.0/firebase-auth.js";
-    import { getDatabase, ref, onValue, push, update, get, remove, set, query, limitToLast } from "https://www.gstatic.com/firebasejs/10.15.0/firebase-database.js";
+    import { getDatabase, ref, onChildAdded, push, update, get, remove, set, query, limitToLast } from "https://www.gstatic.com/firebasejs/10.15.0/firebase-database.js";
     import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.15.0/firebase-remote-config.js";
     import { getAI, GoogleAIBackend } from "https://www.gstatic.com/firebasejs/10.15.0/firebase-ai.js";
 
@@ -599,6 +601,7 @@
     let alertResolve = null;
     let currentQuiz = null;
     let currentQuizMessageId = null;
+    let messages = []; // Store messages for rendering
 
     const ENCRYPTION_KEY = "my-secret-key-123"; // TODO: Replace with secure key management
     const themes = [
@@ -858,11 +861,31 @@
           isActive: true
         };
         const messagesRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages`);
-        const newMessageRef = await push(messagesRef, messageData);
-        currentQuizMessageId = newMessageRef.key;
-        await set(activeQuizRef, { messageId: newMessageRef.key, timestamp: Date.now() });
-        console.log("Quiz generated and stored:", newMessageRef.key);
-        showAlert("New quiz posted!", true);
+        let newMessageRef;
+        let attempts = 0;
+        const maxAttempts = 3;
+        while (!newMessageRef && attempts < maxAttempts) {
+          try {
+            newMessageRef = await push(messagesRef, messageData);
+            currentQuizMessageId = newMessageRef.key;
+            await set(activeQuizRef, { messageId: newMessageRef.key, timestamp: Date.now() });
+            console.log("Quiz generated and stored:", newMessageRef.key);
+            showAlert("New quiz posted!", true);
+          } catch (writeError) {
+            attempts++;
+            console.error(`Error storing quiz (attempt ${attempts}/${maxAttempts}):`, writeError);
+            if (attempts === maxAttempts) {
+              console.error("Max attempts reached, using fallback without Firebase");
+              showAlert("Failed to store quiz in Firebase. Displaying locally.", false);
+              messages.push({
+                id: `local-${Date.now()}`,
+                ...messageData
+              });
+              renderMessages(messages, auth.currentUser.uid, {});
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
       } catch (error) {
         console.error("Error generating quiz:", error.message);
         showAlert(`Failed to generate quiz: ${error.message}. Using fallback question.`, false);
@@ -891,7 +914,12 @@
           showAlert("New quiz posted!", true);
         } catch (fallbackError) {
           console.error("Error storing fallback quiz:", fallbackError);
-          showAlert("Failed to store quiz. Retrying soon...", false);
+          showAlert("Failed to store quiz in Firebase. Displaying locally.", false);
+          messages.push({
+            id: `local-${Date.now()}`,
+            ...messageData
+          });
+          renderMessages(messages, auth.currentUser.uid, {});
         }
       }
     }
@@ -1018,7 +1046,13 @@
         let content = '';
 
         if (message.type === 'quiz') {
-          const quizData = JSON.parse(decryptMessage(message.content));
+          let quizData;
+          try {
+            quizData = JSON.parse(decryptMessage(message.content));
+          } catch (error) {
+            console.error("Error parsing quiz data:", error);
+            quizData = { question: "Error loading quiz", options: [], type: 'quiz' };
+          }
           const isQuizActive = message.isActive && Date.now() < message.expiresAt;
           const answerRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/answers/${message.id}/${userId}`);
           const answerSnapshot = await get(answerRef);
@@ -1026,7 +1060,7 @@
           content = `
             <span class="sender-name">Trivia Bot</span>
             <p>${quizData.question}</p>
-            ${quizData.options
+            ${quizData.options.length ? quizData.options
               .map((option, index) => `
                 <div class="option" 
                      ${isQuizActive && !hasAnswered 
@@ -1036,9 +1070,9 @@
                   ${option}
                 </div>
               `)
-              .join('')}
+              .join('') : '<p>No options available</p>'}
             ${!isQuizActive ? '<p style="color: var(--text-secondary); font-size: 0.8rem;">This quiz has expired.</p>' : ''}
-            ${hasAnswered ? `<p style="color: var(--text-secondary); font-size: 0.8rem;">You answered: ${quizData.options[answerSnapshot.val().answerIndex]}</p>` : ''}
+            ${hasAnswered ? `<p style="color: var(--text-secondary); font-size: 0.8rem;">You answered: ${quizData.options[answerSnapshot.val().answerIndex] || 'Unknown'}</p>` : ''}
           `;
           if (isQuizActive) {
             const timer = document.createElement('div');
@@ -1074,25 +1108,22 @@
 
     async function loadMessages(userId) {
       console.log("Loading messages for user:", userId);
+      messages = [];
       const messagesRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages`);
       const recentMessagesQuery = query(messagesRef, limitToLast(50));
       try {
         const userRef = ref(db, 'users');
         const userSnapshot = await get(userRef);
         const users = userSnapshot.exists() ? userSnapshot.val() : {};
-        onValue(recentMessagesQuery, (snapshot) => {
-          const messages = [];
-          if (snapshot.exists()) {
-            snapshot.forEach(child => {
-              messages.push({ id: child.key, ...child.val() });
-            });
-            messages.sort((a, b) => a.timestamp - b.timestamp);
-            renderMessages(messages, userId, users);
-            console.log("Messages loaded:", messages.length);
-          } else {
-            chatContainer.innerHTML = '<p style="text-align: center; padding: 1rem; color: var(--text-secondary);">No messages yet.</p>';
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-          }
+
+        onChildAdded(recentMessagesQuery, (snapshot) => {
+          const message = { id: snapshot.key, ...snapshot.val() };
+          messages = messages.filter(m => m.id !== message.id); // Remove duplicates
+          messages.push(message);
+          messages.sort((a, b) => a.timestamp - b.timestamp);
+          if (messages.length > 50) messages.shift(); // Keep only last 50 messages
+          renderMessages(messages, userId, users);
+          console.log("New message added:", message.id);
         }, (error) => {
           console.error("Error loading messages:", error);
           showAlert("Failed to load messages. Please check your connection.", false);
@@ -1104,8 +1135,15 @@
             currentQuizMessageId = activeQuizSnapshot.val().messageId;
             get(ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages/${currentQuizMessageId}`)).then((quizMessage) => {
               if (quizMessage.exists() && quizMessage.val().isActive && Date.now() < quizMessage.val().expiresAt) {
-                currentQuiz = JSON.parse(decryptMessage(quizMessage.val().content));
-                console.log("Active quiz loaded:", currentQuizMessageId);
+                try {
+                  currentQuiz = JSON.parse(decryptMessage(quizMessage.val().content));
+                  console.log("Active quiz loaded:", currentQuizMessageId);
+                } catch (error) {
+                  console.error("Error parsing active quiz:", error);
+                  currentQuiz = null;
+                  currentQuizMessageId = null;
+                  remove(activeQuizRef);
+                }
               } else {
                 remove(activeQuizRef);
                 currentQuiz = null;
@@ -1120,7 +1158,7 @@
           console.error("Error loading active quiz:", error);
         });
       } catch (error) {
-        console.error("Error loading messages:", error);
+        console.error("Error initializing message loading:", error);
         showAlert("Failed to load messages. Please check your connection.", false);
       }
     }
