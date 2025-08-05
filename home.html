@@ -814,97 +814,136 @@
   font-style: italic;
   color: var(--accent); /* Use the accent color for visibility */
 }
- .status-section {
+
+
+
+.status-section {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-  padding: 1rem;
+  gap: 0.5rem; /* Tighter gap like Instagram */
+  padding: 0.5rem;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 .status-item {
   background: var(--chat-bg);
-  border-radius: 24px; /* Pill shape */
-  padding: 0.75rem;
+  border-radius: 16px; /* Pill-shaped, less rounded than previous */
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+  aspect-ratio: 1 / 1; /* Square shape */
   display: flex;
   flex-direction: column;
-  align-items: center;
-  text-align: center;
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-  position: relative; /* For delete button positioning */
-  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  border: 2px solid transparent;
 }
 
 .status-item:hover {
-  transform: scale(1.05);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transform: scale(1.03);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.status-item.viewed {
+  opacity: 0.7;
+  border: 2px solid var(--status-bar); /* Greyed-out border for viewed statuses */
+}
+
+.status-item:not(.viewed) {
+  border: 2px solid var(--accent); /* Highlight unviewed statuses */
 }
 
 .status-preview {
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
+  width: 100%;
+  height: 70%; /* Most of the card is the thumbnail */
   object-fit: cover;
-  margin-bottom: 0.5rem;
+  display: block;
+}
+
+.status-preview-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 70%;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.3), transparent); /* Gradient overlay */
+  pointer-events: none;
 }
 
 .status-info {
-  flex: 0;
+  padding: 0.5rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .status-name {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 500;
   margin: 0;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100%;
 }
 
 .status-time {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
-  margin: 0.25rem 0 0;
+  margin-top: 0.2rem;
 }
 
 .status-item .delete-btn {
   position: absolute;
   top: 0.5rem;
   right: 0.5rem;
-  padding: 0.25rem;
-  background: rgba(0, 0, 0, 0.5);
+  padding: 0.3rem;
+  background: rgba(0, 0, 0, 0.6);
   border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .status-item .delete-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   stroke: #FFFFFF;
 }
 
 @media (max-width: 768px) {
   .status-section {
     grid-template-columns: repeat(2, 1fr);
+    gap: 0.4rem;
+    padding: 0.4rem;
+  }
+  .status-item {
+    border-radius: 12px;
+  }
+  .status-preview {
+    height: 65%;
   }
 }
 
 @media (max-width: 480px) {
   .status-section {
     grid-template-columns: 1fr;
+    gap: 0.3rem;
+    padding: 0.3rem;
   }
   .status-item {
-    padding: 0.5rem;
+    border-radius: 10px;
   }
   .status-preview {
-    width: 64px;
-    height: 64px;
+    height: 60%;
   }
   .status-name {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
   }
   .status-time {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
   }
 }
   </style>
@@ -1797,37 +1836,56 @@ function renderSuggestedFriends(users) {
   });
 }
 
-     async function renderStatuses(statuses) {
+async function renderStatuses(statuses) {
   chatList.setAttribute('aria-busy', 'false');
-  chatList.innerHTML = '';
+  chatList.innerHTML = ''; // Clear previous content to prevent duplicates
   const statusSection = document.createElement('div');
   statusSection.className = 'status-section';
 
-  const now = Date.now();
-  for (const uid in statuses) {
-    statuses[uid] = Object.entries(statuses[uid]).map(([statusId, status]) => ({
-      statusId,
-      ...status
-    })).filter(status => now - status.timestamp < 24 * 60 * 60 * 1000);
+  const userId = auth.currentUser?.uid;
+  if (!userId) {
+    chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Please sign in to view statuses.</p>';
+    return;
   }
 
-  const userId = auth.currentUser?.uid;
+  // Filter and sort statuses, removing expired ones
+  const now = Date.now();
+  const processedStatuses = {};
+  for (const uid in statuses) {
+    processedStatuses[uid] = Object.entries(statuses[uid])
+      .map(([statusId, status]) => ({
+        statusId,
+        ...status
+      }))
+      .filter(status => now - status.timestamp < 24 * 60 * 60 * 1000)
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  // Fetch user data once
   const usersRef = ref(db, 'users');
-  const usersSnapshot = await get(usersRef);
-  const users = usersSnapshot.val() || {};
+  let users = {};
+  try {
+    const usersSnapshot = await get(usersRef);
+    users = usersSnapshot.val() || {};
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    window.showAlert(MESSAGES.USER_FAIL, false);
+    return;
+  }
 
   // Render user's own statuses first
-  if (userId && statuses[userId]?.length > 0) {
-    statuses[userId].sort((a, b) => b.timestamp - a.timestamp).forEach((status, index) => {
+  if (processedStatuses[userId]?.length > 0) {
+    processedStatuses[userId].forEach((status, index) => {
       const statusItem = document.createElement('div');
-      statusItem.className = 'status-item';
+      statusItem.className = `status-item ${status.views?.[userId] ? 'viewed' : ''}`;
       statusItem.setAttribute('role', 'button');
       statusItem.setAttribute('aria-label', `View your status ${status.caption || `Status #${index + 1}`}`);
       const thumbnail = status.resource_type === 'image'
-        ? `${status.url}?q_auto,f_auto,w_80,h_80,c_fill`
-        : `${status.url.replace(/\.mp4$/, '.jpg')}?w_80,h_80,c_fill,q_auto,f_auto#t_0.1`;
+        ? `${status.url}?q_auto,f_auto,w_120,h_120,c_fill`
+        : `${status.url.replace(/\.mp4$/, '.jpg')}?w_120,h_120,c_fill,q_auto,f_auto#t_0.1`;
       statusItem.innerHTML = `
-        <img src="${thumbnail}" class="status-preview" alt="Your Status Preview" onerror="this.src='https://via.placeholder.com/80'" />
+        <img src="${thumbnail}" class="status-preview" alt="Your Status Preview" onerror="this.src='https://via.placeholder.com/120'" />
+        <div class="status-preview-overlay"></div>
         <div class="status-info">
           <h3 class="status-name">${status.caption || `My Status #${index + 1}`}</h3>
           <p class="status-time">${formatTimestamp(status.timestamp)}</p>
@@ -1840,7 +1898,7 @@ function renderSuggestedFriends(users) {
       `;
       statusItem.onclick = (e) => {
         if (!e.target.closest('.delete-btn')) {
-          viewStatus(userId, statuses[userId], { name: userName.textContent });
+          viewStatus(userId, processedStatuses[userId], { name: userName.textContent });
         }
       };
       statusItem.querySelector('.delete-btn').onclick = async (e) => {
@@ -1856,6 +1914,7 @@ function renderSuggestedFriends(users) {
           try {
             await remove(ref(db, `statuses/${userId}/${status.statusId}`));
             window.showAlert(MESSAGES.STATUS_DELETE_SUCCESS, true);
+            // Reload statuses to refresh the grid
             loadStatuses(userId, { name: userName.textContent });
           } catch (error) {
             console.error("Error deleting status:", error);
@@ -1868,31 +1927,36 @@ function renderSuggestedFriends(users) {
   }
 
   // Render friends' statuses
-  Object.keys(statuses).forEach(uid => {
-    if (uid !== userId && statuses[uid]?.length > 0) {
+  Object.entries(processedStatuses)
+    .filter(([uid]) => uid !== userId && processedStatuses[uid]?.length > 0)
+    .forEach(([uid, userStatuses]) => {
       const user = users[uid] || { name: 'Unknown', avatar: null };
-      const statusCount = statuses[uid].length;
-      const latestStatus = statuses[uid][0];
+      const statusCount = userStatuses.length;
+      const latestStatus = userStatuses[0];
       const thumbnail = latestStatus.resource_type === 'image'
-        ? `${latestStatus.url}?q_auto,f_auto,w_80,h_80,c_fill`
-        : `${latestStatus.url.replace(/\.mp4$/, '.jpg')}?w_80,h_80,c_fill,q_auto,f_auto#t_0.1`;
+        ? `${latestStatus.url}?q_auto,f_auto,w_120,h_120,c_fill`
+        : `${latestStatus.url.replace(/\.mp4$/, '.jpg')}?w_120,h_120,c_fill,q_auto,f_auto#t_0.1`;
       const statusItem = document.createElement('div');
-      statusItem.className = 'status-item';
+      statusItem.className = `status-item ${latestStatus.views?.[userId] ? 'viewed' : ''}`;
       statusItem.setAttribute('role', 'button');
       statusItem.setAttribute('aria-label', `View ${user.name}'s status`);
       statusItem.innerHTML = `
-        <img src="${thumbnail}" class="status-preview" alt="${user.name}'s Status Preview" onerror="this.src='https://via.placeholder.com/80'" />
+        <img src="${thumbnail}" class="status-preview" alt="${user.name}'s Status Preview" onerror="this.src='https://via.placeholder.com/120'" />
+        <div class="status-preview-overlay"></div>
         <div class="status-info">
           <h3 class="status-name">${user.name} (${statusCount})</h3>
           <p class="status-time">${formatTimestamp(latestStatus.timestamp)}</p>
         </div>
       `;
-      statusItem.onclick = () => viewStatus(uid, statuses[uid], user);
+      statusItem.onclick = () => viewStatus(uid, userStatuses, user);
       statusSection.appendChild(statusItem);
-    }
-  });
+    });
 
-  chatList.appendChild(statusSection);
+  if (statusSection.children.length === 0) {
+    chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No statuses available.</p>';
+  } else {
+    chatList.appendChild(statusSection);
+  }
 }
 
     function viewStatus(userId, statusArray, userProfile) {
