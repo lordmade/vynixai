@@ -538,6 +538,45 @@
     remoteConfig.settings.minimumFetchIntervalMillis = 3600000;
 
     const TRIVIA_ROOM_ID = "trivia_room";
+    const QUIZ_INTERVAL = 120000; // 2 minutes
+    const FALLBACK_QUIZZES = [
+      {
+        question: "What is the capital of France?",
+        options: ["Paris", "London", "Berlin", "Madrid"],
+        correct: 0
+      },
+      {
+        question: "Which planet is known as the Red Planet?",
+        options: ["Venus", "Mars", "Jupiter", "Saturn"],
+        correct: 1
+      },
+      {
+        question: "Who painted the Mona Lisa?",
+        options: ["Vincent van Gogh", "Pablo Picasso", "Leonardo da Vinci", "Claude Monet"],
+        correct: 2
+      },
+      {
+        question: "What is the largest mammal in the world?",
+        options: ["Elephant", "Blue Whale", "Giraffe", "Hippopotamus"],
+        correct: 1
+      },
+      {
+        question: "Which element has the chemical symbol 'O'?",
+        options: ["Gold", "Oxygen", "Osmium", "Oganesson"],
+        correct: 1
+      },
+      {
+        question: "What is the smallest country in the world?",
+        options: ["Monaco", "Vatican City", "San Marino", "Liechtenstein"],
+        correct: 1
+      },
+      {
+        question: "Which gas makes up 78% of Earth's atmosphere?",
+        options: ["Oxygen", "Carbon Dioxide", "Nitrogen", "Argon"],
+        correct: 2
+      }
+    ];
+
     const chatContainer = document.getElementById("chat-container");
     const messageInput = document.getElementById("message-input");
     const sendBtn = document.getElementById("send-btn");
@@ -691,13 +730,15 @@
         await fetchAndActivate(remoteConfig);
         const geminiApiKey = getString(remoteConfig, "gemini_api_key");
         if (!geminiApiKey) {
-          showAlert("Gemini API key not configured in Remote Config.", false);
+          console.error("Gemini API key not found in Remote Config");
+          showAlert("Gemini API key not configured. Using fallback questions.", false);
+          return null;
         }
         console.log("Gemini API key fetched successfully");
         return geminiApiKey;
       } catch (error) {
         console.error("Error fetching Remote Config:", error);
-        showAlert("Failed to fetch Gemini API key.", false);
+        showAlert("Failed to fetch Gemini API key. Using fallback questions.", false);
         return null;
       }
     }
@@ -757,22 +798,50 @@
 
     async function generateQuiz() {
       const activeQuizRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/activeQuiz`);
-      if ((await get(activeQuizRef)).exists()) {
-        console.log("Active quiz exists, skipping generation");
-        return;
-      }
       try {
+        console.log("Checking for active quiz...");
+        const activeQuizSnapshot = await get(activeQuizRef);
+        if (activeQuizSnapshot.exists()) {
+          const activeQuiz = activeQuizSnapshot.val();
+          const quizMessageRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages/${activeQuiz.messageId}`);
+          const quizMessageSnapshot = await get(quizMessageRef);
+          if (quizMessageSnapshot.exists() && quizMessageSnapshot.val().isActive && Date.now() < quizMessageSnapshot.val().expiresAt) {
+            console.log("Active quiz found, skipping generation:", activeQuiz.messageId);
+            return;
+          } else {
+            console.log("Cleaning up expired or inactive quiz...");
+            await remove(activeQuizRef);
+          }
+        }
+
         console.log("Generating new quiz...");
-        const model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const prompt = `
-          Generate a trivia quiz question with the following specifications:
-          - Topic: General Knowledge
-          - Difficulty: Intermediate
-          - Format: Multiple choice
-          - Output: JSON object with keys "question", "options" (array of 4 strings), and "correct" (index of correct option, 0-3)
-        `;
-        const response = await model.generateContent(prompt);
-        const quiz = JSON.parse(response.text);
+        let quiz;
+        const geminiApiKey = await fetchGeminiApiKey();
+        if (geminiApiKey) {
+          try {
+            const model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
+            const prompt = `
+              Generate a trivia quiz question with the following specifications:
+              - Topic: General Knowledge
+              - Difficulty: Intermediate
+              - Format: Multiple choice
+              - Output: JSON object with keys "question", "options" (array of 4 strings), and "correct" (index of correct option, 0-3)
+            `;
+            const response = await model.generateContent(prompt);
+            console.log("Gemini raw response:", response.text);
+            quiz = JSON.parse(response.text);
+            if (!quiz.question || !Array.isArray(quiz.options) || quiz.options.length !== 4 || typeof quiz.correct !== 'number' || quiz.correct < 0 || quiz.correct > 3) {
+              throw new Error("Invalid quiz format from Gemini");
+            }
+          } catch (apiError) {
+            console.error("Gemini API error, using fallback:", apiError);
+            quiz = FALLBACK_QUIZZES[Math.floor(Math.random() * FALLBACK_QUIZZES.length)];
+          }
+        } else {
+          console.log("No Gemini API key, using fallback quiz");
+          quiz = FALLBACK_QUIZZES[Math.floor(Math.random() * FALLBACK_QUIZZES.length)];
+        }
+
         currentQuiz = quiz;
         const content = JSON.stringify({
           question: quiz.question,
@@ -793,21 +862,68 @@
         currentQuizMessageId = newMessageRef.key;
         await set(activeQuizRef, { messageId: newMessageRef.key, timestamp: Date.now() });
         console.log("Quiz generated and stored:", newMessageRef.key);
-
-        setTimeout(async () => {
-          if (currentQuizMessageId === newMessageRef.key) {
-            await update(ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages/${newMessageRef.key}`), { isActive: false });
-            await remove(activeQuizRef);
-            showAlert("Time's up! Generating new quiz...", true);
-            currentQuiz = null;
-            currentQuizMessageId = null;
-            setTimeout(generateQuiz, 2000);
-          }
-        }, 30000);
+        showAlert("New quiz posted!", true);
       } catch (error) {
-        console.error("Error generating quiz:", error);
-        showAlert("Failed to generate quiz. Please try again.", false);
+        console.error("Error generating quiz:", error.message);
+        showAlert(`Failed to generate quiz: ${error.message}. Using fallback question.`, false);
+        quiz = FALLBACK_QUIZZES[Math.floor(Math.random() * FALLBACK_QUIZZES.length)];
+        currentQuiz = quiz;
+        const content = JSON.stringify({
+          question: quiz.question,
+          options: quiz.options,
+          type: 'quiz'
+        });
+        const messageData = {
+          senderId: 'bot',
+          senderName: 'Trivia Bot',
+          content: encryptMessage(content),
+          type: 'quiz',
+          timestamp: Date.now(),
+          expiresAt: Date.now() + 30000,
+          isActive: true
+        };
+        try {
+          const messagesRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages`);
+          const newMessageRef = await push(messagesRef, messageData);
+          currentQuizMessageId = newMessageRef.key;
+          await set(activeQuizRef, { messageId: newMessageRef.key, timestamp: Date.now() });
+          console.log("Fallback quiz stored:", newMessageRef.key);
+          showAlert("New quiz posted!", true);
+        } catch (fallbackError) {
+          console.error("Error storing fallback quiz:", fallbackError);
+          showAlert("Failed to store quiz. Retrying soon...", false);
+        }
       }
+    }
+
+    function startQuizGeneration() {
+      console.log("Starting quiz generation loop...");
+      generateQuiz();
+      setInterval(async () => {
+        try {
+          console.log("Checking quiz status...");
+          const activeQuizRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/activeQuiz`);
+          const activeQuizSnapshot = await get(activeQuizRef);
+          if (activeQuizSnapshot.exists()) {
+            const activeQuiz = activeQuizSnapshot.val();
+            const quizMessageRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages/${activeQuiz.messageId}`);
+            const quizMessageSnapshot = await get(quizMessageRef);
+            if (!quizMessageSnapshot.exists() || !quizMessageSnapshot.val().isActive || Date.now() >= quizMessageSnapshot.val().expiresAt) {
+              console.log("Quiz expired or invalid, generating new quiz...");
+              await remove(activeQuizRef);
+              await generateQuiz();
+            } else {
+              console.log("Active quiz still valid, skipping generation...");
+            }
+          } else {
+            console.log("No active quiz, generating new quiz...");
+            await generateQuiz();
+          }
+        } catch (error) {
+          console.error("Error in quiz generation loop:", error);
+          showAlert("Error managing quizzes. Retrying soon...", false);
+        }
+      }, QUIZ_INTERVAL);
     }
 
     async function updateVynixCoins(userId, amount) {
@@ -858,6 +974,7 @@
     async function submitAnswer(userId, answerIndex, messageId) {
       if (!currentQuiz || !currentQuizMessageId || messageId !== currentQuizMessageId) {
         console.log("Invalid quiz submission attempt:", { userId, messageId });
+        showAlert("This quiz is no longer active!", true);
         return;
       }
       const answerRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/answers/${messageId}/${userId}`);
@@ -923,6 +1040,21 @@
             ${!isQuizActive ? '<p style="color: var(--text-secondary); font-size: 0.8rem;">This quiz has expired.</p>' : ''}
             ${hasAnswered ? `<p style="color: var(--text-secondary); font-size: 0.8rem;">You answered: ${quizData.options[answerSnapshot.val().answerIndex]}</p>` : ''}
           `;
+          if (isQuizActive) {
+            const timer = document.createElement('div');
+            timer.className = 'message-time';
+            messageDiv.appendChild(timer);
+            const updateTimer = () => {
+              const timeLeft = Math.max(0, message.expiresAt - Date.now());
+              timer.textContent = `Time left: ${Math.ceil(timeLeft / 1000)}s`;
+              if (timeLeft > 0) {
+                setTimeout(updateTimer, 1000);
+              } else {
+                timer.textContent = 'Quiz expired';
+              }
+            };
+            updateTimer();
+          }
         } else {
           content = `
             ${!isSent && message.senderId !== 'bot' ? `<span class="sender-name">${users[message.senderId]?.name || 'Unknown'}</span>` : ''}
@@ -937,7 +1069,7 @@
       }
 
       chatContainer.appendChild(fragment);
-      chatContainer.scrollTop = chatContainer.scrollHeight; // Always scroll to bottom
+      chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
     async function loadMessages(userId) {
@@ -966,7 +1098,6 @@
           showAlert("Failed to load messages. Please check your connection.", false);
         });
 
-        // Load active quiz
         const activeQuizRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/activeQuiz`);
         get(activeQuizRef).then((activeQuizSnapshot) => {
           if (activeQuizSnapshot.exists()) {
@@ -1127,6 +1258,8 @@
             renderRoomInfo(chatData, users, user.uid);
             window.showRoomInfo();
           };
+
+          startQuizGeneration();
         } catch (error) {
           console.error("Error loading room data:", error);
           showAlert("Failed to load room data. Please check your connection.", false);
@@ -1151,13 +1284,6 @@
         });
 
         messageInput.addEventListener('input', autoResizeTextarea);
-
-        const messagesRef = ref(db, `chatrooms/${TRIVIA_ROOM_ID}/messages`);
-        const messagesSnapshot = await get(messagesRef);
-        const hasQuiz = messagesSnapshot.exists() && Object.values(messagesSnapshot.val()).some(msg => msg.type === 'quiz' && msg.isActive && Date.now() < msg.expiresAt);
-        if (!hasQuiz) {
-          await generateQuiz();
-        }
       } else {
         console.log("No user authenticated, redirecting to signup");
         showAlert('Please log in to continue.', false);
