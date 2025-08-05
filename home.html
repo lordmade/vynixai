@@ -1893,13 +1893,35 @@ function renderSuggestedFriends(users) {
   showStatus(currentIndex);
 }
 
-   async function renderRooms(rooms, query = '') {
+   
+      async function renderRooms(rooms, query = '') {
   chatList.setAttribute('aria-busy', 'false');
   chatList.innerHTML = ''; // Clear the DOM
+
+  const userId = auth.currentUser?.uid;
+
+  // Check if Trivia Room exists in Firebase, create it if not
+  const triviaRoomId = 'trivia_room';
+  const triviaRoomRef = ref(db, `chatrooms/${triviaRoomId}`);
+  const triviaRoomSnapshot = await get(triviaRoomRef);
+  if (!triviaRoomSnapshot.exists()) {
+    // Create default Trivia Room in Firebase
+    await set(triviaRoomRef, {
+      name: 'Trivia Room',
+      type: 'public',
+      description: 'Join to answer quizzes and win Vynix coins!',
+      creatorId: 'system', // Use a special ID for system-created rooms
+      createdAt: Date.now(),
+      members: {}, // Initialize empty members object
+      moderators: { system: true }
+    });
+  }
 
   // Add Trivia Room card
   const triviaRoomCard = document.createElement('div');
   triviaRoomCard.className = 'room-item';
+  const triviaRoomData = (await get(triviaRoomRef)).val() || {};
+  const memberCount = triviaRoomData.members ? Object.keys(triviaRoomData.members).length : 0;
   triviaRoomCard.innerHTML = `
     <div class="room-avatar">T</div>
     <div class="room-info">
@@ -1907,24 +1929,33 @@ function renderSuggestedFriends(users) {
       <p class="room-preview">Join to answer quizzes and win Vynix coins!</p>
     </div>
     <div class="flex flex-col items-end">
-      <div class="room-members">0 members</div>
+      <div class="room-members">${memberCount} members</div>
     </div>
   `;
-  triviaRoomCard.onclick = () => {
-    const userId = auth.currentUser?.uid;
+  triviaRoomCard.onclick = async () => {
     if (!userId) {
-      window.showAlert(MESSAGES.SIGN_IN_REQUIRED, false);
+      window.showAlert(MESSAGES.SIGN_IN_REQUIRED, false, false, null, () => {
+        window.location.href = `signup.html?returnTo=${encodeURIComponent(`${ROUTES.ROOM}?roomId=${triviaRoomId}`)}`;
+      });
       return;
     }
-    window.location.href = 'trivia_room.html';
+    try {
+      // Join the Trivia Room if not already a member
+      if (!triviaRoomData.members?.[userId]) {
+        await joinRoom(userId, triviaRoomId);
+      }
+      window.location.href = `${ROUTES.ROOM}?roomId=${triviaRoomId}`;
+    } catch (error) {
+      console.error('Error joining Trivia Room:', error);
+      window.showAlert('Failed to join Trivia Room. Please try again.', false);
+    }
   };
   chatList.appendChild(triviaRoomCard);
 
   // Render other rooms
   if (!rooms || Object.keys(rooms).length === 0) {
     if (!query) {
-      // If no query and no rooms, the Trivia Room is already added
-      return;
+      return; // Trivia Room is already added
     } else {
       chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No rooms found.</p>';
       return;
@@ -1939,7 +1970,7 @@ function renderSuggestedFriends(users) {
   // Ensure unique rooms by roomId
   const uniqueRooms = [...new Map(Object.entries(rooms).map(([roomId, room]) => [roomId, room])).entries()];
   uniqueRooms
-    .filter(([_, room]) => room.name.toLowerCase().includes(query.toLowerCase()))
+    .filter(([roomId, room]) => roomId !== triviaRoomId && room.name.toLowerCase().includes(query.toLowerCase())) // Exclude Trivia Room from dynamic list
     .forEach(([roomId, room]) => {
       const roomItem = document.createElement('div');
       roomItem.className = 'room-item';
@@ -1957,8 +1988,6 @@ function renderSuggestedFriends(users) {
         }
       }
       const roomAvatar = room.name ? room.name.charAt(0).toUpperCase() : 'R';
-      
-      // Conditionally add delete button for creator
       const deleteButton = currentUserId === room.creatorId ? `
         <button class="delete-btn" data-room-id="${roomId}" aria-label="Delete room">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1966,7 +1995,6 @@ function renderSuggestedFriends(users) {
           </svg>
         </button>
       ` : '';
-
       roomItem.innerHTML = `
         <div class="room-avatar">${roomAvatar}</div>
         <div class="room-info">
@@ -1979,7 +2007,6 @@ function renderSuggestedFriends(users) {
         </div>
       `;
       roomItem.onclick = async (e) => {
-        // Prevent navigation if clicking the delete button
         if (e.target.closest('.delete-btn')) {
           return;
         }
@@ -2029,10 +2056,7 @@ function renderSuggestedFriends(users) {
       );
       if (confirmed) {
         try {
-          // Remove the room from chatrooms
           await remove(ref(db, `chatrooms/${roomId}`));
-          
-          // Remove the room from all users' joinedRooms
           const roomSnapshot = await get(ref(db, `chatrooms/${roomId}/members`));
           if (roomSnapshot.exists()) {
             const members = Object.keys(roomSnapshot.val());
@@ -2040,9 +2064,7 @@ function renderSuggestedFriends(users) {
               await remove(ref(db, `users/${memberId}/joinedRooms/${roomId}`));
             }
           }
-          
           window.showAlert('Room deleted successfully!', true);
-          // Refresh the rooms list
           const roomsRef = ref(db, 'chatrooms');
           const roomsSnapshot = await get(roomsRef);
           renderRooms(roomsSnapshot.val() || {});
