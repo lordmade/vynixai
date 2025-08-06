@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -170,32 +171,6 @@
     }
 
     .avatar:hover {
-      transform: scale(1.05);
-      box-shadow: 0 0 0 4px var(--gradient-start);
-    }
-
-    .business-preview {
-      width: 120px;
-      height: 120px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 2.5rem;
-      font-weight: 600;
-      background: var(--card-bg);
-      overflow: hidden;
-      position: relative;
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
-    }
-
-    .business-preview img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-
-    .business-preview:hover {
       transform: scale(1.05);
       box-shadow: 0 0 0 4px var(--gradient-start);
     }
@@ -700,7 +675,6 @@
       .chat-list, .status-list { padding: 0.5rem; }
       .chat-item, .room-item, .group-item, .status-card { padding: 0.5rem; }
       .avatar { width: 40px; height: 40px; font-size: 1.25rem; }
-      .business-preview { width: 100px; height: 100px; font-size: 2rem; }
       .chat-name, .status-card-name { font-size: 0.9rem; }
       .chat-message, .status-card-time, .chat-time { font-size: 0.8rem; }
       .fab { width: 48px; height: 48px; bottom: 1rem; right: 1rem; }
@@ -805,7 +779,8 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getDatabase, ref, get, set, remove, update, onValue, off } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getDatabase, ref, get, set, update, onValue, off } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+    import { getFirestore, collection, doc, getDocs, getDoc, setDoc, deleteDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -820,7 +795,8 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
-    const db = getDatabase(app);
+    const db = getDatabase(app); // Realtime Database for chats
+    const fs = getFirestore(app); // Firestore for statuses, rooms, groups
     const chatList = document.getElementById('chat-list');
     const statusList = document.getElementById('status-list');
     const searchInput = document.getElementById('search-input');
@@ -974,9 +950,9 @@
 
     async function getUserName(uid) {
       try {
-        const userRef = ref(db, `users/${uid}`);
-        const snapshot = await get(userRef);
-        return snapshot.exists() ? snapshot.val().name || 'Unknown' : 'Unknown';
+        const userRef = doc(fs, 'users', uid);
+        const userSnap = await getDoc(userRef);
+        return userSnap.exists() ? userSnap.data().name || 'Unknown' : 'Unknown';
       } catch (error) {
         console.error(`Error fetching user ${uid} name:`, error);
         return 'Unknown';
@@ -989,13 +965,13 @@
     }
 
     function cleanupListeners() {
-      listeners.forEach(({ ref, callback }) => off(ref, 'value', callback));
+      listeners.forEach(({ unsubscribe }) => unsubscribe());
       listeners = [];
     }
 
-    function addListener(ref, callback, errorCallback) {
-      const listener = onValue(ref, callback, errorCallback);
-      listeners.push({ ref, callback: listener });
+    function addListener(query, callback, errorCallback) {
+      const unsubscribe = onSnapshot(query, callback, errorCallback);
+      listeners.push({ unsubscribe });
     }
 
     async function setOnlineStatus(uid, isOnline) {
@@ -1008,10 +984,10 @@
 
     async function applyUserTheme(uid) {
       try {
-        const userRef = ref(db, `users/${uid}`);
-        const snapshot = await get(userRef);
-        if (snapshot.exists() && snapshot.val().theme) {
-          const theme = themes.find(t => t.id === snapshot.val().theme) || themes[0];
+        const userRef = doc(fs, 'users', uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists() && userSnap.data().theme) {
+          const theme = themes.find(t => t.id === userSnap.data().theme) || themes[0];
           Object.entries(theme.properties).forEach(([key, value]) => {
             document.documentElement.style.setProperty(key, value);
           });
@@ -1062,7 +1038,7 @@
     window.deleteStatus = async function (uid, statusId) {
       window.showAlert(MESSAGES.STATUS_DELETE_CONFIRM, false, async () => {
         try {
-          await remove(ref(db, `statuses/${uid}/${statusId}`));
+          await deleteDoc(doc(fs, 'statuses', uid, 'userStatuses', statusId));
           window.showAlert(MESSAGES.STATUS_DELETE_SUCCESS, true);
           loadStatuses(auth.currentUser.uid);
         } catch (error) {
@@ -1075,34 +1051,30 @@
     window.toggleLike = async function (uid, statusId) {
       try {
         const userId = auth.currentUser.uid;
-        const likeRef = ref(db, `statuses/${uid}/${statusId}/likes/${userId}`);
-        const snapshot = await get(likeRef);
-        const isLiked = snapshot.exists();
+        const statusRef = doc(fs, 'statuses', uid, 'userStatuses', statusId);
+        const statusSnap = await getDoc(statusRef);
+        const status = statusSnap.exists() ? statusSnap.data() : {};
+        const likes = status.likes || {};
+        const isLiked = likes[userId] || false;
         if (isLiked) {
-          await remove(likeRef);
+          delete likes[userId];
         } else {
-          await set(likeRef, true);
+          likes[userId] = true;
         }
-        // Update the specific status card
+        await updateDoc(statusRef, { likes });
         const statusCard = document.querySelector(`.status-card[data-uid="${uid}"][data-status-id="${statusId}"]`);
         if (statusCard) {
           const likeBtn = statusCard.querySelector('.like-btn');
           const likeCountSpan = statusCard.querySelector('.like-count');
-          const status = statusesData.find(s => s.uid === uid && s.statusId === statusId);
-          const likeCount = status.likes ? Object.keys(status.likes).length : 0;
-          const newLikeCount = isLiked ? likeCount - 1 : likeCount + 1;
+          const statusData = statusesData.find(s => s.uid === uid && s.statusId === statusId);
+          const newLikeCount = Object.keys(likes).length;
           likeBtn.classList.toggle('liked', !isLiked);
           likeCountSpan.textContent = newLikeCount;
-          // Update statusesData to reflect the new like state
-          if (!status.likes) status.likes = {};
-          if (isLiked) {
-            delete status.likes[userId];
-          } else {
-            status.likes[userId] = true;
+          if (statusData) {
+            statusData.likes = likes;
           }
           console.log(`Updated like for status ${statusId} by ${uid}:`, { isLiked: !isLiked, newLikeCount });
         }
-        // Update status viewer if open for this status
         if (statusViewer.classList.contains('active') && currentStatusIndex < statusesData.length && statusesData[currentStatusIndex].uid === uid && statusesData[currentStatusIndex].statusId === statusId) {
           renderStatusViewer(currentStatusIndex);
         }
@@ -1116,13 +1088,14 @@
       const userList = document.getElementById('user-list');
       showShimmer(userList);
       try {
-        const usersRef = ref(db, 'users');
-        const snapshot = await get(usersRef);
+        const usersRef = collection(fs, 'users');
+        const usersSnap = await getDocs(usersRef);
         userList.setAttribute('aria-busy', 'false');
         userList.innerHTML = '';
-        const users = snapshot.val() || {};
         const searchQuery = userSearchInput.value.toLowerCase();
-        Object.entries(users).forEach(([uid, user]) => {
+        usersSnap.forEach(userSnap => {
+          const uid = userSnap.id;
+          const user = userSnap.data();
           if (uid === auth.currentUser.uid) return;
           if (searchQuery && !user.name?.toLowerCase().includes(searchQuery)) return;
           const userItem = document.createElement('div');
@@ -1159,11 +1132,12 @@
     async function loadGroupMembers() {
       const groupMembers = document.getElementById('group-members');
       try {
-        const usersRef = ref(db, 'users');
-        const snapshot = await get(usersRef);
+        const usersRef = collection(fs, 'users');
+        const usersSnap = await getDocs(usersRef);
         groupMembers.innerHTML = '';
-        const users = snapshot.val() || {};
-        Object.entries(users).forEach(([uid, user]) => {
+        usersSnap.forEach(userSnap => {
+          const uid = userSnap.id;
+          const user = userSnap.data();
           if (uid === auth.currentUser.uid) return;
           const option = document.createElement('option');
           option.value = uid;
@@ -1185,10 +1159,10 @@
         const friends = snapshot.val() || {};
         for (const friendId of Object.keys(friends)) {
           try {
-            const userRef = ref(db, `users/${friendId}`);
-            const userSnapshot = await get(userRef);
-            if (userSnapshot.exists()) {
-              const user = userSnapshot.val();
+            const userRef = doc(fs, 'users', friendId);
+            const userSnap = await getDoc(userRef);
+            if (userSnap.exists()) {
+              const user = userSnap.data();
               const messagesRef = ref(db, `messages/${userId}/${friendId}`);
               const messagesSnapshot = await get(messagesRef);
               const messages = messagesSnapshot.val() || {};
@@ -1240,15 +1214,14 @@
       }
       try {
         const roomId = Date.now().toString();
-        await set(ref(db, `chatrooms/${roomId}`), {
+        await setDoc(doc(fs, 'chatrooms', roomId), {
           name: roomName,
           creator: auth.currentUser.uid,
           createdAt: Date.now()
         });
         window.showAlert(MESSAGES.ROOM_CREATE_SUCCESS, true);
         window.hideRoomSheet();
-        roomsData.push({ id: roomId, name: roomName, creator: auth.currentUser.uid, createdAt: Date.now() });
-        renderRooms(roomsData.reduce((acc, room) => ({ ...acc, [room.id]: room }), {}), auth.currentUser.uid);
+        loadRooms(auth.currentUser.uid);
       } catch (error) {
         console.error("Error creating room:", error);
         window.showAlert(MESSAGES.ROOM_CREATE_FAIL, false);
@@ -1266,7 +1239,7 @@
         const groupId = Date.now().toString();
         const members = { [auth.currentUser.uid]: true };
         selectedMembers.forEach(memberId => { members[memberId] = true; });
-        await set(ref(db, `groups/${groupId}`), {
+        await setDoc(doc(fs, 'groups', groupId), {
           name: groupName,
           creator: auth.currentUser.uid,
           members,
@@ -1274,8 +1247,7 @@
         });
         window.showAlert(MESSAGES.GROUP_CREATE_SUCCESS, true);
         window.hideGroupSheet();
-        groupsData.push({ id: groupId, name: groupName, creator: auth.currentUser.uid, members, createdAt: Date.now() });
-        renderGroups(groupsData.reduce((acc, group) => ({ ...acc, [group.id]: group }), {}), auth.currentUser.uid);
+        loadGroups(auth.currentUser.uid);
       } catch (error) {
         console.error("Error creating group:", error);
         window.showAlert(MESSAGES.GROUP_CREATE_FAIL, false);
@@ -1284,16 +1256,17 @@
 
     async function loadRooms(userId) {
       showShimmer(chatList);
-      const roomsRef = ref(db, 'chatrooms');
+      const roomsRef = collection(fs, 'chatrooms');
       cleanupListeners();
       addListener(roomsRef, (snapshot) => {
         roomsData = [];
-        const rooms = snapshot.val() || {};
-        roomsData = Object.entries(rooms).map(([id, room]) => ({ id, ...room }));
-        renderRooms(roomsData.reduce((acc, room) => ({ ...acc, [room.id]: room }), {}), userId);
+        snapshot.forEach(doc => {
+          roomsData.push({ id: doc.id, ...doc.data() });
+        });
+        renderRooms(roomsData, userId);
       }, (error) => {
         console.error("Error loading rooms:", error);
-        window.showAlert(MESSAGES.ROOM_FAIL || "Failed to load rooms. Please try again.", false);
+        window.showAlert(MESSAGES.ROOM_FAIL || "Failed to load rooms.", false);
         chatList.setAttribute('aria-busy', 'false');
         chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load rooms.</p>';
       });
@@ -1304,8 +1277,8 @@
       chatList.innerHTML = '';
 
       const filteredRooms = searchInput.value
-        ? Object.values(rooms).filter(room => room.name.toLowerCase().includes(searchInput.value.toLowerCase()))
-        : Object.values(rooms);
+        ? rooms.filter(room => room.name.toLowerCase().includes(searchInput.value.toLowerCase()))
+        : rooms;
 
       filteredRooms.forEach(room => {
         const roomItem = document.createElement('div');
@@ -1356,10 +1329,9 @@
     async function deleteRoom(roomId) {
       window.showAlert(MESSAGES.ROOM_DELETE_CONFIRM, false, async () => {
         try {
-          await remove(ref(db, `chatrooms/${roomId}`));
+          await deleteDoc(doc(fs, 'chatrooms', roomId));
           window.showAlert(MESSAGES.ROOM_DELETE_SUCCESS, true);
-          roomsData = roomsData.filter(room => room.id !== roomId);
-          renderRooms(roomsData.reduce((acc, room) => ({ ...acc, [room.id]: room }), {}), auth.currentUser.uid);
+          loadRooms(auth.currentUser.uid);
         } catch (error) {
           console.error("Error deleting room:", error);
           window.showAlert(MESSAGES.ROOM_DELETE_FAIL, false);
@@ -1369,18 +1341,20 @@
 
     async function loadGroups(userId) {
       showShimmer(chatList);
-      const groupsRef = ref(db, 'groups');
+      const groupsRef = collection(fs, 'groups');
       cleanupListeners();
       addListener(groupsRef, (snapshot) => {
         groupsData = [];
-        const groups = snapshot.val() || {};
-        groupsData = Object.entries(groups)
-          .filter(([_, group]) => group.members && group.members[userId])
-          .map(([id, group]) => ({ id, ...group }));
-        renderGroups(groupsData.reduce((acc, group) => ({ ...acc, [group.id]: group }), {}), userId);
+        snapshot.forEach(doc => {
+          const group = doc.data();
+          if (group.members && group.members[userId]) {
+            groupsData.push({ id: doc.id, ...group });
+          }
+        });
+        renderGroups(groupsData, userId);
       }, (error) => {
         console.error("Error loading groups:", error);
-        window.showAlert(MESSAGES.GROUP_FAIL || "Failed to load groups. Please try again.", false);
+        window.showAlert(MESSAGES.GROUP_FAIL || "Failed to load groups.", false);
         chatList.setAttribute('aria-busy', 'false');
         chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">Failed to load groups.</p>';
       });
@@ -1391,8 +1365,8 @@
       chatList.innerHTML = '';
 
       const filteredGroups = searchInput.value
-        ? Object.values(groups).filter(group => group.name.toLowerCase().includes(searchInput.value.toLowerCase()))
-        : Object.values(groups);
+        ? groups.filter(group => group.name.toLowerCase().includes(searchInput.value.toLowerCase()))
+        : groups;
 
       filteredGroups.forEach(group => {
         const groupItem = document.createElement('div');
@@ -1443,10 +1417,9 @@
     async function deleteGroup(groupId) {
       window.showAlert(MESSAGES.GROUP_DELETE_CONFIRM, false, async () => {
         try {
-          await remove(ref(db, `groups/${groupId}`));
+          await deleteDoc(doc(fs, 'groups', groupId));
           window.showAlert(MESSAGES.GROUP_DELETE_SUCCESS, true);
-          groupsData = groupsData.filter(group => group.id !== groupId);
-          renderGroups(groupsData.reduce((acc, group) => ({ ...acc, [group.id]: group }), {}), auth.currentUser.uid);
+          loadGroups(auth.currentUser.uid);
         } catch (error) {
           console.error("Error deleting group:", error);
           window.showAlert(MESSAGES.GROUP_DELETE_FAIL, false);
@@ -1510,15 +1483,15 @@
           throw new Error("Invalid Cloudinary response: missing public_id or resource_type");
         }
         const statusId = Date.now().toString();
-        const statusRef = ref(db, `statuses/${auth.currentUser.uid}/${statusId}`);
+        const statusRef = doc(fs, 'statuses', auth.currentUser.uid, 'userStatuses', statusId);
         const statusData = {
           url: public_id,
           resource_type,
           timestamp: Date.now(),
           likes: {}
         };
-        await set(statusRef, statusData);
-        console.log("Status uploaded to Firebase:", statusData);
+        await setDoc(statusRef, statusData);
+        console.log("Status uploaded to Firestore:", statusData);
         window.showAlert(MESSAGES.STATUS_UPLOAD_SUCCESS, true);
         loadStatuses(auth.currentUser.uid);
       } catch (error) {
@@ -1533,20 +1506,22 @@
 
     async function loadStatuses(userId) {
       showShimmer(statusList);
-      const statusesRef = ref(db, 'statuses');
+      const usersRef = collection(fs, 'users');
       cleanupListeners();
-      addListener(statusesRef, (snapshot) => {
+      addListener(usersRef, async (usersSnapshot) => {
         statusesData = [];
-        const statuses = snapshot.val() || {};
-        Object.entries(statuses).forEach(([uid, userStatuses]) => {
-          Object.entries(userStatuses).forEach(([statusId, status]) => {
+        for (const userDoc of usersSnapshot.docs) {
+          const statusesRef = collection(fs, 'statuses', userDoc.id, 'userStatuses');
+          const statusesSnap = await getDocs(statusesRef);
+          statusesSnap.forEach(statusDoc => {
+            const status = statusDoc.data();
             if (!status.url || !status.resource_type || !['image', 'video'].includes(status.resource_type)) {
-              console.warn(`Skipping status ${statusId} for user ${uid}: invalid or missing url/resource_type`, status);
+              console.warn(`Skipping status ${statusDoc.id} for user ${userDoc.id}: invalid or missing url/resource_type`, status);
               return;
             }
-            statusesData.push({ uid, statusId, ...status });
+            statusesData.push({ uid: userDoc.id, statusId: statusDoc.id, ...status });
           });
-        });
+        }
         statusesData.sort((a, b) => b.timestamp - a.timestamp);
         console.log("Loaded statuses:", statusesData);
         renderStatuses(statusesData, userId);
@@ -1715,7 +1690,7 @@
       statusViewer.classList.add('active');
     }
 
-       async function renderChats(chats, userId) {
+    async function renderChats(chats, userId) {
       chatList.setAttribute('aria-busy', 'false');
       chatList.innerHTML = '';
 
@@ -1749,43 +1724,10 @@
         chatList.appendChild(chatItem);
       }
 
-      const businessesRef = ref(db, 'businesses');
-      const businessesSnapshot = await get(businessesRef);
-      const businesses = businessesSnapshot.val() || {};
-      const filteredBusinesses = searchInput.value
-        ? Object.entries(businesses).filter(([_, business]) => business.name.toLowerCase().includes(searchInput.value.toLowerCase()))
-        : Object.entries(businesses);
-
-      filteredBusinesses.forEach(([businessId, business]) => {
-        const businessItem = document.createElement('div');
-        businessItem.className = 'chat-item';
-        businessItem.setAttribute('role', 'button');
-        businessItem.setAttribute('aria-label', `View business ${business.name}`);
-        const firstLetter = business.name.charAt(0).toUpperCase() || 'B';
-        const businessAvatarUrl = business.logo
-          ? `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/upload/q_auto,f_auto,w_120,h_120,c_fill/${business.logo}`
-          : '';
-        console.log(`Business preview for ${business.name}:`, businessAvatarUrl || "Using initials");
-        businessItem.innerHTML = `
-          <div class="business-preview">
-            ${businessAvatarUrl ? `<img src="${businessAvatarUrl}" alt="${business.name} logo" onerror="this.parentElement.innerHTML='<span>${firstLetter}</span>'; console.error('Failed to load business logo for ${business.name}:', this.src)" />` : `<span>${firstLetter}</span>`}
-          </div>
-          <div class="chat-info">
-            <h3 class="chat-name">${business.name}</h3>
-            <p class="chat-message">${business.description || 'No description'}</p>
-          </div>
-        `;
-        businessItem.onclick = () => {
-          window.location.href = `business.html?businessId=${businessId}`;
-        };
-        chatList.appendChild(businessItem);
-      });
-
-      if (filteredChats.length === 0 && filteredBusinesses.length === 0) {
-        chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No chats or businesses available.</p>';
+      if (filteredChats.length === 0) {
+        chatList.innerHTML = '<p style="text-align: center; padding: 1rem;">No chats available.</p>';
       }
     }
-
     function switchTab(tab) {
       currentTab = tab;
       tabItems.forEach(item => item.classList.remove('active'));
@@ -1844,9 +1786,9 @@
       } else if (currentTab === 'status') {
         renderStatuses(statusesData, auth.currentUser.uid);
       } else if (currentTab === 'rooms') {
-        renderRooms(roomsData.reduce((acc, room) => ({ ...acc, [room.id]: room }), {}), auth.currentUser.uid);
+        renderRooms(roomsData, auth.currentUser.uid);
       } else if (currentTab === 'groups') {
-        renderGroups(groupsData.reduce((acc, group) => ({ ...acc, [group.id]: group }), {}), auth.currentUser.uid);
+        renderGroups(groupsData, auth.currentUser.uid);
       }
     });
 
@@ -1872,10 +1814,10 @@
       if (user) {
         await applyUserTheme(user.uid);
         await setOnlineStatus(user.uid, true);
-        const userRef = ref(db, `users/${user.uid}`);
-        const snapshot = await get(userRef);
-        if (snapshot.exists()) {
-          const userData = snapshot.val();
+        const userRef = doc(fs, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const userData = userSnap.data();
           const firstLetter = userData.name ? userData.name.charAt(0).toUpperCase() : 'U';
           const avatarUrl = userData.avatar
             ? `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/upload/q_auto,f_auto,w_40,h_40,c_fill/${userData.avatar}`
