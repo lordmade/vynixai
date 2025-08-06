@@ -734,7 +734,8 @@
     <svg id="fab-icon" viewBox="0 0 24 24">
       <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
       <circle cx="9" cy="7" r="4"></circle>
-      <path d="M23 21v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75"></path>
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+      <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
     </svg>
     <span class="fab-label" id="fab-label">Users</span>
   </div>
@@ -1076,12 +1077,35 @@
         const userId = auth.currentUser.uid;
         const likeRef = ref(db, `statuses/${uid}/${statusId}/likes/${userId}`);
         const snapshot = await get(likeRef);
-        if (snapshot.exists()) {
+        const isLiked = snapshot.exists();
+        if (isLiked) {
           await remove(likeRef);
         } else {
           await set(likeRef, true);
         }
-        loadStatuses(userId); // Refresh statuses to update like count
+        // Update the specific status card
+        const statusCard = document.querySelector(`.status-card[data-uid="${uid}"][data-status-id="${statusId}"]`);
+        if (statusCard) {
+          const likeBtn = statusCard.querySelector('.like-btn');
+          const likeCountSpan = statusCard.querySelector('.like-count');
+          const status = statusesData.find(s => s.uid === uid && s.statusId === statusId);
+          const likeCount = status.likes ? Object.keys(status.likes).length : 0;
+          const newLikeCount = isLiked ? likeCount - 1 : likeCount + 1;
+          likeBtn.classList.toggle('liked', !isLiked);
+          likeCountSpan.textContent = newLikeCount;
+          // Update statusesData to reflect the new like state
+          if (!status.likes) status.likes = {};
+          if (isLiked) {
+            delete status.likes[userId];
+          } else {
+            status.likes[userId] = true;
+          }
+          console.log(`Updated like for status ${statusId} by ${uid}:`, { isLiked: !isLiked, newLikeCount });
+        }
+        // Update status viewer if open for this status
+        if (statusViewer.classList.contains('active') && currentStatusIndex < statusesData.length && statusesData[currentStatusIndex].uid === uid && statusesData[currentStatusIndex].statusId === statusId) {
+          renderStatusViewer(currentStatusIndex);
+        }
       } catch (error) {
         console.error("Error toggling like:", error);
         window.showAlert(MESSAGES.LIKE_FAIL, false);
@@ -1491,7 +1515,7 @@
           url: public_id,
           resource_type,
           timestamp: Date.now(),
-          likes: {} // Initialize likes as an empty object
+          likes: {}
         };
         await set(statusRef, statusData);
         console.log("Status uploaded to Firebase:", statusData);
@@ -1523,7 +1547,7 @@
             statusesData.push({ uid, statusId, ...status });
           });
         });
-        statusesData.sort((a, b) => b.timestamp - a.timestamp); // Sort by timestamp descending
+        statusesData.sort((a, b) => b.timestamp - a.timestamp);
         console.log("Loaded statuses:", statusesData);
         renderStatuses(statusesData, userId);
       }, (error) => {
@@ -1539,92 +1563,93 @@
       statusList.innerHTML = '';
 
       const filteredStatuses = searchInput.value
-        ? statuses.filter(status => {
-            const userRef = ref(db, `users/${status.uid}`);
-            return get(userRef).then(snapshot => {
-              const userName = snapshot.exists() ? snapshot.val().name || 'Unknown' : 'Unknown';
-              return userName.toLowerCase().includes(searchInput.value.toLowerCase());
-            }).catch(() => false);
-          })
+        ? await Promise.all(statuses.map(async status => {
+            const userName = await getUserName(status.uid);
+            return userName.toLowerCase().includes(searchInput.value.toLowerCase()) ? status : null;
+          }))
         : statuses;
 
-      const renderStatusPromises = filteredStatuses.map(async (status, index) => {
-        const userName = await getUserName(status.uid);
-        const firstLetter = userName.charAt(0).toUpperCase() || 'U';
-        const mediaUrl = status.url && status.resource_type
-          ? `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/${status.resource_type}/upload/q_auto,f_auto,w_720,h_720,c_fill/${status.url}${status.resource_type === 'video' ? '#t_0.1' : ''}`
-          : '';
-        const avatarUrl = mediaUrl
-          ? mediaUrl.replace('/upload/q_auto,f_auto,w_720,h_720,c_fill/', '/upload/q_auto,f_auto,w_48,h_48,c_fill/')
-          : '';
-        const likeCount = status.likes ? Object.keys(status.likes).length : 0;
-        const isLiked = status.likes && status.likes[userId] ? 'liked' : '';
-        console.log(`Rendering status card ${index} for ${userName}:`, { mediaUrl, resource_type: status.resource_type, statusId: status.statusId });
+      const renderStatusPromises = filteredStatuses
+        .filter(status => status !== null)
+        .map(async (status, index) => {
+          const userName = await getUserName(status.uid);
+          const firstLetter = userName.charAt(0).toUpperCase() || 'U';
+          const mediaUrl = status.url && status.resource_type
+            ? `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/${status.resource_type}/upload/q_auto,f_auto,w_720,h_720,c_fill/${status.url}${status.resource_type === 'video' ? '#t_0.1' : ''}`
+            : '';
+          const avatarUrl = mediaUrl
+            ? mediaUrl.replace('/upload/q_auto,f_auto,w_720,h_720,c_fill/', '/upload/q_auto,f_auto,w_48,h_48,c_fill/')
+            : '';
+          const likeCount = status.likes ? Object.keys(status.likes).length : 0;
+          const isLiked = status.likes && status.likes[userId] ? 'liked' : '';
+          console.log(`Rendering status card ${index} for ${userName}:`, { mediaUrl, resource_type: status.resource_type, statusId: status.statusId });
 
-        const statusCard = document.createElement('div');
-        statusCard.className = 'status-card';
-        statusCard.setAttribute('role', 'button');
-        statusCard.setAttribute('aria-label', `View ${userName}'s status`);
-        let errorMessage = 'Failed to load media.';
-        if (!status.url) errorMessage = 'Missing media URL.';
-        else if (!['image', 'video'].includes(status.resource_type)) errorMessage = `Invalid resource type: ${status.resource_type}`;
-        else if (!mediaUrl) errorMessage = 'Failed to construct media URL.';
-        statusCard.innerHTML = `
-          <div class="status-card-header">
-            <div class="avatar">
-              ${avatarUrl ? `<img src="${avatarUrl}" alt="${userName}'s avatar" onerror="this.parentElement.innerHTML='<span>${firstLetter}</span>'; console.error('Failed to load status avatar for ${userName}:', this.src)" />` : `<span>${firstLetter}</span>`}
-            </div>
-            <div class="status-card-info">
-              <h3 class="status-card-name">${userName}</h3>
-              <p class="status-card-time">${formatTimestamp(status.timestamp)}</p>
-            </div>
-            ${status.uid === userId ? `
-              <button class="kebab-menu" data-status-id="${status.statusId}" data-uid="${status.uid}" aria-label="Status options">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="5" r="1"></circle>
-                  <circle cx="12" cy="12" r="1"></circle>
-                  <circle cx="12" cy="19" r="1"></circle>
-                </svg>
-              </button>
-              <div class="context-menu" data-status-id="${status.statusId}" data-uid="${status.uid}">
-                <div class="context-menu-item" onclick="window.deleteStatus('${status.uid}', '${status.statusId}')">Delete</div>
+          const statusCard = document.createElement('div');
+          statusCard.className = 'status-card';
+          statusCard.setAttribute('role', 'button');
+          statusCard.setAttribute('aria-label', `View ${userName}'s status`);
+          statusCard.dataset.uid = status.uid;
+          statusCard.dataset.statusId = status.statusId;
+          let errorMessage = 'Failed to load media.';
+          if (!status.url) errorMessage = 'Missing media URL.';
+          else if (!['image', 'video'].includes(status.resource_type)) errorMessage = `Invalid resource type: ${status.resource_type}`;
+          else if (!mediaUrl) errorMessage = 'Failed to construct media URL.';
+          statusCard.innerHTML = `
+            <div class="status-card-header">
+              <div class="avatar">
+                ${avatarUrl ? `<img src="${avatarUrl}" alt="${userName}'s avatar" onerror="this.parentElement.innerHTML='<span>${firstLetter}</span>'; console.error('Failed to load status avatar for ${userName}:', this.src)" />` : `<span>${firstLetter}</span>`}
               </div>
-            ` : ''}
-          </div>
-          ${mediaUrl && status.resource_type ? (
-            status.resource_type === 'image'
-              ? `<img class="status-card-media" src="${mediaUrl}" alt="Status media" onerror="this.parentElement.innerHTML='<p>${errorMessage}</p>'; console.error('Failed to load status media for ${userName}:', this.src, { status })" />`
-              : `<video class="status-card-video" src="${mediaUrl}" controls playsinline alt="Status video" onerror="this.parentElement.innerHTML='<p>${errorMessage}</p>'; console.error('Failed to load status video for ${userName}:', this.src, { status })"></video>`
-          ) : `<p>${errorMessage}</p>`}
-          <div class="status-card-footer">
-            <button class="like-btn ${isLiked}" onclick="window.toggleLike('${status.uid}', '${status.statusId}')">
-              <svg viewBox="0 0 24 24">
-                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
-              </svg>
-              <span class="like-count">${likeCount}</span>
-            </button>
-          </div>
-        `;
-        statusCard.onclick = (e) => {
-          if (!e.target.closest('.kebab-menu') && !e.target.closest('.context-menu') && !e.target.closest('.like-btn')) {
-            window.showStatusViewer(index);
-          }
-        };
-        if (status.uid === userId) {
-          const kebabMenu = statusCard.querySelector('.kebab-menu');
-          kebabMenu.onclick = (e) => {
-            e.stopPropagation();
-            const contextMenu = statusCard.querySelector('.context-menu');
-            document.querySelectorAll('.context-menu').forEach(menu => menu.classList.remove('active'));
-            contextMenu.classList.toggle('active');
+              <div class="status-card-info">
+                <h3 class="status-card-name">${userName}</h3>
+                <p class="status-card-time">${formatTimestamp(status.timestamp)}</p>
+              </div>
+              ${status.uid === userId ? `
+                <button class="kebab-menu" data-status-id="${status.statusId}" data-uid="${status.uid}" aria-label="Status options">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="5" r="1"></circle>
+                    <circle cx="12" cy="12" r="1"></circle>
+                    <circle cx="12" cy="19" r="1"></circle>
+                  </svg>
+                </button>
+                <div class="context-menu" data-status-id="${status.statusId}" data-uid="${status.uid}">
+                  <div class="context-menu-item" onclick="window.deleteStatus('${status.uid}', '${status.statusId}')">Delete</div>
+                </div>
+              ` : ''}
+            </div>
+            ${mediaUrl && status.resource_type ? (
+              status.resource_type === 'image'
+                ? `<img class="status-card-media" src="${mediaUrl}" alt="Status media" onerror="this.parentElement.innerHTML='<p>${errorMessage}</p>'; console.error('Failed to load status media for ${userName}:', this.src, { status })" />`
+                : `<video class="status-card-video" src="${mediaUrl}" controls playsinline alt="Status video" onerror="this.parentElement.innerHTML='<p>${errorMessage}</p>'; console.error('Failed to load status video for ${userName}:', this.src, { status })"></video>`
+            ) : `<p>${errorMessage}</p>`}
+            <div class="status-card-footer">
+              <button class="like-btn ${isLiked}" onclick="window.toggleLike('${status.uid}', '${status.statusId}')">
+                <svg viewBox="0 0 24 24">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                </svg>
+                <span class="like-count">${likeCount}</span>
+              </button>
+            </div>
+          `;
+          statusCard.onclick = (e) => {
+            if (!e.target.closest('.kebab-menu') && !e.target.closest('.context-menu') && !e.target.closest('.like-btn')) {
+              window.showStatusViewer(index);
+            }
           };
-        }
-        statusList.appendChild(statusCard);
-      });
+          if (status.uid === userId) {
+            const kebabMenu = statusCard.querySelector('.kebab-menu');
+            kebabMenu.onclick = (e) => {
+              e.stopPropagation();
+              const contextMenu = statusCard.querySelector('.context-menu');
+              document.querySelectorAll('.context-menu').forEach(menu => menu.classList.remove('active'));
+              contextMenu.classList.toggle('active');
+            };
+          }
+          statusList.appendChild(statusCard);
+        });
 
       await Promise.all(renderStatusPromises);
 
-      if (filteredStatuses.length === 0) {
+      if (filteredStatuses.length === 0 || filteredStatuses.every(s => s === null)) {
         statusList.innerHTML = '<p style="text-align: center; padding: 1rem;">No statuses available.</p>';
       }
     }
@@ -1690,7 +1715,7 @@
       statusViewer.classList.add('active');
     }
 
-        async function renderChats(chats, userId) {
+       async function renderChats(chats, userId) {
       chatList.setAttribute('aria-busy', 'false');
       chatList.innerHTML = '';
 
