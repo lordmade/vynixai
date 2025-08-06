@@ -384,6 +384,19 @@
       margin-right: 0.75rem;
     }
 
+    .user-item .letter-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      margin-right: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #FFFFFF;
+    }
+
     .user-item span {
       font-size: 0.9rem;
     }
@@ -409,6 +422,19 @@
       height: 40px;
       border-radius: 50%;
       margin-right: 0.75rem;
+    }
+
+    .friend-card .letter-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      margin-right: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #FFFFFF;
     }
 
     .friend-card-text {
@@ -538,7 +564,7 @@
         padding: 1rem;
       }
 
-      .friend-card img {
+      .friend-card img, .friend-card .letter-avatar {
         width: 50px;
         height: 50px;
       }
@@ -563,7 +589,7 @@
     }
 
     @media (max-width: 640px) {
-      .user-item img {
+      .user-item img, .user-item .letter-avatar {
         width: 32px;
         height: 32px;
       }
@@ -603,6 +629,13 @@
       </svg>
       Calls
     </div>
+    <div class="sidebar-item" data-tab="profile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+        <circle cx="12" cy="7" r="4"></circle>
+      </svg>
+      Profile
+    </div>
     <button class="sidebar-fab" id="users-btn-desktop">Users</button>
     <button class="sidebar-signout" id="signout-btn-desktop">Sign Out</button>
   </nav>
@@ -632,6 +665,13 @@
       </svg>
       Calls
     </div>
+    <div class="nav-item" data-tab="profile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+        <circle cx="12" cy="7" r="4"></circle>
+      </svg>
+      Profile
+    </div>
   </nav>
 
   <button class="fab" id="users-btn-mobile">
@@ -654,7 +694,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { getFirestore, collection, getDocs, doc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -694,16 +734,103 @@
       setTimeout(() => errorMessage.classList.remove("active"), 5000);
     }
 
-    function renderUserCard(user) {
+    // Generate consistent background color based on user ID
+    function getAvatarColor(userId) {
+      const colors = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4',
+        '#FFEEAD', '#D4A5A5', '#9B59B6', '#3498DB'
+      ];
+      const index = userId.charCodeAt(0) % colors.length;
+      return colors[index];
+    }
+
+    // Generate letter avatar HTML
+    function getAvatarHTML(user) {
+      if (user.photoURL) {
+        return `<img src="${user.photoURL}" alt="${user.displayName || 'User'} Avatar">`;
+      }
+      const firstLetter = (user.displayName || "User")[0].toUpperCase();
+      const bgColor = getAvatarColor(user.id);
+      return `<div class="letter-avatar" style="background-color: ${bgColor}">${firstLetter}</div>`;
+    }
+
+    async function encryptMessage(message, key) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(message);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encrypted = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        key,
+        data
+      );
+      return { encrypted: arrayBufferToBase64(encrypted), iv: arrayBufferToBase64(iv) };
+    }
+
+    async function decryptMessage(encrypted, iv, key) {
+      try {
+        const encryptedData = base64ToArrayBuffer(encrypted);
+        const ivData = base64ToArrayBuffer(iv);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: ivData },
+          key,
+          encryptedData
+        );
+        const decoder = new TextDecoder();
+        return decoder.decode(decrypted);
+      } catch (error) {
+        console.error("Decryption error:", error);
+        return "Unable to decrypt message";
+      }
+    }
+
+    function arrayBufferToBase64(buffer) {
+      return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+    }
+
+    function base64ToArrayBuffer(base64) {
+      const binary = atob(base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+
+    async function generateKey(password) {
+      const encoder = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(password),
+        { name: "PBKDF2" },
+        false,
+        ["deriveKey"]
+      );
+      return crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt: encoder.encode("vynix-salt"),
+          iterations: 100000,
+          hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    function renderUserCard(user, encryptionKey) {
       if (!user) {
         return `<p class="welcome-message">Select a user to start chatting!</p>`;
       }
-      const avatar = user.photoURL || "https://via.placeholder.com/40";
+      const avatar = getAvatarHTML(user);
       const name = user.displayName || "User";
+      // Placeholder for last message (requires fetching and decrypting)
       const lastMessage = "No messages yet";
       return `
         <div class="friend-card">
-          <img src="${avatar}" alt="${name} Avatar">
+          ${avatar}
           <div class="friend-card-text">
             <h3>${name}</h3>
             <p>Last message: ${lastMessage}</p>
@@ -714,7 +841,11 @@
 
     function renderContent(tab) {
       const content = document.getElementById("content");
-      content.innerHTML = tab === "chats" ? renderUserCard(selectedUser) : '<p class="welcome-message">Welcome to Vynix!</p>';
+      if (tab === "profile") {
+        window.location.href = "profile.html";
+        return;
+      }
+      content.innerHTML = tab === "chats" ? renderUserCard(selectedUser, null) : '<p class="welcome-message">Welcome to Vynix!</p>';
     }
 
     function renderUsersList(users, currentUserId) {
@@ -724,21 +855,17 @@
         return;
       }
 
-      // Find current user
       const currentUser = users.find(user => user.id === currentUserId);
       const otherUsers = users.filter(user => user.id !== currentUserId).sort((a, b) =>
         (a.displayName || "User").localeCompare(b.displayName || "User")
       );
 
-      // Render current user at the top
       if (currentUser) {
         const userItem = document.createElement("div");
         userItem.classList.add("user-item", "owner");
-        const avatar = currentUser.photoURL || "https://via.placeholder.com/32";
-        const name = currentUser.displayName || "User";
         userItem.innerHTML = `
-          <img src="${avatar}" alt="${name} Avatar">
-          <span>${name}</span>
+          ${getAvatarHTML(currentUser)}
+          <span>${currentUser.displayName || "User"}</span>
         `;
         userItem.addEventListener("click", () => {
           selectedUser = currentUser;
@@ -751,15 +878,12 @@
         usersList.appendChild(userItem);
       }
 
-      // Render other users
       otherUsers.forEach(user => {
         const userItem = document.createElement("div");
         userItem.classList.add("user-item");
-        const avatar = user.photoURL || "https://via.placeholder.com/32";
-        const name = user.displayName || "User";
         userItem.innerHTML = `
-          <img src="${avatar}" alt="${name} Avatar">
-          <span>${name}</span>
+          ${getAvatarHTML(user)}
+          <span>${user.displayName || "User"}</span>
         `;
         userItem.addEventListener("click", () => {
           selectedUser = user;
