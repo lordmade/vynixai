@@ -150,6 +150,40 @@
       transform: scale(1.05);
     }
 
+    .loader {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      background: var(--twitter-blue);
+      border-radius: 50%;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .dot:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .dot:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        transform: scale(1);
+        opacity: 0.8;
+      }
+      50% {
+        transform: scale(1.5);
+        opacity: 0.4;
+      }
+    }
+
     @keyframes fadeIn {
       0% { opacity: 0; }
       100% { opacity: 1; }
@@ -252,33 +286,96 @@
       }
     }
 
-    async function fetchNews() {
-      const apiKey = "e507775f105e40c7901d931be8b17a35"; // Replace with your NewsAPI key
+    async function fetchNews(retries = 3, delay = 1000) {
+      const apiKey = "e507775f105e40c7901d931be8b17a35";
       const url = `https://newsapi.org/v2/top-headlines?country=us&apiKey=${apiKey}`;
+      newsGrid.innerHTML = `
+        <div class="loader">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+      `;
 
-      try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-        const data = await response.json();
-        if (data.status !== "ok") throw new Error("API error: " + data.message);
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+          const response = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeoutId);
 
-        newsGrid.innerHTML = "";
-        data.articles.forEach((article) => {
-          const card = document.createElement("div");
-          card.className = "news-card";
-          card.innerHTML = `
-            <img src="${article.urlToImage || 'https://via.placeholder.com/300x200?text=No+Image'}" alt="${article.title}">
-            <div class="news-card-content">
-              <h2>${article.title}</h2>
-              <p>${article.description || "No description available."}</p>
-              <a href="${article.url}" target="_blank">Read more</a>
-            </div>
-          `;
-          newsGrid.appendChild(card);
-        });
-      } catch (error) {
-        console.error("Failed to fetch news:", error);
-        showAlert("Failed to load news. Please try again.", false);
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`HTTP error! Status: ${response.status}, Response: ${errorText}`);
+            if (response.status === 429 && attempt < retries) {
+              await new Promise(resolve => setTimeout(resolve, delay * attempt));
+              continue;
+            }
+            throw new Error(`HTTP error! Status: ${response.status}, ${errorText}`);
+          }
+
+          const data = await response.json();
+          if (data.status !== "ok") {
+            throw new Error(`API error: ${data.message} (Code: ${data.code})`);
+          }
+
+          newsGrid.innerHTML = "";
+          if (data.articles.length === 0) {
+            showAlert("No news articles found. Try again later.", false);
+            return;
+          }
+
+          data.articles.forEach((article) => {
+            const card = document.createElement("div");
+            card.className = "news-card";
+            card.innerHTML = `
+              <img src="${article.urlToImage || 'https://via.placeholder.com/300x200?text=No+Image'}" alt="${article.title}">
+              <div class="news-card-content">
+                <h2>${article.title}</h2>
+                <p>${article.description || "No description available."}</p>
+                <a href="${article.url}" target="_blank">Read more</a>
+              </div>
+            `;
+            newsGrid.appendChild(card);
+          });
+          return;
+        } catch (error) {
+          console.error(`Attempt ${attempt} failed:`, error);
+          if (attempt === retries) {
+            // Fallback to sample data for testing
+            const fallbackArticles = [
+              {
+                title: "Sample News Article",
+                description: "This is a fallback article displayed due to an API failure.",
+                url: "#",
+                urlToImage: "https://via.placeholder.com/300x200?text=Sample+News"
+              }
+            ];
+            newsGrid.innerHTML = "";
+            fallbackArticles.forEach((article) => {
+              const card = document.createElement("div");
+              card.className = "news-card";
+              card.innerHTML = `
+                <img src="${article.urlToImage}" alt="${article.title}">
+                <div class="news-card-content">
+                  <h2>${article.title}</h2>
+                  <p>${article.description}</p>
+                  <a href="${article.url}" target="_blank">Read more</a>
+                </div>
+              `;
+              newsGrid.appendChild(card);
+            });
+            let errorMessage = "Failed to load news. Displaying sample data.";
+            if (error.message.includes("426")) {
+              errorMessage = "CORS error: NewsAPI requires localhost or a paid plan. Displaying sample data.";
+            } else if (error.message.includes("429")) {
+              errorMessage = "Rate limit exceeded. Please try again later.";
+            } else if (error.message.includes("401")) {
+              errorMessage = "Invalid API key. Please check your NewsAPI key.";
+            }
+            showAlert(errorMessage, false);
+          }
+        }
       }
     }
 
