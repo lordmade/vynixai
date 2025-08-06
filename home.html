@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>News Home</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-md5@0.7.3/src/md5.min.js"></script>
+  <script src="https://cdn.replyke.com/replyke.min.js"></script>
   <style>
     :root {
       --twitter-blue: #1DA1F2;
@@ -84,6 +86,80 @@
 
     .news-card a:hover {
       color: #1a91da;
+    }
+
+    .details {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s ease-out;
+    }
+
+    .details.expanded {
+      max-height: 500px;
+    }
+
+    .see-more-btn {
+      background: none;
+      border: none;
+      color: var(--twitter-blue);
+      font-weight: 600;
+      cursor: pointer;
+      padding: 0.5rem 0;
+      transition: color 0.2s ease;
+    }
+
+    .see-more-btn:hover {
+      color: #1a91da;
+    }
+
+    .read-more {
+      display: inline-block;
+      margin-top: 0.5rem;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .reactions {
+      display: flex;
+      align-items: center;
+    }
+
+    .reaction-btn {
+      display: flex;
+      align-items: center;
+      background: none;
+      border: none;
+      color: var(--text-light);
+      cursor: pointer;
+      transition: color 0.2s ease, transform 0.2s ease;
+    }
+
+    .reaction-btn:hover {
+      color: var(--twitter-blue);
+      transform: scale(1.1);
+    }
+
+    .reaction-btn.active {
+      color: var(--twitter-blue);
+      font-weight: 600;
+    }
+
+    .comments {
+      border-top: 1px solid var(--border);
+      padding-top: 1rem;
+    }
+
+    .comments .replyke-comment {
+      font-size: 0.9rem;
+      color: var(--text-dark);
+    }
+
+    .comments .replyke-input {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem;
     }
 
     .custom-alert {
@@ -234,8 +310,9 @@
   </div>
 
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
-    import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
+    import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, updateDoc, increment } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -250,6 +327,7 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getFirestore(app);
     const newsGrid = document.getElementById("news-grid");
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
@@ -268,6 +346,7 @@
 
     async function checkAuthState() {
       try {
+        await setPersistence(auth, browserLocalPersistence);
         await new Promise((resolve, reject) => {
           onAuthStateChanged(auth, (user) => {
             if (!user) {
@@ -286,8 +365,178 @@
       }
     }
 
+    async function handleReaction(articleId, reactionType, user) {
+      try {
+        const reactionRef = doc(db, "reactions", `${articleId}_${user.uid}`);
+        const reactionSnap = await getDoc(reactionRef);
+
+        if (reactionSnap.exists()) {
+          const data = reactionSnap.data();
+          if (data.type === reactionType) {
+            showAlert("You already reacted with this!", true);
+            return;
+          }
+          await setDoc(reactionRef, { type: reactionType, timestamp: new Date() });
+          // Decrement old reaction count
+          const oldType = data.type;
+          await updateDoc(doc(db, "articles", articleId), {
+            [`${oldType}Count`]: increment(-1)
+          });
+        } else {
+          await setDoc(reactionRef, { type: reactionType, timestamp: new Date() });
+        }
+
+        // Increment new reaction count
+        const articleRef = doc(db, "articles", articleId);
+        await updateDoc(articleRef, {
+          [`${reactionType}Count`]: increment(1)
+        }, { merge: true });
+
+        // Update UI
+        const btn = document.querySelector(`.reaction-btn[data-article-id="${articleId}"][data-type="${reactionType}"]`);
+        const countSpan = btn.querySelector(`.${reactionType}-count`);
+        const currentCount = parseInt(countSpan.textContent) || 0;
+        countSpan.textContent = currentCount + 1;
+        btn.classList.add("active");
+
+        // Update other reaction button if needed
+        const otherType = reactionType === "like" ? "heart" : "like";
+        const otherBtn = document.querySelector(`.reaction-btn[data-article-id="${articleId}"][data-type="${otherType}"]`);
+        if (otherBtn && reactionSnap.exists() && reactionSnap.data().type === otherType) {
+          const otherCountSpan = otherBtn.querySelector(`.${otherType}-count`);
+          const otherCount = parseInt(otherCountSpan.textContent) || 0;
+          if (otherCount > 0) otherCountSpan.textContent = otherCount - 1;
+          otherBtn.classList.remove("active");
+        }
+      } catch (error) {
+        console.error("Reaction error:", error);
+        showAlert("Failed to record reaction. Please try again.", true);
+      }
+    }
+
+    async function loadReactionCounts(articleId) {
+      try {
+        const articleRef = doc(db, "articles", articleId);
+        const articleSnap = await getDoc(articleRef);
+        if (articleSnap.exists()) {
+          const data = articleSnap.data();
+          const likeCount = document.querySelector(`.like-btn[data-article-id="${articleId}"] .like-count`);
+          const heartCount = document.querySelector(`.heart-btn[data-article-id="${articleId}"] .heart-count`);
+          if (likeCount) likeCount.textContent = data.likeCount || 0;
+          if (heartCount) heartCount.textContent = data.heartCount || 0;
+        }
+        // Check if user has reacted
+        const user = auth.currentUser;
+        if (user) {
+          const reactionRef = doc(db, "reactions", `${articleId}_${user.uid}`);
+          const reactionSnap = await getDoc(reactionRef);
+          if (reactionSnap.exists()) {
+            const { type } = reactionSnap.data();
+            const btn = document.querySelector(`.reaction-btn[data-article-id="${articleId}"][data-type="${type}"]`);
+            if (btn) btn.classList.add("active");
+          }
+        }
+      } catch (error) {
+        console.error("Error loading reaction counts:", error);
+      }
+    }
+
+    async function fetchArticleDetails(articleId, articleUrl, article, detailsElement) {
+      try {
+        const cacheRef = doc(db, "articleDetails", articleId);
+        const cacheSnap = await getDoc(cacheRef);
+        if (cacheSnap.exists()) {
+          detailsElement.innerHTML = cacheSnap.data().content;
+          return;
+        }
+        // Simulate fetching full content via backend proxy
+        const response = await fetch(`https://your-backend.com/scrape?url=${encodeURIComponent(articleUrl)}`);
+        if (!response.ok) throw new Error("Failed to fetch details");
+        const data = await response.json();
+        const content = `
+          <p>${data.fullContent || article.content || "Full content not available."}</p>
+          <p><strong>Source:</strong> ${article.source.name}</p>
+          <p><strong>Published:</strong> ${new Date(article.publishedAt).toLocaleString()}</p>
+        `;
+        await setDoc(cacheRef, { content, timestamp: new Date() });
+        detailsElement.innerHTML = content;
+      } catch (error) {
+        console.error("Error fetching details:", error);
+        detailsElement.innerHTML = `
+          <p>Unable to load full content. Try the full article.</p>
+          <p><strong>Source:</strong> ${article.source.name}</p>
+          <p><strong>Published:</strong> ${new Date(article.publishedAt).toLocaleString()}</p>
+        `;
+        showAlert("Failed to load article details.", true);
+      }
+    }
+
+    function setupSeeMoreButtons() {
+      document.querySelectorAll(".see-more-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const articleId = btn.dataset.articleId;
+          const articleUrl = btn.dataset.url;
+          const detailsElement = document.getElementById(`details-${articleId}`);
+          const readMoreLink = btn.nextElementSibling;
+          const article = JSON.parse(btn.dataset.article || "{}");
+
+          if (detailsElement.classList.contains("expanded")) {
+            detailsElement.classList.remove("expanded");
+            btn.textContent = "See More";
+            btn.setAttribute("aria-expanded", "false");
+            readMoreLink.classList.add("hidden");
+          } else {
+            detailsElement.classList.add("expanded");
+            btn.textContent = "See Less";
+            btn.setAttribute("aria-expanded", "true");
+            readMoreLink.classList.remove("hidden");
+            if (detailsElement.innerHTML.includes("Loading")) {
+              await fetchArticleDetails(articleId, articleUrl, article, detailsElement);
+            }
+          }
+        });
+      });
+    }
+
+    async function initializeReplyke(articleId, user) {
+      try {
+        // Simulate JWT generation (replace with backend call)
+        const jwt = await fetch("https://your-backend.com/generate-jwt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uid: user.uid, email: user.email })
+        }).then(res => res.json()).then(data => data.token);
+
+        const replyke = new Replyke({
+          siteId: "your-replyke-site-id",
+          element: `#comments-${articleId}`,
+          jwt,
+          theme: "light",
+          styles: {
+            "--primary-color": "var(--twitter-blue)",
+            "--background-color": "var(--white)",
+            "--text-color": "var(--text-dark)"
+          }
+        });
+        replyke.render();
+      } catch (error) {
+        console.error("Replyke initialization failed:", error);
+        showAlert("Failed to load comments.", true);
+      }
+    }
+
     async function fetchNews(retries = 3, delay = 1000) {
-      const apiKey = "52bd3bed4b1d587d9a12214f977de5bb"; // Replace with your GNews API key
+      const cacheKey = "news-cache";
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const { data, timestamp } = JSON.parse(cached);
+        if (Date.now() - timestamp < 3600000) {
+          renderArticles(data.articles);
+          return;
+        }
+      }
+
+      const apiKey = "52bd3bed4b1d587d9a12214f977de5bb"; // Move to backend
       const url = `https://gnews.io/api/v4/top-headlines?country=us&lang=en&max=10&apikey=${apiKey}`;
       newsGrid.innerHTML = `
         <div class="loader">
@@ -300,71 +549,38 @@
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
           const response = await fetch(url, { signal: controller.signal });
           clearTimeout(timeoutId);
 
-          if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`HTTP error! Status: ${response.status}, Response: ${errorText}`);
-            if (response.status === 429 && attempt < retries) {
-              await new Promise(resolve => setTimeout(resolve, delay * attempt));
-              continue;
-            }
-            throw new Error(`HTTP error! Status: ${response.status}, ${errorText}`);
-          }
-
+          if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
           const data = await response.json();
-          if (!data.articles) {
-            throw new Error(`API error: No articles returned`);
-          }
+          if (!data.articles) throw new Error("No articles returned");
 
+          localStorage.setItem(cacheKey, JSON.stringify({ data, timestamp: Date.now() }));
           newsGrid.innerHTML = "";
           if (data.articles.length === 0) {
             showAlert("No news articles found. Try again later.", false);
             return;
           }
 
-          data.articles.forEach((article) => {
-            const card = document.createElement("div");
-            card.className = "news-card";
-            card.innerHTML = `
-              <img src="${article.image || 'https://via.placeholder.com/300x200?text=No+Image'}" alt="${article.title}">
-              <div class="news-card-content">
-                <h2>${article.title}</h2>
-                <p>${article.description || "No description available."}</p>
-                <a href="${article.url}" target="_blank">Read more</a>
-              </div>
-            `;
-            newsGrid.appendChild(card);
-          });
+          renderArticles(data.articles);
           return;
         } catch (error) {
           console.error(`Attempt ${attempt} failed:`, error);
           if (attempt === retries) {
-            // Fallback to sample data
             const fallbackArticles = [
               {
                 title: "Sample News Article",
                 description: "This is a fallback article displayed due to an API failure.",
                 url: "#",
-                image: "https://via.placeholder.com/300x200?text=Sample+News"
+                image: "https://via.placeholder.com/300x200?text=Sample+News",
+                source: { name: "Sample Source" },
+                publishedAt: new Date().toISOString()
               }
             ];
             newsGrid.innerHTML = "";
-            fallbackArticles.forEach((article) => {
-              const card = document.createElement("div");
-              card.className = "news-card";
-              card.innerHTML = `
-                <img src="${article.image}" alt="${article.title}">
-                <div class="news-card-content">
-                  <h2>${article.title}</h2>
-                  <p>${article.description}</p>
-                  <a href="${article.url}" target="_blank">Read more</a>
-                </div>
-              `;
-              newsGrid.appendChild(card);
-            });
+            renderArticles(fallbackArticles);
             let errorMessage = "Failed to load news. Displaying sample data.";
             if (error.message.includes("429")) {
               errorMessage = "Rate limit exceeded. Please try again later.";
@@ -375,13 +591,65 @@
             }
             showAlert(errorMessage, false);
           }
+          await new Promise(resolve => setTimeout(resolve, delay * attempt));
         }
       }
     }
 
+    function renderArticles(articles) {
+      articles.forEach(async (article, index) => {
+        const articleId = md5(article.url);
+        const card = document.createElement("div");
+        card.className = "news-card";
+        card.innerHTML = `
+          <img src="${article.image || 'https://via.placeholder.com/300x200?text=No+Image'}" alt="${article.title}">
+          <div class="news-card-content">
+            <h2>${article.title}</h2>
+            <p class="description">${article.description || "No description available."}</p>
+            <div class="details hidden" id="details-${articleId}">
+              <p>Loading additional details...</p>
+            </div>
+            <button class="see-more-btn" data-article-id="${articleId}" data-url="${article.url}" data-article='${JSON.stringify(article)}' aria-expanded="false">See More</button>
+            <a href="${article.url}" target="_blank" class="read-more hidden">Read full article</a>
+            <div class="reactions mt-4 flex gap-4">
+              <button class="reaction-btn like-btn" data-article-id="${articleId}" data-type="like">
+                <svg class="w-5 h-5 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path></svg>
+                <span class="like-count">0</span>
+              </button>
+              <button class="reaction-btn heart-btn" data-article-id="${articleId}" data-type="heart">
+                <svg class="w-5 h-5 inline-block mr-1" fill="currentColor" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"></path></svg>
+                <span class="heart-count">0</span>
+              </button>
+            </div>
+            <div id="comments-${articleId}" class="comments mt-4"></div>
+          </div>
+        `;
+        newsGrid.appendChild(card);
+        if (auth.currentUser) {
+          await initializeReplyke(articleId, auth.currentUser);
+          await loadReactionCounts(articleId);
+        }
+      });
+
+      document.querySelectorAll(".reaction-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const user = auth.currentUser;
+          if (!user) {
+            showAlert("Please sign in to react.", true);
+            return;
+          }
+          const articleId = btn.dataset.articleId;
+          const reactionType = btn.dataset.type;
+          await handleReaction(articleId, reactionType, user);
+        });
+      });
+
+      setupSeeMoreButtons();
+    }
+
     document.addEventListener("DOMContentLoaded", async () => {
       await checkAuthState();
-      fetchNews();
+      await fetchNews();
     });
   </script>
 </body>
