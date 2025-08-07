@@ -443,14 +443,15 @@
 
     .comment-item {
       display: flex;
-      justify-content: space-between;
       align-items: flex-start;
       padding: 0.5rem 0;
       border-bottom: 1px solid var(--border);
+      position: relative;
     }
 
     .comment-content {
       flex: 1;
+      margin-left: 0.5rem;
     }
 
     .comment-user {
@@ -471,6 +472,45 @@
       margin-top: 0.2rem;
     }
 
+    .comment-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      font-weight: bold;
+      color: var(--white);
+      flex-shrink: 0;
+    }
+
+    .comment-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 50%;
+    }
+
+    .comment-actions {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.3rem;
+    }
+
+    .reply-btn {
+      background: none;
+      border: none;
+      color: var(--twitter-blue);
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: color 0.2s ease;
+    }
+
+    .reply-btn:hover {
+      color: #1a91da;
+    }
+
     .comment-delete {
       background: none;
       border: none;
@@ -487,6 +527,38 @@
     .comment-delete svg {
       width: 16px;
       height: 16px;
+    }
+
+    .reply-list {
+      margin-left: 2rem;
+      position: relative;
+    }
+
+    .reply-list::before {
+      content: '';
+      position: absolute;
+      left: 0.75rem;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--border);
+    }
+
+    .reply-item {
+      display: flex;
+      align-items: flex-start;
+      padding: 0.5rem 0;
+      position: relative;
+    }
+
+    .reply-item::before {
+      content: '';
+      position: absolute;
+      left: -1.25rem;
+      top: 1rem;
+      width: 1rem;
+      height: 2px;
+      background: var(--border);
     }
 
     .view-all-comments {
@@ -695,6 +767,20 @@
         font-size: 0.85rem;
       }
 
+      .comment-avatar {
+        width: 28px;
+        height: 28px;
+        font-size: 0.9rem;
+      }
+
+      .reply-list {
+        margin-left: 1.5rem;
+      }
+
+      .reply-item::before {
+        left: -1rem;
+      }
+
       .custom-alert {
         width: 85%;
         padding: 1rem;
@@ -893,7 +979,7 @@
       }
     }
 
-    async function postComment(articleId, user, commentText) {
+    async function postComment(articleId, user, commentText, parentCommentId = null) {
       if (!user) {
         showAlert("Please sign in to comment.", true);
         return;
@@ -907,7 +993,10 @@
         showAlert("Comment must be 280 characters or less.", true);
         return;
       }
-      const commentsRef = ref(db, `articles/${articleId}/comments`);
+      const refPath = parentCommentId 
+        ? `articles/${articleId}/comments/${parentCommentId}/replies`
+        : `articles/${articleId}/comments`;
+      const commentsRef = ref(db, refPath);
       try {
         await push(commentsRef, {
           uid: user.uid,
@@ -922,8 +1011,11 @@
       }
     }
 
-    async function deleteComment(articleId, commentId) {
-      const commentRef = ref(db, `articles/${articleId}/comments/${commentId}`);
+    async function deleteComment(articleId, commentId, parentCommentId = null) {
+      const refPath = parentCommentId 
+        ? `articles/${articleId}/comments/${parentCommentId}/replies/${commentId}`
+        : `articles/${articleId}/comments/${commentId}`;
+      const commentRef = ref(db, refPath);
       try {
         await remove(commentRef);
         updateCommentList(articleId);
@@ -939,44 +1031,146 @@
       if (!commentList) return;
       const commentsRef = ref(db, `articles/${articleId}/comments`);
       try {
-        onValue(commentsRef, (snapshot) => {
+        onValue(commentsRef, async (snapshot) => {
           const comments = [];
+          const userPhotoURLs = {};
           snapshot.forEach(child => {
-            comments.push({ id: child.key, ...child.val() });
+            const commentData = child.val();
+            comments.push({ id: child.key, ...commentData, replies: [] });
+            userPhotoURLs[commentData.uid] = null;
           });
+          // Fetch user photoURLs
+          for (const uid of Object.keys(userPhotoURLs)) {
+            const userRef = ref(db, `users/${uid}/photoURL`);
+            const userSnap = await get(userRef);
+            if (userSnap.exists()) {
+              userPhotoURLs[uid] = userSnap.val();
+            }
+          }
+          // Fetch replies for each comment
+          for (const comment of comments) {
+            const repliesRef = ref(db, `articles/${articleId}/comments/${comment.id}/replies`);
+            const replySnap = await get(repliesRef);
+            if (replySnap.exists()) {
+              replySnap.forEach(child => {
+                const replyData = child.val();
+                comment.replies.push({ id: child.key, ...replyData });
+                userPhotoURLs[replyData.uid] = userPhotoURLs[replyData.uid] || null;
+              });
+            }
+          }
           comments.sort((a, b) => b.timestamp - a.timestamp); // Newest first
           commentList.innerHTML = "";
           const maxDisplay = 3;
+          const totalItems = comments.reduce((sum, comment) => sum + 1 + (comment.replies ? comment.replies.length : 0), 0);
           const displayComments = comments.slice(0, maxDisplay);
           displayComments.forEach(comment => {
             const isOwnComment = auth.currentUser && comment.uid === auth.currentUser.uid;
             const commentItem = document.createElement("div");
             commentItem.className = "comment-item";
             const timeAgo = new Date(comment.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const avatarContent = userPhotoURLs[comment.uid]
+              ? `<img src="${userPhotoURLs[comment.uid]}" alt="${DOMPurify.sanitize(comment.displayName)}'s profile picture" />`
+              : `<span>${DOMPurify.sanitize(comment.displayName.charAt(0).toUpperCase())}</span>`;
             commentItem.innerHTML = `
+              <div class="comment-avatar" style="background-color: ${generateAvatarColor(comment.uid)}">${avatarContent}</div>
               <div class="comment-content">
                 <div class="comment-user">${DOMPurify.sanitize(comment.displayName)}</div>
                 <div class="comment-text">${DOMPurify.sanitize(comment.text)}</div>
                 <div class="comment-time">${timeAgo}</div>
+                <div class="comment-actions">
+                  <button class="reply-btn" data-comment-id="${comment.id}" aria-label="Reply to this comment">Reply</button>
+                  ${isOwnComment ? `
+                    <button class="comment-delete" data-comment-id="${comment.id}" aria-label="Delete this comment">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18M6 6v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V6M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path>
+                      </svg>
+                    </button>
+                  ` : ""}
+                </div>
+                <div class="reply-list" data-comment-id="${comment.id}"></div>
               </div>
-              ${isOwnComment ? `
-                <button class="comment-delete" data-comment-id="${comment.id}" aria-label="Delete this comment">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 6h18M6 6v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V6M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path>
-                  </svg>
-                </button>
-              ` : ""}
             `;
             commentList.appendChild(commentItem);
+            // Render replies
+            const replyList = commentItem.querySelector(".reply-list");
+            if (comment.replies && comment.replies.length > 0) {
+              comment.replies.sort((a, b) => b.timestamp - a.timestamp); // Newest first
+              comment.replies.forEach(reply => {
+                const isOwnReply = auth.currentUser && reply.uid === auth.currentUser.uid;
+                const replyItem = document.createElement("div");
+                replyItem.className = "reply-item";
+                const replyTimeAgo = new Date(reply.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const replyAvatarContent = userPhotoURLs[reply.uid]
+                  ? `<img src="${userPhotoURLs[reply.uid]}" alt="${DOMPurify.sanitize(reply.displayName)}'s profile picture" />`
+                  : `<span>${DOMPurify.sanitize(reply.displayName.charAt(0).toUpperCase())}</span>`;
+                replyItem.innerHTML = `
+                  <div class="comment-avatar" style="background-color: ${generateAvatarColor(reply.uid)}">${replyAvatarContent}</div>
+                  <div class="comment-content">
+                    <div class="comment-user">${DOMPurify.sanitize(reply.displayName)}</div>
+                    <div class="comment-text">${DOMPurify.sanitize(reply.text)}</div>
+                    <div class="comment-time">${replyTimeAgo}</div>
+                    ${isOwnReply ? `
+                      <button class="comment-delete" data-comment-id="${comment.id}" data-reply-id="${reply.id}" aria-label="Delete this reply">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M3 6h18M6 6v12a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V6M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path>
+                        </svg>
+                      </button>
+                    ` : ""}
+                  </div>
+                `;
+                replyList.appendChild(replyItem);
+                if (isOwnReply) {
+                  replyItem.querySelector(".comment-delete").addEventListener("click", () => {
+                    deleteComment(articleId, reply.id, comment.id);
+                  });
+                }
+              });
+            }
+            // Add reply input when reply button is clicked
+            const replyBtn = commentItem.querySelector(".reply-btn");
+            replyBtn.addEventListener("click", () => {
+              if (!auth.currentUser) {
+                showAlert("Please sign in to reply.", true);
+                return;
+              }
+              let replyInputGroup = replyList.querySelector(".reply-input-group");
+              if (replyInputGroup) {
+                replyInputGroup.remove();
+                return;
+              }
+              replyInputGroup = document.createElement("div");
+              replyInputGroup.className = "comment-input-group";
+              replyInputGroup.style.marginLeft = "2rem";
+              replyInputGroup.innerHTML = `
+                <input type="text" class="comment-input" data-comment-id="${comment.id}" placeholder="Write a reply..." maxlength="280" aria-label="Enter your reply" />
+                <button class="comment-btn" data-comment-id="${comment.id}" aria-label="Post reply">Reply</button>
+              `;
+              replyList.insertBefore(replyInputGroup, replyList.firstChild);
+              const replyInput = replyInputGroup.querySelector(".comment-input");
+              const replySubmitBtn = replyInputGroup.querySelector(".comment-btn");
+              replySubmitBtn.addEventListener("click", () => {
+                postComment(articleId, auth.currentUser, replyInput.value, comment.id);
+                replyInput.value = "";
+                replySubmitBtn.classList.add("tap-active");
+                setTimeout(() => replySubmitBtn.classList.remove("tap-active"), 100);
+              });
+              replyInput.addEventListener("keypress", (e) => {
+                if (e.key === "Enter") {
+                  postComment(articleId, auth.currentUser, replyInput.value, comment.id);
+                  replyInput.value = "";
+                }
+              });
+            });
             if (isOwnComment) {
               commentItem.querySelector(".comment-delete").addEventListener("click", () => {
                 deleteComment(articleId, comment.id);
               });
             }
           });
-          if (comments.length > maxDisplay) {
+          if (totalItems > maxDisplay) {
             viewAllLink.style.display = "block";
-            viewAllLink.textContent = `View all ${comments.length} comments`;
+            viewAllLink.textContent = `View all ${totalItems} comments and replies`;
           } else {
             viewAllLink.style.display = "none";
           }
@@ -1068,7 +1262,6 @@
         }
       }
 
-      // Use Firebase Cloud Function in production
       const apiKey = "52bd3bed4b1d587d9a12214f977de5bb"; // Move to backend
       let url = `https://gnews.io/api/v4/top-headlines?country=za&lang=en&max=10&category=${category}&apikey=${apiKey}`;
       if (query) {
