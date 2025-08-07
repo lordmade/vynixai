@@ -503,12 +503,14 @@
     }
 
     .views-counter {
+      position: absolute;
+      bottom: 1.25rem;
+      right: 1.25rem;
       font-size: 0.85rem;
       color: var(--text-light);
       display: flex;
       align-items: center;
       gap: 0.3rem;
-      margin: 0.5rem 0;
     }
 
     .views-counter svg {
@@ -1063,6 +1065,7 @@
     }
 
     async function fetchNews(category = currentCategory, query = currentQuery, retries = 3, delay = 1000) {
+      const apiKey = "52bd3bed4b1d587d9a12214f977de5bb";
       const cacheKey = `news-cache-${category}-${query || 'default'}`;
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -1073,11 +1076,9 @@
         }
       }
 
-      const apiKey = "52bd3bed4b1d587d9a12214f977de5bb";
-      let url = `https://gnews.io/api/v4/top-headlines?country=za&lang=en&max=10&category=${category}&apikey=${apiKey}`;
-      if (query) {
-        url += `&q=${encodeURIComponent(query)}`;
-      }
+      const africanCountries = ['ng', 'ke', 'gh', 'dz'];
+      let allArticles = [];
+      let errorMessage = "Failed to load news. Displaying sample data.";
       newsGrid.innerHTML = `
         <div class="loader">
           <div class="dot"></div>
@@ -1085,6 +1086,12 @@
           <div class="dot"></div>
         </div>
       `;
+
+      // Try South African news first
+      let url = `https://gnews.io/api/v4/top-headlines?country=za&lang=en&max=10&category=${category}&apikey=${apiKey}`;
+      if (query) {
+        url += `&q=${encodeURIComponent(query)}`;
+      }
 
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
@@ -1097,31 +1104,53 @@
           const data = await response.json();
           if (!data.articles) throw new Error("No articles returned");
 
-          localStorage.setItem(cacheKey, JSON.stringify({ data, timestamp: Date.now() }));
+          allArticles = data.articles;
+          if (allArticles.length < 5) {
+            for (const country of africanCountries) {
+              const africanUrl = `https://gnews.io/api/v4/top-headlines?country=${country}&lang=en&max=5&category=${category}&apikey=${apiKey}${query ? `&q=${encodeURIComponent(query)}` : ''}`;
+              try {
+                const africanResponse = await fetch(africanUrl);
+                if (africanResponse.ok) {
+                  const africanData = await africanResponse.json();
+                  if (africanData.articles) {
+                    // Filter out duplicates by URL
+                    const existingUrls = new Set(allArticles.map(a => a.url));
+                    const newArticles = africanData.articles.filter(a => !existingUrls.has(a.url));
+                    allArticles = [...allArticles, ...newArticles].slice(0, 10);
+                    newArticles.forEach(a => existingUrls.add(a.url));
+                  }
+                }
+              } catch (error) {
+                console.error(`Failed to fetch news for ${country}:`, error);
+              }
+              if (allArticles.length >= 10) break;
+            }
+          }
+
+          localStorage.setItem(cacheKey, JSON.stringify({ data: { articles: allArticles }, timestamp: Date.now() }));
           newsGrid.innerHTML = "";
-          if (data.articles.length === 0) {
+          if (allArticles.length === 0) {
             showAlert("No news articles found. Try a different search or category.", false);
             return;
           }
 
-          renderArticles(data.articles);
+          renderArticles(allArticles);
           return;
         } catch (error) {
-          console.error(`Attempt ${attempt} failed:`, error);
+          console.error(`Attempt ${attempt} failed for za:`, error);
           if (attempt === retries) {
             const fallbackArticles = [
               {
-                title: "Sample South African News",
-                description: "This is a fallback article for South African news.",
+                title: "Sample African News",
+                description: "This is a fallback article for African news.",
                 url: "#",
-                image: "https://via.placeholder.com/300x200?text=SA+News",
+                image: "https://via.placeholder.com/300x200?text=African+News",
                 source: { name: "Sample Source" },
                 publishedAt: new Date().toISOString()
               }
             ];
             newsGrid.innerHTML = "";
             renderArticles(fallbackArticles);
-            let errorMessage = "Failed to load news. Displaying sample data.";
             if (error.message.includes("429")) {
               errorMessage = "Rate limit exceeded. Please try again later.";
             } else if (error.message.includes("401")) {
@@ -1159,13 +1188,6 @@
           <div class="news-card-content">
             <h2>${DOMPurify.sanitize(article.title)}</h2>
             <p class="description">${DOMPurify.sanitize(article.description || "No description available.")}</p>
-            <div class="views-counter" data-article-id="${articleId}">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                <circle cx="12" cy="12" r="3"></circle>
-              </svg>
-              <span class="view-count">0</span>
-            </div>
             <div class="likes-summary" data-article-id="${articleId}">Be the first to like this!</div>
             <div class="interaction-buttons">
               <button class="like-btn" data-article-id="${articleId}" aria-label="Like this article">
@@ -1174,6 +1196,13 @@
                 </svg>
                 <span class="like-count">0</span>
               </button>
+            </div>
+            <div class="views-counter" data-article-id="${articleId}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+              <span class="view-count">0</span>
             </div>
             <div class="comment-section">
               <div class="comment-input-group">
