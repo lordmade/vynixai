@@ -289,6 +289,19 @@
       transform: scale(0.98);
     }
 
+    .news-card .badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: var(--sa-blue);
+      color: var(--white);
+      padding: 0.3rem 0.6rem;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      z-index: 1;
+    }
+
     .news-card img {
       width: 100%;
       height: 180px;
@@ -313,14 +326,36 @@
       overflow: hidden;
     }
 
-    .post-card h2 {
-      font-size: 1.1rem;
-      font-weight: 700;
-      color: var(--text-dark);
-      margin: 0 0 0.5rem;
+    .post-card .post-header {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .post-card .avatar {
+      width: 32px;
+      height: 32px;
+      font-size: 1rem;
+    }
+
+    .post-card .username {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+
+    .post-card .timestamp {
+      font-size: 0.8rem;
+      color: var(--text-light);
+    }
+
+    .post-card img {
+      width: 100%;
+      max-height: 400px;
+      object-fit: cover;
+      border-radius: 8px;
+      margin-bottom: 0.5rem;
     }
 
     .news-card p.description, .post-card p.description {
@@ -687,6 +722,9 @@
       .post-fab svg { width: 20px; height: 20px; }
       .desktop-search-bar { display: none; }
       .username { font-size: 0.9rem; }
+      .post-card .avatar { width: 28px; height: 28px; font-size: 0.9rem; }
+      .post-card .username { font-size: 0.85rem; }
+      .post-card .timestamp { font-size: 0.75rem; }
     }
 
     @media (min-width: 768px) {
@@ -813,7 +851,7 @@
       const name = user.displayName || user.email.split("@")[0];
       const initial = name.charAt(0).toUpperCase();
       if (user.photoURL) {
-        avatarElement.innerHTML = `<img src="${user.photoURL}" alt="${name}'s profile picture" />`;
+        avatarElement.innerHTML = `<img src="${user.photoURL}" alt="${DOMPurify.sanitize(name)}'s profile picture" />`;
       } else {
         avatarElement.style.backgroundColor = generateAvatarColor(user.uid);
         avatarElement.textContent = initial;
@@ -1019,7 +1057,7 @@
       }
     }
 
-    function updateLikeButtonState(id, userId, type) {
+    async function updateLikeButtonState(id, userId, type) {
       const likeBtn = document.querySelector(`.like-btn[data-id="${id}"][data-type="${type}"]`);
       if (!likeBtn) return;
       const refPath = type === "article" ? `articles/${id}/likedBy/${userId}` : `posts/${id}/likedBy/${userId}`;
@@ -1109,11 +1147,19 @@
             post.displayName.toLowerCase().includes(cleanQuery)
           );
         }
-        return posts.sort(() => Math.random() - 0.5); // Randomize posts
+        return posts;
       } catch (error) {
         console.error("Error fetching posts:", error);
         return [];
       }
+    }
+
+    function fisherYatesShuffle(array) {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+      return array;
     }
 
     async function fetchFeed(category = currentCategory, query = currentQuery) {
@@ -1130,13 +1176,29 @@
           fetchPosts(query)
         ]);
         const mixedFeed = [];
-        let postIndex = 0;
-        for (let i = 0; i < Math.max(articles.length, posts.length); i++) {
-          if (i % 3 === 2 && articles.length > i / 3) {
-            mixedFeed.push({ type: "article", data: articles[Math.floor(i / 3)] });
-          } else if (postIndex < posts.length) {
-            mixedFeed.push({ type: "post", data: posts[postIndex++] });
+        if (posts.length > 0) {
+          posts.sort((a, b) => b.timestamp - a.timestamp);
+          mixedFeed.push({ type: "post", data: posts[0] }); // Most recent post at top
+          const remainingPosts = posts.slice(1);
+          const itemsToShuffle = [
+            ...remainingPosts.map(post => ({ type: "post", data: post })),
+            ...articles.map(article => ({ type: "article", data: article }))
+          ];
+          const shuffledItems = fisherYatesShuffle(itemsToShuffle);
+          let articleCount = 0;
+          for (let i = 0; i < shuffledItems.length; i++) {
+            if (articleCount < articles.length && i % 3 === 2) {
+              const nextArticle = shuffledItems.find(item => item.type === "article" && !mixedFeed.includes(item));
+              if (nextArticle) {
+                mixedFeed.push(nextArticle);
+                articleCount++;
+                continue;
+              }
+            }
+            mixedFeed.push(shuffledItems[i]);
           }
+        } else {
+          mixedFeed.push(...articles.map(article => ({ type: "article", data: article })));
         }
         feedGrid.innerHTML = "";
         renderFeed(mixedFeed);
@@ -1168,7 +1230,8 @@
         card.dataset.type = type;
         if (type === "article") {
           card.innerHTML = `
-            <img src="${data.image || 'https://via.placeholder.com/300x200?text=No+Image'}" alt="${DOMPurify.sanitize(data.title)}">
+            <div class="badge">News</div>
+            <img src="${data.image || 'https://via.placeholder.com/300x200?text=SA+News'}" alt="${DOMPurify.sanitize(data.title)}">
             <div class="news-card-content">
               <h2>${DOMPurify.sanitize(data.title)}</h2>
               <p class="description">${DOMPurify.sanitize(data.description || "No description available.")}</p>
@@ -1198,14 +1261,20 @@
             </div>
           `;
         } else {
+          const timeAgo = new Date(data.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+          const avatarContent = data.photoURL
+            ? `<img src="${data.photoURL}" alt="${DOMPurify.sanitize(data.displayName)}'s profile picture" />`
+            : `<span>${DOMPurify.sanitize(data.displayName.charAt(0).toUpperCase())}</span>`;
           card.innerHTML = `
             <div class="post-card-content">
-              <h2>
-                <span class="comment-avatar" style="background-color: ${generateAvatarColor(data.uid)}">
-                  ${data.photoURL ? `<img src="${data.photoURL}" alt="${DOMPurify.sanitize(data.displayName)}'s profile picture" />` : `<span>${DOMPurify.sanitize(data.displayName.charAt(0).toUpperCase())}</span>`}
-                </span>
-                ${DOMPurify.sanitize(data.displayName)}
-              </h2>
+              <div class="post-header">
+                <div class="avatar" style="background-color: ${generateAvatarColor(data.uid)}">${avatarContent}</div>
+                <div>
+                  <div class="username">${DOMPurify.sanitize(data.displayName)}</div>
+                  <div class="timestamp">${timeAgo}</div>
+                </div>
+              </div>
+              ${data.image ? `<img src="${data.image}" alt="User uploaded image">` : ''}
               <p class="description">${DOMPurify.sanitize(data.text)}</p>
               <div class="likes-summary" data-id="${id}" data-type="${type}">Be the first to like this!</div>
               <div class="interaction-buttons">
@@ -1269,98 +1338,77 @@
         updateLikeButtonState(id, auth.currentUser?.uid || "", type);
         updateCommentList(id, type);
         await updateViewCountDisplay(id, type);
-        if (auth.currentUser) {
-          observer.observe(card);
+        ```html
+        observer.observe(card);
+      });
+    }
+
+    function handleSearch(query) {
+      currentQuery = query;
+      fetchFeed(currentCategory, currentQuery);
+    }
+
+    function setupSearchListeners() {
+      searchBtn.addEventListener("click", () => {
+        handleSearch(searchInput.value.trim());
+      });
+      searchInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          handleSearch(searchInput.value.trim());
+        }
+      });
+      desktopSearchBtn.addEventListener("click", () => {
+        handleSearch(desktopSearchInput.value.trim());
+      });
+      desktopSearchInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          handleSearch(desktopSearchInput.value.trim());
         }
       });
     }
 
     function setupCategoryListeners() {
-      categoryButtons.forEach(btn => {
-        btn.addEventListener("click", () => {
-          categoryButtons.forEach(b => b.classList.remove("active"));
-          btn.classList.add("active");
-          currentCategory = btn.dataset.category;
+      categoryButtons.forEach(button => {
+        button.addEventListener("click", () => {
+          categoryButtons.forEach(btn => btn.classList.remove("active"));
+          button.classList.add("active");
+          currentCategory = button.dataset.category;
           currentQuery = "";
           searchInput.value = "";
-          if (desktopSearchInput) desktopSearchInput.value = "";
-          fetchFeed(currentCategory, "");
+          desktopSearchInput.value = "";
+          fetchFeed(currentCategory);
         });
       });
     }
 
-    function setupSearchListeners() {
-      if (searchBtn) {
-        searchBtn.addEventListener("click", () => {
-          currentQuery = searchInput.value.trim();
-          if (desktopSearchInput) desktopSearchInput.value = currentQuery;
-          fetchFeed(currentCategory, currentQuery);
-        });
-        searchInput.addEventListener("keypress", (e) => {
-          if (e.key === "Enter") {
-            currentQuery = searchInput.value.trim();
-            if (desktopSearchInput) desktopSearchInput.value = currentQuery;
-            fetchFeed(currentCategory, currentQuery);
-          }
-        });
-      }
-      if (desktopSearchBtn) {
-        desktopSearchBtn.addEventListener("click", () => {
-          currentQuery = desktopSearchInput.value.trim();
-          if (searchInput) searchInput.value = currentQuery;
-          fetchFeed(currentCategory, currentQuery);
-        });
-        desktopSearchInput.addEventListener("keypress", (e) => {
-          if (e.key === "Enter") {
-            currentQuery = desktopSearchInput.value.trim();
-            if (searchInput) searchInput.value = currentQuery;
-            fetchFeed(currentCategory, currentQuery);
-          }
-        });
-      }
-    }
-
     function setupSignOutListener() {
-      if (signOutBtn) {
-        signOutBtn.addEventListener("click", async () => {
-          try {
-            await signOut(auth);
-            document.body.classList.add("fade-out");
-            setTimeout(() => {
-              window.location.href = "signup.html";
-            }, 500);
-          } catch (error) {
-            console.error("Sign out failed:", error);
-            showAlert("Failed to sign out. Please try again.", false);
-          }
-        });
-      }
+      signOutBtn.addEventListener("click", async () => {
+        try {
+          await signOut(auth);
+          document.body.classList.add("fade-out");
+          setTimeout(() => {
+            window.location.href = "signup.html";
+          }, 500);
+        } catch (error) {
+          console.error("Sign out failed:", error);
+          showAlert("Failed to sign out. Please try again.", true);
+        }
+      });
     }
 
     function setupPostFabListener() {
-      if (postFab) {
-        postFab.addEventListener("click", () => {
-          document.body.classList.add("fade-out");
-          setTimeout(() => {
-            window.location.href = "post.html";
-          }, 500);
-        });
-      }
-    }
-
-    function applyTheme() {
-      const theme = localStorage.getItem("theme") || "light";
-      document.documentElement.setAttribute("data-theme", theme);
+      postFab.addEventListener("click", () => {
+        window.location.href = "post.html";
+      });
     }
 
     document.addEventListener("DOMContentLoaded", async () => {
-      applyTheme();
       await checkAuthState();
-      setupCategoryListeners();
       setupSearchListeners();
+      setupCategoryListeners();
       setupSignOutListener();
       setupPostFabListener();
-      await fetchFeed();
+      fetchFeed();
     });
   </script>
 </body>
