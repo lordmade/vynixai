@@ -302,6 +302,7 @@
 
     .news-card-content {
       padding: 1.25rem;
+      position: relative;
     }
 
     .news-card h2 {
@@ -391,12 +392,6 @@
       margin-top: 1rem;
       border-top: 1px solid var(--border);
       padding-top: 1rem;
-    }
-
-    .comment-header {
-      display: flex;
-      justify-content: flex-end;
-      margin-bottom: 0.5rem;
     }
 
     .comment-input-group {
@@ -508,9 +503,12 @@
     }
 
     .views-counter {
+      position: absolute;
+      bottom: 1.25rem;
+      right: 1.25rem;
       font-size: 0.85rem;
       color: var(--text-light);
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: 0.3rem;
     }
@@ -697,15 +695,6 @@
         font-size: 0.85rem;
       }
 
-      .comment-list {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-      }
-
-      .comment-list::-webkit-scrollbar {
-        display: none;
-      }
-
       .custom-alert {
         width: 85%;
         padding: 1rem;
@@ -822,6 +811,7 @@
 
     let currentCategory = "general";
     let currentQuery = "";
+    const viewedArticles = new Set();
 
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
@@ -998,14 +988,11 @@
     }
 
     async function incrementViewCount(articleId, userId) {
-      const userViewRef = ref(db, `users/${userId}/viewedArticles/${articleId}`);
+      if (viewedArticles.has(`${userId}-${articleId}`)) return;
+      const viewCountRef = ref(db, `articles/${articleId}/viewCount`);
       try {
-        const snapshot = await get(userViewRef);
-        if (!snapshot.exists()) {
-          const viewCountRef = ref(db, `articles/${articleId}/viewCount`);
-          await set(userViewRef, true);
-          await set(viewCountRef, increment(1));
-        }
+        await set(viewCountRef, increment(1));
+        viewedArticles.add(`${userId}-${articleId}`);
       } catch (error) {
         console.error("View count increment failed:", error);
       }
@@ -1069,7 +1056,6 @@
     }
 
     async function fetchNews(category = currentCategory, query = currentQuery, retries = 3, delay = 1000) {
-      const apiKey = "52bd3bed4b1d587d9a12214f977de5bb";
       const cacheKey = `news-cache-${category}-${query || 'default'}`;
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -1080,9 +1066,12 @@
         }
       }
 
-      const africanCountries = ['ng', 'ke', 'gh', 'dz'];
-      let allArticles = [];
-      let errorMessage = "Failed to load news. Displaying sample data.";
+      // Use Firebase Cloud Function in production
+      const apiKey = "52bd3bed4b1d587d9a12214f977de5bb"; // Move to backend
+      let url = `https://gnews.io/api/v4/top-headlines?country=za&lang=en&max=10&category=${category}&apikey=${apiKey}`;
+      if (query) {
+        url += `&q=${encodeURIComponent(query)}`;
+      }
       newsGrid.innerHTML = `
         <div class="loader">
           <div class="dot"></div>
@@ -1090,12 +1079,6 @@
           <div class="dot"></div>
         </div>
       `;
-
-      // Try South African news first
-      let url = `https://gnews.io/api/v4/top-headlines?country=za&lang=en&max=10&category=${category}&apikey=${apiKey}`;
-      if (query) {
-        url += `&q=${encodeURIComponent(query)}`;
-      }
 
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
@@ -1108,53 +1091,31 @@
           const data = await response.json();
           if (!data.articles) throw new Error("No articles returned");
 
-          allArticles = data.articles;
-          if (allArticles.length < 5) {
-            for (const country of africanCountries) {
-              const africanUrl = `https://gnews.io/api/v4/top-headlines?country=${country}&lang=en&max=5&category=${category}&apikey=${apiKey}${query ? `&q=${encodeURIComponent(query)}` : ''}`;
-              try {
-                const africanResponse = await fetch(africanUrl);
-                if (africanResponse.ok) {
-                  const africanData = await africanResponse.json();
-                  if (africanData.articles) {
-                    // Filter out duplicates by URL
-                    const existingUrls = new Set(allArticles.map(a => a.url));
-                    const newArticles = africanData.articles.filter(a => !existingUrls.has(a.url));
-                    allArticles = [...allArticles, ...newArticles].slice(0, 10);
-                    newArticles.forEach(a => existingUrls.add(a.url));
-                  }
-                }
-              } catch (error) {
-                console.error(`Failed to fetch news for ${country}:`, error);
-              }
-              if (allArticles.length >= 10) break;
-            }
-          }
-
-          localStorage.setItem(cacheKey, JSON.stringify({ data: { articles: allArticles }, timestamp: Date.now() }));
+          localStorage.setItem(cacheKey, JSON.stringify({ data, timestamp: Date.now() }));
           newsGrid.innerHTML = "";
-          if (allArticles.length === 0) {
+          if (data.articles.length === 0) {
             showAlert("No news articles found. Try a different search or category.", false);
             return;
           }
 
-          renderArticles(allArticles);
+          renderArticles(data.articles);
           return;
         } catch (error) {
-          console.error(`Attempt ${attempt} failed for za:`, error);
+          console.error(`Attempt ${attempt} failed:`, error);
           if (attempt === retries) {
             const fallbackArticles = [
               {
-                title: "Sample African News",
-                description: "This is a fallback article for African news.",
+                title: "Sample South African News",
+                description: "This is a fallback article for South African news.",
                 url: "#",
-                image: "https://via.placeholder.com/300x200?text=African+News",
+                image: "https://via.placeholder.com/300x200?text=SA+News",
                 source: { name: "Sample Source" },
                 publishedAt: new Date().toISOString()
               }
             ];
             newsGrid.innerHTML = "";
             renderArticles(fallbackArticles);
+            let errorMessage = "Failed to load news. Displaying sample data.";
             if (error.message.includes("429")) {
               errorMessage = "Rate limit exceeded. Please try again later.";
             } else if (error.message.includes("401")) {
@@ -1202,21 +1163,19 @@
               </button>
             </div>
             <div class="comment-section">
-              <div class="comment-header">
-                <div class="views-counter" data-article-id="${articleId}">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                    <circle cx="12" cy="12" r="3"></circle>
-                  </svg>
-                  <span class="view-count">0</span>
-                </div>
-              </div>
               <div class="comment-input-group">
                 <input type="text" class="comment-input" data-article-id="${articleId}" placeholder="Add a comment..." maxlength="280" aria-label="Enter your comment" />
                 <button class="comment-btn" data-article-id="${articleId}" aria-label="Post comment">Comment</button>
               </div>
               <div class="comment-list" data-article-id="${articleId}"></div>
               <a href="#" class="view-all-comments" data-article-id="${articleId}" style="display: none;" aria-label="View all comments">View all comments</a>
+            </div>
+            <div class="views-counter" data-article-id="${articleId}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+              <span class="view-count">0</span>
             </div>
           </div>
         `;
