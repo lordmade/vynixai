@@ -301,6 +301,7 @@
 
     .news-card-content {
       padding: 1.25rem;
+      position: relative;
     }
 
     .news-card h2 {
@@ -352,6 +353,66 @@
 
     .likes-summary a:hover {
       text-decoration: underline;
+    }
+
+    .interaction-buttons {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    .like-btn {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.3rem 0.6rem;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text-light);
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .like-btn.liked {
+      background: var(--sa-red);
+      color: var(--white);
+      border-color: var(--sa-red);
+    }
+
+    .like-btn svg {
+      width: 20px;
+      height: 20px;
+      transition: fill 0.2s ease;
+    }
+
+    .like-btn.liked svg {
+      fill: var(--white);
+    }
+
+    .like-btn:hover {
+      background: var(--sa-red);
+      color: var(--white);
+    }
+
+    .like-btn:hover svg {
+      fill: var(--white);
+    }
+
+    .views-counter {
+      position: absolute;
+      bottom: 1.25rem;
+      right: 1.25rem;
+      font-size: 0.85rem;
+      color: var(--text-light);
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .views-counter svg {
+      width: 18px;
+      height: 18px;
     }
 
     .custom-alert {
@@ -605,7 +666,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
-    import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
+    import { getDatabase, ref, get, set, increment, onValue } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -637,6 +698,7 @@
 
     let currentCategory = "general";
     let currentQuery = "";
+    const viewedArticles = new Set();
 
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
@@ -698,6 +760,38 @@
       }
     }
 
+    async function toggleLike(articleId, user) {
+      const articleRef = ref(db, `articles/${articleId}`);
+      const userLikeRef = ref(db, `articles/${articleId}/likedBy/${user.uid}`);
+      const likeCountRef = ref(db, `articles/${articleId}/likeCount`);
+      try {
+        const snapshot = await get(userLikeRef);
+        if (snapshot.exists()) {
+          await set(userLikeRef, null);
+          await set(likeCountRef, increment(-1));
+        } else {
+          await set(userLikeRef, user.displayName || user.email.split("@")[0]);
+          await set(likeCountRef, increment(1));
+        }
+        updateLikesSummary(articleId);
+        updateLikeButtonState(articleId, user.uid);
+      } catch (error) {
+        console.error("Like toggle failed:", error);
+        showAlert("Failed to update like. Please try again.", true);
+      }
+    }
+
+    async function incrementViewCount(articleId, userId) {
+      if (viewedArticles.has(`${userId}-${articleId}`)) return;
+      const viewCountRef = ref(db, `articles/${articleId}/viewCount`);
+      try {
+        await set(viewCountRef, increment(1));
+        viewedArticles.add(`${userId}-${articleId}`);
+      } catch (error) {
+        console.error("View count increment failed:", error);
+      }
+    }
+
     async function updateLikesSummary(articleId) {
       try {
         const articleRef = ref(db, `articles/${articleId}`);
@@ -706,7 +800,7 @@
           const data = articleSnap.val();
           const likedBy = data.likedBy || {};
           const userIds = Object.keys(likedBy);
-          const totalLikes = (data.likeCount || 0) + (data.heartCount || 0);
+          const totalLikes = data.likeCount || 0;
           const summaryElement = document.querySelector(`.likes-summary[data-article-id="${articleId}"]`);
           if (totalLikes === 0) {
             summaryElement.textContent = "Be the first to like this!";
@@ -724,6 +818,34 @@
         }
       } catch (error) {
         console.error("Error updating likes summary:", error);
+      }
+    }
+
+    function updateLikeButtonState(articleId, userId) {
+      const likeBtn = document.querySelector(`.like-btn[data-article-id="${articleId}"]`);
+      if (!likeBtn) return;
+      const articleRef = ref(db, `articles/${articleId}/likedBy/${userId}`);
+      onValue(articleRef, (snapshot) => {
+        if (snapshot.exists()) {
+          likeBtn.classList.add("liked");
+        } else {
+          likeBtn.classList.remove("liked");
+        }
+      });
+      const likeCountRef = ref(db, `articles/${articleId}/likeCount`);
+      onValue(likeCountRef, (snapshot) => {
+        const count = snapshot.val() || 0;
+        likeBtn.querySelector(".like-count").textContent = count;
+      });
+    }
+
+    async function updateViewCountDisplay(articleId) {
+      const viewCountRef = ref(db, `articles/${articleId}/viewCount`);
+      const snapshot = await get(viewCountRef);
+      const viewCount = snapshot.val() || 0;
+      const viewElement = document.querySelector(`.views-counter[data-article-id="${articleId}"]`);
+      if (viewElement) {
+        viewElement.querySelector(".view-count").textContent = viewCount;
       }
     }
 
@@ -815,6 +937,21 @@
             <p class="description">${article.description || "No description available."}</p>
             <a href="${article.url}" target="_blank" class="read-more">Read full article</a>
             <div class="likes-summary" data-article-id="${articleId}">Be the first to like this!</div>
+            <div class="interaction-buttons">
+              <button class="like-btn" data-article-id="${articleId}" aria-label="Like this article">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                </svg>
+                <span class="like-count">0</span>
+              </button>
+            </div>
+            <div class="views-counter" data-article-id="${articleId}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+              <span class="view-count">0</span>
+            </div>
           </div>
         `;
         if (window.innerWidth <= 767) {
@@ -823,8 +960,25 @@
             setTimeout(() => card.classList.remove("tap-active"), 100);
           });
         }
+        card.querySelector(".like-btn").addEventListener("click", () => {
+          if (auth.currentUser) {
+            toggleLike(articleId, auth.currentUser);
+          } else {
+            showAlert("Please sign in to like articles.", true);
+          }
+        });
+        card.querySelector(".read-more").addEventListener("click", () => {
+          if (auth.currentUser) {
+            incrementViewCount(articleId, auth.currentUser.uid);
+          }
+        });
         newsGrid.appendChild(card);
         await updateLikesSummary(articleId);
+        updateLikeButtonState(articleId, auth.currentUser?.uid || "");
+        if (auth.currentUser) {
+          await incrementViewCount(articleId, auth.currentUser.uid);
+        }
+        await updateViewCountDisplay(articleId);
       });
     }
 
