@@ -700,7 +700,6 @@
       <div class="search-results" id="search-results"></div>
     </div>
   </div>
-
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
   import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
@@ -781,13 +780,13 @@
       await setPersistence(auth, browserLocalPersistence);
       await new Promise((resolve, reject) => {
         onAuthStateChanged(auth, (user) => {
-          console.log("Auth state checked:", user ? "User logged in" : "No user");
+          console.log("Auth state checked:", user ? `User logged in: ${user.uid}` : "No user");
           if (!user) {
             document.body.classList.add("fade-out");
             setTimeout(() => window.location.href = "signup.html", 500);
           } else {
             renderAvatar(user, avatar);
-            resolve();
+            resolve(user);
           }
         }, (error) => {
           console.error("Auth state error:", error);
@@ -797,6 +796,8 @@
     } catch (error) {
       console.error("Auth check failed:", error);
       showAlert("Failed to verify authentication. Please try again.", false);
+      friendsGrid.innerHTML = `<p class="no-content">Authentication failed. Please sign in.</p>`;
+      statusList.innerHTML = `<p class="no-content">Authentication failed. Please sign in.</p>`;
     }
   }
 
@@ -851,8 +852,9 @@
     try {
       const user = auth.currentUser;
       if (!user) {
-        showAlert("Please sign in to view chats.", true);
+        console.log("No authenticated user for fetching chats");
         friendsGrid.innerHTML = `<p class="no-content">Please sign in to view chats</p>`;
+        showAlert("Please sign in to view chats.", true);
         return;
       }
       friendsGrid.innerHTML = `
@@ -863,17 +865,22 @@
         </div>
       `;
       const loaderTimeout = setTimeout(() => {
-        friendsGrid.innerHTML = `<p class="no-content">Loading timed out. Please try again.</p>`;
+        friendsGrid.innerHTML = `<p class="no-content">Loading chats timed out. Please try again.</p>`;
         showAlert("Loading chats timed out. Please try again.", false);
       }, 10000);
+
+      // Fetch friends
       const friendsRef = ref(db, `friends/${user.uid}`);
       const friendsSnap = await get(friendsRef);
       const friendIds = friendsSnap.exists() ? Object.keys(friendsSnap.val()) : [];
       console.log("Fetched friend IDs:", friendIds);
+
+      // Fetch chats
       const chatsRef = ref(db, `chats`);
       onValue(chatsRef, async (snapshot) => {
         console.log("Chats snapshot received:", snapshot.exists());
         clearTimeout(loaderTimeout);
+        friendsGrid.innerHTML = ""; // Clear loader immediately
         let conversations = [];
         if (snapshot.exists()) {
           snapshot.forEach(child => {
@@ -891,39 +898,50 @@
             }
           });
         }
+        console.log("Conversations found:", conversations);
+
+        // Fetch user data for friends and chat participants
         const userPhotoURLs = {};
         const userDisplayNames = {};
-        for (const conv of conversations) {
-          const userRef = ref(db, `users/${conv.otherUserId}`);
-          const userSnap = await get(userRef);
-          if (userSnap.exists()) {
-            const userData = userSnap.val();
-            userPhotoURLs[conv.otherUserId] = userData.photoURL || null;
-            userDisplayNames[conv.otherUserId] = userData.displayName || userData.email.split("@")[0];
-          }
-        }
-        for (const friendId of friendIds) {
-          if (!conversations.some(conv => conv.otherUserId === friendId)) {
-            const userRef = ref(db, `users/${friendId}`);
+        const allUserIds = [...new Set([...friendIds, ...conversations.map(conv => conv.otherUserId)])];
+        for (const userId of allUserIds) {
+          try {
+            const userRef = ref(db, `users/${userId}`);
             const userSnap = await get(userRef);
             if (userSnap.exists()) {
               const userData = userSnap.val();
-              userPhotoURLs[friendId] = userData.photoURL || null;
-              userDisplayNames[friendId] = userData.displayName || userData.email.split("@")[0];
-              conversations.push({
-                chatId: null,
-                otherUserId: friendId,
-                lastMessage: { text: "No messages yet", timestamp: 0 }
-              });
+              userPhotoURLs[userId] = userData.photoURL || null;
+              userDisplayNames[userId] = userData.displayName || userData.email.split("@")[0];
+            } else {
+              console.warn(`User data not found for ID: ${userId}`);
+              userDisplayNames[userId] = "Unknown User";
+              userPhotoURLs[userId] = null;
             }
+          } catch (error) {
+            console.error(`Error fetching user data for ${userId}:`, error);
+            userDisplayNames[userId] = "Unknown User";
+            userPhotoURLs[userId] = null;
           }
         }
+
+        // Add friends without chats
+        for (const friendId of friendIds) {
+          if (!conversations.some(conv => conv.otherUserId === friendId)) {
+            conversations.push({
+              chatId: null,
+              otherUserId: friendId,
+              lastMessage: { text: "No messages yet", timestamp: 0 }
+            });
+          }
+        }
+
         conversations.sort((a, b) => b.lastMessage.timestamp - a.lastMessage.timestamp);
-        friendsGrid.innerHTML = "";
         if (conversations.length === 0) {
           friendsGrid.innerHTML = `<p class="no-content">No conversations or friends yet</p>`;
+          console.log("No conversations or friends to display");
           return;
         }
+
         conversations.forEach(conv => {
           const card = document.createElement("div");
           card.className = "friend-card";
@@ -960,6 +978,7 @@
           }
           friendsGrid.appendChild(card);
         });
+        console.log("Chats and friends rendered successfully");
       }, (error) => {
         console.error("Chats listener error:", error);
         clearTimeout(loaderTimeout);
@@ -968,6 +987,7 @@
       });
     } catch (error) {
       console.error("Error fetching chats and friends:", error);
+      clearTimeout(loaderTimeout);
       friendsGrid.innerHTML = `<p class="no-content">Failed to load chats. Please try again.</p>`;
       showAlert("Failed to load chats and friends. Please try again.", false);
     }
@@ -1096,8 +1116,9 @@
     try {
       const user = auth.currentUser;
       if (!user) {
-        showAlert("Please sign in to view statuses.", true);
+        console.log("No authenticated user for fetching statuses");
         statusList.innerHTML = `<p class="no-content">Please sign in to view statuses</p>`;
+        showAlert("Please sign in to view statuses.", true);
         return;
       }
       const statusesRef = ref(db, `statuses`);
@@ -1106,15 +1127,9 @@
         showAlert("Loading statuses timed out. Please try again.", false);
       }, 10000);
       onValue(statusesRef, async (snapshot) => {
-        console.log("Statuses snapshot received:", snapshot.exists());
+        console.log("Statuses snapshot received:", snapshot.exists(), "Data:", snapshot.val());
         clearTimeout(loaderTimeout);
-        statusList.innerHTML = `
-          <div class="loader">
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
-          </div>
-        `;
+        statusList.innerHTML = ""; // Clear loader immediately
         const statuses = [];
         const userDisplayNames = {};
         const userPhotoURLs = {};
@@ -1128,22 +1143,35 @@
               }
             });
           });
+        } else {
+          console.log("No statuses found in database");
         }
+        console.log("Statuses collected:", statuses);
         for (const status of statuses) {
           if (!userDisplayNames[status.userId]) {
-            const userRef = ref(db, `users/${status.userId}`);
-            const userSnap = await get(userRef);
-            if (userSnap.exists()) {
-              const userData = userSnap.val();
-              userDisplayNames[status.userId] = userData.displayName || userData.email.split("@")[0];
-              userPhotoURLs[status.userId] = userData.photoURL || null;
+            try {
+              const userRef = ref(db, `users/${status.userId}`);
+              const userSnap = await get(userRef);
+              if (userSnap.exists()) {
+                const userData = userSnap.val();
+                userDisplayNames[status.userId] = userData.displayName || userData.email.split("@")[0];
+                userPhotoURLs[status.userId] = userData.photoURL || null;
+              } else {
+                console.warn(`User data not found for ID: ${status.userId}`);
+                userDisplayNames[status.userId] = "Unknown User";
+                userPhotoURLs[status.userId] = null;
+              }
+            } catch (error) {
+              console.error(`Error fetching user data for ${status.userId}:`, error);
+              userDisplayNames[status.userId] = "Unknown User";
+              userPhotoURLs[status.userId] = null;
             }
           }
         }
         statuses.sort((a, b) => b.timestamp - a.timestamp);
-        statusList.innerHTML = "";
         if (statuses.length === 0) {
           statusList.innerHTML = `<p class="no-content">No statuses available</p>`;
+          console.log("No statuses to display");
           return;
         }
         statuses.forEach(status => {
@@ -1170,6 +1198,7 @@
           `;
           statusList.appendChild(statusItem);
         });
+        console.log("Statuses rendered successfully");
       }, (error) => {
         console.error("Statuses listener error:", error);
         clearTimeout(loaderTimeout);
@@ -1187,8 +1216,9 @@
     try {
       const user = auth.currentUser;
       if (!user) {
-        showAlert("Please sign in to view calls.", true);
+        console.log("No authenticated user for fetching calls");
         callsList.innerHTML = `<p class="no-content">Please sign in to view calls</p>`;
+        showAlert("Please sign in to view calls.", true);
         return;
       }
       const callsRef = ref(db, `calls/${user.uid}`);
@@ -1197,15 +1227,9 @@
         showAlert("Loading calls timed out. Please try again.", false);
       }, 10000);
       onValue(callsRef, async (snapshot) => {
-        console.log("Calls snapshot received:", snapshot.exists());
+        console.log("Calls snapshot received:", snapshot.exists(), "Data:", snapshot.val());
         clearTimeout(loaderTimeout);
-        callsList.innerHTML = `
-          <div class="loader">
-            <div class="dot"></div>
-            <div class="dot"></div>
-            <div class="dot"></div>
-          </div>
-        `;
+        callsList.innerHTML = "";
         const calls = [];
         const userDisplayNames = {};
         const userPhotoURLs = {};
@@ -1216,19 +1240,29 @@
         }
         for (const call of calls) {
           if (!userDisplayNames[call.otherUserId]) {
-            const userRef = ref(db, `users/${call.otherUserId}`);
-            const userSnap = await get(userRef);
-            if (userSnap.exists()) {
-              const userData = userSnap.val();
-              userDisplayNames[call.otherUserId] = userData.displayName || userData.email.split("@")[0];
-              userPhotoURLs[call.otherUserId] = userData.photoURL || null;
+            try {
+              const userRef = ref(db, `users/${call.otherUserId}`);
+              const userSnap = await get(userRef);
+              if (userSnap.exists()) {
+                const userData = userSnap.val();
+                userDisplayNames[call.otherUserId] = userData.displayName || userData.email.split("@")[0];
+                userPhotoURLs[call.otherUserId] = userData.photoURL || null;
+              } else {
+                console.warn(`User data not found for ID: ${call.otherUserId}`);
+                userDisplayNames[call.otherUserId] = "Unknown User";
+                userPhotoURLs[call.otherUserId] = null;
+              }
+            } catch (error) {
+              console.error(`Error fetching user data for ${call.otherUserId}:`, error);
+              userDisplayNames[call.otherUserId] = "Unknown User";
+              userPhotoURLs[call.otherUserId] = null;
             }
           }
         }
         calls.sort((a, b) => b.timestamp - a.timestamp);
-        callsList.innerHTML = "";
         if (calls.length === 0) {
           callsList.innerHTML = `<p class="no-content">No calls yet</p>`;
+          console.log("No calls to display");
           return;
         }
         calls.forEach(call => {
@@ -1247,6 +1281,7 @@
           `;
           callsList.appendChild(callItem);
         });
+        console.log("Calls rendered successfully");
       }, (error) => {
         console.error("Calls listener error:", error);
         clearTimeout(loaderTimeout);
@@ -1319,6 +1354,7 @@
       }
       statusInput.value = "";
       statusMediaInput.value = "";
+      fetchStatuses(); // Refresh statuses after posting
     } catch (error) {
       console.error("Error posting status:", error);
       showAlert(`Error: ${error.message}`, false);
@@ -1342,30 +1378,37 @@
 
   async function checkFriendRequests() {
     const user = auth.currentUser;
-    if (!user) return;
+    if (!user) {
+      console.log("No authenticated user for checking friend requests");
+      return;
+    }
     const requestsRef = ref(db, `friend_requests/${user.uid}`);
     onValue(requestsRef, async (snapshot) => {
-      console.log("Friend requests snapshot:", snapshot.exists());
+      console.log("Friend requests snapshot:", snapshot.exists(), "Data:", snapshot.val());
       if (snapshot.exists()) {
         const requests = snapshot.val();
         for (const fromId in requests) {
-          const userRef = ref(db, `users/${fromId}`);
-          const userSnap = await get(userRef);
-          if (userSnap.exists()) {
-            const userData = userSnap.val();
-            const displayName = userData.displayName || userData.email.split("@")[0];
-            showAlert(`Friend request from ${displayName}. Accept?`, false);
-            const existingAcceptBtn = customAlert.querySelector(".accept-btn");
-            if (existingAcceptBtn) existingAcceptBtn.remove();
-            const acceptBtn = document.createElement("button");
-            acceptBtn.textContent = "Accept";
-            acceptBtn.className = "retry-btn accept-btn";
-            acceptBtn.style.marginLeft = "0.5rem";
-            acceptBtn.addEventListener("click", async () => {
-              await acceptFriendRequest(fromId);
-              hideAlert();
-            });
-            customAlert.appendChild(acceptBtn);
+          try {
+            const userRef = ref(db, `users/${fromId}`);
+            const userSnap = await get(userRef);
+            if (userSnap.exists()) {
+              const userData = userSnap.val();
+              const displayName = userData.displayName || userData.email.split("@")[0];
+              showAlert(`Friend request from ${displayName}. Accept?`, false);
+              const existingAcceptBtn = customAlert.querySelector(".accept-btn");
+              if (existingAcceptBtn) existingAcceptBtn.remove();
+              const acceptBtn = document.createElement("button");
+              acceptBtn.textContent = "Accept";
+              acceptBtn.className = "retry-btn accept-btn";
+              acceptBtn.style.marginLeft = "0.5rem";
+              acceptBtn.addEventListener("click", async () => {
+                await acceptFriendRequest(fromId);
+                hideAlert();
+              });
+              customAlert.appendChild(acceptBtn);
+            }
+          } catch (error) {
+            console.error(`Error fetching user data for friend request ${fromId}:`, error);
           }
         }
       }
@@ -1377,12 +1420,14 @@
 
   document.addEventListener("DOMContentLoaded", async () => {
     console.log("DOM content loaded, initializing app");
-    await checkAuthState();
-    setupTabs();
-    setupPostFabListener();
-    setupFriendSearch();
-    fetchChatsAndFriends();
-    checkFriendRequests();
+    const user = await checkAuthState();
+    if (user) {
+      setupTabs();
+      setupPostFabListener();
+      setupFriendSearch();
+      fetchChatsAndFriends();
+      checkFriendRequests();
+    }
   });
 </script>
 </body>
