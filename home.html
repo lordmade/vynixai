@@ -399,13 +399,29 @@ body.fade-out {
   margin: 0 auto;
   overflow: hidden;
   padding: 1rem 0;
+  touch-action: pan-x;
 }
 
 .carousel-inner {
   display: flex;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s ease-out;
+  will-change: transform;
 }
-
+    
+@media (max-width: 767px) {
+  .status-carousel {
+    padding: 0.5rem 0;
+  }
+  .status-item {
+    flex: 0 0 200px;
+    margin: 0 0.25rem;
+  }
+  .status-item .status-content img,
+  .status-item .status-content video {
+    height: 150px;
+  }
+}
+    
 .status-item {
   flex: 0 0 280px;
   margin: 0 0.5rem;
@@ -2065,57 +2081,148 @@ async function fetchStatuses(category = "all") {
 function setupCarousel() {
   const carousel = document.getElementById("status-carousel");
   const inner = document.getElementById("status-list");
-  const prevBtn = document.querySelector(".carousel-nav.prev");
-  const nextBtn = document.querySelector(".carousel-nav.next");
   let currentIndex = 0;
-  const items = inner.querySelectorAll(".status-item");
-  const itemWidth = 288; // 280px + 8px margin
+  const itemWidth = 288; // 280px + 8px margin (adjust to 208 for mobile if needed)
+  let startX = 0;
+  let currentX = 0;
+  let isSwiping = false;
+  let startTime = 0;
+  let velocity = 0;
+  let lastX = 0;
+  let lastTime = 0;
 
-  function updateCarousel() {
-    inner.style.transform = `translateX(-${currentIndex * itemWidth}px)`;
-    prevBtn.disabled = currentIndex === 0;
-    nextBtn.disabled = currentIndex >= items.length - 3; // Show 3 items at a time
+  function updateCarousel(snap = true) {
+    const maxIndex = Math.max(0, inner.children.length - 3); // Show 3 items at a time
+    currentIndex = Math.max(0, Math.min(currentIndex, maxIndex));
+    if (snap) {
+      inner.style.transition = "transform 0.3s ease-out";
+      inner.style.transform = `translateX(-${currentIndex * itemWidth}px)`;
+    } else {
+      inner.style.transition = "none";
+      inner.style.transform = `translateX(-${currentX}px)`;
+    }
   }
 
-  prevBtn.addEventListener("click", () => {
-    if (currentIndex > 0) {
-      currentIndex--;
-      updateCarousel();
-    }
-  });
+  function calculateSnapPosition() {
+    const maxIndex = Math.max(0, inner.children.length - 3);
+    const proposedIndex = Math.round(currentX / itemWidth);
+    currentIndex = Math.max(0, Math.min(proposedIndex, maxIndex));
+    updateCarousel();
+  }
 
-  nextBtn.addEventListener("click", () => {
-    if (currentIndex < items.length - 3) {
-      currentIndex++;
-      updateCarousel();
-    }
-  });
-
-  let startX = 0;
-  let isSwiping = false;
   carousel.addEventListener("touchstart", (e) => {
     startX = e.touches[0].clientX;
+    currentX = currentIndex * itemWidth;
     isSwiping = true;
-  });
-  carousel.addEventListener("touchmove", (e) => {
-    if (!isSwiping) return;
-    const currentX = e.touches[0].clientX;
-    const diff = startX - currentX;
-    if (Math.abs(diff) > 50) {
-      if (diff > 0 && currentIndex < items.length - 3) {
-        currentIndex++;
-      } else if (diff < 0 && currentIndex > 0) {
-        currentIndex--;
-      }
-      updateCarousel();
-      isSwiping = false;
-    }
-  });
-  carousel.addEventListener("touchend", () => {
-    isSwiping = false;
+    startTime = performance.now();
+    lastX = startX;
+    lastTime = startTime;
+    inner.style.transition = "none";
   });
 
-  updateCarousel();
+  carousel.addEventListener("touchmove", (e) => {
+    if (!isSwiping) return;
+    const x = e.touches[0].clientX;
+    const deltaX = startX - x;
+    currentX = currentIndex * itemWidth + deltaX;
+
+    // Calculate velocity for momentum
+    const currentTime = performance.now();
+    const timeDelta = currentTime - lastTime;
+    if (timeDelta > 0) {
+      velocity = (x - lastX) / timeDelta;
+    }
+    lastX = x;
+    lastTime = currentTime;
+
+    // Bound the scrolling
+    const maxScroll = (inner.children.length - 3) * itemWidth;
+    currentX = Math.max(0, Math.min(currentX, maxScroll));
+    updateCarousel(false);
+    e.preventDefault();
+  });
+
+  carousel.addEventListener("touchend", () => {
+    if (!isSwiping) return;
+    isSwiping = false;
+
+    // Apply momentum
+    const momentum = velocity * 100; // Adjust for momentum effect
+    currentX += momentum;
+    calculateSnapPosition();
+
+    // Prevent status click during swipe
+    const statusItems = inner.querySelectorAll(".status-item");
+    statusItems.forEach(item => {
+      item.style.pointerEvents = "none";
+      setTimeout(() => {
+        item.style.pointerEvents = "auto";
+      }, 300);
+    });
+  });
+
+  // Support mouse dragging for desktop testing
+  carousel.addEventListener("mousedown", (e) => {
+    startX = e.clientX;
+    currentX = currentIndex * itemWidth;
+    isSwiping = true;
+    startTime = performance.now();
+    lastX = startX;
+    lastTime = startTime;
+    inner.style.transition = "none";
+    e.preventDefault();
+  });
+
+  carousel.addEventListener("mousemove", (e) => {
+    if (!isSwiping) return;
+    const x = e.clientX;
+    const deltaX = startX - x;
+    currentX = currentIndex * itemWidth + deltaX;
+
+    const currentTime = performance.now();
+    const timeDelta = currentTime - lastTime;
+    if (timeDelta > 0) {
+      velocity = (x - lastX) / timeDelta;
+    }
+    lastX = x;
+    lastTime = currentTime;
+
+    const maxScroll = (inner.children.length - 3) * itemWidth;
+    currentX = Math.max(0, Math.min(currentX, maxScroll));
+    updateCarousel(false);
+    e.preventDefault();
+  });
+
+  carousel.addEventListener("mouseup", () => {
+    if (!isSwiping) return;
+    isSwiping = false;
+    currentX += velocity * 100;
+    calculateSnapPosition();
+    const statusItems = inner.querySelectorAll(".status-item");
+    statusItems.forEach(item => {
+      item.style.pointerEvents = "none";
+      setTimeout(() => {
+        item.style.pointerEvents = "auto";
+      }, 300);
+    });
+  });
+
+  carousel.addEventListener("mouseleave", () => {
+    if (isSwiping) {
+      isSwiping = false;
+      calculateSnapPosition();
+    }
+  });
+
+  // Adjust item width for mobile
+  const updateItemWidth = () => {
+    const isMobile = window.innerWidth <= 767;
+    itemWidth = isMobile ? 208 : 288; // 200px + 8px margin for mobile
+    updateCarousel();
+  };
+
+  window.addEventListener("resize", updateItemWidth);
+  updateItemWidth();
 }
 
 async function fetchCalls() {
