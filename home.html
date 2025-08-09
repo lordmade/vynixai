@@ -2044,202 +2044,118 @@
       showAlert("Failed to load search results. Please try again.", false);
     }
   }
+async function fetchStatuses(category = "all") {
+  try {
+    const user = auth.currentUser;
+    if (!user) return;
 
-  async function fetchStatuses(category = "all") {
-    try {
-      const user = auth.currentUser;
-      if (!user) {
-        console.log("No authenticated user for fetching statuses");
-        statusList.innerHTML = `<p class="no-content">Please sign in to view statuses</p>`;
-        showAlert("Please sign in to view statuses.", true);
+    let friends = [];
+    if (category !== "all") {
+      const friendsRef = ref(db, `users/${user.uid}/friends`);
+      const friendsSnapshot = await get(friendsRef);
+      if (friendsSnapshot.exists()) {
+        friends = Object.keys(friendsSnapshot.val()).filter(friendId => {
+          if (category === "favorites") {
+            return friendsSnapshot.val()[friendId].favorite;
+          }
+          return true;
+        });
+      }
+    }
+
+    const userStatusAvatar = document.getElementById("user-status-avatar");
+    userStatusAvatar.innerHTML = "";
+    const statusContainer = document.getElementById("status-container");
+    statusContainer.innerHTML = `<div class="no-content">No statuses available</div>`;
+
+    const statusesRef = ref(db, "statuses");
+    onValue(statusesRef, async (snapshot) => {
+      if (!snapshot.exists()) {
+        statusContainer.innerHTML = `<p class="no-content">No statuses available</p>`;
         return;
       }
-      const statusesRef = ref(db, `statuses`);
-      const friendsRef = ref(db, `friends/${user.uid}`);
-      const favoritesRef = ref(db, `favorites/${user.uid}`);
-      const loaderTimeout = setTimeout(() => {
-        statusList.innerHTML = `<p class="no-content">Loading statuses timed out. Please try again.</p>`;
-        showAlert("Loading statuses timed out. Please try again.", false);
-      }, 10000);
-
-      // Fetch friends and favorites
-      const [friendsSnap, favoritesSnap] = await Promise.all([get(friendsRef), get(favoritesRef)]);
-      const friendIds = friendsSnap.exists() ? Object.keys(friendsSnap.val()) : [];
-      const favoriteIds = favoritesSnap.exists() ? Object.keys(favoritesSnap.val()) : [];
-
-      onValue(statusesRef, async (snapshot) => {
-        console.log("Statuses snapshot received:", snapshot.exists());
-        clearTimeout(loaderTimeout);
-        statusList.innerHTML = "";
-        const statuses = [];
-        const userDisplayNames = {};
-        const userPhotoURLs = {};
-
-        if (snapshot.exists()) {
-          snapshot.forEach(userSnap => {
-            const userId = userSnap.key;
-            userSnap.forEach(statusSnap => {
-              const status = statusSnap.val();
-              if (Date.now() - status.timestamp < 24 * 60 * 60 * 1000) {
-                statuses.push({ userId, statusId: statusSnap.key, ...status });
-              }
-            });
-          });
-        }
-
-        for (const status of statuses) {
-          if (!userDisplayNames[status.userId]) {
-            try {
-              const userRef = ref(db, `users/${status.userId}`);
-              const userSnap = await get(userRef);
-              if (userSnap.exists()) {
-                const userData = userSnap.val();
-                userDisplayNames[status.userId] = userData.displayName || userData.email.split("@")[0];
-                userPhotoURLs[status.userId] = userData.photoURL || null;
-              } else {
-                userDisplayNames[status.userId] = "Unknown User";
-                userPhotoURLs[status.userId] = null;
-              }
-            } catch (error) {
-              console.error(`Error fetching user data for ${status.userId}:`, error);
-              userDisplayNames[status.userId] = "Unknown User";
-              userPhotoURLs[status.userId] = null;
-            }
+      const statuses = [];
+      const userDisplayNames = {};
+      snapshot.forEach(userSnap => {
+        const userId = userSnap.key;
+        userSnap.forEach(statusSnap => {
+          const status = statusSnap.val();
+          if (Date.now() - status.timestamp < 24 * 60 * 60 * 1000) {
+            statuses.push({ userId, statusId: statusSnap.key, ...status });
           }
-        }
-
-        // Filter statuses based on category
-        let filteredStatuses = statuses;
-        if (category === "friends") {
-          filteredStatuses = statuses.filter(status => friendIds.includes(status.userId));
-        } else if (category === "favorites") {
-          filteredStatuses = statuses.filter(status => favoriteIds.includes(status.userId));
-        }
-
-        filteredStatuses.sort((a, b) => b.timestamp - a.timestamp);
-        if (filteredStatuses.length === 0) {
-          statusList.innerHTML = `<p class="no-content">No statuses available</p>`;
-          console.log("No statuses to display");
-          return;
-        }
-
-        // Store statuses for modal navigation
-        window.currentStatuses = filteredStatuses;
-
-        filteredStatuses.forEach((status, index) => {
+        });
+      });
+      if (statuses.length === 0) {
+        statusContainer.innerHTML = `<p class="no-content">No statuses available</p>`;
+        return;
+      }
+      statusContainer.innerHTML = "";
+      for (const status of statuses) {
+        if (category === "all" || (category === "friends" && friends.includes(status.userId)) || (category === "favorites" && friends.includes(status.userId))) {
+          const userRef = ref(db, `users/${status.userId}`);
+          const userSnap = await get(userRef);
+          const userData = userSnap.exists() ? userSnap.val() : {};
+          userDisplayNames[status.userId] = userData.displayName || userData.email?.split("@")[0] || "Unknown User";
           const statusItem = document.createElement("div");
           statusItem.className = "status-item";
           statusItem.setAttribute("role", "article");
-          statusItem.setAttribute("aria-label", `View status by ${userDisplayNames[status.userId]}`);
-          statusItem.dataset.index = index; // Store index for modal navigation
-          const avatarContent = userPhotoURLs[status.userId]
-            ? `<img src="${userPhotoURLs[status.userId]}" alt="${DOMPurify.sanitize(userDisplayNames[status.userId])}'s profile picture" />`
-            : `<span>${DOMPurify.sanitize(userDisplayNames[status.userId].charAt(0).toUpperCase())}</span>`;
-          let mediaContent = "";
-          let previewContent = "";
-          if (status.type === "image") {
-            mediaContent = `<img src="${DOMPurify.sanitize(status.content)}" alt="Status image" />`;
-          } else if (status.type === "video") {
-            // Generate thumbnail URL for Cloudinary video
-            const videoId = status.content.split('/').pop().split('.')[0];
-            const thumbnailUrl = `https://res.cloudinary.com/dqkujefxj/video/upload/so_0/${videoId}.jpg`;
-            mediaContent = `<video src="${DOMPurify.sanitize(status.content)}" muted playsinline></video>`;
-            previewContent = `<img class="video-preview" src="${DOMPurify.sanitize(thumbnailUrl)}" alt="Video preview" />`;
-          } else {
-            mediaContent = `<p>${DOMPurify.sanitize(status.content)}</p>`;
-          }
+          statusItem.setAttribute("aria-label", `Status by ${userDisplayNames[status.userId]}`);
           const viewCount = status.views ? Object.keys(status.views).length : 0;
-          const deleteButton = status.userId === user.uid ? `
-            <button class="delete-btn" data-status-id="${status.statusId}" data-user-id="${status.userId}" aria-label="Delete status">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 6h18M5 6l1 12h12l1-12M8 6V4h8v2M10 11v6M14 11v6" />
-              </svg>
-            </button>
-          ` : "";
           statusItem.innerHTML = `
-            <div class="status-header">
-              <div class="avatar" style="background-color: ${generateAvatarColor(status.userId)}">${avatarContent}</div>
-              <p style="font-weight: 600; margin: 0;">${DOMPurify.sanitize(userDisplayNames[status.userId])}</p>
-              <span class="timestamp">${timeAgo(status.timestamp)}</span>
+            <div class="avatar" style="background-color: ${generateAvatarColor(status.userId)}">
+              ${userData.photoURL ? `<img src="${userData.photoURL}" alt="${userDisplayNames[status.userId]}'s profile picture" />` : `<span>${userDisplayNames[status.userId].charAt(0).toUpperCase()}</span>`}
             </div>
             <div class="status-content">
-              ${previewContent}
-              ${mediaContent}
-              <div class="status-preview"><p>View Status</p></div>
-              <span class="views-count">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                  <circle cx="12" cy="12" r="3" />
+              <p style="font-weight: 600;">${DOMPurify.sanitize(userDisplayNames[status.userId])}</p>
+              ${status.type === "image" ? `<img src="${DOMPurify.sanitize(status.content)}" alt="Status image" style="width: 100px; height: 100px; border-radius: 8px;" />` :
+                status.type === "video" ? `<video src="${DOMPurify.sanitize(status.content)}" style="width: 100px; height: 100px; border-radius: 8px;"></video>` :
+                `<p>${DOMPurify.sanitize(status.content)}</p>`}
+              <span class="timestamp">${timeAgo(status.timestamp)}</span>
+              <span class="view-count">${viewCount} view${viewCount !== 1 ? "s" : ""}</span>
+              ${status.userId === user.uid ? `<button class="delete-btn" data-status-id="${status.statusId}" aria-label="Delete status">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m-10 5v9a2 2 0 002 2h8a2 2 0 002-2v-9M10 11v6m4-6v6" />
                 </svg>
-                ${viewCount}
-              </span>
-              ${deleteButton}
+              </button>` : ""}
             </div>
           `;
-          // Play video on hover/tap
-          const video = statusItem.querySelector("video");
-          if (video) {
-            statusItem.addEventListener("mouseenter", () => video.play());
-            statusItem.addEventListener("mouseleave", () => {
-              video.pause();
-              video.currentTime = 0;
-            });
-            statusItem.addEventListener("touchstart", () => {
-              video.play();
-              statusItem.classList.add("active");
-            });
-            statusItem.addEventListener("touchend", () => {
-              video.pause();
-              video.currentTime = 0;
-              statusItem.classList.remove("active");
-            });
-          }
+          statusContainer.appendChild(statusItem);
+          // New click event listener
           statusItem.addEventListener("click", async (e) => {
-            if (!e.target.closest(".delete-btn")) {
+            // Prevent redirection on delete button or media controls
+            if (e.target.closest(".delete-btn") || e.target.tagName === "VIDEO" || e.target.tagName === "BUTTON") {
+              return;
+            }
+            try {
+              const user = auth.currentUser;
+              if (!user) {
+                showAlert("Please sign in to view statuses.", true);
+                return;
+              }
+              // Record the status view
               await recordStatusView(status.userId, status.statusId, user.uid);
-              showStatusModal(index);
+              // Redirect to status view page with userId and statusId
+              window.location.href = `status-view.html?userId=${status.userId}&statusId=${status.statusId}`;
+            } catch (error) {
+              console.error("Error handling status click:", error);
+              showAlert("Failed to view status. Please try again.", false);
             }
           });
-          if (status.userId === user.uid) {
-            const deleteBtn = statusItem.querySelector(".delete-btn");
-            if (deleteBtn) {
-              deleteBtn.addEventListener("click", async () => {
-                await deleteStatus(status.userId, status.statusId);
-              });
-            }
-          }
-          statusList.appendChild(statusItem);
-        });
-
-        // Initialize carousel
-        setupCarousel();
-        console.log("Statuses rendered successfully");
-      }, (error) => {
-        console.error("Statuses listener error:", error);
-        clearTimeout(loaderTimeout);
-        statusList.innerHTML = `<p class="no-content">Failed to load statuses. Please try again.</p>`;
-        showAlert("Failed to load statuses. Please try again.", false);
-      });
-
-      // Setup user status avatar
-      const userStatusAvatar = document.getElementById("user-status-avatar");
-      renderAvatar(user, userStatusAvatar);
-      userStatusAvatar.addEventListener("click", async () => {
-        const userStatuses = filteredStatuses.filter(status => status.userId === user.uid);
-        if (userStatuses.length > 0) {
-          window.currentStatuses = userStatuses;
-          showStatusModal(0);
-        } else {
-          showAlert("You haven't posted any statuses yet.", true);
         }
+      }
+      // Existing delete button logic
+      document.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          const statusId = btn.getAttribute("data-status-id");
+          await deleteStatus(statusId);
+        });
       });
-    } catch (error) {
-      console.error("Error loading statuses:", error);
-      statusList.innerHTML = `<p class="no-content">Failed to load statuses. Please try again.</p>`;
-      showAlert("Failed to load statuses. Please try again.", false);
-    }
+    });
+  } catch (error) {
+    console.error("Error fetching statuses:", error);
+    showAlert("Failed to fetch statuses. Please try again.", false);
   }
-
+}
   async function showStatusModal(index) {
     const modal = document.getElementById("status-view-modal");
     const content = document.getElementById("status-view-content");
