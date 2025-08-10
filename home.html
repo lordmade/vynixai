@@ -292,7 +292,6 @@
       display: flex;
       justify-content: center;
       padding: 1rem;
-      position: relative;
     }
 
     .status-upload input {
@@ -322,47 +321,6 @@
     .upload-btn svg {
       width: 18px;
       height: 18px;
-    }
-
-    .upload-progress {
-      display: none;
-      position: absolute;
-      top: calc(100% + 0.5rem);
-      left: 50%;
-      transform: translateX(-50%);
-      width: 200px;
-      background: var(--white);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.5rem;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      z-index: 100;
-    }
-
-    .upload-progress.active {
-      display: block;
-    }
-
-    .upload-progress-bar {
-      width: 100%;
-      height: 8px;
-      background: rgba(0, 0, 0, 0.1);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-
-    .upload-progress-fill {
-      width: 0%;
-      height: 100%;
-      background: var(--twitter-blue);
-      transition: width 0.2s ease;
-    }
-
-    .upload-progress-text {
-      text-align: center;
-      font-size: 0.8rem;
-      color: var(--text-dark);
-      margin-top: 0.25rem;
     }
 
     .status-list {
@@ -1032,14 +990,6 @@
         width: 28px;
         height: 28px;
       }
-
-      .upload-progress {
-        width: 180px;
-      }
-
-      .upload-progress-text {
-        font-size: 0.75rem;
-      }
     }
   </style>
 </head>
@@ -1087,12 +1037,6 @@
           Upload Status
         </label>
         <input type="file" id="status-file-input" accept="image/*,video/*" aria-label="Upload status image or video" />
-        <div class="upload-progress" id="upload-progress">
-          <div class="upload-progress-bar">
-            <div class="upload-progress-fill" id="upload-progress-fill"></div>
-          </div>
-          <div class="upload-progress-text" id="upload-progress-text">Uploading: 0%</div>
-        </div>
       </div>
       <div class="status-list" id="status-list"></div>
     </div>
@@ -1224,9 +1168,6 @@
     const tabContents = document.querySelectorAll(".tab-content");
     const fab = document.getElementById("fab");
     const chatsUnreadBadge = document.getElementById("chats-unread-badge");
-    const uploadProgress = document.getElementById("upload-progress");
-    const uploadProgressFill = document.getElementById("upload-progress-fill");
-    const uploadProgressText = document.getElementById("upload-progress-text");
 
     let currentUserId;
     let currentUsername;
@@ -1308,19 +1249,6 @@
       setTimeout(() => {
         toast.classList.remove("active");
       }, 3000);
-    }
-
-    function updateUploadProgress(progress) {
-      uploadProgressFill.style.width = `${progress}%`;
-      uploadProgressText.textContent = `Uploading: ${Math.round(progress)}%`;
-      uploadProgress.classList.add("active");
-      if (progress >= 100) {
-        setTimeout(() => {
-          uploadProgress.classList.remove("active");
-          uploadProgressFill.style.width = "0%";
-          uploadProgressText.textContent = "Uploading: 0%";
-        }, 1000); // Hide after 1s when complete
-      }
     }
 
     document.querySelector(".custom-alert .close-btn").addEventListener("click", hideAlert);
@@ -1500,51 +1428,41 @@
         const formData = new FormData();
         formData.append("file", file);
         formData.append("upload_preset", uploadPreset);
-        formData.append("eager", "sp_last_frame|jpg"); // Request last frame thumbnail
-        formData.append("public_id", `status_${currentUserId}_${Date.now()}`);
-
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", url, true);
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const progress = (event.loaded / event.total) * 100;
-            updateUploadProgress(progress);
-            console.log(`Upload progress: ${Math.round(progress)}%`); // Debugging log
+        const response = await fetch(url, { method: "POST", body: formData });
+        const data = await response.json();
+        if (data.secure_url) {
+          const statusId = data.public_id;
+          let thumbnail = null;
+          if (data.resource_type === "video") {
+            const video = document.createElement("video");
+            video.src = data.secure_url;
+            await new Promise(resolve => {
+              video.onloadedmetadata = () => {
+                video.currentTime = video.duration || 0; // Seek to last frame
+                video.onseeked = () => {
+                  const canvas = document.createElement("canvas");
+                  canvas.width = video.videoWidth;
+                  canvas.height = video.videoHeight;
+                  canvas.getContext("2d").drawImage(video, 0, 0);
+                  thumbnail = canvas.toDataURL("image/jpeg");
+                  resolve();
+                };
+              };
+            });
           }
-        };
-
-        xhr.onload = async () => {
-          if (xhr.status === 200) {
-            const data = JSON.parse(xhr.responseText);
-            if (data.secure_url) {
-              const statusId = data.public_id;
-              const thumbnail = data.resource_type === "video" && data.eager && data.eager[0] ? data.eager[0].secure_url : null;
-              await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
-                url: data.secure_url,
-                type: data.resource_type,
-                timestamp: Date.now(),
-                createdAt: Date.now(),
-                thumbnail: thumbnail || (data.resource_type === "image" ? data.secure_url : `${data.secure_url.replace(/\/upload\//, '/upload/so_0/')}.jpg`)
-              });
-              await checkAndDeleteExpiredStatuses();
-              showToast("Status uploaded successfully!");
-            } else {
-              throw new Error("Failed to upload status");
-            }
-          } else {
-            throw new Error(`Upload failed with status ${xhr.status}`);
-          }
-          hideSpinner();
-        };
-
-        xhr.onerror = () => {
-          console.error("Upload failed due to network error");
-          showAlert("Failed to upload status. Please try again.", true);
-          hideSpinner();
-        };
-
-        xhr.send(formData);
+          await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
+            url: data.secure_url,
+            type: data.resource_type,
+            timestamp: Date.now(),
+            createdAt: Date.now(),
+            thumbnail: data.resource_type === "video" ? thumbnail || `${data.secure_url.replace(/\/upload\//, '/upload/so_0/')}.jpg` : null
+          });
+          await checkAndDeleteExpiredStatuses();
+          showToast("Status uploaded successfully!");
+        } else {
+          throw new Error("Failed to upload status");
+        }
+        hideSpinner();
       } catch (error) {
         console.error("Status upload failed:", error);
         showAlert("Failed to upload status. Please try again.", true);
