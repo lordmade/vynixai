@@ -1519,128 +1519,129 @@
     }
 
     async function uploadStatus(file) {
-      if (!file) {
-        showAlert("Please select a file.", true);
-        return;
+  if (!file) {
+    showAlert("Please select a file.", true);
+    return;
+  }
+  // Removed showSpinner() to avoid showing overlay spinner during upload
+  uploadProgressContainer.classList.add("active");
+  uploadProgressText.classList.add("active");
+  cancelUploadBtn.classList.add("active");
+
+  try {
+    let processedFile = file;
+    if (file.type.startsWith("video/")) {
+      // Compress video using Compressor.js
+      processedFile = await new Promise((resolve, reject) => {
+        new Compressor(file, {
+          mimeType: "video/mp4",
+          quality: 0.6, // Adjust quality for compression (0 to 1)
+          maxWidth: 1280, // Limit resolution
+          maxHeight: 720,
+          success(result) {
+            resolve(result);
+          },
+          error(err) {
+            reject(err);
+          }
+        });
+      });
+    }
+
+    const cloudName = "dqkujefxj";
+    const uploadPreset = "banter_box";
+    const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
+    const formData = new FormData();
+    formData.append("file", processedFile);
+    formData.append("upload_preset", uploadPreset);
+    formData.append("eager", "w_80,h_80,c_fill,r_max"); // Generate thumbnail during upload
+
+    xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const percent = Math.round((event.loaded / event.total) * 100);
+        uploadProgress.style.width = `${percent}%`;
+        uploadProgressText.textContent = `Uploading: ${percent}%`;
+        uploadProgressContainer.setAttribute("aria-valuenow", percent);
       }
-      showSpinner();
-      uploadProgressContainer.classList.add("active");
-      uploadProgressText.classList.add("active");
-      cancelUploadBtn.classList.add("active");
+    };
 
-      try {
-        let processedFile = file;
-        if (file.type.startsWith("video/")) {
-          // Compress video using Compressor.js
-          processedFile = await new Promise((resolve, reject) => {
-            new Compressor(file, {
-              mimeType: "video/mp4",
-              quality: 0.6, // Adjust quality for compression (0 to 1)
-              maxWidth: 1280, // Limit resolution
-              maxHeight: 720,
-              success(result) {
-                resolve(result);
-              },
-              error(err) {
-                reject(err);
-              }
+    xhr.onload = async () => {
+      if (xhr.status === 200) {
+        const data = JSON.parse(xhr.responseText);
+        if (data.secure_url) {
+          const statusId = data.public_id;
+          let thumbnail = null;
+          if (data.resource_type === "video") {
+            const video = document.createElement("video");
+            video.src = data.secure_url;
+            await new Promise(resolve => {
+              video.onloadedmetadata = () => {
+                video.currentTime = video.duration || 0;
+                video.onseeked = () => {
+                  const canvas = document.createElement("canvas");
+                  canvas.width = video.videoWidth;
+                  canvas.height = video.videoHeight;
+                  canvas.getContext("2d").drawImage(video, 0, 0);
+                  thumbnail = canvas.toDataURL("image/jpeg");
+                  resolve();
+                };
+              };
             });
+          }
+          await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
+            url: data.secure_url,
+            type: data.resource_type,
+            timestamp: Date.now(),
+            createdAt: Date.now(),
+            thumbnail: data.resource_type === "video" ? thumbnail || data.eager[0]?.secure_url || `${data.secure_url.replace(/\/upload\//, '/upload/so_0/')}.jpg` : null
           });
+          await checkAndDeleteExpiredStatuses();
+          showToast("Status uploaded successfully!");
+        } else {
+          throw new Error("Failed to upload status");
         }
+      } else {
+        throw new Error("Upload failed");
+      }
+      resetUploadUI();
+    };
 
-        const cloudName = "dqkujefxj";
-        const uploadPreset = "banter_box";
-        const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
-        const formData = new FormData();
-        formData.append("file", processedFile);
-        formData.append("upload_preset", uploadPreset);
-        formData.append("eager", "w_80,h_80,c_fill,r_max"); // Generate thumbnail during upload
+    xhr.onerror = () => {
+      showAlert("Failed to upload status. Please try again.", true);
+      resetUploadUI();
+    };
 
-        xhr = new XMLHttpRequest();
-        xhr.open("POST", url, true);
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 100);
-            uploadProgress.style.width = `${percent}%`;
-            uploadProgressText.textContent = `Uploading: ${percent}%`;
-            uploadProgressContainer.setAttribute("aria-valuenow", percent);
-          }
-        };
-
-        xhr.onload = async () => {
-          if (xhr.status === 200) {
-            const data = JSON.parse(xhr.responseText);
-            if (data.secure_url) {
-              const statusId = data.public_id;
-              let thumbnail = null;
-              if (data.resource_type === "video") {
-                const video = document.createElement("video");
-                video.src = data.secure_url;
-                await new Promise(resolve => {
-                  video.onloadedmetadata = () => {
-                    video.currentTime = video.duration || 0;
-                    video.onseeked = () => {
-                      const canvas = document.createElement("canvas");
-                      canvas.width = video.videoWidth;
-                      canvas.height = video.videoHeight;
-                      canvas.getContext("2d").drawImage(video, 0, 0);
-                      thumbnail = canvas.toDataURL("image/jpeg");
-                      resolve();
-                    };
-                  };
-                });
-              }
-              await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
-                url: data.secure_url,
-                type: data.resource_type,
-                timestamp: Date.now(),
-                createdAt: Date.now(),
-                thumbnail: data.resource_type === "video" ? thumbnail || data.eager[0]?.secure_url || `${data.secure_url.replace(/\/upload\//, '/upload/so_0/')}.jpg` : null
-              });
-              await checkAndDeleteExpiredStatuses();
-              showToast("Status uploaded successfully!");
-            } else {
-              throw new Error("Failed to upload status");
-            }
-          } else {
-            throw new Error("Upload failed");
-          }
-          resetUploadUI();
-        };
-
-        xhr.onerror = () => {
-          showAlert("Failed to upload status. Please try again.", true);
-          resetUploadUI();
-        };
-
-        cancelUploadBtn.onclick = () => {
-          if (xhr) {
-            xhr.abort();
-            showToast("Upload cancelled");
-            resetUploadUI();
-          }
-        };
-
-        xhr.send(formData);
-      } catch (error) {
-        console.error("Status upload failed:", error);
-        showAlert("Failed to upload status. Please try again.", true);
+    cancelUploadBtn.onclick = () => {
+      if (xhr) {
+        xhr.abort();
+        showToast("Upload cancelled");
         resetUploadUI();
       }
-    }
+    };
 
-    function resetUploadUI() {
-      uploadProgressContainer.classList.remove("active");
-      uploadProgressText.classList.remove("active");
-      cancelUploadBtn.classList.remove("active");
-      uploadProgress.style.width = "0%";
-      uploadProgressText.textContent = "Uploading: 0%";
-      uploadProgressContainer.setAttribute("aria-valuenow", 0);
-      hideSpinner();
-      xhr = null;
-    }
+    xhr.send(formData);
+  } catch (error) {
+    console.error("Status upload failed:", error);
+    showAlert("Failed to upload status. Please try again.", true);
+    resetUploadUI();
+  }
+}
 
+function resetUploadUI() {
+  uploadProgressContainer.classList.remove("active");
+  uploadProgressText.classList.remove("active");
+  cancelUploadBtn.classList.remove("active");
+  uploadProgress.style.width = "0%";
+  uploadProgressText.textContent = "Uploading: 0%";
+  uploadProgressContainer.setAttribute("aria-valuenow", 0);
+  hideSpinner(); // Ensure spinner is hidden if it was shown elsewhere
+  xhr = null;
+}
+
+    
     async function deleteStatus(userId, statusId) {
       showSpinner();
       try {
