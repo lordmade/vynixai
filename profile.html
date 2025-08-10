@@ -7,8 +7,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/js-md5@0.7.3/src/md5.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/compressorjs/1.2.1/compressor.min.js"></script>
   <style>
-    /* Reuse the same CSS variables and styles from the main page */
     :root {
       --whatsapp-green: #25D366;
       --whatsapp-teal: #128C7E;
@@ -23,7 +23,7 @@
       --border-dark: #2A3942;
       --white-dark: #1C2526;
       --highlight: #F0F2F5;
-      --custom-theme: #6B7280; /* Default custom theme */
+      --custom-theme: #6B7280;
     }
 
     [data-theme="dark"] {
@@ -305,7 +305,6 @@
       }
     }
 
-    /* Profile Edit Modal */
     .modal {
       display: none;
       position: fixed;
@@ -406,6 +405,87 @@
       min-height: 60px;
       resize: vertical;
     }
+
+    .upload-progress-container {
+      width: 80%;
+      max-width: 300px;
+      height: 6px;
+      background: var(--text-light);
+      border-radius: 3px;
+      overflow: hidden;
+      display: none;
+      margin: 0 auto;
+    }
+
+    .upload-progress-container.active {
+      display: block;
+    }
+
+    .upload-progress {
+      width: 0%;
+      height: 100%;
+      background: var(--whatsapp-green);
+      transition: width 0.3s ease;
+      animation: pulse 1.5s infinite ease-in-out;
+    }
+
+    .upload-progress-text {
+      font-size: 0.8rem;
+      color: var(--text-dark);
+      margin-top: 0.25rem;
+      text-align: center;
+      display: none;
+    }
+
+    .upload-progress-text.active {
+      display: block;
+    }
+
+    .cancel-upload-btn {
+      padding: 0.5rem 1rem;
+      background: var(--border);
+      color: var(--text-dark);
+      border: none;
+      border-radius: 24px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+      display: none;
+      margin: 0.5rem auto;
+    }
+
+    .cancel-upload-btn.active {
+      display: block;
+    }
+
+    .cancel-upload-btn:hover,
+    .cancel-upload-btn:focus {
+      background: var(--whatsapp-green);
+      color: var(--white);
+      transform: scale(1.05);
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+
+    @media (max-width: 767px) {
+      .upload-progress-container {
+        width: 90%;
+      }
+
+      .upload-progress-text {
+        font-size: 0.75rem;
+      }
+
+      .cancel-upload-btn {
+        font-size: 0.75rem;
+        padding: 0.4rem 0.8rem;
+      }
+    }
   </style>
 </head>
 <body>
@@ -460,7 +540,6 @@
           <span class="slider"></span>
         </label>
       </div>
-      <!-- Add more like change number, delete account as buttons if needed -->
     </div>
     <div class="settings-category">
       <div class="category-header">Chats</div>
@@ -548,7 +627,6 @@
     </div>
     <button class="save-btn" id="save-settings-btn">Save Settings</button>
   </div>
-  <!-- Profile Edit Modal -->
   <div id="edit-profile-modal" class="modal">
     <div class="modal-content">
       <button class="modal-close" id="close-edit-modal">
@@ -565,6 +643,11 @@
         </button>
       </div>
       <input type="file" id="photo-input" accept="image/*" style="display: none;" />
+      <div class="upload-progress-container" id="upload-progress-container" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+        <div class="upload-progress" id="upload-progress"></div>
+      </div>
+      <span class="upload-progress-text" id="upload-progress-text">Uploading: 0%</span>
+      <button class="cancel-upload-btn" id="cancel-upload-btn" aria-label="Cancel upload">Cancel</button>
       <div class="profile-field">
         <label for="name-input">Name</label>
         <input type="text" id="name-input" placeholder="Enter your name" />
@@ -634,18 +717,34 @@
     const saveSettingsBtn = document.getElementById("save-settings-btn");
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
+    const uploadProgressContainer = document.getElementById("upload-progress-container");
+    const uploadProgress = document.getElementById("upload-progress");
+    const uploadProgressText = document.getElementById("upload-progress-text");
+    const cancelUploadBtn = document.getElementById("cancel-upload-btn");
 
     const CLOUDINARY_UPLOAD_URL = "https://api.cloudinary.com/v1_1/dqkujefxj/upload";
     const CLOUDINARY_UPLOAD_PRESET = "banter_box";
 
+    let xhr = null;
+
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
       customAlert.classList.add("active");
-      if (autoHide) setTimeout(() => customAlert.classList.remove("active"), 5000);
+      if (autoHide) setTimeout(() => customAlert.classList.remove("active"), 3000);
     }
 
     function hideAlert() {
       customAlert.classList.remove("active");
+    }
+
+    function resetUploadUI() {
+      uploadProgressContainer.classList.remove("active");
+      uploadProgressText.classList.remove("active");
+      cancelUploadBtn.classList.remove("active");
+      uploadProgress.style.width = "0%";
+      uploadProgressText.textContent = "Uploading: 0%";
+      uploadProgressContainer.setAttribute("aria-valuenow", 0);
+      xhr = null;
     }
 
     document.querySelector(".custom-alert .close-btn").addEventListener("click", hideAlert);
@@ -685,23 +784,18 @@
       const settingsSnap = await get(settingsRef);
       if (settingsSnap.exists()) {
         const settings = settingsSnap.val();
-        // Load privacy
         if (settings.privacy) {
           privacyLastSeen.value = settings.privacy.lastSeen || "everyone";
           privacyProfilePhoto.value = settings.privacy.profilePhoto || "everyone";
           privacyAbout.value = settings.privacy.about || "everyone";
         }
         twoStepVerification.checked = settings.twoStepVerification || false;
-        // Load chats
         fontSizeSelect.value = settings.chats?.fontSize || "medium";
-        // Load notifications
         conversationTones.checked = settings.notifications?.conversationTones || true;
         popupNotifications.checked = settings.notifications?.popupNotifications || true;
         vibrateSelect.value = settings.notifications?.vibrate || "default";
-        // Load data usage
         autoDownloadMobile.checked = settings.dataUsage?.autoDownloadMobile || false;
         autoDownloadWifi.checked = settings.dataUsage?.autoDownloadWifi || true;
-        // Load theme
         if (settings.theme) {
           const { theme, customColor } = settings.theme;
           document.documentElement.setAttribute("data-theme", theme);
@@ -729,20 +823,44 @@
 
     async function uploadToCloudinary(file) {
       return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", CLOUDINARY_UPLOAD_URL, true);
-        xhr.onreadystatechange = () => {
-          if (xhr.readyState === 4 && xhr.status === 200) {
-            const data = JSON.parse(xhr.responseText);
-            resolve(data.secure_url);
-          } else if (xhr.readyState === 4) {
-            reject(new Error("Upload failed"));
+        let processedFile = file;
+        // Compress image using Compressor.js
+        new Compressor(file, {
+          quality: 0.8,
+          maxWidth: 512,
+          maxHeight: 512,
+          mimeType: "image/jpeg",
+          success(compressedFile) {
+            const formData = new FormData();
+            formData.append("file", compressedFile);
+            formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+            xhr = new XMLHttpRequest();
+            xhr.open("POST", CLOUDINARY_UPLOAD_URL, true);
+            xhr.upload.onprogress = (event) => {
+              if (event.lengthComputable) {
+                const percent = Math.round((event.loaded / event.total) * 100);
+                uploadProgress.style.width = `${percent}%`;
+                uploadProgressText.textContent = `Uploading: ${percent}%`;
+                uploadProgressContainer.setAttribute("aria-valuenow", percent);
+              }
+            };
+            xhr.onreadystatechange = () => {
+              if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                  const data = JSON.parse(xhr.responseText);
+                  resolve(data.secure_url);
+                } else {
+                  reject(new Error("Upload failed"));
+                }
+              }
+            };
+            xhr.onerror = () => reject(new Error("Upload failed"));
+            xhr.send(formData);
+          },
+          error(err) {
+            reject(err);
           }
-        };
-        xhr.send(formData);
+        });
       });
     }
 
@@ -780,14 +898,16 @@
 
     onAuthStateChanged(auth, (user) => {
       if (!user) {
-        window.location.href = "signup.html";
+        document.body.classList.add("fade-out");
+        setTimeout(() => window.location.href = "signup.html", 500);
       } else {
         loadUserSettings(user);
       }
     });
 
     backBtn.addEventListener("click", () => {
-      window.location.href = "index.html";
+      document.body.classList.add("fade-out");
+      setTimeout(() => window.location.href = "index.html", 500);
     });
 
     editProfileSection.addEventListener("click", () => {
@@ -796,6 +916,7 @@
 
     closeEditModal.addEventListener("click", () => {
       editModal.classList.remove("active");
+      resetUploadUI();
     });
 
     editPhotoBtn.addEventListener("click", () => {
@@ -804,16 +925,34 @@
 
     photoInput.addEventListener("change", async () => {
       const file = photoInput.files[0];
-      if (file) {
-        try {
-          const url = await uploadToCloudinary(file);
-          await updateProfile(auth.currentUser, { photoURL: url });
-          renderAvatar(auth.currentUser, profileAvatar);
-          renderAvatar(auth.currentUser, editAvatarPlaceholder, true);
-          showAlert("Profile picture updated", true);
-        } catch (error) {
-          showAlert("Failed to update profile picture", false);
-        }
+      if (!file) {
+        showAlert("Please select an image.", true);
+        return;
+      }
+      uploadProgressContainer.classList.add("active");
+      uploadProgressText.classList.add("active");
+      cancelUploadBtn.classList.add("active");
+      try {
+        const url = await uploadToCloudinary(file);
+        await updateProfile(auth.currentUser, { photoURL: url });
+        const userRef = ref(db, `users/${auth.currentUser.uid}`);
+        await update(userRef, { profilePic: url });
+        renderAvatar(auth.currentUser, profileAvatar);
+        renderAvatar(auth.currentUser, editAvatarPlaceholder, true);
+        showAlert("Profile picture updated", true);
+        resetUploadUI();
+      } catch (error) {
+        console.error("Profile picture upload failed:", error);
+        showAlert("Failed to update profile picture", true);
+        resetUploadUI();
+      }
+    });
+
+    cancelUploadBtn.addEventListener("click", () => {
+      if (xhr) {
+        xhr.abort();
+        showAlert("Upload cancelled", true);
+        resetUploadUI();
       }
     });
 
@@ -829,7 +968,7 @@
         editModal.classList.remove("active");
         showAlert("Profile saved successfully", true);
       } catch (error) {
-        showAlert("Failed to save profile", false);
+        showAlert("Failed to save profile", true);
       }
     });
 
@@ -845,9 +984,7 @@
     });
 
     backupBtn.addEventListener("click", () => {
-      // Simulate backup
       showAlert("Chat backup started", true);
-      // In real app, trigger Firebase backup
     });
 
     saveSettingsBtn.addEventListener("click", () => {
