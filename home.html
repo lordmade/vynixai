@@ -42,27 +42,10 @@
       margin: 0;
       padding: 0;
       transition: opacity 0.5s ease, background 0.3s ease, color 0.3s ease;
-      user-select: none; /* Disable text selection */
-      -webkit-user-select: none; /* Safari */
-      -moz-user-select: none; /* Firefox */
-      -ms-user-select: none; /* IE/Edge */
     }
 
     body.fade-out {
       opacity: 0;
-    }
-
-    /* Allow text selection for specific input elements */
-    input, textarea {
-      user-select: text;
-      -webkit-user-select: text;
-      -moz-user-select: text;
-      -ms-user-select: text;
-    }
-
-    /* Prevent context menu on long press */
-    * {
-      -webkit-touch-callout: none; /* Disable iOS long-press callout */
     }
 
     .top-bar {
@@ -1060,7 +1043,7 @@
     }
   </style>
 </head>
-<body oncontextmenu="return false;">
+<body>
   <div class="top-bar">
     <div class="logo">
       <svg viewBox="0 0 24 24" fill="currentColor">
@@ -1403,15 +1386,18 @@
                   document.body.classList.add("fade-out");
                   setTimeout(() => window.location.href = "signup.html", 500);
                 }
+                hideSpinner();
                 resolve();
               } catch (error) {
                 console.error("Error fetching user data:", error);
                 showAlert("Failed to load user data. Please try again.", false);
+                hideSpinner();
                 reject(error);
               }
             } else {
               document.body.classList.add("fade-out");
               setTimeout(() => window.location.href = "signup.html", 500);
+              hideSpinner();
               resolve();
             }
           }, reject);
@@ -1419,7 +1405,6 @@
       } catch (error) {
         console.error("Auth check failed:", error);
         showAlert("Failed to verify authentication. Please try again.", false);
-      } finally {
         hideSpinner();
       }
     }
@@ -1503,53 +1488,38 @@
     }
 
     async function uploadStatus(file) {
-  if (!file) {
-    showAlert("Please select a file.", true);
-    return;
-  }
-
-  // Validate file size and type
-  const maxSizeMB = 10; // Cloudinary free tier limit
-  if (file.size > maxSizeMB * 1024 * 1024) {
-    showAlert(`File size exceeds ${maxSizeMB}MB limit. Please choose a smaller file.`, true);
-    return;
-  }
-  if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) {
-    showAlert("Only images and videos are allowed.", true);
-    return;
-  }
-
-  showSpinner();
-  try {
-    const cloudName = "dqkujefxj";
-    const uploadPreset = "banter_box";
-    const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("upload_preset", uploadPreset);
-    formData.append("eager", "sp_last_frame|jpg"); // Request last frame thumbnail
-    formData.append("public_id", `status_${currentUserId}_${Date.now()}`);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url, true);
-
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const progress = (event.loaded / event.total) * 100;
-        updateUploadProgress(progress);
-        console.log(`Upload progress: ${Math.round(progress)}%`);
+      if (!file) {
+        showAlert("Please select a file.", true);
+        return;
       }
-    };
-
-    xhr.onload = async () => {
+      showSpinner();
       try {
-        if (xhr.status === 200) {
-          const data = JSON.parse(xhr.responseText);
-          console.log("Cloudinary response:", data); // Debug Cloudinary response
-          if (data.secure_url) {
-            const statusId = data.public_id;
-            const thumbnail = data.resource_type === "video" && data.eager && data.eager[0] ? data.eager[0].secure_url : null;
-            try {
+        const cloudName = "dqkujefxj";
+        const uploadPreset = "banter_box";
+        const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("upload_preset", uploadPreset);
+        formData.append("eager", "sp_last_frame|jpg"); // Request last frame thumbnail
+        formData.append("public_id", `status_${currentUserId}_${Date.now()}`);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const progress = (event.loaded / event.total) * 100;
+            updateUploadProgress(progress);
+            console.log(`Upload progress: ${Math.round(progress)}%`); // Debugging log
+          }
+        };
+
+        xhr.onload = async () => {
+          if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            if (data.secure_url) {
+              const statusId = data.public_id;
+              const thumbnail = data.resource_type === "video" && data.eager && data.eager[0] ? data.eager[0].secure_url : null;
               await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
                 url: data.secure_url,
                 type: data.resource_type,
@@ -1559,45 +1529,28 @@
               });
               await checkAndDeleteExpiredStatuses();
               showToast("Status uploaded successfully!");
-            } catch (firebaseError) {
-              console.error("Firebase write failed:", firebaseError);
-              showAlert("Failed to save status to database. Please try again.", true);
+            } else {
+              throw new Error("Failed to upload status");
             }
           } else {
-            console.error("Cloudinary response missing secure_url:", data);
-            showAlert("Upload failed: Invalid response from server.", true);
+            throw new Error(`Upload failed with status ${xhr.status}`);
           }
-        } else {
-          console.error("Cloudinary upload failed with status:", xhr.status, xhr.responseText);
-          showAlert(`Upload failed with status ${xhr.status}. Please try again.`, true);
-        }
+          hideSpinner();
+        };
+
+        xhr.onerror = () => {
+          console.error("Upload failed due to network error");
+          showAlert("Failed to upload status. Please try again.", true);
+          hideSpinner();
+        };
+
+        xhr.send(formData);
       } catch (error) {
-        console.error("Status upload processing failed:", error);
-        showAlert("Failed to process upload response. Please try again.", true);
-      } finally {
-        hideSpinner(); // Ensure spinner hides
+        console.error("Status upload failed:", error);
+        showAlert("Failed to upload status. Please try again.", true);
+        hideSpinner();
       }
-    };
-
-    xhr.onerror = () => {
-      console.error("Upload failed due to network error:", xhr.statusText);
-      showAlert("Network error during upload. Please check your connection and try again.", true);
-      hideSpinner();
-    };
-
-    xhr.onabort = () => {
-      console.error("Upload aborted");
-      showAlert("Upload was cancelled.", true);
-      hideSpinner();
-    };
-
-    xhr.send(formData);
-  } catch (error) {
-    console.error("Status upload initialization failed:", error);
-    showAlert("Failed to initialize upload. Please try again.", true);
-    hideSpinner();
-  }
-}
+    }
 
     async function deleteStatus(userId, statusId) {
       showSpinner();
@@ -1613,10 +1566,10 @@
           statusModal.classList.remove("active");
           statusVideo.pause();
         }
+        hideSpinner();
       } catch (error) {
         console.error("Status deletion failed:", error);
         showAlert("Failed to delete status. Please try again.", true);
-      } finally {
         hideSpinner();
       }
     }
@@ -1724,8 +1677,8 @@
           updateProgressBar();
         }).catch(error => {
           console.error("Video autoplay failed:", error);
-          showAlert("Video could not autoplay. Please play manually.", true);
           hideSpinner();
+          showAlert("Video could not autoplay. Please play manually.", true);
         });
       }
       statusModal.classList.add("active");
@@ -1894,7 +1847,6 @@
       } catch (error) {
         console.error("Sign out failed:", error);
         showAlert("Failed to sign out. Please try again.", true);
-      } finally {
         hideSpinner();
       }
     }
