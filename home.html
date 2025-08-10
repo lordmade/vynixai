@@ -446,10 +446,10 @@
       border-radius: 12px;
     }
 
-    .status-modal-close {
+    .status-modal-close,
+    .status-modal-delete {
       position: absolute;
       top: 10px;
-      right: 10px;
       background: var(--white);
       border: none;
       border-radius: 50%;
@@ -461,7 +461,16 @@
       justify-content: center;
     }
 
-    .status-modal-close svg {
+    .status-modal-close {
+      right: 10px;
+    }
+
+    .status-modal-delete {
+      right: 50px; /* Offset from close button */
+    }
+
+    .status-modal-close svg,
+    .status-modal-delete svg {
       width: 20px;
       height: 20px;
       stroke: var(--text-dark);
@@ -693,6 +702,22 @@
         height: 60px;
       }
 
+      .status-modal-close,
+      .status-modal-delete {
+        width: 24px;
+        height: 24px;
+      }
+
+      .status-modal-close svg,
+      .status-modal-delete svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .status-modal-delete {
+        right: 40px; /* Adjusted for smaller screens */
+      }
+
       .fab {
         width: 48px;
         height: 48px;
@@ -774,10 +799,18 @@
 
   <div id="status-modal" class="status-modal">
     <div class="status-modal-content">
-      <button class="status-modal-close">
+      <button class="status-modal-close" aria-label="Close status">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="6" x2="6" y2="18"></line>
           <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <button class="status-modal-delete" id="status-modal-delete" style="display: none;" aria-label="Delete status">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          <line x1="10" y1="11" x2="10" y2="17"></line>
+          <line x1="14" y1="11" x2="14" y2="17"></line>
         </svg>
       </button>
       <img id="status-image" src="" alt="Status content" style="display: none;" />
@@ -786,7 +819,7 @@
   </div>
 
   <div id="custom-alert" class="custom-alert">
-    <button class="close-btn">
+    <button class="close-btn" aria-label="Close alert">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"></line>
         <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -806,18 +839,18 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
-    import { getDatabase, ref, get, set, onDisconnect, onValue } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
+    import { getDatabase, ref, get, set, remove, onDisconnect, onValue } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
 
     const firebaseConfig = {
-  apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
-  authDomain: "fire-b-a8878.firebaseapp.com",
-  databaseURL: "https://fire-b-a8878.firebaseio.com",
-  projectId: "fire-b-a8878",
-  storageBucket: "fire-b-a8878.firebasestorage.app",
-  messagingSenderId: "658673187627",
-  appId: "1:658673187627:web:6e4c29af661785f0afa36e",
-  measurementId: "G-V4W97VMSKL"
-};
+      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
+      authDomain: "fire-b-a8878.firebaseapp.com",
+      databaseURL: "https://fire-b-a8878.firebaseio.com",
+      projectId: "fire-b-a8878",
+      storageBucket: "fire-b-a8878.firebasestorage.app",
+      messagingSenderId: "658673187627",
+      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
+      measurementId: "G-V4W97VMSKL"
+    };
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
@@ -833,6 +866,7 @@
     const statusImage = document.getElementById("status-image");
     const statusVideo = document.getElementById("status-video");
     const statusModalClose = document.querySelector(".status-modal-close");
+    const statusModalDelete = document.getElementById("status-modal-delete");
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
     const spinner = document.getElementById("spinner");
@@ -844,7 +878,11 @@
     const chatsUnreadBadge = document.getElementById("chats-unread-badge");
 
     let currentUserId;
+    let currentUsername;
+    let currentProfilePic;
     let encryptionKey;
+    const MAX_STATUSES = 3;
+    const STATUS_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     async function generateEncryptionKey(userId) {
       const keyMaterial = await crypto.subtle.importKey(
@@ -923,6 +961,27 @@
       return url && !url.includes("via.placeholder.com") && !url.includes("data:image/svg+xml");
     }
 
+    async function checkAndDeleteExpiredStatuses() {
+      try {
+        const statusesRef = ref(db, `statuses`);
+        const snapshot = await get(statusesRef);
+        if (snapshot.exists()) {
+          const statuses = snapshot.val();
+          for (const userId in statuses) {
+            for (const statusId in statuses[userId]) {
+              const status = statuses[userId][statusId];
+              if (Date.now() - status.createdAt > STATUS_EXPIRY_MS) {
+                await remove(ref(db, `statuses/${userId}/${statusId}`));
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error checking/deleting expired statuses:", error);
+        showAlert("Failed to clean up expired statuses.", true);
+      }
+    }
+
     async function checkAuthState() {
       showSpinner();
       try {
@@ -937,14 +996,15 @@
                 const userSnapshot = await get(userRef);
                 if (userSnapshot.exists()) {
                   const userData = userSnapshot.val();
-                  const username = userData.username || user.displayName || "User";
-                  const profilePic = userData.profilePic || user.photoURL;
-                  profilePicContainer.innerHTML = isValidImageUrl(profilePic)
-                    ? `<img class="profile-pic-small" src="${profilePic}" alt="${username}'s profile picture" />`
-                    : getAvatarElement(username);
+                  currentUsername = userData.username || user.displayName || "User";
+                  currentProfilePic = userData.profilePic || user.photoURL;
+                  profilePicContainer.innerHTML = isValidImageUrl(currentProfilePic)
+                    ? `<img class="profile-pic-small" src="${currentProfilePic}" alt="${currentUsername}'s profile picture" />`
+                    : getAvatarElement(currentUsername);
                   await set(userRef, { ...userData, online: true });
                   await onDisconnect(userRef).update({ online: false });
-                  showToast(`${username} is now online`);
+                  showToast(`${currentUsername} is now online`);
+                  await checkAndDeleteExpiredStatuses();
                   loadFriends(user.uid);
                   loadStatuses();
                 } else {
@@ -1061,8 +1121,16 @@
       }
       showSpinner();
       try {
-        const cloudName = "dqkujefxj"; // Replace with your Cloudinary cloud name
-        const uploadPreset = "banter_box"; // Replace with your unsigned upload preset
+        const statusRef = ref(db, `statuses/${currentUserId}`);
+        const snapshot = await get(statusRef);
+        const currentStatuses = snapshot.exists() ? Object.keys(snapshot.val()) : [];
+        if (currentStatuses.length >= MAX_STATUSES) {
+          hideSpinner();
+          showAlert("You can only upload a maximum of 3 statuses.", true);
+          return;
+        }
+        const cloudName = "dqkujefxj";
+        const uploadPreset = "banter_box";
         const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
         const formData = new FormData();
         formData.append("file", file);
@@ -1070,12 +1138,14 @@
         const response = await fetch(url, { method: "POST", body: formData });
         const data = await response.json();
         if (data.secure_url) {
-          const statusRef = ref(db, `statuses/${currentUserId}/${data.public_id}`);
-          await set(statusRef, {
+          const statusId = data.public_id;
+          await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
             url: data.secure_url,
             type: data.resource_type,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            createdAt: Date.now()
           });
+          await checkAndDeleteExpiredStatuses();
           showToast("Status uploaded successfully!");
         } else {
           throw new Error("Failed to upload status");
@@ -1088,6 +1158,22 @@
       }
     }
 
+    async function deleteStatus(userId, statusId) {
+      showSpinner();
+      try {
+        const statusRef = ref(db, `statuses/${userId}/${statusId}`);
+        await remove(statusRef);
+        showToast("Status deleted successfully!");
+        statusModal.classList.remove("active");
+        statusVideo.pause();
+        hideSpinner();
+      } catch (error) {
+        console.error("Status deletion failed:", error);
+        showAlert("Failed to delete status. Please try again.", true);
+        hideSpinner();
+      }
+    }
+
     async function loadStatuses() {
       const statusesRef = ref(db, `statuses`);
       onValue(statusesRef, async (snapshot) => {
@@ -1096,31 +1182,36 @@
           const statuses = snapshot.val();
           let statusCards = [];
           for (const userId in statuses) {
-            const userRef = ref(db, `users/${userId}`);
-            const userSnapshot = await get(userRef);
-            if (userSnapshot.exists()) {
+            let username, profilePic;
+            if (userId === currentUserId) {
+              username = currentUsername;
+              profilePic = currentProfilePic;
+            } else {
+              const userRef = ref(db, `users/${userId}`);
+              const userSnapshot = await get(userRef);
+              if (!userSnapshot.exists()) continue;
               const userData = userSnapshot.val();
-              const userStatuses = Object.entries(statuses[userId]).map(([statusId, status]) => ({
-                statusId,
-                ...status
-              }));
-              const latestTimestamp = Math.max(...userStatuses.map(s => s.timestamp));
-              statusCards.push({
-                userId,
-                username: userData.username,
-                profilePic: userData.profilePic,
-                statuses: userStatuses,
-                latestTimestamp
-              });
+              username = userData.username;
+              profilePic = userData.profilePic;
             }
+            const userStatuses = Object.entries(statuses[userId])
+              .map(([statusId, status]) => ({ statusId, ...status }))
+              .filter(status => Date.now() - status.createdAt <= STATUS_EXPIRY_MS);
+            if (userStatuses.length === 0) continue;
+            const latestTimestamp = Math.max(...userStatuses.map(s => s.timestamp));
+            statusCards.push({
+              userId,
+              username,
+              profilePic,
+              statuses: userStatuses,
+              latestTimestamp
+            });
           }
-          // Sort: current user's card first, others by latest timestamp
           statusCards.sort((a, b) => {
             if (a.userId === currentUserId) return -1;
             if (b.userId === currentUserId) return 1;
             return b.latestTimestamp - a.latestTimestamp;
           });
-          // Limit to 3 cards
           statusCards.slice(0, 3).forEach(card => {
             const statusCard = document.createElement("div");
             statusCard.className = "status-card";
@@ -1135,6 +1226,7 @@
                 class="status-thumbnail" 
                 data-status-id="${status.statusId}" 
                 data-type="${status.type}" 
+                data-user-id="${card.userId}"
                 alt="${card.username}'s status" 
                 ${status.type === "video" ? "muted" : ""}>
             `).join("");
@@ -1150,7 +1242,9 @@
               thumbnail.addEventListener("click", () => {
                 openStatusModal({
                   url: thumbnail.src,
-                  type: thumbnail.dataset.type
+                  type: thumbnail.dataset.type,
+                  statusId: thumbnail.dataset.statusId,
+                  userId: thumbnail.dataset.userId
                 }, card.username);
               });
             });
@@ -1174,6 +1268,12 @@
       } else {
         statusVideo.src = status.url;
       }
+      statusModalDelete.style.display = status.userId === currentUserId ? "flex" : "none";
+      statusModalDelete.onclick = () => {
+        if (status.userId === currentUserId) {
+          deleteStatus(status.userId, status.statusId);
+        }
+      };
       statusModal.classList.add("active");
     }
 
@@ -1231,11 +1331,6 @@
       statusModalClose.addEventListener("click", () => {
         statusModal.classList.remove("active");
         statusVideo.pause();
-      });
-
-      fab.addEventListener("click", () => {
-        document.body.classList.add("fade-out");
-        setTimeout(() => window.location.href = "users.html", 500);
       });
     }
 
