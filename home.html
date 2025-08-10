@@ -123,7 +123,7 @@
       background: var(--white);
       border-bottom: 1px solid var(--border);
       padding: 0.5rem 0;
-      gap: 0.5rem;
+      gap: 0.25rem; /* Reduced gap for overlap */
     }
 
     .tab-btn {
@@ -143,12 +143,14 @@
       justify-content: center;
       gap: 0.5rem;
       position: relative;
+      margin: -0.25rem; /* Negative margin for overlap */
     }
 
     .tab-btn.active {
       background: var(--twitter-blue);
       color: var(--white);
       border-color: var(--twitter-blue);
+      z-index: 1; /* Ensure active tab is above others */
     }
 
     .tab-btn:hover {
@@ -437,6 +439,9 @@
       position: relative;
       max-width: 90%;
       max-height: 90%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
 
     .status-modal-content img,
@@ -444,6 +449,36 @@
       width: 100%;
       height: auto;
       border-radius: 12px;
+    }
+
+    .custom-progress {
+      width: 100%;
+      height: 5px;
+      background: #333;
+      margin-top: 10px;
+    }
+
+    .custom-progress progress {
+      width: 100%;
+      height: 100%;
+      -webkit-appearance: none;
+      appearance: none;
+      background: none;
+    }
+
+    .custom-progress progress::-webkit-progress-bar {
+      background-color: #444;
+      border-radius: 2px;
+    }
+
+    .custom-progress progress::-webkit-progress-value {
+      background-color: var(--twitter-blue);
+      border-radius: 2px;
+    }
+
+    .custom-progress progress::-moz-progress-bar {
+      background-color: var(--twitter-blue);
+      border-radius: 2px;
     }
 
     .status-modal-close,
@@ -814,7 +849,10 @@
         </svg>
       </button>
       <img id="status-image" src="" alt="Status content" style="display: none;" />
-      <video id="status-video" controls style="display: none;"></video>
+      <video id="status-video" style="display: none;" muted></video>
+      <div class="custom-progress">
+        <progress id="progress-bar" value="0" max="100"></progress>
+      </div>
     </div>
   </div>
 
@@ -876,6 +914,7 @@
     const tabContents = document.querySelectorAll(".tab-content");
     const fab = document.getElementById("fab");
     const chatsUnreadBadge = document.getElementById("chats-unread-badge");
+    const progressBar = document.getElementById("progress-bar");
 
     let currentUserId;
     let currentUsername;
@@ -958,6 +997,23 @@
 
     function isValidImageUrl(url) {
       return url && !url.includes("via.placeholder.com") && !url.includes("data:image/svg+xml");
+    }
+
+    async function getVideoThumbnail(videoUrl) {
+      return new Promise((resolve) => {
+        const video = document.createElement("video");
+        video.crossOrigin = "anonymous";
+        video.src = videoUrl;
+        video.onloadeddata = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 80; // Match status-thumbnail width
+          canvas.height = 80; // Match status-thumbnail height
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(video, 0, 0, 80, 80);
+          resolve(canvas.toDataURL("image/jpeg"));
+        };
+        video.onerror = () => resolve(null);
+      });
     }
 
     async function checkAndDeleteExpiredStatuses() {
@@ -1129,7 +1185,7 @@
         const response = await fetch(url, { method: "POST", body: formData });
         const data = await response.json();
         if (data.secure_url) {
-          const statusId = data.public_id;
+          const statusId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`; // Unique ID
           await set(ref(db, `statuses/${currentUserId}/${statusId}`), {
             url: data.secure_url,
             type: data.resource_type,
@@ -1211,23 +1267,27 @@
             const avatarElement = isValidImageUrl(card.profilePic)
               ? `<img class="profile-pic" src="${card.profilePic}" alt="${card.username}'s profile picture" />`
               : getAvatarElement(card.username, "profile-pic");
-            const thumbnails = card.statuses.map(status => `
-              <${status.type === "image" ? "img" : "video"} 
-                src="${status.url}" 
-                class="status-thumbnail" 
-                data-status-id="${status.statusId}" 
-                data-type="${status.type}" 
-                data-user-id="${card.userId}"
-                alt="${card.username}'s status" 
-                ${status.type === "video" ? "muted" : ""}>
-            `).join("");
+            const thumbnails = await Promise.all(card.statuses.map(async (status) => {
+              const thumbnailSrc = status.type === "video"
+                ? await getVideoThumbnail(status.url) || status.url
+                : status.url;
+              return `
+                <img 
+                  src="${thumbnailSrc}" 
+                  class="status-thumbnail" 
+                  data-status-id="${status.statusId}" 
+                  data-type="${status.type}" 
+                  data-user-id="${card.userId}"
+                  alt="${card.username}'s status" />
+              `;
+            }));
             statusCard.innerHTML = `
               ${avatarElement}
               <div class="status-card-info">
                 <h3>${card.username}</h3>
                 <p>${new Date(card.latestTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
               </div>
-              <div class="status-thumbnails">${thumbnails}</div>
+              <div class="status-thumbnails">${thumbnails.join("")}</div>
             `;
             statusCard.querySelectorAll(".status-thumbnail").forEach(thumbnail => {
               thumbnail.addEventListener("click", () => {
@@ -1256,8 +1316,15 @@
       if (status.type === "image") {
         statusImage.src = status.url;
         statusImage.alt = `${username}'s status`;
+        statusVideo.pause();
       } else {
         statusVideo.src = status.url;
+        statusVideo.autoplay = true;
+        statusVideo.loop = true;
+        statusVideo.controls = false;
+        statusVideo.controlsList = "nodownload noplaybackrate";
+        statusVideo.play().catch(error => console.error("Video play failed:", error));
+        updateProgressBar();
       }
       statusModalDelete.style.display = status.userId === currentUserId ? "flex" : "none";
       statusModalDelete.onclick = () => {
@@ -1267,6 +1334,28 @@
       };
       statusModal.classList.add("active");
     }
+
+    function updateProgressBar() {
+      const video = statusVideo;
+      if (video.readyState > 0) {
+        const progress = (video.currentTime / video.duration) * 100 || 0;
+        progressBar.value = progress;
+        if (video.ended) {
+          video.currentTime = 0;
+          video.play();
+        }
+      }
+      if (statusModal.classList.contains("active")) {
+        requestAnimationFrame(updateProgressBar);
+      }
+    }
+
+    statusModalClose.addEventListener("click", () => {
+      statusModal.classList.remove("active");
+      statusVideo.pause();
+      statusVideo.currentTime = 0;
+      progressBar.value = 0;
+    });
 
     async function handleSignOut() {
       showSpinner();
@@ -1317,11 +1406,6 @@
           uploadStatus(file);
           e.target.value = "";
         }
-      });
-
-      statusModalClose.addEventListener("click", () => {
-        statusModal.classList.remove("active");
-        statusVideo.pause();
       });
     }
 
