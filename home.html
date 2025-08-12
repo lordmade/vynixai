@@ -289,7 +289,13 @@
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-    const net = new brain.NeuralNetwork({ hiddenLayers: [20, 10], activation: 'sigmoid' });
+    // Explicitly set input and output sizes
+    const net = new brain.NeuralNetwork({
+      inputSize: 7, // happy, great, sad, bad, excited, angry, neutral
+      hiddenLayers: [20, 10],
+      outputSize: 3, // positive, negative, neutral
+      activation: 'sigmoid'
+    });
     let trainingData = [];
 
     const spinner = document.getElementById("spinner");
@@ -319,6 +325,7 @@
       words.forEach(word => {
         wordFreq[word] = (wordFreq[word] || 0) + 1;
       });
+      // Ensure all expected keys are present
       return {
         happy: wordFreq['happy'] || wordFreq['awesome'] || wordFreq['joy'] || 0,
         great: wordFreq['great'] || wordFreq['good'] || wordFreq['amazing'] || 0,
@@ -332,7 +339,6 @@
 
     async function fetchWebsiteContent(url) {
       try {
-        // Note: This requires a proxy server to bypass CORS in production
         const response = await axios.get(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
         const parser = new DOMParser();
         const doc = parser.parseFromString(response.data, 'text/html');
@@ -340,11 +346,39 @@
           .map(el => el.textContent.trim())
           .filter(t => t.length > 10)
           .join(' ');
-        return text.substring(0, 1000); // Limit to 1000 chars to avoid overloading
+        return text.substring(0, 1000);
       } catch (error) {
         console.error("Failed to fetch website content:", error.message);
         showToast(`Failed to fetch URL content: ${error.message}`);
         return null;
+      }
+    }
+
+    async function initializeDefaultData() {
+      const defaultTrainingData = [
+        { input: { happy: 1, great: 0, sad: 0, bad: 0, excited: 0, angry: 0, neutral: 0 }, output: { positive: 1, negative: 0, neutral: 0 }, text: "I'm so happy today!" },
+        { input: { happy: 0, great: 1, sad: 0, bad: 0, excited: 0, angry: 0, neutral: 0 }, output: { positive: 1, negative: 0, neutral: 0 }, text: "This is great!" },
+        { input: { happy: 0, great: 0, sad: 1, bad: 0, excited: 0, angry: 0, neutral: 0 }, output: { positive: 0, negative: 1, neutral: 0 }, text: "Feeling sad." },
+        { input: { happy: 0, great: 0, sad: 0, bad: 1, excited: 0, angry: 0, neutral: 0 }, output: { positive: 0, negative: 1, neutral: 0 }, text: "This is awful." },
+        { input: { happy: 0, great: 0, sad: 0, bad: 0, excited: 1, angry: 0, neutral: 0 }, output: { positive: 1, negative: 0, neutral: 0 }, text: "So excited for this!" },
+        { input: { happy: 0, great: 0, sad: 0, bad: 0, excited: 0, angry: 1, neutral: 0 }, output: { positive: 0, negative: 1, neutral: 0 }, text: "I'm really angry!" },
+        { input: { happy: 0, great: 0, sad: 0, bad: 0, excited: 0, angry: 0, neutral: 1 }, output: { positive: 0, negative: 0, neutral: 1 }, text: "Just chilling." }
+      ];
+
+      try {
+        for (const data of defaultTrainingData) {
+          await addDoc(collection(db, `global-training-data`), {
+            ...data,
+            createdBy: auth.currentUser?.uid || "admin",
+            createdAt: Timestamp.now()
+          });
+        }
+        trainingData = defaultTrainingData;
+        showToast("Initialized default training data.");
+        await loadTrainingData();
+      } catch (error) {
+        console.error("Failed to initialize default data:", error.message);
+        showToast(`Failed to initialize default data: ${error.message}`);
       }
     }
 
@@ -426,7 +460,29 @@
     async function trainModel() {
       showSpinner();
       try {
-        net.train(trainingData.map(d => ({ input: d.input, output: d.output })), {
+        if (trainingData.length === 0) {
+          showToast("No training data available. Initializing default data.");
+          await initializeDefaultData();
+        }
+
+        const formattedData = trainingData.map(d => ({
+          input: d.input,
+          output: d.output
+        }));
+
+        // Validate data consistency
+        for (const data of formattedData) {
+          if (
+            Object.keys(data.input).length !== 7 ||
+            Object.keys(data.output).length !== 3 ||
+            !Object.values(data.input).every(v => typeof v === 'number' && !isNaN(v)) ||
+            !Object.values(data.output).every(v => typeof v === 'number' && !isNaN(v))
+          ) {
+            throw new Error("Inconsistent input/output sizes in training data");
+          }
+        }
+
+        net.train(formattedData, {
           iterations: 2000,
           errorThresh: 0.002,
           log: true,
@@ -471,6 +527,8 @@
             data.input &&
             data.output &&
             data.text &&
+            Object.keys(data.input).length === 7 &&
+            Object.keys(data.output).length === 3 &&
             Object.values(data.input).every(v => typeof v === 'number' && !isNaN(v)) &&
             Object.values(data.output).every(v => typeof v === 'number' && !isNaN(v))
           ) {
@@ -487,6 +545,9 @@
           }
         });
         console.log("Loaded training data:", trainingData);
+        if (trainingData.length === 0) {
+          showToast("No training data found. Add data or initialize default data.");
+        }
       } catch (error) {
         console.error("Failed to load training data:", error.message);
         showToast(`Failed to load training data: ${error.message}`);
