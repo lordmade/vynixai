@@ -108,6 +108,7 @@ body.fade-out {
   color: var(--white);
   cursor: pointer;
   transition: transform 0.2s ease;
+  position: relative;
 }
 
 .avatar:hover {
@@ -119,6 +120,18 @@ body.fade-out {
   height: 100%;
   object-fit: cover;
   border-radius: 50%;
+}
+
+.avatar.online::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  background: #25D366;
+  border-radius: 50%;
+  border: 2px solid var(--white);
 }
 
 .username {
@@ -236,6 +249,7 @@ body.fade-out {
   width: 48px;
   height: 48px;
   font-size: 1.5rem;
+  position: relative;
 }
 
 .friend-info {
@@ -261,6 +275,12 @@ body.fade-out {
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.status {
+  font-size: 0.75rem;
+  color: var(--text-light);
+  margin: 0;
 }
 
 .timestamp {
@@ -1068,6 +1088,11 @@ body.fade-out {
       <line x1="17" y1="11" x2="23" y2="11"></line>
     </svg>
   </button>
+  <button class="post-fab" id="new-group-fab" aria-label="Create a new group chat" style="bottom: 7rem;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-0.707l5.964-5.964A6 6 0 0121 9z" />
+    </svg>
+  </button>
   <div id="custom-alert" class="custom-alert" role="alert">
     <button class="close-btn" aria-label="Close alert">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1089,6 +1114,21 @@ body.fade-out {
       <h2>Add Friend</h2>
       <input type="text" id="friend-search-input" placeholder="Enter email or username" aria-label="Search for friends by email or username" />
       <div class="search-results" id="search-results" aria-live="polite"></div>
+    </div>
+  </div>
+  <div id="new-group-modal" class="modal">
+    <div class="modal-content">
+      <button class="close-btn" id="close-group-modal" aria-label="Close new group modal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <h2>Create Group</h2>
+      <input type="text" id="group-name-input" placeholder="Group name" aria-label="Enter group name" />
+      <input type="text" id="group-search-input" placeholder="Search friends to add" aria-label="Search friends to add to group" />
+      <div class="search-results" id="group-search-results" aria-live="polite"></div>
+      <button id="create-group-btn">Create</button>
     </div>
   </div>
   <div id="theme-modal" class="modal">
@@ -1118,7 +1158,7 @@ body.fade-out {
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-app.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
-import { getDatabase, ref, onValue, push, get, set, update, remove } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
+import { getDatabase, ref, onValue, push, get, set, update, remove, onDisconnect, serverValue } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -1143,6 +1183,7 @@ const avatar = document.getElementById("avatar");
 const username = document.getElementById("username");
 const postFab = document.getElementById("post-fab");
 const addFriendFab = document.getElementById("add-friend-fab");
+const newGroupFab = document.getElementById("new-group-fab");
 const statusInput = document.getElementById("status-input");
 const statusMediaInput = document.getElementById("status-media-input");
 const postStatusBtn = document.getElementById("post-status-btn");
@@ -1159,9 +1200,16 @@ const closeThemeModal = document.getElementById("close-theme-modal");
 const themeSelector = document.getElementById("theme-selector");
 const colorPicker = document.getElementById("color-picker");
 const saveThemeBtn = document.getElementById("save-theme-btn");
+const newGroupModal = document.getElementById("new-group-modal");
+const closeGroupModal = document.getElementById("close-group-modal");
+const groupNameInput = document.getElementById("group-name-input");
+const groupSearchInput = document.getElementById("group-search-input");
+const groupSearchResults = document.getElementById("group-search-results");
+const createGroupBtn = document.getElementById("create-group-btn");
 
 const CLOUDINARY_UPLOAD_URL = "https://api.cloudinary.com/v1_1/dqkujefxj/upload";
 const CLOUDINARY_UPLOAD_PRESET = "banter_box";
+const ServerValue = serverValue;
 
 function showAlert(message, autoHide = true) {
   alertMessage.textContent = message;
@@ -1227,6 +1275,7 @@ async function checkAuthState() {
         } else {
           renderAvatar(user, avatar);
           loadUserTheme(user.uid);
+          setupPresence(user.uid);
           resolve(user);
         }
       }, (error) => {
@@ -1242,6 +1291,17 @@ async function checkAuthState() {
     callsList.innerHTML = `<p class="no-content">Authentication failed. Please sign in.</p>`;
     return null;
   }
+}
+
+function setupPresence(userId) {
+  const connectedRef = ref(db, '.info/connected');
+  const presenceRef = ref(db, `presence/${userId}`);
+  onValue(connectedRef, (snap) => {
+    if (snap.val()) {
+      onDisconnect(presenceRef).set(ServerValue.TIMESTAMP);
+      set(presenceRef, true);
+    }
+  });
 }
 
 async function loadUserTheme(userId) {
@@ -1294,19 +1354,23 @@ async function archiveChat(chatId, userId) {
   }
 }
 
-async function createChat(userId, friendId) {
+async function createChat(userId, participantIds, isGroup = false, groupName = '') {
   try {
+    const participants = {};
+    const allParticipants = [userId, ...participantIds];
+    allParticipants.forEach(id => {
+      participants[id] = { archived: false };
+    });
     const chatsRef = ref(db, `chats`);
     const newChatRef = push(chatsRef);
     await set(newChatRef, {
-      participants: {
-        [userId]: { archived: false },
-        [friendId]: { archived: false }
-      },
+      participants,
       lastMessage: {
         text: "No messages yet",
         timestamp: Date.now()
-      }
+      },
+      type: isGroup ? 'group' : 'one_to_one',
+      name: isGroup ? groupName : null
     });
     console.log("Chat created:", newChatRef.key);
     return newChatRef.key;
@@ -1451,14 +1515,13 @@ async function fetchChatsAndFriends(category = "all") {
           const chatData = child.val();
           const participants = Object.keys(chatData.participants || {});
           if (participants.includes(user.uid) && !chatData.participants[user.uid]?.archived) {
-            const otherUserId = participants.find(id => id !== user.uid);
-            if (otherUserId) {
-              conversations.push({
-                chatId: child.key,
-                otherUserId,
-                lastMessage: chatData.lastMessage || { text: "No messages yet", timestamp: 0 }
-              });
-            }
+            conversations.push({
+              chatId: child.key,
+              type: chatData.type || 'one_to_one',
+              name: chatData.name || null,
+              participants,
+              lastMessage: chatData.lastMessage || { text: "No messages yet", timestamp: 0 }
+            });
           }
         });
       }
@@ -1466,7 +1529,7 @@ async function fetchChatsAndFriends(category = "all") {
 
       const userPhotoURLs = {};
       const userDisplayNames = {};
-      const allUserIds = [...new Set([...friendIds, ...favoriteIds, ...conversations.map(conv => conv.otherUserId)])];
+      const allUserIds = [...new Set([...friendIds, ...favoriteIds, ...conversations.flatMap(conv => conv.participants.filter(id => id !== user.uid))])];
       for (const userId of allUserIds) {
         try {
           const userRef = ref(db, `users/${userId}`);
@@ -1490,18 +1553,20 @@ async function fetchChatsAndFriends(category = "all") {
       // Filter conversations based on category
       let filteredConversations = conversations;
       if (category === "friends") {
-        filteredConversations = conversations.filter(conv => friendIds.includes(conv.otherUserId));
+        filteredConversations = conversations.filter(conv => conv.type === 'one_to_one' && friendIds.includes(conv.participants.find(id => id !== user.uid)));
       } else if (category === "favorites") {
-        filteredConversations = conversations.filter(conv => favoriteIds.includes(conv.otherUserId));
+        filteredConversations = conversations.filter(conv => conv.type === 'one_to_one' && favoriteIds.includes(conv.participants.find(id => id !== user.uid)));
       }
 
       // Include friends without conversations for "All" and "Friends" categories
       if (category === "all" || category === "friends") {
         for (const friendId of friendIds) {
-          if (!filteredConversations.some(conv => conv.otherUserId === friendId)) {
+          if (!filteredConversations.some(conv => conv.type === 'one_to_one' && conv.participants.includes(friendId))) {
             filteredConversations.push({
               chatId: null,
-              otherUserId: friendId,
+              type: 'one_to_one',
+              name: null,
+              participants: [user.uid, friendId],
               lastMessage: { text: "No messages yet", timestamp: 0 }
             });
           }
@@ -1511,10 +1576,12 @@ async function fetchChatsAndFriends(category = "all") {
       // Include favorites without conversations for "Favorites" category
       if (category === "favorites") {
         for (const favoriteId of favoriteIds) {
-          if (!filteredConversations.some(conv => conv.otherUserId === favoriteId)) {
+          if (!filteredConversations.some(conv => conv.type === 'one_to_one' && conv.participants.includes(favoriteId))) {
             filteredConversations.push({
               chatId: null,
-              otherUserId: favoriteId,
+              type: 'one_to_one',
+              name: null,
+              participants: [user.uid, favoriteId],
               lastMessage: { text: "No messages yet", timestamp: 0 }
             });
           }
@@ -1532,44 +1599,68 @@ async function fetchChatsAndFriends(category = "all") {
         const card = document.createElement("div");
         card.className = "friend-card";
         card.dataset.chatId = conv.chatId || "";
-        card.dataset.friendId = conv.otherUserId;
+        card.dataset.friendId = conv.type === 'one_to_one' ? conv.participants.find(id => id !== user.uid) : '';
         card.setAttribute("role", "button");
-        card.setAttribute("aria-label", `Open chat with ${userDisplayNames[conv.otherUserId]}`);
         const timeAgoStr = conv.lastMessage.timestamp
           ? new Date(conv.lastMessage.timestamp).toLocaleString([], { timeStyle: 'short' })
           : "";
-        const avatarContent = userPhotoURLs[conv.otherUserId]
-          ? `<img src="${userPhotoURLs[conv.otherUserId]}" alt="${DOMPurify.sanitize(userDisplayNames[conv.otherUserId])}'s profile picture" />`
-          : `<span>${DOMPurify.sanitize(userDisplayNames[conv.otherUserId].charAt(0).toUpperCase())}</span>`;
-        const isFavorite = favoriteIds.includes(conv.otherUserId);
+        const isGroup = conv.type === 'group';
+        const otherUserId = isGroup ? null : card.dataset.friendId;
+        const name = isGroup ? conv.name : userDisplayNames[otherUserId];
+        const avatarContent = isGroup ? name.charAt(0).toUpperCase() : (userPhotoURLs[otherUserId]
+          ? `<img src="${userPhotoURLs[otherUserId]}" alt="${DOMPurify.sanitize(name)}'s profile picture" />`
+          : `<span>${DOMPurify.sanitize(name.charAt(0).toUpperCase())}</span>`);
+        const isFavorite = !isGroup && favoriteIds.includes(otherUserId);
+        card.setAttribute("aria-label", `Open ${isGroup ? 'group ' : ''}chat with ${name}`);
         card.innerHTML = `
-          <div class="avatar" style="background-color: ${generateAvatarColor(conv.otherUserId)}">${avatarContent}</div>
+          <div class="avatar ${!isGroup ? 'online' : ''}" style="background-color: ${generateAvatarColor(isGroup ? conv.chatId : otherUserId)}">${avatarContent}</div>
           <div class="friend-info">
-            <h3 class="friend-name">${DOMPurify.sanitize(userDisplayNames[conv.otherUserId])}</h3>
+            <h3 class="friend-name">${DOMPurify.sanitize(name)}</h3>
             <p class="last-message">${DOMPurify.sanitize(conv.lastMessage.text)}</p>
+            <p class="status"></p>
           </div>
           <div class="timestamp">${timeAgoStr}</div>
-          <button class="favorite-btn" data-friend-id="${conv.otherUserId}" aria-label="${isFavorite ? 'Remove from' : 'Add to'} favorites">
+          ${!isGroup ? `<button class="favorite-btn" data-friend-id="${otherUserId}" aria-label="${isFavorite ? 'Remove from' : 'Add to'} favorites">
             <svg viewBox="0 0 24 24" fill="${isFavorite ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
               <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
             </svg>
-          </button>
+          </button>` : ''}
         `;
         card.addEventListener("click", async (e) => {
           if (!e.target.closest(".favorite-btn")) {
             let chatId = conv.chatId;
             if (!chatId) {
-              chatId = await createChat(user.uid, conv.otherUserId);
+              chatId = await createChat(user.uid, [otherUserId]);
             }
             if (chatId) {
               window.location.href = `conversation.html?chatId=${chatId}`;
             }
           }
         });
-        const favoriteBtn = card.querySelector(".favorite-btn");
-        favoriteBtn.addEventListener("click", async () => {
-          await toggleFavorite(user.uid, conv.otherUserId, !isFavorite);
-        });
+        if (!isGroup) {
+          const favoriteBtn = card.querySelector(".favorite-btn");
+          if (favoriteBtn) {
+            favoriteBtn.addEventListener("click", async () => {
+              await toggleFavorite(user.uid, otherUserId, !isFavorite);
+            });
+          }
+          // Setup presence listener
+          const presenceRef = ref(db, `presence/${otherUserId}`);
+          onValue(presenceRef, (snap) => {
+            const statusSpan = card.querySelector(".status");
+            const avatarEl = card.querySelector(".avatar");
+            if (snap.val() === true) {
+              statusSpan.textContent = "online";
+              avatarEl.classList.add("online");
+            } else if (typeof snap.val() === "number") {
+              statusSpan.textContent = "last seen " + timeAgo(snap.val());
+              avatarEl.classList.remove("online");
+            } else {
+              statusSpan.textContent = "offline";
+              avatarEl.classList.remove("online");
+            }
+          });
+        }
         setupSwipeGestures(card, user.uid);
         friendsGrid.appendChild(card);
       });
@@ -1662,31 +1753,34 @@ async function searchChats(query) {
       const chatData = child.val();
       const participants = Object.keys(chatData.participants || {});
       if (participants.includes(user.uid) && !chatData.participants[user.uid]?.archived) {
-        const otherUserId = participants.find(id => id !== user.uid);
-        if (otherUserId) {
-          chats.push({
-            chatId: child.key,
-            otherUserId,
-            lastMessage: chatData.lastMessage || { text: "No messages yet", timestamp: 0 }
-          });
-        }
+        const otherUserId = chatData.type === 'one_to_one' ? participants.find(id => id !== user.uid) : null;
+        chats.push({
+          chatId: child.key,
+          otherUserId,
+          name: chatData.name,
+          type: chatData.type || 'one_to_one',
+          lastMessage: chatData.lastMessage || { text: "No messages yet", timestamp: 0 }
+        });
       }
     });
     const userDisplayNames = {};
     for (const chat of chats) {
-      const userRef = ref(db, `users/${chat.otherUserId}`);
-      const userSnap = await get(userRef);
-      if (userSnap.exists()) {
-        const userData = userSnap.val();
-        userDisplayNames[chat.otherUserId] = userData.displayName || userData.email.split("@")[0];
-      } else {
-        userDisplayNames[chat.otherUserId] = "Unknown User";
+      if (chat.type === 'one_to_one') {
+        const userRef = ref(db, `users/${chat.otherUserId}`);
+        const userSnap = await get(userRef);
+        if (userSnap.exists()) {
+          const userData = userSnap.val();
+          userDisplayNames[chat.otherUserId] = userData.displayName || userData.email.split("@")[0];
+        } else {
+          userDisplayNames[chat.otherUserId] = "Unknown User";
+        }
       }
     }
-    return chats.filter(chat =>
-      userDisplayNames[chat.otherUserId].toLowerCase().includes(query.toLowerCase()) ||
-      chat.lastMessage.text.toLowerCase().includes(query.toLowerCase())
-    );
+    return chats.filter(chat => {
+      const name = chat.type === 'group' ? chat.name : userDisplayNames[chat.otherUserId];
+      return name.toLowerCase().includes(query.toLowerCase()) ||
+        chat.lastMessage.text.toLowerCase().includes(query.toLowerCase());
+    });
   } catch (error) {
     console.error("Error searching chats:", error);
     return [];
@@ -1739,7 +1833,7 @@ async function globalSearchHandler(query) {
 
     const userPhotoURLs = {};
     const userDisplayNames = {};
-    const allUserIds = [...new Set([...users.map(u => u.uid), ...chats.map(c => c.otherUserId), ...statuses.map(s => s.userId)])];
+    const allUserIds = [...new Set([...users.map(u => u.uid), ...chats.filter(c => c.type === 'one_to_one').map(c => c.otherUserId), ...statuses.map(s => s.userId)])];
     for (const userId of allUserIds) {
       const userRef = ref(db, `users/${userId}`);
       const userSnap = await get(userRef);
@@ -1796,14 +1890,15 @@ async function globalSearchHandler(query) {
         const resultItem = document.createElement("div");
         resultItem.className = "search-result-item";
         resultItem.setAttribute("role", "option");
-        resultItem.setAttribute("aria-label", `Open chat with ${userDisplayNames[chat.otherUserId]}`);
-        const avatarContent = userPhotoURLs[chat.otherUserId]
-          ? `<img src="${userPhotoURLs[chat.otherUserId]}" alt="${DOMPurify.sanitize(userDisplayNames[chat.otherUserId])}'s profile picture" />`
-          : `<span>${DOMPurify.sanitize(userDisplayNames[chat.otherUserId].charAt(0).toUpperCase())}</span>`;
+        const name = chat.type === 'group' ? chat.name : userDisplayNames[chat.otherUserId];
+        resultItem.setAttribute("aria-label", `Open chat with ${name}`);
+        const avatarContent = chat.type === 'group' ? name.charAt(0).toUpperCase() : (userPhotoURLs[chat.otherUserId]
+          ? `<img src="${userPhotoURLs[chat.otherUserId]}" alt="${DOMPurify.sanitize(name)}'s profile picture" />`
+          : `<span>${DOMPurify.sanitize(name.charAt(0).toUpperCase())}</span>`);
         resultItem.innerHTML = `
-          <div class="avatar" style="background-color: ${generateAvatarColor(chat.otherUserId)}">${avatarContent}</div>
+          <div class="avatar" style="background-color: ${generateAvatarColor(chat.type === 'group' ? chat.chatId : chat.otherUserId)}">${avatarContent}</div>
           <div>
-            <p>${DOMPurify.sanitize(userDisplayNames[chat.otherUserId])}</p>
+            <p>${DOMPurify.sanitize(name)}</p>
             <p style="font-size: 0.8rem; color: var(--text-light);">${DOMPurify.sanitize(chat.lastMessage.text)}</p>
           </div>
         `;
@@ -1836,7 +1931,7 @@ async function globalSearchHandler(query) {
           </div>
         `;
         resultItem.addEventListener("click", async () => {
-          const chatId = await createChat(auth.currentUser.uid, status.userId);
+          const chatId = await createChat(auth.currentUser.uid, [status.userId]);
           if (chatId) {
             window.location.href = `conversation.html?chatId=${chatId}`;
             globalSearch.value = "";
@@ -1888,7 +1983,7 @@ async function acceptFriendRequest(friendId) {
     await set(friendRef, { added: Date.now() });
     await set(friendRefReverse, { added: Date.now() });
     const friendRequestRef = ref(db, `friend_requests/${user.uid}/${friendId}`);
-    await set(friendRequestRef, null);
+    await remove(friendRequestRef);
     console.log("Friend request accepted:", friendId);
     showAlert("Friend added!", true);
     fetchChatsAndFriends(document.querySelector(".chat-categories .category-btn.active")?.dataset.category || "all");
@@ -1909,14 +2004,16 @@ async function fetchStatuses(category = "all") {
     }
     const statusesRef = ref(db, `statuses`);
     const friendsRef = ref(db, `friends/${user.uid}`);
+    const favoritesRef = ref(db, `favorites/${user.uid}`);
     const loaderTimeout = setTimeout(() => {
       statusList.innerHTML = `<p class="no-content">Loading statuses timed out. Please try again.</p>`;
       showAlert("Loading statuses timed out. Please try again.", false);
     }, 10000);
 
-    // Fetch friends for filtering
-    const friendsSnap = await get(friendsRef);
+    // Fetch friends and favorites for filtering
+    const [friendsSnap, favoritesSnap] = await Promise.all([get(friendsRef), get(favoritesRef)]);
     const friendIds = friendsSnap.exists() ? Object.keys(friendsSnap.val()) : [];
+    const favoriteIds = favoritesSnap.exists() ? Object.keys(favoritesSnap.val()) : [];
 
     onValue(statusesRef, async (snapshot) => {
       console.log("Statuses snapshot received:", snapshot.exists());
@@ -1964,7 +2061,7 @@ async function fetchStatuses(category = "all") {
       if (category === "friends") {
         filteredStatuses = statuses.filter(status => friendIds.includes(status.userId));
       } else if (category === "favorites") {
-        filteredStatuses = [];
+        filteredStatuses = statuses.filter(status => favoriteIds.includes(status.userId));
       }
 
       filteredStatuses.sort((a, b) => b.timestamp - a.timestamp);
@@ -2020,7 +2117,7 @@ async function fetchStatuses(category = "all") {
         statusItem.addEventListener("click", async (e) => {
           if (!e.target.closest(".delete-btn")) {
             await recordStatusView(status.userId, status.statusId, user.uid);
-            const chatId = await createChat(user.uid, status.userId);
+            const chatId = await createChat(user.uid, [status.userId]);
             if (chatId) {
               window.location.href = `conversation.html?chatId=${chatId}`;
             }
@@ -2053,7 +2150,7 @@ async function fetchStatuses(category = "all") {
     userStatusAvatar.addEventListener("click", async () => {
       const userStatuses = statuses.filter(status => status.userId === user.uid);
       if (userStatuses.length > 0) {
-        const chatId = await createChat(user.uid, user.uid); // Self-chat for viewing own status
+        const chatId = await createChat(user.uid, [user.uid]); // Self-chat for viewing own status
         if (chatId) {
           window.location.href = `conversation.html?chatId=${chatId}`;
         }
@@ -2072,7 +2169,7 @@ function setupCarousel() {
   const carousel = document.getElementById("status-carousel");
   const inner = document.getElementById("status-list");
   let currentIndex = 0;
-  const itemWidth = 288; // 280px + 8px margin (adjust to 208 for mobile if needed)
+  let itemWidth = 288; // Default
   let startX = 0;
   let currentX = 0;
   let isSwiping = false;
@@ -2207,7 +2304,8 @@ function setupCarousel() {
   // Adjust item width for mobile
   const updateItemWidth = () => {
     const isMobile = window.innerWidth <= 767;
-    itemWidth = isMobile ? 208 : 288; // 200px + 8px margin for mobile
+    const firstItem = inner.querySelector(".status-item");
+    itemWidth = firstItem ? firstItem.offsetWidth + 8 : (isMobile ? 208 : 288);
     updateCarousel();
   };
 
@@ -2316,6 +2414,7 @@ function setupTabs() {
       document.getElementById(`${item.dataset.tab}-content`).classList.add("active");
       postFab.style.display = item.dataset.tab === "chats" ? "flex" : "none";
       addFriendFab.style.display = item.dataset.tab === "chats" ? "flex" : "none";
+      newGroupFab.style.display = item.dataset.tab === "chats" ? "flex" : "none";
       if (item.dataset.tab === "chats") {
         fetchChatsAndFriends("all");
         setupChatCategoryFilters();
@@ -2375,6 +2474,70 @@ function setupFriendSearch() {
       return;
     }
     await globalSearchHandler(query);
+  });
+}
+
+function setupGroupCreation() {
+  newGroupFab.addEventListener("click", () => {
+    newGroupModal.classList.add("active");
+    groupSearchInput.focus();
+  });
+  closeGroupModal.addEventListener("click", () => {
+    newGroupModal.classList.remove("active");
+    groupNameInput.value = "";
+    groupSearchInput.value = "";
+    groupSearchResults.innerHTML = "";
+  });
+  groupSearchInput.addEventListener("input", async () => {
+    const query = groupSearchInput.value.trim();
+    if (query.length < 2) {
+      groupSearchResults.innerHTML = "";
+      return;
+    }
+    const users = await searchUsers(query);
+    groupSearchResults.innerHTML = "";
+    users.forEach(user => {
+      const resultItem = document.createElement("div");
+      resultItem.className = "search-result-item";
+      resultItem.dataset.uid = user.uid;
+      const avatarContent = user.photoURL
+        ? `<img src="${user.photoURL}" alt="${DOMPurify.sanitize(user.displayName)}'s profile picture" />`
+        : `<span>${DOMPurify.sanitize(user.displayName.charAt(0).toUpperCase())}</span>`;
+      resultItem.innerHTML = `
+        <input type="checkbox" class="group-checkbox">
+        <div class="avatar" style="background-color: ${generateAvatarColor(user.uid)}">${avatarContent}</div>
+        <div>
+          <p>${DOMPurify.sanitize(user.displayName)}</p>
+        </div>
+      `;
+      resultItem.addEventListener("click", (e) => {
+        if (e.target.tagName !== 'INPUT') {
+          const checkbox = resultItem.querySelector('.group-checkbox');
+          checkbox.checked = !checkbox.checked;
+        }
+      });
+      groupSearchResults.appendChild(resultItem);
+    });
+  });
+  createGroupBtn.addEventListener("click", async () => {
+    const groupName = groupNameInput.value.trim();
+    if (!groupName) {
+      showAlert("Please enter a group name.", true);
+      return;
+    }
+    const selectedUids = Array.from(groupSearchResults.querySelectorAll('.group-checkbox:checked')).map(cb => cb.parentElement.dataset.uid);
+    if (selectedUids.length < 1) {
+      showAlert("Please select at least one friend.", true);
+      return;
+    }
+    const chatId = await createChat(auth.currentUser.uid, selectedUids, true, groupName);
+    if (chatId) {
+      window.location.href = `conversation.html?chatId=${chatId}`;
+    }
+    newGroupModal.classList.remove("active");
+    groupNameInput.value = "";
+    groupSearchInput.value = "";
+    groupSearchResults.innerHTML = "";
   });
 }
 
@@ -2553,6 +2716,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     setupTabs();
     setupPostFabListener();
     setupFriendSearch();
+    setupGroupCreation();
     setupThemeToggle();
     fetchChatsAndFriends();
     checkFriendRequests();
