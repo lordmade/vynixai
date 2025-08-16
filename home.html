@@ -87,6 +87,9 @@
       flex: 1;
       max-width: 400px;
       margin: 0 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
 
     .search-input {
@@ -103,6 +106,28 @@
 
     .search-input:focus {
       border-color: var(--primary-purple);
+    }
+
+    .clear-button {
+      background: #ff0000;
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+
+    .clear-button.active {
+      display: flex;
+    }
+
+    .clear-button:hover {
+      transform: scale(1.1);
     }
 
     .suggestions-list {
@@ -437,6 +462,13 @@
       height: 60px;
       position: relative;
       perspective: 1000px;
+      cursor: grab;
+    }
+
+    .destination-pin.dragging {
+      cursor: grabbing;
+      transform: scale(1.1);
+      transition: transform 0.2s ease;
     }
 
     .destination-pin .pin {
@@ -495,6 +527,7 @@
       .title { font-size: 1.2rem; }
       .search-container { margin: 0 0.5rem; }
       .search-input { font-size: 0.8rem; padding: 0.4rem 0.8rem; }
+      .clear-button { width: 20px; height: 20px; }
       .suggestions-list { max-height: 150px; }
       .suggestion-item { font-size: 0.8rem; padding: 0.5rem 0.8rem; }
       .fab { bottom: 5.5rem; right: 1rem; }
@@ -515,6 +548,12 @@
     <h1 class="title">Emergency Map</h1>
     <div class="search-container">
       <input type="text" class="search-input" id="search-input" placeholder="Search for a location..." aria-label="Search location">
+      <button class="clear-button" id="clear-button" aria-label="Clear destination">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
       <div class="suggestions-list" id="suggestions-list"></div>
     </div>
   </div>
@@ -629,6 +668,7 @@
     const communityBadge = document.getElementById("community-badge");
     const searchInput = document.getElementById("search-input");
     const suggestionsList = document.getElementById("suggestions-list");
+    const clearButton = document.getElementById("clear-button");
     const spinnerOverlay = document.getElementById("spinner-overlay");
 
     let map;
@@ -637,6 +677,8 @@
     let destinationPlaceName = '';
     const markers = {};
     let previousIncidentCount = 0;
+    const reverseGeocodeCache = new Map();
+    let debounceTimeout = null;
 
     const ENCRYPTION_KEY = 'your-secure-key-1234567890123456';
 
@@ -700,6 +742,32 @@
       closeSosModal.addEventListener("click", () => {
         sosModal.classList.remove("active");
       });
+    }
+
+    function getRecentDestinations() {
+      const stored = localStorage.getItem('recentDestinations');
+      return stored ? JSON.parse(stored) : [];
+    }
+
+    function saveRecentDestination(coords, placeName) {
+      const recent = getRecentDestinations();
+      const newDestination = { coords, placeName };
+      const updated = [newDestination, ...recent.filter(d => d.placeName !== placeName)].slice(0, 5);
+      localStorage.setItem('recentDestinations', JSON.stringify(updated));
+    }
+
+    function clearDestination() {
+      if (destinationMarker) {
+        destinationMarker.remove();
+        destinationMarker = null;
+      }
+      if (map.getSource('route')) {
+        map.removeLayer('route');
+        map.removeSource('route');
+      }
+      searchInput.value = '';
+      destinationPlaceName = '';
+      clearButton.classList.remove('active');
     }
 
     async function fetchUserData(userId, retries = 3) {
@@ -950,11 +1018,27 @@
     }
 
     async function setupSearchBar() {
+      clearButton.addEventListener('click', clearDestination);
+
       searchInput.addEventListener('input', async () => {
         const query = searchInput.value.trim();
+        suggestionsList.innerHTML = '';
         if (query.length < 3) {
-          suggestionsList.classList.remove('active');
-          suggestionsList.innerHTML = '';
+          const recent = getRecentDestinations();
+          if (recent.length > 0 && query.length === 0) {
+            recent.forEach(dest => {
+              const item = document.createElement('div');
+              item.className = 'suggestion-item';
+              item.textContent = dest.placeName;
+              item.dataset.coords = JSON.stringify(dest.coords);
+              item.dataset.name = dest.placeName;
+              item.addEventListener('click', () => selectDestination(dest.coords, dest.placeName));
+              suggestionsList.appendChild(item);
+            });
+            suggestionsList.classList.add('active');
+          } else {
+            suggestionsList.classList.remove('active');
+          }
           return;
         }
 
@@ -963,7 +1047,6 @@
             `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxgl.accessToken}&limit=5`
           );
           const data = await response.json();
-          suggestionsList.innerHTML = '';
           if (data.features && data.features.length > 0) {
             data.features.forEach(feature => {
               const item = document.createElement('div');
@@ -981,6 +1064,25 @@
         } catch (error) {
           console.error("Error fetching suggestions:", error);
           showAlert("Failed to fetch location suggestions.", false);
+        }
+      });
+
+      searchInput.addEventListener('focus', () => {
+        if (searchInput.value.trim().length === 0) {
+          const recent = getRecentDestinations();
+          if (recent.length > 0) {
+            suggestionsList.innerHTML = '';
+            recent.forEach(dest => {
+              const item = document.createElement('div');
+              item.className = 'suggestion-item';
+              item.textContent = dest.placeName;
+              item.dataset.coords = JSON.stringify(dest.coords);
+              item.dataset.name = dest.placeName;
+              item.addEventListener('click', () => selectDestination(dest.coords, dest.placeName));
+              suggestionsList.appendChild(item);
+            });
+            suggestionsList.classList.add('active');
+          }
         }
       });
 
@@ -1043,11 +1145,44 @@
       }
     }
 
+    async function reverseGeocode(coords) {
+      const cacheKey = `${coords[0].toFixed(6)},${coords[1].toFixed(6)}`;
+      if (reverseGeocodeCache.has(cacheKey)) {
+        return reverseGeocodeCache.get(cacheKey);
+      }
+
+      try {
+        const response = await fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${coords[0]},${coords[1]}.json?access_token=${mapboxgl.accessToken}&limit=1`
+        );
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          const placeName = data.features[0].place_name;
+          reverseGeocodeCache.set(cacheKey, placeName);
+          return placeName;
+        }
+        return 'Unknown Location';
+      } catch (error) {
+        console.error("Error reverse geocoding:", error);
+        return 'Unknown Location';
+      }
+    }
+
+    function debounce(func, wait) {
+      return function (...args) {
+        clearTimeout(debounceTimeout);
+        debounceTimeout = setTimeout(() => func.apply(this, args), wait);
+      };
+    }
+
     async function selectDestination(coords, placeName) {
       suggestionsList.classList.remove('active');
       suggestionsList.innerHTML = '';
       searchInput.value = placeName;
       destinationPlaceName = placeName;
+      clearButton.classList.add('active');
+
+      saveRecentDestination(coords, placeName);
 
       if (destinationMarker) {
         destinationMarker.remove();
@@ -1059,29 +1194,34 @@
         <div class="pin"></div>
         <div class="pin-base"></div>
       `;
-      destinationMarker = new mapboxgl.Marker({ element: destinationPinEl, anchor: 'bottom', draggable: true })
+      destinationMarker = new mapboxgl.Marker({ 
+        element: destinationPinEl, 
+        anchor: 'bottom', 
+        draggable: true,
+        offset: [0, -10] // Offset upward to avoid obstructing exact location
+      })
         .setLngLat(coords)
         .setPopup(new mapboxgl.Popup().setText(`Destination: ${placeName}`))
         .addTo(map);
 
-      destinationMarker.on('dragend', async () => {
-        const newCoords = destinationMarker.getLngLat();
-        await updateRoute([newCoords.lng, newCoords.lat]);
-        // Optionally update placeName via reverse geocoding
-        try {
-          const response = await fetch(
-            `https://api.mapbox.com/geocoding/v5/mapbox.places/${newCoords.lng},${newCoords.lat}.json?access_token=${mapboxgl.accessToken}&limit=1`
-          );
-          const data = await response.json();
-          if (data.features && data.features.length > 0) {
-            destinationPlaceName = data.features[0].place_name;
-            searchInput.value = destinationPlaceName;
-            destinationMarker.setPopup(new mapboxgl.Popup().setText(`Destination: ${destinationPlaceName}`));
-          }
-        } catch (error) {
-          console.error("Error reverse geocoding:", error);
-        }
+      destinationPinEl.addEventListener('mousedown', () => {
+        destinationPinEl.classList.add('dragging');
       });
+      destinationPinEl.addEventListener('mouseup', () => {
+        destinationPinEl.classList.remove('dragging');
+      });
+
+      const debouncedDragEnd = debounce(async () => {
+        const newCoords = destinationMarker.getLngLat();
+        const newPlaceName = await reverseGeocode([newCoords.lng, newCoords.lat]);
+        destinationPlaceName = newPlaceName;
+        searchInput.value = newPlaceName;
+        destinationMarker.setPopup(new mapboxgl.Popup().setText(`Destination: ${newPlaceName}`));
+        saveRecentDestination([newCoords.lng, newCoords.lat], newPlaceName);
+        await updateRoute([newCoords.lng, newCoords.lat]);
+      }, 500);
+
+      destinationMarker.on('dragend', debouncedDragEnd);
 
       await updateRoute(coords);
     }
