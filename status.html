@@ -430,17 +430,38 @@
     }
 
     async function fetchUserData(userId) {
-      const userRef = ref(db, `users/${userId}`);
-      const userSnap = await get(userRef);
-      return userSnap.exists() ? userSnap.val() : { displayName: "Unknown User" };
+      try {
+        const userRef = ref(db, `users/${userId}`);
+        const userSnap = await get(userRef);
+        return userSnap.exists() ? userSnap.val() : { displayName: "Unknown User" };
+      } catch (error) {
+        console.error(`Error fetching user data for ${userId}:`, error);
+        return { displayName: "Unknown User" };
+      }
     }
 
     async function checkAuthState() {
-      await setPersistence(auth, browserLocalPersistence);
-      return new Promise((resolve) => {
-        onAuthStateChanged(auth, (user) => {
-          if (user) {
-            fetchUserData(user.uid).then(userData => {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+        return await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            console.error("Authentication check timed out");
+            statusesGrid.innerHTML = '<p class="no-content">Authentication timed out. Please sign in.</p>';
+            document.body.classList.add("fade-out");
+            setTimeout(() => window.location.href = "signup.html", 500);
+            reject(new Error("Authentication timed out"));
+          }, 10000);
+
+          onAuthStateChanged(auth, async (user) => {
+            clearTimeout(timeout);
+            if (!user) {
+              console.log("No authenticated user");
+              statusesGrid.innerHTML = '<p class="no-content">Please sign in to view statuses.</p>';
+              document.body.classList.add("fade-out");
+              setTimeout(() => window.location.href = "signup.html", 500);
+              resolve(null);
+            } else {
+              const userData = await fetchUserData(user.uid);
               const displayUser = {
                 uid: user.uid,
                 displayName: userData.displayName || user.email.split("@")[0],
@@ -448,13 +469,19 @@
               };
               renderAvatar(displayUser);
               resolve(displayUser);
-            });
-          } else {
-            window.location.href = "signup.html";
-            resolve(null);
-          }
+            }
+          }, (error) => {
+            clearTimeout(timeout);
+            console.error("Auth state error:", error);
+            statusesGrid.innerHTML = '<p class="no-content">Authentication failed. Please try again.</p>';
+            reject(error);
+          });
         });
-      });
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        statusesGrid.innerHTML = '<p class="no-content">Failed to verify authentication. Please try again.</p>';
+        return null;
+      }
     }
 
     function renderAvatar(user) {
@@ -476,26 +503,30 @@
     }
 
     async function loadStatuses() {
-      const statusesRef = ref(db, 'statuses');
-      onValue(statusesRef, async (snapshot) => {
-        allStatuses = [];
-        if (snapshot.exists()) {
-          snapshot.forEach(child => {
-            allStatuses.push({ statusId: child.key, ...child.val() });
-          });
-        }
-        allStatuses.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)); // Recent at top
-        // Optional partial shuffle after sorting (keeps recent near top)
-        const shuffled = [...allStatuses];
-        for (let i = allStatuses.length - 1; i > allStatuses.length * 0.3; i--) { // Shuffle last 70%
-          const j = Math.floor(Math.random() * (i + 1));
-          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-        }
-        renderStatuses(shuffled);
-      }, (error) => {
-        console.error("Error loading statuses:", error);
-        statusesGrid.innerHTML = '<p class="no-content">Failed to load statuses.</p>';
-      });
+      try {
+        const statusesRef = ref(db, 'statuses');
+        onValue(statusesRef, async (snapshot) => {
+          allStatuses = [];
+          if (snapshot.exists()) {
+            snapshot.forEach(child => {
+              allStatuses.push({ statusId: child.key, ...child.val() });
+            });
+          }
+          allStatuses.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)); // Recent at top
+          const shuffled = [...allStatuses];
+          for (let i = allStatuses.length - 1; i > allStatuses.length * 0.3; i--) { // Shuffle last 70%
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+          }
+          renderStatuses(shuffled);
+        }, (error) => {
+          console.error("Error loading statuses:", error);
+          statusesGrid.innerHTML = '<p class="no-content">Failed to load statuses. Check your internet connection or database permissions.</p>';
+        });
+      } catch (error) {
+        console.error("Error initializing statuses load:", error);
+        statusesGrid.innerHTML = '<p class="no-content">Error loading statuses. Please try again later.</p>';
+      }
     }
 
     async function renderStatuses(statuses) {
@@ -546,7 +577,6 @@
             </button>
           </div>
           <div class="comments-section" data-status-id="${status.statusId}">
-            <!-- Comments will be appended here -->
             <input type="text" class="comment-input" placeholder="Add a comment..." data-status-id="${status.statusId}">
           </div>
         `;
@@ -557,18 +587,27 @@
     }
 
     async function checkFriendship(userId, friendId) {
-      if (!userId || !friendId || userId === friendId) return true; // Same user or no user
-      const friendsRef = ref(db, `friends/${userId}/${friendId}`);
-      const snapshot = await get(friendsRef);
-      return snapshot.exists();
+      if (!userId || !friendId || userId === friendId) return true;
+      try {
+        const friendsRef = ref(db, `friends/${userId}/${friendId}`);
+        const snapshot = await get(friendsRef);
+        return snapshot.exists();
+      } catch (error) {
+        console.error(`Error checking friendship: ${error}`);
+        return false;
+      }
     }
 
     async function addFriend(userId, friendId) {
-      const friendRef = ref(db, `friends/${userId}/${friendId}`);
-      await set(friendRef, true);
-      const userRef = ref(db, `friends/${friendId}/${userId}`);
-      await set(userRef, true);
-      console.log(`Added ${friendId} as friend for ${userId}`);
+      try {
+        const friendRef = ref(db, `friends/${userId}/${friendId}`);
+        await set(friendRef, true);
+        const userRef = ref(db, `friends/${friendId}/${userId}`);
+        await set(userRef, true);
+        console.log(`Added ${friendId} as friend for ${userId}`);
+      } catch (error) {
+        console.error(`Error adding friend: ${error}`);
+      }
     }
 
     function attachEventListeners() {
@@ -576,21 +615,25 @@
         btn.addEventListener('click', async () => {
           const statusId = btn.dataset.statusId;
           const userId = auth.currentUser.uid;
-          const statusRef = ref(db, `statuses/${statusId}`);
-          const statusSnap = await get(statusRef);
-          let likers = statusSnap.val().likers || [];
-          let likes = statusSnap.val().likes || 0;
-          if (likers.includes(userId)) {
-            likers = likers.filter(id => id !== userId);
-            likes--;
-            btn.classList.remove('liked');
-          } else {
-            likers.push(userId);
-            likes++;
-            btn.classList.add('liked');
+          try {
+            const statusRef = ref(db, `statuses/${statusId}`);
+            const statusSnap = await get(statusRef);
+            let likers = statusSnap.val().likers || [];
+            let likes = statusSnap.val().likes || 0;
+            if (likers.includes(userId)) {
+              likers = likers.filter(id => id !== userId);
+              likes--;
+              btn.classList.remove('liked');
+            } else {
+              likers.push(userId);
+              likes++;
+              btn.classList.add('liked');
+            }
+            await update(statusRef, { likes, likers });
+            btn.querySelector('.like-count').textContent = likes;
+          } catch (error) {
+            console.error(`Error liking status: ${error}`);
           }
-          update(statusRef, { likes, likers });
-          btn.querySelector('.like-count').textContent = likes;
         });
       });
 
@@ -598,14 +641,18 @@
         input.addEventListener('keypress', async (e) => {
           if (e.key === 'Enter' && input.value.trim()) {
             const statusId = input.dataset.statusId;
-            const commentsRef = ref(db, `statuses/${statusId}/comments`);
-            const newCommentRef = push(commentsRef);
-            await set(newCommentRef, {
-              userId: auth.currentUser.uid,
-              text: input.value.trim(),
-              timestamp: serverTimestamp()
-            });
-            input.value = '';
+            try {
+              const commentsRef = ref(db, `statuses/${statusId}/comments`);
+              const newCommentRef = push(commentsRef);
+              await set(newCommentRef, {
+                userId: auth.currentUser.uid,
+                text: input.value.trim(),
+                timestamp: serverTimestamp()
+              });
+              input.value = '';
+            } catch (error) {
+              console.error(`Error adding comment: ${error}`);
+            }
           }
         });
       });
@@ -614,7 +661,7 @@
         btn.addEventListener('click', async () => {
           const friendId = btn.dataset.userId;
           await addFriend(auth.currentUser.uid, friendId);
-          btn.remove(); // Remove button after adding
+          btn.remove();
         });
       });
     }
@@ -643,6 +690,8 @@
             commentsSection.insertBefore(commentEl, commentsSection.firstChild.nextSibling);
           }
         }
+      }, (error) => {
+        console.error(`Error loading comments for status ${statusId}:`, error);
       });
     }
 
@@ -671,38 +720,52 @@
         if (!caption && !file) return;
         let mediaUrl = '';
         if (file) {
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('upload_preset', uploadPreset);
-          const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, {
-            method: 'POST',
-            body: formData
-          });
-          const data = await response.json();
-          mediaUrl = data.secure_url;
+          try {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('upload_preset', uploadPreset);
+            const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, {
+              method: 'POST',
+              body: formData
+            });
+            const data = await response.json();
+            mediaUrl = data.secure_url;
+          } catch (error) {
+            console.error("Error uploading media to Cloudinary:", error);
+            return;
+          }
         }
-        const statusesRef = ref(db, 'statuses');
-        const newStatusRef = push(statusesRef);
-        await set(newStatusRef, {
-          userId: auth.currentUser.uid,
-          caption,
-          mediaUrl,
-          timestamp: serverTimestamp(),
-          likes: 0,
-          likers: []
-        });
-        postCaption.value = '';
-        postMedia.value = '';
-        newPostModal.classList.remove('active');
+        try {
+          const statusesRef = ref(db, 'statuses');
+          const newStatusRef = push(statusesRef);
+          await set(newStatusRef, {
+            userId: auth.currentUser.uid,
+            caption,
+            mediaUrl,
+            timestamp: serverTimestamp(),
+            likes: 0,
+            likers: []
+          });
+          postCaption.value = '';
+          postMedia.value = '';
+          newPostModal.classList.remove('active');
+        } catch (error) {
+          console.error("Error saving status to Firebase:", error);
+        }
       });
     }
 
     document.addEventListener("DOMContentLoaded", async () => {
-      const user = await checkAuthState();
-      if (user) {
-        loadStatuses();
-        setupSearch();
-        setupNewPost();
+      try {
+        const user = await checkAuthState();
+        if (user) {
+          await loadStatuses();
+          setupSearch();
+          setupNewPost();
+        }
+      } catch (error) {
+        console.error("Error initializing app:", error);
+        statusesGrid.innerHTML = '<p class="no-content">An error occurred. Please refresh or sign in again.</p>';
       }
     });
   </script>
