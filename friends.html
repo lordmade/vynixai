@@ -9,8 +9,8 @@
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
   <style>
     :root {
-      --primary-purple: #000;
-      --secondary-teal: #000;
+      --primary-purple: #7C3AED;
+      --secondary-teal: #14B8A6;
       --text-dark: #000;
       --text-light: #666;
       --border: #ddd;
@@ -77,7 +77,7 @@
       font-size: 1.2rem;
       font-weight: bold;
       color: var(--white);
-      background: linear-gradient(45deg, #7C3AED, #14B8A6);
+      background: linear-gradient(45deg, var(--primary-purple), var(--secondary-teal));
     }
 
     .avatar img {
@@ -98,6 +98,79 @@
       background: var(--background);
       min-height: calc(100vh - 60px);
       box-sizing: border-box;
+    }
+
+    .suggested-friends {
+      margin-bottom: 1.5rem;
+      overflow-x: auto;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+      scrollbar-color: var(--primary-purple) var(--white);
+      padding-bottom: 0.5rem;
+    }
+
+    .suggested-friends::-webkit-scrollbar {
+      height: 8px;
+    }
+
+    .suggested-friends::-webkit-scrollbar-thumb {
+      background: var(--primary-purple);
+      border-radius: 4px;
+    }
+
+    .suggested-friends::-webkit-scrollbar-track {
+      background: var(--white);
+    }
+
+    .suggested-friends h2 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text-dark);
+      margin: 0 0 1rem 0;
+    }
+
+    .suggested-friends-grid {
+      display: inline-flex;
+      gap: 1rem;
+      padding: 0 0.5rem;
+    }
+
+    .suggested-friend-card {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100px;
+      background: var(--card-background);
+      padding: 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: transform 0.2s ease, background 0.2s ease;
+      text-align: center;
+    }
+
+    .suggested-friend-card:hover {
+      transform: translateY(-3px);
+      background: var(--highlight);
+    }
+
+    .suggested-friend-card .avatar {
+      width: 60px;
+      height: 60px;
+      font-size: 1.8rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .suggested-friend-name {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--text-dark);
+      margin: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
     }
 
     .friends-grid {
@@ -197,6 +270,9 @@
       .friend-card .avatar { width: 40px; height: 40px; font-size: 1.2rem; }
       .friend-name { font-size: 1rem; }
       .status { font-size: 0.8rem; }
+      .suggested-friend-card { width: 80px; }
+      .suggested-friend-card .avatar { width: 48px; height: 48px; font-size: 1.5rem; }
+      .suggested-friend-name { font-size: 0.8rem; }
     }
   </style>
 </head>
@@ -212,6 +288,16 @@
     </div>
   </div>
   <div class="main-content">
+    <div class="suggested-friends" id="suggested-friends">
+      <h2>Suggested Friends</h2>
+      <div class="suggested-friends-grid" id="suggested-friends-grid">
+        <div class="loader">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+      </div>
+    </div>
     <div class="friends-grid" id="friends-grid" aria-live="polite">
       <div class="loader">
         <div class="dot"></div>
@@ -223,7 +309,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue, get, push, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -241,6 +327,7 @@
     const db = getDatabase(app);
 
     const friendsGrid = document.getElementById("friends-grid");
+    const suggestedFriendsGrid = document.getElementById("suggested-friends-grid");
     const userAvatar = document.getElementById("user-avatar");
 
     function generateAvatarColor(userId) {
@@ -309,6 +396,7 @@
       } catch (error) {
         console.error("Auth check failed:", error);
         friendsGrid.innerHTML = `<p class="no-content">Authentication failed. Please sign in.</p>`;
+        suggestedFriendsGrid.innerHTML = `<p class="no-content">Authentication failed. Please sign in.</p>`;
         return null;
       }
     }
@@ -324,10 +412,74 @@
       }
     }
 
+    async function loadSuggestedFriends(currentUserId, friendIds) {
+      suggestedFriendsGrid.innerHTML = '<div class="loader"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
+      try {
+        const usersRef = ref(db, 'users');
+        const snapshot = await get(usersRef);
+        if (!snapshot.exists()) {
+          suggestedFriendsGrid.innerHTML = '<p class="no-content">No suggested friends available</p>';
+          return;
+        }
+
+        const allUsers = snapshot.val();
+        const suggestedUserIds = Object.keys(allUsers).filter(
+          uid => uid !== currentUserId && !friendIds.includes(uid)
+        );
+
+        if (suggestedUserIds.length === 0) {
+          suggestedFriendsGrid.innerHTML = '<p class="no-content">No suggested friends available</p>';
+          return;
+        }
+
+        suggestedFriendsGrid.innerHTML = '';
+        const userDataCache = {};
+        for (const userId of suggestedUserIds) {
+          if (!userDataCache[userId]) {
+            userDataCache[userId] = await fetchUserData(userId);
+          }
+        }
+
+        suggestedUserIds.forEach(userId => {
+          const userData = userDataCache[userId] || { displayName: "Unknown User" };
+          const name = userData.displayName || "Unknown User";
+          const card = document.createElement("div");
+          card.className = "suggested-friend-card";
+          card.setAttribute("role", "button");
+          card.setAttribute("aria-label", `Start chat with ${name}`);
+          const avatarContent = userData.photoURL
+            ? `<img src="${DOMPurify.sanitize(userData.photoURL)}" alt="${DOMPurify.sanitize(name)}'s profile picture" />`
+            : `<span>${DOMPurify.sanitize(name.charAt(0).toUpperCase())}</span>`;
+          card.innerHTML = `
+            <div class="avatar" style="background: linear-gradient(45deg, ${generateAvatarColor(userId)}, ${generateAvatarColor(userId + '1')})">${avatarContent}</div>
+            <p class="suggested-friend-name">${DOMPurify.sanitize(name)}</p>
+          `;
+          card.addEventListener("click", async () => {
+            const chatId = await findExistingChat(currentUserId, userId);
+            if (chatId) {
+              window.location.href = `conversation.html?chatId=${chatId}`;
+            } else {
+              const newChatId = await createChat(currentUserId, [userId]);
+              if (newChatId) {
+                // Optionally add to friends list
+                await set(ref(db, `friends/${currentUserId}/${userId}`), true);
+                window.location.href = `conversation.html?chatId=${newChatId}`;
+              }
+            }
+          });
+          suggestedFriendsGrid.appendChild(card);
+        });
+      } catch (error) {
+        console.error("Suggested friends load error:", error);
+        suggestedFriendsGrid.innerHTML = '<p class="no-content">Failed to load suggested friends.</p>';
+      }
+    }
+
     async function loadFriends() {
       const user = auth.currentUser;
       if (!user) {
         friendsGrid.innerHTML = '<p class="no-content">Please sign in to view friends</p>';
+        suggestedFriendsGrid.innerHTML = '<p class="no-content">Please sign in to view suggested friends</p>';
         return;
       }
 
@@ -337,12 +489,14 @@
         friendsGrid.innerHTML = '';
         if (!snapshot.exists()) {
           friendsGrid.innerHTML = '<p class="no-content">No friends yet</p>';
+          loadSuggestedFriends(user.uid, []);
           return;
         }
 
         const friendIds = Object.keys(snapshot.val() || {});
         if (friendIds.length === 0) {
           friendsGrid.innerHTML = '<p class="no-content">No friends yet</p>';
+          loadSuggestedFriends(user.uid, []);
           return;
         }
 
@@ -367,7 +521,7 @@
             <div class="avatar" style="background: linear-gradient(45deg, ${generateAvatarColor(friendId)}, ${generateAvatarColor(friendId + '1')})">${avatarContent}</div>
             <div class="friend-info">
               <h3 class="friend-name">${DOMPurify.sanitize(name)}</h3>
-              <p class="status">Last seen recently</p> <!-- Placeholder; replace with actual status if available -->
+              <p class="status">Last seen recently</p>
             </div>
           `;
           card.addEventListener("click", () => {
@@ -375,7 +529,7 @@
             if (chatId) {
               window.location.href = `conversation.html?chatId=${chatId}`;
             } else {
-              createChat(user.uid, [friendId]).then(chatId => {
+              create repertoire(user.uid, [friendId]).then(chatId => {
                 if (chatId) window.location.href = `conversation.html?chatId=${chatId}`;
               });
             }
@@ -388,14 +542,17 @@
               card.querySelector(".status").textContent = "Online";
             } else {
               avatarEl.classList.remove("online");
-              card.querySelector(".status").textContent = "Last seen recently"; // Replace with actual timestamp if available
+              card.querySelector(".status").textContent = "Last seen recently";
             }
           });
           friendsGrid.appendChild(card);
         });
+
+        loadSuggestedFriends(user.uid, friendIds);
       }, (error) => {
         console.error("Friends listener error:", error);
         friendsGrid.innerHTML = '<p class="no-content">Failed to load friends.</p>';
+        suggestedFriendsGrid.innerHTML = '<p class="no-content">Failed to load suggested friends.</p>';
       });
     }
 
