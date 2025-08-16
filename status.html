@@ -695,7 +695,7 @@
           allUsersStatuses[userId].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         }
 
-        renderStatusesList();
+        await renderStatusesList();
       }, (error) => {
         console.error("Statuses listener error:", error);
         statusesList.innerHTML = '<p class="no-content">Failed to load statuses.</p>';
@@ -706,21 +706,29 @@
       statusesList.innerHTML = '';
       const currentUserId = auth.currentUser.uid;
       const userDataCache = {};
-      let usersWithStatuses = Object.keys(allUsersStatuses).filter(async userId => {
-        if (!userDataCache[userId]) {
-          userDataCache[userId] = await fetchUserData(userId);
-        }
+
+      // Pre-fetch user data for all users with statuses
+      const userIds = Object.keys(allUsersStatuses);
+      await Promise.all(userIds.map(async (userId) => {
+        userDataCache[userId] = await fetchUserData(userId);
+      }));
+
+      // Now filter synchronously with cached data
+      const usersWithStatuses = userIds.filter(userId => {
         const name = userDataCache[userId].displayName || userDataCache[userId].email?.split("@")[0] || "Unknown User";
-        return name.toLowerCase().includes(query.toLowerCase()) || allUsersStatuses[userId].some(status => status.caption.toLowerCase().includes(query.toLowerCase()));
+        return name.toLowerCase().includes(query.toLowerCase()) ||
+               allUsersStatuses[userId].some(status => (status.caption || '').toLowerCase().includes(query.toLowerCase()));
       });
 
-      // Owner's section with username from users path
-      const ownerSection = document.createElement("div");
-      ownerSection.className = "user-section";
+      // Owner's section
       const ownerStatuses = allUsersStatuses[currentUserId] || [];
-      if (ownerStatuses.length > 0 || query === '') { // Show section even if empty when no search
-        const ownerData = await fetchUserData(currentUserId);
-        const ownerName = ownerData.displayName || ownerData.email?.split("@")[0] || "Me";
+      const ownerData = userDataCache[currentUserId] || await fetchUserData(currentUserId); // Fallback if not in cache (rare)
+      const ownerName = ownerData.displayName || ownerData.email?.split("@")[0] || "Me";
+      const ownerMatches = ownerName.toLowerCase().includes(query.toLowerCase()) ||
+                           ownerStatuses.some(status => (status.caption || '').toLowerCase().includes(query.toLowerCase()));
+      if (ownerStatuses.length > 0 && (query === '' || ownerMatches)) {
+        const ownerSection = document.createElement("div");
+        ownerSection.className = "user-section";
         ownerSection.innerHTML = `<div class="user-header">${DOMPurify.sanitize(ownerName)}'s Statuses</div>`;
         ownerStatuses.forEach(status => {
           const statusItem = createStatusItem(currentUserId, status, ownerData);
@@ -729,15 +737,13 @@
         statusesList.appendChild(ownerSection);
       }
 
+      // Friends' sections
       const friendsRef = ref(db, `friends/${currentUserId}`);
       const friendsSnap = await get(friendsRef);
       const friendIds = friendsSnap.exists() ? Object.keys(friendsSnap.val()) : [];
       const friendsWithStatuses = usersWithStatuses.filter(userId => friendIds.includes(userId) && userId !== currentUserId);
 
-      friendsWithStatuses.forEach(async userId => {
-        if (!userDataCache[userId]) {
-          userDataCache[userId] = await fetchUserData(userId);
-        }
+      for (const userId of friendsWithStatuses) {
         const userData = userDataCache[userId];
         const name = userData.displayName || userData.email?.split("@")[0] || "Unknown User";
         const statuses = allUsersStatuses[userId];
@@ -749,10 +755,11 @@
           section.appendChild(statusItem);
         });
         statusesList.appendChild(section);
-      });
+      }
 
-      if (usersWithStatuses.length === 0 && ownerStatuses.length === 0) {
-        statusesList.innerHTML = '<p class="no-content">No statuses found</p>';
+      // Improved no-content check
+      if (statusesList.children.length === 0) {
+        statusesList.innerHTML = `<p class="no-content">${query ? 'No statuses found' : 'No statuses yet'}</p>`;
       }
     }
 
