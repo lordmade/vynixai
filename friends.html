@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Text Suggestion with TensorFlow.js</title>
+    <title>AI Text Suggester with Brain.js and Firestore</title>
     <style>
         body {
             font-family: 'Arial', sans-serif;
@@ -49,6 +49,10 @@
         button:hover {
             background-color: #0056b3;
         }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
         #suggestionOutput {
             margin-top: 20px;
             font-size: 18px;
@@ -58,6 +62,22 @@
         .loading {
             color: #666;
             font-style: italic;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #007bff;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -65,47 +85,91 @@
     <div class="container">
         <h1>AI Text Suggester</h1>
         <input type="text" id="userInput" placeholder="Type something...">
-        <button onclick="suggestText()">Get Suggestion</button>
+        <button id="suggestButton" onclick="suggestText()">Get Suggestion</button>
         <div id="suggestionOutput"></div>
     </div>
 
-    <!-- Load TensorFlow.js and Universal Sentence Encoder -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@1.3.3/dist/universal-sentence-encoder.min.js"></script>
-    <script>
-        // Predefined responses for suggestion (can be expanded)
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+        import { getFirestore, collection, doc, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        import * as brain from 'https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js/+esm';
+
+        // Firebase configuration (replace with your project's config)
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "your-project.firebaseapp.com",
+            projectId: "your-project",
+            storageBucket: "your-project.appspot.com",
+            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Predefined responses (for fallback)
         const responsePool = [
-            { text: "Hi there! How can I assist you today?", keywords: ["hello", "hi", "hey"] },
-            { text: "I'm doing great, thanks for asking!", keywords: ["how are you", "how's it going"] },
-            { text: "Not much, just here to help!", keywords: ["what's up", "what are you doing"] },
-            { text: "Goodbye! Have a great day!", keywords: ["bye", "see you", "farewell"] },
-            { text: "Can you clarify what you mean?", keywords: ["what", "huh", "explain"] },
-            { text: "That's awesome! Tell me more!", keywords: ["cool", "awesome", "great"] }
+            { text: "Hi there! How can I assist you?", keywords: ["hello", "hi"] },
+            { text: "I'm doing great, thanks!", keywords: ["how are you"] },
+            { text: "Not much, just here!", keywords: ["what's up"] },
+            { text: "See you later!", keywords: ["bye"] }
         ];
 
-        let model = null;
+        let net = null;
+        let isLoading = false;
+        let lastClickTime = 0;
+        const debounceDelay = 1000;
 
-        // Load the Universal Sentence Encoder model
-        async function loadModel() {
-            document.getElementById("suggestionOutput").innerText = "Loading model...";
-            model = await use.load();
-            document.getElementById("suggestionOutput").innerText = "Model loaded! Type something to get a suggestion.";
-        }
-
-        // Compute cosine similarity between two vectors
-        function cosineSimilarity(vecA, vecB) {
-            const dotProduct = vecA.mul(vecB).sum().dataSync()[0];
-            const normA = vecA.norm().dataSync()[0];
-            const normB = vecB.norm().dataSync()[0];
-            return dotProduct / (normA * normB);
-        }
-
-        // Suggest text based on input
-        async function suggestText() {
-            if (!model) {
-                document.getElementById("suggestionOutput").innerText = "Model is still loading...";
-                return;
+        // Fallback keyword matching
+        function fallbackSuggest(input) {
+            input = input.toLowerCase();
+            for (const response of responsePool) {
+                for (const keyword of response.keywords) {
+                    if (input.includes(keyword)) {
+                        return response.text;
+                    }
+                }
             }
+            return "No suggestion available.";
+        }
+
+        // Initialize Brain.js model from Firestore
+        async function initializeModel() {
+            isLoading = true;
+            document.getElementById("suggestionOutput").innerHTML = '<div class="spinner"></div>Loading model...';
+            document.getElementById("suggestButton").disabled = true;
+
+            try {
+                net = new brain.recurrent.LSTM();
+                let modelJson = JSON.parse(localStorage.getItem('text-suggester-model'));
+                if (!modelJson) {
+                    const modelDoc = await getDoc(doc(collection(db, 'models'), 'text-suggester'));
+                    if (modelDoc.exists()) {
+                        modelJson = modelDoc.data().model;
+                        localStorage.setItem('text-suggester-model', JSON.stringify(modelJson));
+                    } else {
+                        throw new Error('Model not found in Firestore.');
+                    }
+                }
+                net.fromJSON(modelJson);
+                document.getElementById("suggestionOutput").innerText = "Model ready! Type something to get a suggestion.";
+            } catch (error) {
+                console.error("Error loading model:", error);
+                document.getElementById("suggestionOutput").innerText = "Failed to load model. Using fallback mode.";
+                net = null;
+            }
+
+            isLoading = false;
+            document.getElementById("suggestButton").disabled = false;
+        }
+
+        // Suggest text
+        async function suggestText() {
+            const now = Date.now();
+            if (now - lastClickTime < debounceDelay) return;
+            lastClickTime = now;
 
             const userInput = document.getElementById("userInput").value.trim().toLowerCase();
             if (!userInput) {
@@ -113,30 +177,25 @@
                 return;
             }
 
-            document.getElementById("suggestionOutput").innerText = "Generating suggestion...";
+            document.getElementById("suggestionOutput").innerHTML = '<div class="spinner"></div>Generating suggestion...';
+            document.getElementById("suggestButton").disabled = true;
 
-            // Get embedding for user input
-            const inputEmbedding = await model.embed([userInput]);
-
-            // Compute embeddings for response keywords and find the best match
-            let bestMatch = null;
-            let highestSimilarity = -1;
-
-            for (const response of responsePool) {
-                const keywordEmbedding = await model.embed(response.keywords);
-                const similarity = cosineSimilarity(inputEmbedding, keywordEmbedding);
-                if (similarity > highestSimilarity) {
-                    highestSimilarity = similarity;
-                    bestMatch = response.text;
+            try {
+                let suggestion = null;
+                if (net && !isLoading) {
+                    suggestion = net.run(userInput);
                 }
+                document.getElementById("suggestionOutput").innerText = suggestion || fallbackSuggest(userInput);
+            } catch (error) {
+                console.error("Error generating suggestion:", error);
+                document.getElementById("suggestionOutput").innerText = fallbackSuggest(userInput);
             }
 
-            // Display the best matching response or a fallback
-            document.getElementById("suggestionOutput").innerText = bestMatch || "No relevant suggestion found.";
+            document.getElementById("suggestButton").disabled = false;
         }
 
-        // Load the model when the page loads
-        loadModel();
+        // Initialize model on page load
+        initializeModel();
     </script>
 </body>
 </html>
