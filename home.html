@@ -8,6 +8,10 @@
   <!-- Mapbox GL JS and CSS -->
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet" />
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <style>
     :root {
       --primary-purple: #000;
@@ -289,35 +293,42 @@
       </ul>
     </div>
   </div>
-  <script>
-    // Set your Mapbox access token here
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+    import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+
+    // Firebase configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
+      authDomain: "fire-b-a8878.firebaseapp.com",
+      databaseURL: "https://fire-b-a8878.firebaseio.com",
+      projectId: "fire-b-a8878",
+      storageBucket: "fire-b-a8878.firebasestorage.app",
+      messagingSenderId: "658673187627",
+      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
+      measurementId: "G-V4W97VMSKL"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+
+    // Mapbox access token
     mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
 
-    // Initialize Mapbox map
-    const map = new mapboxgl.Map({
-      container: 'map', // ID of the map container
-      style: 'mapbox://styles/mapbox/streets-v12', // Mapbox style (clean, similar to Bolt)
-      center: [28.0473, -26.2041], // Johannesburg, South Africa [lng, lat]
-      zoom: 12, // City-level zoom
-      interactive: true // Enable panning and zooming
-    });
-
-    // Add navigation controls (zoom and rotation)
-    map.addControl(new mapboxgl.NavigationControl(), 'top-right');
-
-    // Add a marker at the center (e.g., user location)
-    new mapboxgl.Marker()
-      .setLngLat([28.0473, -26.2041])
-      .setPopup(new mapboxgl.Popup().setText('Current Location'))
-      .addTo(map);
-
-    // Alert handling
+    // DOM elements
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
     const actionFab = document.getElementById("action-fab");
     const actionModal = document.getElementById("action-modal");
     const closeActionModal = document.getElementById("close-action-modal");
+    const userAvatar = document.getElementById("user-avatar");
 
+    let map;
+
+    // Alert handling
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
       customAlert.classList.add("active");
@@ -349,9 +360,19 @@
     window.handleOption = function(option) {
       switch (option) {
         case 'Map':
-          // Already on map, just close modal
           actionModal.classList.remove("active");
-          map.jumpTo({ center: [28.0473, -26.2041], zoom: 12 }); // Reset to default view
+          if (map) {
+            // Reset to user's location if available, else default
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                const { longitude, latitude } = position.coords;
+                map.jumpTo({ center: [longitude, latitude], zoom: 12 });
+              },
+              () => {
+                map.jumpTo({ center: [28.0473, -26.2041], zoom: 12 }); // Default
+              }
+            );
+          }
           break;
         case 'Settings':
           showAlert("Settings functionality not implemented.");
@@ -364,18 +385,139 @@
       }
     };
 
-    // Initialize
-    document.addEventListener("DOMContentLoaded", () => {
-      setupModal();
-      // Simulate user avatar (static for now, no auth)
-      const userAvatar = document.getElementById("user-avatar");
-      userAvatar.style.background = `linear-gradient(45deg, #7C3AED, #14B8A6)`;
-      userAvatar.textContent = "U";
+    // Fetch user data from Firebase
+    async function fetchUserData(userId, retries = 3) {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const userRef = ref(db, `users/${userId}`);
+          const userSnap = await get(userRef);
+          if (userSnap.exists()) {
+            return userSnap.val();
+          }
+          console.warn(`No user data for ${userId}, attempt ${i + 1}`);
+          if (i === retries - 1) {
+            return { displayName: null, photoURL: null, email: "Unknown User" };
+          }
+        } catch (error) {
+          console.error(`Error fetching user data for ${userId}, attempt ${i + 1}:`, error);
+          if (i === retries - 1) {
+            showAlert("Failed to load user data.", false);
+            return { displayName: null, photoURL: null, email: "Unknown User" };
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    // Render user avatar
+    function renderAvatar(user) {
+      const name = user.displayName || user.email?.split("@")[0] || "U";
+      const initial = name.charAt(0).toUpperCase();
+      if (user.photoURL) {
+        userAvatar.innerHTML = `<img src="${user.photoURL}" alt="${name}'s profile picture" />`;
+      } else {
+        userAvatar.style.background = `linear-gradient(45deg, #7C3AED, #14B8A6)`;
+        userAvatar.textContent = initial;
+      }
+    }
+
+    // Check authentication state
+    async function checkAuthState() {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+        return await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            console.error("Authentication check timed out");
+            showAlert("Authentication timed out. Please sign in.", false);
+            document.body.classList.add("fade-out");
+            setTimeout(() => window.location.href = "signup.html", 500);
+            reject(new Error("Authentication timed out"));
+          }, 10000);
+
+          onAuthStateChanged(auth, async (user) => {
+            clearTimeout(timeout);
+            if (!user) {
+              console.log("No authenticated user");
+              showAlert("Please sign in to continue.", false);
+              document.body.classList.add("fade-out");
+              setTimeout(() => window.location.href = "signup.html", 500);
+              resolve(null);
+            } else {
+              const userData = await fetchUserData(user.uid);
+              const displayUser = {
+                uid: user.uid,
+                displayName: userData?.displayName || user.email?.split("@")[0] || "User",
+                photoURL: userData?.photoURL || user.photoURL,
+                email: user.email || "unknown@example.com"
+              };
+              renderAvatar(displayUser);
+              resolve(displayUser);
+            }
+          }, (error) => {
+            clearTimeout(timeout);
+            console.error("Auth state error:", error);
+            showAlert("Authentication failed. Please try again.", false);
+            document.body.classList.add("fade-out");
+            setTimeout(() => window.location.href = "signup.html", 500);
+            reject(error);
+          });
+        });
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        showAlert("Failed to verify authentication.", false);
+        return null;
+      }
+    }
+
+    // Initialize Mapbox map
+    function initializeMap(lng, lat) {
+      map = new mapboxgl.Map({
+        container: 'map', // ID of the map container
+        style: 'mapbox://styles/mapbox/streets-v12', // Mapbox style (clean, similar to Bolt)
+        center: [lng, lat], // User's location or default
+        zoom: 12, // City-level zoom
+        interactive: true // Enable panning and zooming
+      });
+
+      // Add navigation controls (zoom and rotation)
+      map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
+      // Add a marker at the user's location
+      new mapboxgl.Marker()
+        .setLngLat([lng, lat])
+        .setPopup(new mapboxgl.Popup().setText('Your Location'))
+        .addTo(map);
 
       // Handle Mapbox load errors
       map.on('error', () => {
         showAlert("Failed to load the map. Please check your Mapbox access token.");
       });
+    }
+
+    // Initialize
+    document.addEventListener("DOMContentLoaded", async () => {
+      setupModal();
+      const user = await checkAuthState();
+      if (user) {
+        // Get user's current location
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const { longitude, latitude } = position.coords;
+              initializeMap(longitude, latitude);
+            },
+            (error) => {
+              console.error("Geolocation error:", error);
+              showAlert("Unable to get your location. Using default location.", true);
+              initializeMap(28.0473, -26.2041); // Default: Johannesburg
+            },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+          );
+        } else {
+          showAlert("Geolocation is not supported by your browser.", true);
+          initializeMap(28.0473, -26.2041); // Default: Johannesburg
+        }
+      }
     });
   </script>
 </body>
