@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bolt-Like Mapbox App</title>
+  <title>Emergency Map App</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Mapbox GL JS and CSS -->
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
@@ -108,7 +108,7 @@
       position: fixed;
       bottom: 1.5rem;
       right: 1.5rem;
-      background: #000;
+      background: #ff0000; /* Red for SOS */
       color: #fff;
       border: none;
       border-radius: 50%;
@@ -119,7 +119,7 @@
       justify-content: center;
       box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
       cursor: pointer;
-      font-size: 2rem;
+      font-size: 1.2rem;
       font-weight: bold;
       transition: transform 0.3s ease, box-shadow 0.3s ease;
       z-index: 1000;
@@ -244,6 +244,18 @@
       z-index: 1; /* Behind top-bar and FAB */
     }
 
+    /* Animated SVG hand-shaking icon */
+    .hand-shaking {
+      width: 40px;
+      height: 40px;
+      animation: shake 0.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes shake {
+      0% { transform: rotate(-10deg); }
+      100% { transform: rotate(10deg); }
+    }
+
     @media (max-width: 767px) {
       .top-bar { padding: 0.75rem; }
       .title { font-size: 1.2rem; }
@@ -256,7 +268,7 @@
 </head>
 <body>
   <div class="top-bar" role="banner">
-    <h1 class="title">Map</h1>
+    <h1 class="title">Emergency Map</h1>
     <div class="user-info">
       <div class="avatar" id="user-avatar">U</div>
       <svg class="notification-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -267,7 +279,7 @@
   </div>
   <!-- Mapbox map container -->
   <div id="map"></div>
-  <button class="fab" id="action-fab" aria-label="Menu">+</button>
+  <button class="fab" id="sos-button" aria-label="SOS">SOS</button>
   <div id="custom-alert" class="custom-alert" role="alert">
     <button class="close-btn" aria-label="Close alert">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -277,26 +289,26 @@
     </button>
     <p id="alert-message">An error occurred. Please try again.</p>
   </div>
-  <div id="action-modal" class="modal">
+  <div id="sos-modal" class="modal">
     <div class="modal-content">
-      <button class="close-btn" id="close-action-modal" aria-label="Close menu modal">
+      <button class="close-btn" id="close-sos-modal" aria-label="Close SOS modal">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="18" y1="6" x2="6" y2="18"></line>
           <line x1="6" y1="6" x2="18" y2="18"></line>
         </svg>
       </button>
-      <h2>Menu</h2>
+      <h2>Emergency Type</h2>
       <ul class="options-list">
-        <li onclick="handleOption('Map')">Map</li>
-        <li onclick="handleOption('Settings')">Settings</li>
-        <li onclick="handleOption('Profile')">Profile</li>
+        <li onclick="requestEmergency('Police Emergency')">Police Emergency</li>
+        <li onclick="requestEmergency('Ambulance')">Ambulance</li>
+        <li onclick="requestEmergency('Fire Fighter')">Fire Fighter</li>
       </ul>
     </div>
   </div>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, get, set, onValue, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     // Firebase configuration
     const firebaseConfig = {
@@ -321,12 +333,21 @@
     // DOM elements
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
-    const actionFab = document.getElementById("action-fab");
-    const actionModal = document.getElementById("action-modal");
-    const closeActionModal = document.getElementById("close-action-modal");
+    const sosButton = document.getElementById("sos-button");
+    const sosModal = document.getElementById("sos-modal");
+    const closeSosModal = document.getElementById("close-sos-modal");
     const userAvatar = document.getElementById("user-avatar");
 
     let map;
+    const markers = {}; // Store markers for other users' emergencies
+
+    // SVG for hand-shaking icon
+    const handShakingSvg = `
+      <svg class="hand-shaking" viewBox="0 0 24 24" fill="none" stroke="red" stroke-width="2">
+        <path d="M7 10v4h3v7h4v-7h3l1-5h-4v-2a2 2 0 0 0-2-2h-1a2 2 0 0 0-2 2v2H7z"/>
+        <path d="M12 5v3"/>
+      </svg>
+    `;
 
     // Alert handling
     function showAlert(message, autoHide = true) {
@@ -349,41 +370,13 @@
 
     // Modal handling
     function setupModal() {
-      actionFab.addEventListener("click", () => {
-        actionModal.classList.add("active");
+      sosButton.addEventListener("click", () => {
+        sosModal.classList.add("active");
       });
-      closeActionModal.addEventListener("click", () => {
-        actionModal.classList.remove("active");
+      closeSosModal.addEventListener("click", () => {
+        sosModal.classList.remove("active");
       });
     }
-
-    window.handleOption = function(option) {
-      switch (option) {
-        case 'Map':
-          actionModal.classList.remove("active");
-          if (map) {
-            // Reset to user's location if available, else default
-            navigator.geolocation.getCurrentPosition(
-              (position) => {
-                const { longitude, latitude } = position.coords;
-                map.jumpTo({ center: [longitude, latitude], zoom: 12 });
-              },
-              () => {
-                map.jumpTo({ center: [28.0473, -26.2041], zoom: 12 }); // Default
-              }
-            );
-          }
-          break;
-        case 'Settings':
-          showAlert("Settings functionality not implemented.");
-          actionModal.classList.remove("active");
-          break;
-        case 'Profile':
-          showAlert("Profile functionality not implemented.");
-          actionModal.classList.remove("active");
-          break;
-      }
-    };
 
     // Fetch user data from Firebase
     async function fetchUserData(userId, retries = 3) {
@@ -472,26 +465,108 @@
     // Initialize Mapbox map
     function initializeMap(lng, lat) {
       map = new mapboxgl.Map({
-        container: 'map', // ID of the map container
-        style: 'mapbox://styles/mapbox/streets-v12', // Mapbox style (clean, similar to Bolt)
-        center: [lng, lat], // User's location or default
-        zoom: 12, // City-level zoom
-        interactive: true // Enable panning and zooming
+        container: 'map',
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [lng, lat],
+        zoom: 12,
+        interactive: true
       });
 
-      // Add navigation controls (zoom and rotation)
       map.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
-      // Add a marker at the user's location
+      // Add user's own marker
       new mapboxgl.Marker()
         .setLngLat([lng, lat])
         .setPopup(new mapboxgl.Popup().setText('Your Location'))
         .addTo(map);
 
-      // Handle Mapbox load errors
+      // Listen for other users' emergencies
+      const incidentsRef = ref(db, 'incidents');
+      onValue(incidentsRef, (snapshot) => {
+        // Clear existing markers (except user's own)
+        Object.values(markers).forEach(marker => marker.remove());
+        markers = {};
+
+        const incidents = snapshot.val();
+        if (incidents) {
+          for (let incidentId in incidents) {
+            const incident = incidents[incidentId];
+            if (incident.status === 'pending' && incident.userId !== auth.currentUser?.uid) {
+              const el = document.createElement('div');
+              el.innerHTML = handShakingSvg;
+              el.className = 'hand-shaking';
+              markers[incidentId] = new mapboxgl.Marker({ element: el })
+                .setLngLat([incident.location.lng, incident.location.lat])
+                .setPopup(new mapboxgl.Popup().setText(`${incident.type} Emergency`))
+                .addTo(map);
+            }
+          }
+        }
+      });
+
       map.on('error', () => {
         showAlert("Failed to load the map. Please check your Mapbox access token.");
       });
+    }
+
+    // Request emergency
+    async function requestEmergency(type) {
+      const user = auth.currentUser;
+      if (!user) {
+        showAlert("Please sign in to request help.", false);
+        return;
+      }
+      sosModal.classList.remove("active");
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const { longitude, latitude } = position.coords;
+          const incidentId = `${user.uid}_${Date.now()}`;
+          try {
+            const incidentRef = ref(db, `incidents/${incidentId}`);
+            await set(incidentRef, {
+              userId: user.uid,
+              type,
+              location: { lng: longitude, lat: latitude },
+              timestamp: Date.now(),
+              status: "pending"
+            });
+            showAlert(`${type} reported. Help is on the way.`, true);
+            // Add user's own emergency marker
+            const el = document.createElement('div');
+            el.innerHTML = handShakingSvg;
+            el.className = 'hand-shaking';
+            new mapboxgl.Marker({ element: el })
+              .setLngLat([longitude, latitude])
+              .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
+              .addTo(map);
+          } catch (error) {
+            console.error("Error reporting emergency:", error);
+            showAlert("Failed to report emergency.", false);
+          }
+        },
+        (error) => {
+          console.error("Geolocation error:", error);
+          showAlert("Unable to get your location. Using default location.", true);
+          const incidentId = `${user.uid}_${Date.now()}`;
+          set(ref(db, `incidents/${incidentId}`), {
+            userId: user.uid,
+            type,
+            location: { lng: 28.0473, lat: -26.2041 },
+            timestamp: Date.now(),
+            status: "pending"
+          }).then(() => {
+            showAlert(`${type} reported at default location.`, true);
+            const el = document.createElement('div');
+            el.innerHTML = handShakingSvg;
+            el.className = 'hand-shaking';
+            new mapboxgl.Marker({ element: el })
+              .setLngLat([28.0473, -26.2041])
+              .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
+              .addTo(map);
+          });
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
     }
 
     // Initialize
@@ -499,7 +574,6 @@
       setupModal();
       const user = await checkAuthState();
       if (user) {
-        // Get user's current location
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
             (position) => {
