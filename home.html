@@ -220,7 +220,7 @@
       border-radius: 50%;
       width: 18px;
       height: 18px;
-      display frase para activar grok 3.5: flex;
+      display: flex;
       align-items: center;
       justify-content: center;
       font-size: 0.75rem;
@@ -457,6 +457,38 @@
       clip-path: polygon(50% 100%, 0 0, 100% 0);
     }
 
+    /* Spinner Styles */
+    .spinner-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .spinner-overlay.active {
+      display: flex;
+    }
+
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 5px solid var(--border);
+      border-top: 5px solid var(--primary-purple);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
     @media (max-width: 767px) {
       .top-bar { padding: 0.5rem; }
       .title { font-size: 1.2rem; }
@@ -470,6 +502,7 @@
       .nav-label { font-size: 0.65rem; }
       .nav-item .badge { width: 16px; height: 16px; font-size: 0.65rem; }
       .map-attribution { bottom: 70px; font-size: 0.6rem; }
+      .spinner { width: 40px; height: 40px; border-width: 4px; }
     }
   </style>
 </head>
@@ -524,6 +557,9 @@
       </ul>
     </div>
   </div>
+  <div class="spinner-overlay" id="spinner-overlay">
+    <div class="spinner"></div>
+  </div>
   <nav class="bottom-nav" role="navigation">
     <div class="nav-item active" data-tab="home">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -560,7 +596,7 @@
   </nav>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-    import { getAuth_icon, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, get, set, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
@@ -589,6 +625,7 @@
     const communityBadge = document.getElementById("community-badge");
     const searchInput = document.getElementById("search-input");
     const suggestionsList = document.getElementById("suggestions-list");
+    const spinnerOverlay = document.getElementById("spinner-overlay");
 
     let map;
     let userLocation = null;
@@ -597,6 +634,14 @@
     let previousIncidentCount = 0;
 
     const ENCRYPTION_KEY = 'your-secure-key-1234567890123456';
+
+    function showSpinner() {
+      spinnerOverlay.classList.add("active");
+    }
+
+    function hideSpinner() {
+      spinnerOverlay.classList.remove("active");
+    }
 
     function encryptCoordinate(coord) {
       try {
@@ -653,20 +698,24 @@
     }
 
     async function fetchUserData(userId, retries = 3) {
+      showSpinner();
       for (let i = 0; i < retries; i++) {
         try {
           const userRef = ref(db, `users/${userId}`);
           const userSnap = await get(userRef);
           if (userSnap.exists()) {
+            hideSpinner();
             return userSnap.val();
           }
           console.warn(`No user data for ${userId}, attempt ${i + 1}`);
           if (i === retries - 1) {
+            hideSpinner();
             return { displayName: null, photoURL: null, email: "Unknown User" };
           }
         } catch (error) {
           console.error(`Error fetching user data for ${userId}, attempt ${i + 1}:`, error);
           if (i === retries - 1) {
+            hideSpinner();
             showAlert("Failed to load user data.", false);
             return { displayName: null, photoURL: null, email: "Unknown User" };
           }
@@ -676,6 +725,7 @@
     }
 
     async function updateCommunityBadge(userId) {
+      showSpinner();
       try {
         const groupsRef = ref(db, `groups`);
         const groupsSnap = await get(groupsRef);
@@ -701,10 +751,13 @@
         communityBadge.classList.toggle("active", unreadCount > 0);
       } catch (error) {
         console.error("Error updating community badge:", error);
+      } finally {
+        hideSpinner();
       }
     }
 
     async function updateNotificationBadge(userId) {
+      showSpinner();
       try {
         const notificationsRef = ref(db, `emergencyNotifications/${userId}`);
         const notificationsSnap = await get(notificationsRef);
@@ -721,10 +774,13 @@
         notificationBadge.classList.toggle("active", unreadCount > 0);
       } catch (error) {
         console.error("Error updating notification badge:", error);
+      } finally {
+        hideSpinner();
       }
     }
 
     async function checkAuthState() {
+      showSpinner();
       try {
         await setPersistence(auth, browserLocalPersistence);
         return await new Promise((resolve, reject) => {
@@ -743,6 +799,7 @@
               showAlert("Please sign in to continue.", false);
               document.body.classList.add("fade-out");
               setTimeout(() => window.location.href = "signup.html", 500);
+              hideSpinner();
               resolve(null);
             } else {
               const userData = await fetchUserData(user.uid);
@@ -752,8 +809,11 @@
                 photoURL: userData?.photoURL || user.photoURL,
                 email: user.email || "unknown@example.com"
               };
-              updateCommunityBadge(user.uid);
-              updateNotificationBadge(user.uid);
+              await Promise.all([
+                updateCommunityBadge(user.uid),
+                updateNotificationBadge(user.uid)
+              ]);
+              hideSpinner();
               resolve(displayUser);
             }
           }, (error) => {
@@ -762,12 +822,14 @@
             showAlert("Authentication failed. Please try again.", false);
             document.body.classList.add("fade-out");
             setTimeout(() => window.location.href = "signup.html", 500);
+            hideSpinner();
             reject(error);
           });
         });
       } catch (error) {
         console.error("Auth check failed:", error);
         showAlert("Failed to verify authentication.", false);
+        hideSpinner();
         return null;
       }
     }
@@ -799,75 +861,84 @@
 
       const incidentsRef = ref(db, 'incidents');
       onValue(incidentsRef, async (snapshot) => {
-        Object.values(markers).forEach(marker => marker.remove());
-        markers = {};
+        showSpinner();
+        try {
+          Object.values(markers).forEach(marker => marker.remove());
+          markers = {};
 
-        const incidents = snapshot.val();
-        let currentIncidentCount = incidents ? Object.keys(incidents).length : 0;
+          const incidents = snapshot.val();
+          let currentIncidentCount = incidents ? Object.keys(incidents).length : 0;
 
-        if (currentIncidentCount > previousIncidentCount && navigator.vibrate) {
-          navigator.vibrate([200, 100, 200]);
-        }
-        previousIncidentCount = currentIncidentCount;
+          if (currentIncidentCount > previousIncidentCount && navigator.vibrate) {
+            navigator.vibrate([200, 100, 200]);
+          }
+          previousIncidentCount = currentIncidentCount;
 
-        if (incidents) {
-          for (let incidentId in incidents) {
-            const incident = incidents[incidentId];
-            if (incident.status === 'pending' && incident.userId !== auth.currentUser?.uid) {
-              const lng = decryptCoordinate(incident.location.encryptedLng);
-              const lat = decryptCoordinate(incident.location.encryptedLat);
-              if (lng === null || lat === null) {
-                console.error(`Failed to decrypt coordinates for incident ${incidentId}`);
-                continue;
-              }
+          if (incidents) {
+            for (let incidentId in incidents) {
+              const incident = incidents[incidentId];
+              if (incident.status === 'pending' && incident.userId !== auth.currentUser?.uid) {
+                const lng = decryptCoordinate(incident.location.encryptedLng);
+                const lat = decryptCoordinate(incident.location.encryptedLat);
+                if (lng === null || lat === null) {
+                  console.error(`Failed to decrypt coordinates for incident ${incidentId}`);
+                  continue;
+                }
 
-              const userData = await fetchUserData(incident.userId);
-              const incidentUser = {
-                displayName: userData?.displayName || userData?.email?.split("@")[0] || "User",
-                photoURL: userData?.photoURL
-              };
-              const pinEl = document.createElement('div');
-              pinEl.className = 'map-pin';
-              const name = incidentUser.displayName || "U";
-              const initial = name.charAt(0).toUpperCase();
-              pinEl.innerHTML = `
-                <div class="avatar">${incidentUser.photoURL ? `<img src="${incidentUser.photoURL}" alt="${name}'s profile picture" />` : initial}</div>
-                <div class="pin-base"></div>
-              `;
-              const marker = new mapboxgl.Marker({ element: pinEl, anchor: 'bottom' })
-                .setLngLat([lng, lat])
-                .setPopup(new mapboxgl.Popup().setText(`${incidentUser.displayName}'s ${incident.type}`))
-                .addTo(map);
-              markers[incidentId] = marker;
+                const userData = await fetchUserData(incident.userId);
+                const incidentUser = {
+                  displayName: userData?.displayName || userData?.email?.split("@")[0] || "User",
+                  photoURL: userData?.photoURL
+                };
+                const pinEl = document.createElement('div');
+                pinEl.className = 'map-pin';
+                const name = incidentUser.displayName || "U";
+                const initial = name.charAt(0).toUpperCase();
+                pinEl.innerHTML = `
+                  <div class="avatar">${incidentUser.photoURL ? `<img src="${incidentUser.photoURL}" alt="${name}'s profile picture" />` : initial}</div>
+                  <div class="pin-base"></div>
+                `;
+                const marker = new mapboxgl.Marker({ element: pinEl, anchor: 'bottom' })
+                  .setLngLat([lng, lat])
+                  .setPopup(new mapboxgl.Popup().setText(`${incidentUser.displayName}'s ${incident.type}`))
+                  .addTo(map);
+                markers[incidentId] = marker;
 
-              const friendsRef = ref(db, `friends/${incident.userId}`);
-              const friendsSnap = await get(friendsRef);
-              if (friendsSnap.exists()) {
-                const friends = friendsSnap.val();
-                for (let friendId in friends) {
-                  if (friendId === auth.currentUser?.uid) {
-                    const notificationId = `${incidentId}_${friendId}`;
-                    await set(ref(db, `emergencyNotifications/${friendId}/${notificationId}`), {
-                      incidentId,
-                      friendId: incident.userId,
-                      type: incident.type,
-                      timestamp: Date.now(),
-                      read: false
-                    });
+                const friendsRef = ref(db, `friends/${incident.userId}`);
+                const friendsSnap = await get(friendsRef);
+                if (friendsSnap.exists()) {
+                  const friends = friendsSnap.val();
+                  for (let friendId in friends) {
+                    if (friendId === auth.currentUser?.uid) {
+                      const notificationId = `${incidentId}_${friendId}`;
+                      await set(ref(db, `emergencyNotifications/${friendId}/${notificationId}`), {
+                        incidentId,
+                        friendId: incident.userId,
+                        type: incident.type,
+                        timestamp: Date.now(),
+                        read: false
+                      });
+                    }
                   }
                 }
               }
             }
           }
-        }
 
-        if (auth.currentUser) {
-          updateNotificationBadge(auth.currentUser.uid);
+          if (auth.currentUser) {
+            await updateNotificationBadge(auth.currentUser.uid);
+          }
+        } catch (error) {
+          console.error("Error processing incidents:", error);
+          showAlert("Failed to load incidents.", false);
+        } finally {
+          hideSpinner();
         }
       });
 
       map.on('error', () => {
         showAlert("Failed to load the map. Please check your Mapbox access token.");
+        hideSpinner();
       });
 
       setupSearchBar();
@@ -908,7 +979,6 @@
         }
       });
 
-      // Hide suggestions when clicking outside
       document.addEventListener('click', (e) => {
         if (!searchContainer.contains(e.target)) {
           suggestionsList.classList.remove('active');
@@ -922,12 +992,10 @@
       suggestionsList.innerHTML = '';
       searchInput.value = placeName;
 
-      // Remove existing destination marker
       if (destinationMarker) {
         destinationMarker.remove();
       }
 
-      // Add new destination marker
       const destinationPinEl = document.createElement('div');
       destinationPinEl.className = 'destination-pin';
       destinationPinEl.innerHTML = `
@@ -939,7 +1007,6 @@
         .setPopup(new mapboxgl.Popup().setText(`Destination: ${placeName}`))
         .addTo(map);
 
-      // Draw route
       if (userLocation) {
         try {
           const response = await fetch(
@@ -949,13 +1016,11 @@
           if (data.routes && data.routes.length > 0) {
             const route = data.routes[0].geometry;
 
-            // Remove existing route layer
             if (map.getSource('route')) {
               map.removeLayer('route');
               map.removeSource('route');
             }
 
-            // Add route layer
             map.addSource('route', {
               type: 'geojson',
               data: {
@@ -998,13 +1063,15 @@
         return;
       }
       sosModal.classList.remove("active");
+      showSpinner();
       navigator.geolocation.getCurrentPosition(
         async (position) => {
           const { longitude, latitude } = position.coords;
-          userLocation = [longitude, latitude]; // Update user location
+          userLocation = [longitude, latitude];
           const encryptedLng = encryptCoordinate(longitude);
           const encryptedLat = encryptCoordinate(latitude);
           if (!encryptedLng || !encryptedLat) {
+            hideSpinner();
             showAlert("Failed to encrypt location. Please try again.", false);
             return;
           }
@@ -1029,6 +1096,8 @@
           } catch (error) {
             console.error("Error reporting emergency:", error);
             showAlert("Failed to report emergency.", false);
+          } finally {
+            hideSpinner();
           }
         },
         (error) => {
@@ -1037,6 +1106,7 @@
           const encryptedLng = encryptCoordinate(28.0473);
           const encryptedLat = encryptCoordinate(-26.2041);
           if (!encryptedLng || !encryptedLat) {
+            hideSpinner();
             showAlert("Failed to encrypt default location.", false);
             return;
           }
@@ -1056,6 +1126,11 @@
               .setLngLat([28.0473, -26.2041])
               .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
               .addTo(map);
+          }).catch((error) => {
+            console.error("Error reporting emergency:", error);
+            showAlert("Failed to report emergency.", false);
+          }).finally(() => {
+            hideSpinner();
           });
         },
         { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
@@ -1070,6 +1145,7 @@
           item.classList.add('active');
           const tab = item.dataset.tab;
           if (tab === 'notifications') {
+            showSpinner();
             const notificationsRef = ref(db, `emergencyNotifications/${auth.currentUser?.uid}`);
             get(notificationsRef).then(snapshot => {
               if (snapshot.exists()) {
@@ -1082,6 +1158,11 @@
                   notificationBadge.classList.remove("active");
                 });
               }
+            }).catch((error) => {
+              console.error("Error marking notifications as read:", error);
+              showAlert("Failed to update notifications.", false);
+            }).finally(() => {
+              hideSpinner();
             });
           }
         });
