@@ -594,6 +594,14 @@
       clip-path: polygon(50% 100%, 0 0, 100% 0);
     }
 
+    .weather-marker {
+      transition: transform 0.3s ease;
+    }
+
+    .weather-marker:hover {
+      transform: scale(1.2);
+    }
+
     .spinner-overlay {
       display: none;
       position: fixed;
@@ -651,6 +659,7 @@
       .modal-content h2 { font-size: 1.1rem; }
       .options-list li { font-size: 0.875rem; padding: 0.75rem; }
       .option-icon { width: 24px; height: 24px; }
+      .weather-marker { width: 32px; height: 32px; }
     }
   </style>
 </head>
@@ -788,6 +797,9 @@
       measurementId: "G-V4W97VMSKL"
     };
 
+    const OPENWEATHER_API_KEY = '6d6aeaf0d5905985e878923cf9eb48af'; // Replace with your actual OpenWeatherMap API key
+    mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
+
     let app, auth, db;
     try {
       app = initializeApp(firebaseConfig);
@@ -798,8 +810,6 @@
       console.error("Firebase initialization failed:", error.code, error.message);
       showAlert("Failed to connect to Firebase. Please check your network.", false);
     }
-
-    mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
 
     const customAlert = document.getElementById("custom-alert");
     const alertMessage = document.getElementById("alert-message");
@@ -819,9 +829,10 @@
     let userLocation = null;
     let destinationMarker = null;
     let destinationPlaceName = '';
-    let markers = {}; // Changed from const to let to fix reassignment error
+    let markers = {};
     let previousIncidentCount = 0;
     const reverseGeocodeCache = new Map();
+    const weatherCache = new Map();
     let debounceTimeout = null;
 
     const ENCRYPTION_KEY = 'your-secure-key-1234567890123456';
@@ -866,7 +877,7 @@
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
       customAlert.classList.add("active");
-      customAlert.setAttribute("aria-hidden", "false");
+      customAlert.setAttribute("aria(hidden", "false");
       console.log("Alert shown:", message);
       if (autoHide) {
         setTimeout(() => {
@@ -942,6 +953,11 @@
         destinationMarker = null;
         console.log("Destination marker cleared");
       }
+      Object.values(markers).forEach(marker => {
+        if (marker._element.className.includes('weather-marker')) {
+          marker.remove();
+        }
+      });
       if (map && map.getSource('route')) {
         map.removeLayer('route');
         map.removeSource('route');
@@ -1095,6 +1111,61 @@
       }
     }
 
+    async function fetchWeatherData(lng, lat) {
+      const cacheKey = `${lng.toFixed(6)},${lat.toFixed(6)}`;
+      if (weatherCache.has(cacheKey)) {
+        console.log("Using cached weather for:", cacheKey);
+        return weatherCache.get(cacheKey);
+      }
+      try {
+        const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&units=metric&appid=${OPENWEATHER_API_KEY}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Weather API error: ${response.statusText}`);
+        }
+        const data = await response.json();
+        const weatherData = {
+          temperature: data.main.temp,
+          description: data.weather[0].description,
+          icon: data.weather[0].icon,
+          placeName: data.name || 'Unknown Location'
+        };
+        weatherCache.set(cacheKey, weatherData);
+        console.log("Weather data fetched and cached:", weatherData);
+        return weatherData;
+      } catch (error) {
+        console.error("Error fetching weather data:", error);
+        showAlert("Failed to fetch weather data.", false);
+        return null;
+      }
+    }
+
+    function addWeatherMarker(map, lng, lat, weatherData, label = 'Location') {
+      if (!weatherData) return;
+      const iconUrl = `http://openweathermap.org/img/wn/${weatherData.icon}@2x.png`;
+      const weatherEl = document.createElement('div');
+      weatherEl.className = 'weather-marker';
+      weatherEl.style.backgroundImage = `url(${iconUrl})`;
+      weatherEl.style.width = '40px';
+      weatherEl.style.height = '40px';
+      weatherEl.style.backgroundSize = 'contain';
+      weatherEl.style.backgroundRepeat = 'no-repeat';
+      weatherEl.style.cursor = 'pointer';
+      const popupContent = `
+        <div style="text-align: center; color: var(--text-dark); font-family: 'Inter', sans-serif;">
+          <h3 style="font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem;">${weatherData.placeName}</h3>
+          <p style="margin: 0.25rem 0;">${weatherData.description}</p>
+          <p style="margin: 0.25rem 0;">Temperature: ${weatherData.temperature}°C</p>
+        </div>
+      `;
+      const marker = new mapboxgl.Marker({ element: weatherEl, anchor: 'center' })
+        .setLngLat([lng, lat])
+        .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(popupContent))
+        .addTo(map);
+      console.log(`Weather marker added for ${weatherData.placeName} at:`, [lng, lat]);
+      return marker;
+    }
+
     async function initializeMap(lng, lat, displayUser) {
       showSpinner();
       try {
@@ -1111,7 +1182,7 @@
           interactive: true
         });
 
-        map.on('load', () => {
+        map.on('load', async () => {
           console.log("Map loaded successfully at", new Date().toLocaleString());
           map.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
@@ -1128,6 +1199,11 @@
             .setPopup(new mapboxgl.Popup().setText('Your Location'))
             .addTo(map);
           console.log("User marker added at:", [lng, lat]);
+
+          const weatherData = await fetchWeatherData(lng, lat);
+          if (weatherData) {
+            addWeatherMarker(map, lng, lat, weatherData, 'Your Location');
+          }
 
           const incidentsRef = ref(db, 'incidents');
           onValue(incidentsRef, async (snapshot) => {
@@ -1176,6 +1252,11 @@
                       .addTo(map);
                     markers[incidentId] = marker;
                     console.log(`Added marker for incident ${incidentId} at:`, [lng, lat]);
+
+                    const weatherData = await fetchWeatherData(lng, lat);
+                    if (weatherData) {
+                      markers[`weather_${incidentId}`] = addWeatherMarker(map, lng, lat, weatherData, `${incidentUser.displayName}'s Location`);
+                    }
 
                     const friendsRef = ref(db, `friends/${incident.userId}`);
                     const friendsSnap = await get(friendsRef);
@@ -1507,6 +1588,11 @@
         .addTo(map);
       console.log("Destination marker added at:", coords);
 
+      const weatherData = await fetchWeatherData(coords[0], coords[1]);
+      if (weatherData) {
+        addWeatherMarker(map, coords[0], coords[1], weatherData, placeName);
+      }
+
       destinationPinEl.addEventListener('mousedown', () => {
         destinationPinEl.classList.add('dragging');
         console.log("Destination pin drag started");
@@ -1524,6 +1610,10 @@
         destinationMarker.setPopup(new mapboxgl.Popup().setText(`Destination: ${newPlaceName}`));
         saveRecentDestination([newCoords.lng, newCoords.lat], newPlaceName);
         await updateRoute([newCoords.lng, newCoords.lat]);
+        const weatherData = await fetchWeatherData(newCoords.lng, newCoords.lat);
+        if (weatherData) {
+          addWeatherMarker(map, newCoords.lng, newCoords.lat, weatherData, newPlaceName);
+        }
         console.log("Destination dragged to:", newPlaceName, [newCoords.lng, newCoords.lat]);
       }, 500);
 
