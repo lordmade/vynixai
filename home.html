@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -474,6 +475,15 @@
       outline: 2px solid var(--focus-ring);
     }
 
+    .modal-content.listening {
+      animation: listening-pulse 1.5s infinite ease-in-out;
+    }
+
+    @keyframes listening-pulse {
+      0%, 100% { box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15); }
+      50% { box-shadow: 0 -4px 16px rgba(109, 40, 217, 0.3); }
+    }
+
     .weather-drawer {
       position: fixed;
       top: 0;
@@ -941,6 +951,103 @@
 
     const ENCRYPTION_KEY = 'your-secure-key-1234567890123456';
 
+    class EmergencyAssistant {
+      constructor() {
+        this.isSupported = 'speechSynthesis' in window && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+        this.recognition = this.isSupported ? new (window.SpeechRecognition || window.webkitSpeechRecognition)() : null;
+        if (this.recognition) {
+          this.recognition.lang = 'en-ZA';
+          this.recognition.interimResults = false;
+          this.recognition.maxAlternatives = 1;
+        }
+        this.emergencyTypes = {
+          police: ["police", "crime", "robbery", "assault", "theft", "danger"],
+          ambulance: ["ambulance", "medical", "injury", "hurt", "accident", "bleeding"],
+          fire: ["fire", "burn", "flame", "smoke"]
+        };
+      }
+
+      speak(text) {
+        if (!this.isSupported) {
+          console.warn("Text-to-speech not supported");
+          return Promise.resolve(false);
+        }
+        return new Promise((resolve) => {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.lang = 'en-ZA';
+          utterance.volume = 1.0;
+          utterance.rate = 1.0;
+          utterance.pitch = 1.0;
+          utterance.onend = () => {
+            console.log("Voice prompt finished:", text);
+            resolve(true);
+          };
+          utterance.onerror = (error) => {
+            console.error("Text-to-speech error:", error);
+            resolve(false);
+          };
+          speechSynthesis.speak(utterance);
+        });
+      }
+
+      listen() {
+        if (!this.recognition) {
+          console.warn("Speech recognition not supported");
+          return Promise.resolve(null);
+        }
+        return new Promise((resolve) => {
+          this.recognition.onresult = (event) => {
+            const transcript = event.results[0][0].transcript.toLowerCase();
+            console.log("Speech recognition result:", transcript);
+            resolve(transcript);
+          };
+          this.recognition.onerror = (error) => {
+            console.error("Speech recognition error:", error);
+            resolve(null);
+          };
+          this.recognition.onend = () => {
+            console.log("Speech recognition ended");
+          };
+          this.recognition.start();
+        });
+      }
+
+      processEmergencyQuery(query) {
+        if (!query) return null;
+        for (const [type, keywords] of Object.entries(this.emergencyTypes)) {
+          if (keywords.some(keyword => query.includes(keyword))) {
+            return type === "police" ? "Police Emergency" : type === "ambulance" ? "Ambulance" : "Fire Fighter";
+          }
+        }
+        return null;
+      }
+
+      async startConversation() {
+        sosModal.querySelector(".modal-content").classList.add("listening");
+        await this.speak("Please describe the emergency, for example, 'I need the police' or 'There's a fire.'");
+        const userResponse = await this.listen();
+        if (!userResponse) {
+          await this.speak("I didn't catch that. Please try again or select an option.");
+          console.log("No valid speech input, retrying conversation");
+          sosModal.querySelector(".modal-content").classList.remove("listening");
+          setTimeout(() => this.startConversation(), 1000);
+          return;
+        }
+
+        const emergencyType = this.processEmergencyQuery(userResponse);
+        if (emergencyType) {
+          await this.speak(`Got it, sending ${emergencyType} alert.`);
+          await requestEmergency(emergencyType);
+          sosModal.querySelector(".modal-content").classList.remove("listening");
+        } else {
+          await this.speak("I'm sorry, I couldn't understand the emergency type. Please try again or select an option.");
+          console.log("Could not determine emergency type, retrying");
+          sosModal.querySelector(".modal-content").classList.remove("listening");
+          setTimeout(() => this.startConversation(), 1000);
+        }
+      }
+    }
+
     function showSpinner() {
       spinnerOverlay.classList.add("active");
       console.log("Spinner shown at", new Date().toLocaleString());
@@ -999,21 +1106,54 @@
     document.querySelector(".custom-alert .close-btn").addEventListener("click", hideAlert);
 
     function setupModal() {
-      sosButton.addEventListener("click", () => {
+      const assistant = new EmergencyAssistant();
+      let sosTimeout = null;
+
+      sosButton.addEventListener("click", async () => {
         sosModal.classList.add("active");
         console.log("SOS modal opened");
+
+        if (assistant.isSupported) {
+          await assistant.speak("What's the emergency? Please choose an option or tell me about it.");
+        } else {
+          console.warn("Voice assistant not supported, falling back to manual selection");
+          showAlert("Please select an emergency type.", true);
+        }
+
+        sosModal.querySelector(".modal-content").classList.remove("listening");
+        sosTimeout = setTimeout(async () => {
+          console.log("No emergency selected within 5 seconds, starting voice conversation");
+          await assistant.startConversation();
+        }, 5000);
+
+        sosModal.querySelectorAll(".options-list li").forEach(item => {
+          item.addEventListener("click", () => {
+            clearTimeout(sosTimeout);
+            sosModal.querySelector(".modal-content").classList.remove("listening");
+            console.log("Emergency selected, clearing timeout");
+          });
+        });
       });
+
       closeSosModal.addEventListener("click", () => {
+        clearTimeout(sosTimeout);
         sosModal.classList.remove("active");
+        sosModal.querySelector(".modal-content").classList.remove("listening");
         console.log("SOS modal closed");
       });
+
       cancelSosModal.addEventListener("click", () => {
+        clearTimeout(sosTimeout);
         sosModal.classList.remove("active");
+        sosModal.querySelector(".modal-content").classList.remove("listening");
         console.log("SOS modal cancelled");
       });
+
       sosModal.addEventListener('click', (e) => {
         if (e.target === sosModal) {
+          clearTimeout(sosTimeout);
           sosModal.classList.remove('active');
+          sosModal.querySelector(".modal-content").classList.remove("listening");
           console.log("SOS modal closed via backdrop");
         }
       });
@@ -1786,6 +1926,7 @@
     async function requestEmergency(type) {
       if (!auth.currentUser || !userLocation) {
         showAlert("Cannot send SOS: User not authenticated or location unavailable.", false);
+        sosModal.querySelector(".modal-content").classList.remove("listening");
         return;
       }
 
@@ -1810,9 +1951,11 @@
         console.log(`SOS requested: ${type} at`, userLocation);
         showAlert(`SOS sent for ${type}. Help is on the way!`, true);
         sosModal.classList.remove('active');
+        sosModal.querySelector(".modal-content").classList.remove("listening");
       } catch (error) {
         console.error("Error requesting emergency:", error.code || error.message);
         showAlert(`Failed to send SOS: ${error.message}`, false);
+        sosModal.querySelector(".modal-content").classList.remove("listening");
       } finally {
         hideSpinner();
       }
@@ -1906,3 +2049,4 @@
   </script>
 </body>
 </html>
+```
