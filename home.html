@@ -27,7 +27,7 @@
       --text-dark-dark: #f3f4f6;
       --text-light-dark: #9ca3af;
       --border-dark: #374151;
-      --white-dark: # 1f2937;
+      --white-dark: #1f2937;
       --highlight: #f3f4f6;
       --focus-ring: #7C3AED;
     }
@@ -536,7 +536,7 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.4);
+      background: rgba(0, 0, 0, 0.5);
       z-index: 2000;
       align-items: center;
       justify-content: center;
@@ -547,10 +547,10 @@
     }
 
     .spinner {
-      width: 50px;
-      height: 50px;
-      border: 5px solid var(--border);
-      border-top: 5px solid var(--primary-purple);
+      width: 60px;
+      height: 60px;
+      border: 6px solid var(--border);
+      border-top: 6px solid var(--primary-purple);
       border-radius: 50%;
       animation: spin 1s linear infinite;
     }
@@ -574,7 +574,7 @@
       .nav-label { font-size: 0.7rem; }
       .nav-item .badge { width: 16px; height: 16px; font-size: 0.65rem; }
       .map-attribution { bottom: 70px; font-size: 0.6rem; padding: 3px 6px; }
-      .spinner { width: 40px; height: 40px; border-width: 4px; }
+      .spinner { width: 48px; height: 48px; border-width: 5px; }
       .map-pin, .destination-pin { width: 32px; height: 48px; }
       .map-pin .avatar, .destination-pin .pin { width: 32px; height: 32px; font-size: 1rem; }
       .map-pin .pin-base, .destination-pin .pin-base { width: 8px; height: 16px; }
@@ -695,7 +695,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, get, set, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, get, set, onValue, enablePersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -711,6 +711,12 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
+
+    // Enable offline persistence
+    enablePersistence(db).catch((error) => {
+      console.error("Failed to enable offline persistence:", error.code, error.message);
+      showAlert("Offline support unavailable. Some features may not work offline.", false);
+    });
 
     mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
 
@@ -735,15 +741,20 @@
     let previousIncidentCount = 0;
     const reverseGeocodeCache = new Map();
     let debounceTimeout = null;
+    let activeFirebaseOperations = 0; // Track concurrent Firebase operations
 
     const ENCRYPTION_KEY = 'your-secure-key-1234567890123456';
 
     function showSpinner() {
+      activeFirebaseOperations++;
       spinnerOverlay.classList.add("active");
     }
 
     function hideSpinner() {
-      spinnerOverlay.classList.remove("active");
+      activeFirebaseOperations = Math.max(0, activeFirebaseOperations - 1);
+      if (activeFirebaseOperations === 0) {
+        spinnerOverlay.classList.remove("active");
+      }
     }
 
     function encryptCoordinate(coord) {
@@ -836,60 +847,80 @@
       updateSuggestionsAria();
     }
 
-    async function fetchUserData(userId, retries = 3) {
-      showSpinner();
+    async function fetchWithRetry(path, retries = 3, delay = 1000) {
       for (let i = 0; i < retries; i++) {
         try {
-          const userRef = ref(db, `users/${userId}`);
-          const userSnap = await get(userRef);
-          if (userSnap.exists()) {
-            hideSpinner();
-            return userSnap.val();
-          }
-          console.warn(`No user data for ${userId}, attempt ${i + 1}`);
-          if (i === retries - 1) {
-            hideSpinner();
-            return { displayName: null, photoURL: null, email: "Unknown User" };
-          }
+          showSpinner();
+          const snapshot = await get(ref(db, path));
+          console.log(`Fetched data from ${path}:`, snapshot.val());
+          return snapshot;
         } catch (error) {
-          console.error(`Error fetching user data for ${userId}, attempt ${i + 1}:`, error);
+          console.error(`Error fetching ${path}, attempt ${i + 1}/${retries}:`, error.code, error.message);
           if (i === retries - 1) {
-            hideSpinner();
-            showAlert("Failed to load user data.", false);
-            return { displayName: null, photoURL: null, email: "Unknown User" };
+            throw error;
           }
+          await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+        } finally {
+          hideSpinner();
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    async function fetchUserData(userId, retries = 3) {
+      showSpinner();
+      try {
+        const userRef = ref(db, `users/${userId}`);
+        const userSnap = await fetchWithRetry(`users/${userId}`, retries);
+        if (userSnap.exists()) {
+          const userData = userSnap.val();
+          console.log(`User data for ${userId}:`, userData);
+          return userData;
+        } else {
+          console.warn(`No user data found for ${userId}`);
+          return { displayName: null, photoURL: null, email: "Unknown User" };
+        }
+      } catch (error) {
+        console.error(`Failed to fetch user data for ${userId}:`, error.code, error.message);
+        showAlert(`Failed to load user data: ${error.message}`, false);
+        return { displayName: null, photoURL: null, email: "Unknown User" };
+      } finally {
+        hideSpinner();
       }
     }
 
     async function updateCommunityBadge(userId) {
       showSpinner();
       try {
-        const groupsRef = ref(db, `groups`);
-        const groupsSnap = await get(groupsRef);
+        const groupsSnap = await fetchWithRetry('groups');
         let unreadCount = 0;
         if (groupsSnap.exists()) {
           const groups = groupsSnap.val();
+          console.log("Groups data:", groups);
           for (let groupId in groups) {
             if (groups[groupId].members?.[userId]) {
-              const messagesRef = ref(db, `groupMessages/${groupId}`);
-              const messagesSnap = await get(messagesRef);
+              const messagesSnap = await fetchWithRetry(`groupMessages/${groupId}`);
               if (messagesSnap.exists()) {
                 const messages = messagesSnap.val();
+                console.log(`Messages for group ${groupId}:`, messages);
                 for (let messageId in messages) {
                   if (!messages[messageId].readBy?.[userId]) {
                     unreadCount++;
                   }
                 }
+              } else {
+                console.log(`No messages found for group ${groupId}`);
               }
             }
           }
+        } else {
+          console.log("No groups found");
         }
         communityBadge.textContent = unreadCount;
         communityBadge.classList.toggle("active", unreadCount > 0);
+        console.log(`Community badge updated: ${unreadCount}`);
       } catch (error) {
-        console.error("Error updating community badge:", error);
+        console.error("Error updating community badge:", error.code, error.message);
+        showAlert(`Failed to update community badge: ${error.message}`, false);
       } finally {
         hideSpinner();
       }
@@ -898,21 +929,25 @@
     async function updateNotificationBadge(userId) {
       showSpinner();
       try {
-        const notificationsRef = ref(db, `emergencyNotifications/${userId}`);
-        const notificationsSnap = await get(notificationsRef);
+        const notificationsSnap = await fetchWithRetry(`emergencyNotifications/${userId}`);
         let unreadCount = 0;
         if (notificationsSnap.exists()) {
           const notifications = notificationsSnap.val();
+          console.log(`Notifications for ${userId}:`, notifications);
           for (let notificationId in notifications) {
             if (!notifications[notificationId].read) {
               unreadCount++;
             }
           }
+        } else {
+          console.log(`No notifications found for ${userId}`);
         }
         notificationBadge.textContent = unreadCount;
         notificationBadge.classList.toggle("active", unreadCount > 0);
+        console.log(`Notification badge updated: ${unreadCount}`);
       } catch (error) {
-        console.error("Error updating notification badge:", error);
+        console.error("Error updating notification badge:", error.code, error.message);
+        showAlert(`Failed to update notifications: ${error.message}`, false);
       } finally {
         hideSpinner();
       }
@@ -941,6 +976,7 @@
               hideSpinner();
               resolve(null);
             } else {
+              console.log("Authenticated user:", user.uid, user.email);
               const userData = await fetchUserData(user.uid);
               const displayUser = {
                 uid: user.uid,
@@ -948,6 +984,7 @@
                 photoURL: userData?.photoURL || user.photoURL,
                 email: user.email || "unknown@example.com"
               };
+              console.log("Display user:", displayUser);
               await Promise.all([
                 updateCommunityBadge(user.uid),
                 updateNotificationBadge(user.uid)
@@ -957,8 +994,8 @@
             }
           }, (error) => {
             clearTimeout(timeout);
-            console.error("Auth state error:", error);
-            showAlert("Authentication failed. Please try again.", false);
+            console.error("Auth state error:", error.code, error.message);
+            showAlert(`Authentication failed: ${error.message}`, false);
             document.body.classList.add("fade-out");
             setTimeout(() => window.location.href = "signup.html", 500);
             hideSpinner();
@@ -966,8 +1003,8 @@
           });
         });
       } catch (error) {
-        console.error("Auth check failed:", error);
-        showAlert("Failed to verify authentication.", false);
+        console.error("Auth check failed:", error.code, error.message);
+        showAlert(`Failed to verify authentication: ${error.message}`, false);
         hideSpinner();
         return null;
       }
@@ -1006,6 +1043,7 @@
           markers = {};
 
           const incidents = snapshot.val();
+          console.log("Incidents data:", incidents);
           let currentIncidentCount = incidents ? Object.keys(incidents).length : 0;
 
           if (currentIncidentCount > previousIncidentCount && navigator.vibrate) {
@@ -1016,6 +1054,7 @@
           if (incidents) {
             for (let incidentId in incidents) {
               const incident = incidents[incidentId];
+              console.log(`Processing incident ${incidentId}:`, incident);
               if (incident.status === 'pending' && incident.userId !== auth.currentUser?.uid) {
                 const lng = decryptCoordinate(incident.location.encryptedLng);
                 const lat = decryptCoordinate(incident.location.encryptedLat);
@@ -1044,9 +1083,10 @@
                 markers[incidentId] = marker;
 
                 const friendsRef = ref(db, `friends/${incident.userId}`);
-                const friendsSnap = await get(friendsRef);
+                const friendsSnap = await fetchWithRetry(`friends/${incident.userId}`);
                 if (friendsSnap.exists()) {
                   const friends = friendsSnap.val();
+                  console.log(`Friends for user ${incident.userId}:`, friends);
                   for (let friendId in friends) {
                     if (friendId === auth.currentUser?.uid) {
                       const notificationId = `${incidentId}_${friendId}`;
@@ -1057,22 +1097,31 @@
                         timestamp: Date.now(),
                         read: false
                       });
+                      console.log(`Notification sent for ${notificationId}`);
                     }
                   }
+                } else {
+                  console.log(`No friends found for user ${incident.userId}`);
                 }
               }
             }
+          } else {
+            console.log("No incidents found");
           }
 
           if (auth.currentUser) {
             await updateNotificationBadge(auth.currentUser.uid);
           }
         } catch (error) {
-          console.error("Error processing incidents:", error);
-          showAlert("Failed to load incidents.", false);
+          console.error("Error processing incidents:", error.code, error.message);
+          showAlert(`Failed to load incidents: ${error.message}`, false);
         } finally {
           hideSpinner();
         }
+      }, (error) => {
+        console.error("onValue error for incidents:", error.code, error.message);
+        showAlert(`Failed to monitor incidents: ${error.message}`, false);
+        hideSpinner();
       });
 
       map.on('error', () => {
@@ -1199,7 +1248,7 @@
       });
 
       document.addEventListener('click', (e) => {
-        if (!searchContainer.contains(e.target)) {
+        if (!searchInput.contains(e.target) && !suggestionsList.contains(e.target)) {
           suggestionsList.classList.remove('active');
           suggestionsList.innerHTML = '';
           updateSuggestionsAria();
@@ -1244,7 +1293,7 @@
               'line-cap': 'round'
             },
             paint: {
-              'line-color': var(--primary-purple),
+              'line-color': 'var(--primary-purple)',
               'line-width': 6,
               'line-opacity': 0.7
             }
@@ -1361,6 +1410,7 @@
           }
           const incidentId = `${user.uid}_${Date.now()}`;
           try {
+            showSpinner();
             const incidentRef = ref(db, `incidents/${incidentId}`);
             await set(incidentRef, {
               userId: user.uid,
@@ -1377,9 +1427,10 @@
               .setLngLat([longitude, latitude])
               .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
               .addTo(map);
+            console.log(`Emergency ${incidentId} reported:`, { type, location: { longitude, latitude } });
           } catch (error) {
-            console.error("Error reporting emergency:", error);
-            showAlert("Failed to report emergency.", false);
+            console.error("Error reporting emergency:", error.code, error.message);
+            showAlert(`Failed to report emergency: ${error.message}`, false);
           } finally {
             hideSpinner();
           }
@@ -1395,6 +1446,7 @@
             return;
           }
           const incidentId = `${user.uid}_${Date.now()}`;
+          showSpinner();
           set(ref(db, `incidents/${incidentId}`), {
             userId: user.uid,
             type,
@@ -1410,9 +1462,10 @@
               .setLngLat([28.0473, -26.2041])
               .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
               .addTo(map);
+            console.log(`Emergency ${incidentId} reported at default location:`, { type, location: { longitude: 28.0473, latitude: -26.2041 } });
           }).catch((error) => {
-            console.error("Error reporting emergency:", error);
-            showAlert("Failed to report emergency.", false);
+            console.error("Error reporting emergency:", error.code, error.message);
+            showAlert(`Failed to report emergency: ${error.message}`, false);
           }).finally(() => {
             hideSpinner();
           });
@@ -1431,9 +1484,9 @@
           navItems.forEach(i => i.classList.remove('active'));
           item.classList.add('active');
           const tab = item.dataset.tab;
-          if (tab === 'notifications') {
+          if (tab === 'notifications' && auth.currentUser) {
             showSpinner();
-            const notificationsRef = ref(db, `emergencyNotifications/${auth.currentUser?.uid}`);
+            const notificationsRef = ref(db, `emergencyNotifications/${auth.currentUser.uid}`);
             get(notificationsRef).then(snapshot => {
               if (snapshot.exists()) {
                 const updates = {};
@@ -1443,11 +1496,14 @@
                 set(ref(db, `/`), updates).then(() => {
                   notificationBadge.textContent = "0";
                   notificationBadge.classList.remove("active");
+                  console.log("Notifications marked as read");
                 });
+              } else {
+                console.log("No notifications to mark as read");
               }
             }).catch((error) => {
-              console.error("Error marking notifications as read:", error);
-              showAlert("Failed to update notifications.", false);
+              console.error("Error marking notifications as read:", error.code, error.message);
+              showAlert(`Failed to update notifications: ${error.message}`, false);
             }).finally(() => {
               hideSpinner();
             });
