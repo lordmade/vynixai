@@ -82,6 +82,7 @@
     .avatar {
       width: 32px;
       height: 32px;
+      height: 32px;
       border-radius: 50%;
       display: flex;
       align-items: center;
@@ -291,6 +292,38 @@
       transform: scale(1.2);
     }
 
+    /* Spinner Styles */
+    .spinner-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .spinner-overlay.active {
+      display: flex;
+    }
+
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 5px solid var(--border);
+      border-top: 5px solid var(--primary-purple);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
     @media (max-width: 767px) {
       .top-bar { padding: 0.75rem; }
       .title { font-size: 1.2rem; }
@@ -305,6 +338,7 @@
       .message .sender { font-size: 0.7rem; }
       .message .text { font-size: 0.85rem; }
       .message .timestamp { font-size: 0.6rem; }
+      .spinner { width: 40px; height: 40px; border-width: 4px; }
     }
   </style>
 </head>
@@ -349,6 +383,9 @@
     </button>
     <p id="alert-message">An error occurred. Please try again.</p>
   </div>
+  <div class="spinner-overlay" id="spinner-overlay">
+    <div class="spinner"></div>
+  </div>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
@@ -377,10 +414,30 @@
     const userAvatar = document.getElementById("user-avatar");
     const notificationIcon = document.getElementById("notification-icon");
     const notificationBadge = document.getElementById("notification-badge");
+    const spinnerOverlay = document.getElementById("spinner-overlay");
 
     let userLocation = null;
     let currentUser = null; // Store current user data
     const ENCRYPTION_KEY = 'your-secure-key-1234567890123456'; // Must be 16, 24, or 32 bytes
+
+    // Timeout utility for Firebase operations
+    function timeoutPromise(promise, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Firebase operation timed out. Please check your connection and try again."));
+        }, timeoutMs);
+        promise.then(
+          (result) => {
+            clearTimeout(timeout);
+            resolve(result);
+          },
+          (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          }
+        );
+      });
+    }
 
     // Encrypt coordinate
     function encryptCoordinate(coord) {
@@ -433,23 +490,27 @@
       customAlert.setAttribute("aria-hidden", "true");
     }
 
-    // Fetch user data
+    // Fetch user data with timeout
     async function fetchUserData(userId, retries = 3) {
+      showSpinner();
       for (let i = 0; i < retries; i++) {
         try {
           const userRef = ref(db, `users/${userId}`);
-          const userSnap = await get(userRef);
+          const userSnap = await timeoutPromise(get(userRef), 10000);
           if (userSnap.exists()) {
+            hideSpinner();
             return userSnap.val();
           }
           console.warn(`No user data for ${userId}, attempt ${i + 1}`);
           if (i === retries - 1) {
+            hideSpinner();
             return { displayName: null, photoURL: null, email: "Unknown User" };
           }
         } catch (error) {
           console.error(`Error fetching user data for ${userId}, attempt ${i + 1}:`, error);
           if (i === retries - 1) {
-            showAlert("Failed to load user data.", false);
+            hideSpinner();
+            showAlert(error.message || "Failed to load user data. Firebase may be unresponsive.", false);
             return { displayName: null, photoURL: null, email: "Unknown User" };
           }
         }
@@ -473,11 +534,12 @@
       }
     }
 
-    // Update notification badge
+    // Update notification badge with timeout
     async function updateNotificationBadge(userId) {
+      showSpinner();
       try {
         const notificationsRef = ref(db, `emergencyNotifications/${userId}`);
-        const notificationsSnap = await get(notificationsRef);
+        const notificationsSnap = await timeoutPromise(get(notificationsRef), 10000);
         let unreadCount = 0;
         if (notificationsSnap.exists()) {
           const notifications = notificationsSnap.val();
@@ -496,98 +558,115 @@
             for (let notificationId in notificationsSnap.val()) {
               updates[`emergencyNotifications/${userId}/${notificationId}/read`] = true;
             }
-            await set(ref(db, `/`), updates);
+            await timeoutPromise(set(ref(db, `/`), updates), 10000);
             notificationBadge.textContent = "0";
             notificationBadge.classList.remove("active");
           } catch (error) {
             console.error("Error marking notifications as read:", error);
+            showAlert(error.message || "Failed to update notifications. Firebase may be unresponsive.", false);
           }
         };
       } catch (error) {
         console.error("Error updating notification badge:", error);
+        showAlert(error.message || "Failed to update notification badge. Firebase may be unresponsive.", false);
+      } finally {
+        hideSpinner();
       }
     }
 
-    // Load messages within 25 km
+    // Load messages within 25 km with timeout
     async function loadMessages(userId, userLat, userLng) {
       const messagesRef = ref(db, `messages`);
       onValue(messagesRef, async (snapshot) => {
-        messageList.innerHTML = '';
-        const messages = snapshot.val();
-        if (messages) {
-          for (let messageId in messages) {
-            const message = messages[messageId];
-            const lng = decryptCoordinate(message.location?.encryptedLng);
-            const lat = decryptCoordinate(message.location?.encryptedLat);
-            if (lng === null || lat === null) {
-              console.error(`Failed to decrypt coordinates for message ${messageId}`);
-              continue;
-            }
-            const distance = getDistance(userLat, userLng, lat, lng);
-            if (distance <= 25) {
-              const userData = await fetchUserData(message.senderId);
-              const senderName = userData.displayName || userData.email?.split("@")[0] || "Unknown";
-              const timestamp = new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              const messageDiv = document.createElement('div');
-              messageDiv.className = `message ${message.senderId === userId ? 'sent' : 'received'}`;
-              const avatarDiv = document.createElement('div');
-              renderAvatar(userData, avatarDiv, true); // Use same avatar rendering as header
-              messageDiv.appendChild(avatarDiv);
-              messageDiv.innerHTML += `
-                <div class="message-content">
-                  <div class="sender">${senderName}</div>
-                  <div class="text">${message.text}</div>
-                  <div class="timestamp">${timestamp}</div>
-                </div>
-              `;
-              messageList.appendChild(messageDiv);
+        showSpinner();
+        try {
+          messageList.innerHTML = '';
+          const messages = snapshot.val();
+          if (messages) {
+            for (let messageId in messages) {
+              const message = messages[messageId];
+              const lng = decryptCoordinate(message.location?.encryptedLng);
+              const lat = decryptCoordinate(message.location?.encryptedLat);
+              if (lng === null || lat === null) {
+                console.error(`Failed to decrypt coordinates for message ${messageId}`);
+                continue;
+              }
+              const distance = getDistance(userLat, userLng, lat, lng);
+              if (distance <= 25) {
+                const userData = await fetchUserData(message.senderId);
+                const senderName = userData.displayName || userData.email?.split("@")[0] || "Unknown";
+                const timestamp = new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${message.senderId === userId ? 'sent' : 'received'}`;
+                const avatarDiv = document.createElement('div');
+                renderAvatar(userData, avatarDiv, true); // Use same avatar rendering as header
+                messageDiv.appendChild(avatarDiv);
+                messageDiv.innerHTML += `
+                  <div class="message-content">
+                    <div class="sender">${senderName}</div>
+                    <div class="text">${message.text}</div>
+                    <div class="timestamp">${timestamp}</div>
+                  </div>
+                `;
+                messageList.appendChild(messageDiv);
 
-              // Mark message as read
-              if (message.senderId !== userId && !message.readBy?.[userId]) {
-                await set(ref(db, `messages/${messageId}/readBy/${userId}`), true);
+                // Mark message as read
+                if (message.senderId !== userId && !message.readBy?.[userId]) {
+                  await timeoutPromise(set(ref(db, `messages/${messageId}/readBy/${userId}`), true), 10000);
+                }
               }
             }
           }
+          // Scroll to bottom
+          messageList.scrollTop = messageList.scrollHeight;
+        } catch (error) {
+          console.error("Error loading messages:", error);
+          showAlert(error.message || "Failed to load messages. Firebase may be unresponsive.", false);
+        } finally {
+          hideSpinner();
         }
-        // Scroll to bottom
-        messageList.scrollTop = messageList.scrollHeight;
       });
     }
 
-    // Send message
+    // Send message with timeout
     async function sendMessage() {
       const text = messageInput.value.trim();
       if (!text || !currentUser || !userLocation) {
         showAlert("Please enter a message and allow location access.", false);
         return;
       }
+      showSpinner();
       try {
         const encryptedLng = encryptCoordinate(userLocation.longitude);
         const encryptedLat = encryptCoordinate(userLocation.latitude);
         if (!encryptedLng || !encryptedLat) {
+          hideSpinner();
           showAlert("Failed to encrypt location.", false);
           return;
         }
         const messagesRef = ref(db, `messages`);
         const newMessageRef = push(messagesRef);
-        await set(newMessageRef, {
+        await timeoutPromise(set(newMessageRef, {
           senderId: currentUser.uid,
           text: text,
           timestamp: Date.now(),
           location: { encryptedLng, encryptedLat },
           readBy: { [currentUser.uid]: true }
-        });
+        }), 10000);
         messageInput.value = '';
       } catch (error) {
         console.error("Error sending message:", error);
-        showAlert("Failed to send message.", false);
+        showAlert(error.message || "Failed to send message. Firebase may be unresponsive.", false);
+      } finally {
+        hideSpinner();
       }
     }
 
-    // Check authentication state
+    // Check authentication state with timeout
     async function checkAuthState() {
+      showSpinner();
       try {
-        await setPersistence(auth, browserLocalPersistence);
+        await timeoutPromise(setPersistence(auth, browserLocalPersistence), 10000);
         return await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => {
             console.error("Authentication check timed out");
@@ -618,10 +697,10 @@
               updateNotificationBadge(user.uid);
               resolve(displayUser);
             }
-          }, (error) => {
+          }, (error) {
             clearTimeout(timeout);
             console.error("Auth state error:", error);
-            showAlert("Authentication failed. Please try again.", false);
+            showAlert(error.message || "Authentication failed. Please try again. Firebase may be unresponsive.", false);
             document.body.classList.add("fade-out");
             setTimeout(() => window.location.href = "signup.html", 500);
             reject(error);
@@ -629,8 +708,9 @@
         });
       } catch (error) {
         console.error("Auth check failed:", error);
-        showAlert("Failed to verify authentication.", false);
-        return null;
+        showAlert(error.message || "Failed to verify authentication. Firebase may be unresponsive.", false);
+      } finally {
+        hideSpinner();
       }
     }
 
