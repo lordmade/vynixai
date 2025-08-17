@@ -244,6 +244,11 @@
       transform: scale(0.95);
     }
 
+    .weather-fab {
+      bottom: 10rem;
+      background: linear-gradient(45deg, var(--primary-purple), var(--secondary-teal));
+    }
+
     @keyframes pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.05); }
@@ -469,6 +474,76 @@
       outline: 2px solid var(--focus-ring);
     }
 
+    .weather-drawer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: var(--card-background);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      z-index: 15;
+      transform: translateY(-100%);
+      transition: transform 0.4s ease-in-out;
+      border-bottom-left-radius: 12px;
+      border-bottom-right-radius: 12px;
+    }
+
+    .weather-drawer.active {
+      transform: translateY(4.5rem);
+    }
+
+    .weather-content {
+      padding: 1.5rem;
+      position: relative;
+    }
+
+    .weather-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--text-dark);
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+
+    .weather-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      color: var(--text-dark);
+      font-size: 0.9rem;
+    }
+
+    .weather-info p {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .weather-info svg {
+      width: 20px;
+      height: 20px;
+      stroke: var(--primary-purple);
+    }
+
+    .weather-drawer .close-btn {
+      position: absolute;
+      top: 0.75rem;
+      right: 0.75rem;
+      width: 24px;
+      height: 24px;
+      background: none;
+      border: none;
+      color: var(--primary-purple);
+      cursor: pointer;
+    }
+
+    .weather-drawer .close-btn:hover,
+    .weather-drawer .close-btn:focus {
+      transform: scale(1.2);
+      outline: 2px solid var(--focus-ring);
+    }
+
     #map {
       position: fixed;
       top: 0;
@@ -646,6 +721,12 @@
       .suggestion-item, .suggestions-empty { font-size: 0.875rem; padding: 0.5rem 0.75rem; }
       .suggestion-icon { width: 14px; height: 14px; }
       .fab { bottom: 5rem; right: 1rem; width: 80px; height: 48px; font-size: 1rem; }
+      .weather-fab { bottom: 9rem; width: 60px; height: 40px; }
+      .weather-fab svg { width: 20px; height: 20px; }
+      .weather-drawer.active { transform: translateY(4rem); }
+      .weather-title { font-size: 1.1rem; }
+      .weather-info { font-size: 0.875rem; }
+      .weather-info svg { width: 18px; height: 18px; }
       .bottom-nav { height: 60px; padding: 0.5rem 0; }
       .nav-item svg { width: 20px; height: 20px; }
       .nav-label { font-size: 0.7rem; }
@@ -694,8 +775,27 @@
       </svg>
     </button>
   </div>
+  <div id="weather-drawer" class="weather-drawer" role="dialog" aria-hidden="true">
+    <div class="weather-content">
+      <button class="close-btn transition-base" id="close-weather-drawer" aria-label="Close weather drawer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <h2 class="weather-title">Weather Information</h2>
+      <div id="weather-info" class="weather-info">
+        <p>Loading weather data...</p>
+      </div>
+    </div>
+  </div>
   <div id="map"></div>
   <div class="map-attribution">Map data © Mapbox</div>
+  <button class="fab weather-fab transition-base" id="weather-button" aria-label="View weather information" title="View weather information">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+    </svg>
+  </button>
   <button class="fab transition-base" id="sos-button" aria-label="Send SOS alert" title="Send SOS alert">
     <span>SOS</span>
   </button>
@@ -824,6 +924,10 @@
     const clearButton = document.getElementById("clear-button");
     const spinnerOverlay = document.getElementById("spinner-overlay");
     const themeToggle = document.getElementById("theme-toggle");
+    const weatherButton = document.getElementById("weather-button");
+    const weatherDrawer = document.getElementById("weather-drawer");
+    const closeWeatherDrawer = document.getElementById("close-weather-drawer");
+    const weatherInfo = document.getElementById("weather-info");
 
     let map;
     let userLocation = null;
@@ -877,7 +981,7 @@
     function showAlert(message, autoHide = true) {
       alertMessage.textContent = message;
       customAlert.classList.add("active");
-      customAlert.setAttribute("aria(hidden", "false");
+      customAlert.setAttribute("aria-hidden", "false");
       console.log("Alert shown:", message);
       if (autoHide) {
         setTimeout(() => {
@@ -1128,7 +1232,10 @@
           temperature: data.main.temp,
           description: data.weather[0].description,
           icon: data.weather[0].icon,
-          placeName: data.name || 'Unknown Location'
+          placeName: data.name || 'Unknown Location',
+          rain: data.rain ? (data.rain['1h'] || 0) : 0,
+          windSpeed: data.wind.speed,
+          feelsLike: data.main.feels_like
         };
         weatherCache.set(cacheKey, weatherData);
         console.log("Weather data fetched and cached:", weatherData);
@@ -1137,6 +1244,60 @@
         console.error("Error fetching weather data:", error);
         showAlert("Failed to fetch weather data.", false);
         return null;
+      }
+    }
+
+    async function displayWeatherDrawer(lng, lat) {
+      showSpinner();
+      try {
+        const weatherData = await fetchWeatherData(lng, lat);
+        if (weatherData) {
+          weatherInfo.innerHTML = `
+            <p>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v2m0 16v2m10-10h-2M4 12H2m16.36-6.36l-1.42 1.42M7.06 17.06l-1.42 1.42M17.06 17.06l1.42 1.42M7.06 7.06l1.42-1.42"/>
+              </svg>
+              Temperature: ${weatherData.temperature}°C
+            </p>
+            <p>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v2m0 16v2m10-10h-2M4 12H2m16.36-6.36l-1.42 1.42M7.06 17.06l-1.42 1.42M17.06 17.06l1.42 1.42M7.06 7.06l1.42-1.42"/>
+              </svg>
+              Feels Like: ${weatherData.feelsLike}°C
+            </p>
+            <p>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a10 10 0 0 0-10 10c0 4.4 2.9 8.1 6.9 9.4l3.1-5.4h4l3.1 5.4c4-1.3 6.9-5 6.9-9.4A10 10 0 0 0 12 2z"/>
+              </svg>
+              Condition: ${weatherData.description}
+            </p>
+            <p>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M8 17l-4 4m0-4l4 4m4-10v8m4-8v8m4-8v8"/>
+              </svg>
+              Rain: ${weatherData.rain} mm (last hour)
+            </p>
+            <p>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M7 7l4 4m0-4l-4 4m10-2h-6m6 4h-6"/>
+              </svg>
+              Wind: ${weatherData.windSpeed} m/s
+            </p>
+            <p>Location: ${weatherData.placeName}</p>
+          `;
+          weatherDrawer.classList.add("active");
+          weatherDrawer.setAttribute("aria-hidden", "false");
+          console.log("Weather drawer populated and shown for:", weatherData.placeName);
+        } else {
+          weatherInfo.innerHTML = '<p>Unable to load weather data.</p>';
+          weatherDrawer.classList.add("active");
+          weatherDrawer.setAttribute("aria-hidden", "false");
+        }
+      } catch (error) {
+        console.error("Error displaying weather:", error);
+        showAlert("Failed to display weather information.", false);
+      } finally {
+        hideSpinner();
       }
     }
 
@@ -1623,178 +1784,123 @@
     }
 
     async function requestEmergency(type) {
-      const user = auth.currentUser;
-      if (!user) {
-        showAlert("Please sign in to request help.", false);
+      if (!auth.currentUser || !userLocation) {
+        showAlert("Cannot send SOS: User not authenticated or location unavailable.", false);
         return;
       }
-      sosModal.classList.remove("active");
+
       showSpinner();
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const { longitude, latitude } = position.coords;
-          userLocation = [longitude, latitude];
-          const encryptedLng = encryptCoordinate(longitude);
-          const encryptedLat = encryptCoordinate(latitude);
-          if (!encryptedLng || !encryptedLat) {
-            hideSpinner();
-            showAlert("Failed to encrypt location. Please try again.", false);
-            return;
-          }
-          const incidentId = `${user.uid}_${Date.now()}`;
-          try {
-            showSpinner();
-            const incidentRef = ref(db, `incidents/${incidentId}`);
-            await set(incidentRef, {
-              userId: user.uid,
-              type,
-              location: { encryptedLng, encryptedLat },
-              timestamp: Date.now(),
-              status: "pending"
-            });
-            showAlert(`${type} reported. Help is on the way.`, true);
-            const el = document.createElement('div');
-            el.innerHTML = handShakingSvg;
-            el.className = 'hand-shaking';
-            new mapboxgl.Marker({ element: el })
-              .setLngLat([longitude, latitude])
-              .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
-              .addTo(map);
-            console.log(`Emergency ${incidentId} reported:`, { type, location: { longitude, latitude } });
-          } catch (error) {
-            console.error("Error reporting emergency:", error.code, error.message);
-            showAlert(`Failed to report emergency: ${error.message}`, false);
-          } finally {
-            hideSpinner();
-          }
-        },
-        (error) => {
-          console.error("Geolocation error:", error);
-          showAlert("Unable to get your location. Using default location.", true);
-          const encryptedLng = encryptCoordinate(28.0473);
-          const encryptedLat = encryptCoordinate(-26.2041);
-          if (!encryptedLng || !encryptedLat) {
-            hideSpinner();
-            showAlert("Failed to encrypt default location.", false);
-            return;
-          }
-          const incidentId = `${user.uid}_${Date.now()}`;
-          showSpinner();
-          set(ref(db, `incidents/${incidentId}`), {
-            userId: user.uid,
-            type,
-            location: { encryptedLng, encryptedLat },
-            timestamp: Date.now(),
-            status: "pending"
-          }).then(() => {
-            showAlert(`${type} reported at default location.`, true);
-            const el = document.createElement('div');
-            el.innerHTML = handShakingSvg;
-            el.className = 'hand-shaking';
-            new mapboxgl.Marker({ element: el })
-              .setLngLat([28.0473, -26.2041])
-              .setPopup(new mapboxgl.Popup().setText(`Your ${type} Emergency`))
-              .addTo(map);
-            console.log(`Emergency ${incidentId} reported at default location:`, { type, location: { longitude: 28.0473, latitude: -26.2041 } });
-          }).catch((error) => {
-            console.error("Error reporting emergency:", error.code, error.message);
-            showAlert(`Failed to report emergency: ${error.message}`, false);
-          }).finally(() => {
-            hideSpinner();
-          });
-        },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-      );
+      try {
+        const incidentId = `${auth.currentUser.uid}_${Date.now()}`;
+        const encryptedLng = encryptCoordinate(userLocation[0]);
+        const encryptedLat = encryptCoordinate(userLocation[1]);
+        if (!encryptedLng || !encryptedLat) {
+          throw new Error("Failed to encrypt coordinates");
+        }
+
+        const incidentRef = ref(db, `incidents/${incidentId}`);
+        await set(incidentRef, {
+          userId: auth.currentUser.uid,
+          type,
+          location: { encryptedLng, encryptedLat },
+          timestamp: Date.now(),
+          status: 'pending'
+        });
+
+        console.log(`SOS requested: ${type} at`, userLocation);
+        showAlert(`SOS sent for ${type}. Help is on the way!`, true);
+        sosModal.classList.remove('active');
+      } catch (error) {
+        console.error("Error requesting emergency:", error.code || error.message);
+        showAlert(`Failed to send SOS: ${error.message}`, false);
+      } finally {
+        hideSpinner();
+      }
     }
 
     function setupBottomNav() {
       const navItems = document.querySelectorAll('.nav-item');
       navItems.forEach(item => {
         item.addEventListener('click', () => {
-          if (navigator.vibrate) {
-            navigator.vibrate(50);
-          }
-          navItems.forEach(i => i.classList.remove('active'));
-          item.classList.add('active');
-          const tab = item.dataset.tab;
-          console.log("Nav item clicked:", tab);
-          if (tab === 'notifications' && auth.currentUser) {
-            showSpinner();
-            const notificationsRef = ref(db, `emergencyNotifications/${auth.currentUser.uid}`);
-            get(notificationsRef).then(snapshot => {
-              if (snapshot.exists()) {
-                const updates = {};
-                for (let notificationId in snapshot.val()) {
-                  updates[`emergencyNotifications/${auth.currentUser.uid}/${notificationId}/read`] = true;
-                }
-                set(ref(db, `/`), updates).then(() => {
-                  notificationBadge.textContent = "0";
-                  notificationBadge.classList.remove("active");
-                  console.log("Notifications marked as read");
-                });
-              } else {
-                console.log("No notifications to mark as read");
-              }
-            }).catch((error) => {
-              console.error("Error marking notifications as read:", error.code, error.message);
-              showAlert(`Failed to update notifications: ${error.message}`, false);
-            }).finally(() => {
-              hideSpinner();
-            });
+          if (item.dataset.tab === 'home') {
+            navItems.forEach(i => i.classList.remove('active'));
+            item.classList.add('active');
+            console.log("Navigated to:", item.dataset.tab);
           }
         });
         item.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             item.click();
-            console.log("Nav item activated via keyboard:", item.dataset.tab);
           }
         });
       });
     }
 
-    window.requestEmergency = requestEmergency;
+    document.addEventListener('DOMContentLoaded', async () => {
+      const savedTheme = localStorage.getItem('theme') || 'light';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+      console.log("Applied saved theme:", savedTheme);
 
-    document.addEventListener("DOMContentLoaded", async () => {
-      console.log("DOMContentLoaded event fired at", new Date().toLocaleString());
-      try {
-        const savedTheme = localStorage.getItem('theme') || 'light';
-        document.documentElement.setAttribute('data-theme', savedTheme);
-        console.log("Initial theme set to:", savedTheme);
+      setupModal();
+      setupBottomNav();
 
-        setupModal();
-        setupBottomNav();
-        console.log("UI event listeners set up");
-
-        const displayUser = await checkAuthState();
-        if (displayUser) {
-          console.log("User authenticated, proceeding to initialize map");
-          if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-              (position) => {
-                const { longitude, latitude } = position.coords;
-                console.log("Geolocation success:", longitude, latitude);
-                initializeMap(longitude, latitude, displayUser);
-              },
-              (error) => {
-                console.error("Geolocation error:", error);
-                showAlert("Unable to get your location. Using default location.", true);
-                initializeMap(28.0473, -26.2041, displayUser);
-              },
-              { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-            );
-          } else {
-            console.warn("Geolocation not supported by browser");
-            showAlert("Geolocation is not supported by your browser.", true);
-            initializeMap(28.0473, -26.2041, displayUser);
-          }
+      weatherButton.addEventListener("click", () => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const { longitude, latitude } = position.coords;
+              displayWeatherDrawer(longitude, latitude);
+            },
+            (error) => {
+              console.error("Geolocation error for weather:", error);
+              showAlert("Unable to get your location for weather. Using default location.", true);
+              displayWeatherDrawer(28.0473, -26.2041); // Default location (Johannesburg)
+            },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+          );
         } else {
-          console.warn("No authenticated user, redirecting to signup");
+          console.warn("Geolocation not supported for weather");
+          showAlert("Geolocation is not supported by your browser.", true);
+          displayWeatherDrawer(28.0473, -26.2041); // Default location
         }
-      } catch (error) {
-        console.error("Error in DOMContentLoaded:", error);
-        showAlert("Failed to initialize app: " + error.message, false);
-        hideSpinner();
+      });
+
+      closeWeatherDrawer.addEventListener("click", () => {
+        weatherDrawer.classList.remove("active");
+        weatherDrawer.setAttribute("aria-hidden", "true");
+        console.log("Weather drawer closed");
+      });
+
+      weatherDrawer.addEventListener("click", (e) => {
+        if (e.target === weatherDrawer) {
+          weatherDrawer.classList.remove("active");
+          weatherDrawer.setAttribute("aria-hidden", "true");
+          console.log("Weather drawer closed via backdrop");
+        }
+      });
+
+      const displayUser = await checkAuthState();
+      if (displayUser) {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const { longitude, latitude } = position.coords;
+              console.log("User location obtained:", [longitude, latitude]);
+              initializeMap(longitude, latitude, displayUser);
+            },
+            (error) => {
+              console.error("Geolocation error:", error);
+              showAlert("Unable to get your location. Using default location.", true);
+              initializeMap(28.0473, -26.2041, displayUser); // Default location (Johannesburg)
+            },
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+          );
+        } else {
+          console.warn("Geolocation not supported");
+          showAlert("Geolocation is not supported by your browser.", true);
+          initializeMap(28.0473, -26.2041, displayUser); // Default location
+        }
       }
     });
   </script>
