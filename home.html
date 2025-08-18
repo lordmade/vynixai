@@ -751,6 +751,43 @@
       .option-icon { width: 24px; height: 24px; }
       .weather-marker { width: 32px; height: 32px; }
     }
+
+.chat-message {
+      margin: 0.5rem 0;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      max-width: 80%;
+      word-wrap: break-word;
+    }
+    .chat-message.user {
+      background: var(--primary-purple);
+      color: var(--white);
+      margin-left: auto;
+    }
+    .chat-message.admin {
+      background: var(--highlight);
+      color: var(--text-dark);
+      margin-right: auto;
+    }
+    .chat-message-timestamp {
+      font-size: 0.7rem;
+      color: var(--text-light);
+      margin-top: 0.25rem;
+    }
+    @media (max-width: 767px) {
+      #chat-messages {
+        max-height: 200px;
+      }
+      #chat-input {
+        font-size: 0.875rem;
+        padding: 0.5rem 0.75rem;
+      }
+      #send-chat-message {
+        padding: 0.5rem;
+        font-size: 0.875rem;
+      }
+    }
+    
   </style>
 </head>
 <body>
@@ -859,6 +896,31 @@
       </ul>
     </div>
   </div>
+
+
+<div id="chat-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="chat-modal-title">
+    <div class="modal-content">
+      <h2 id="chat-modal-title">Emergency Chat</h2>
+      <button class="close-btn transition-base" id="close-chat-modal" aria-label="Close chat modal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+      <div id="chat-messages" style="max-height: 300px; overflow-y: auto; margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--white);">
+        <!-- Messages will be populated here -->
+      </div>
+      <div style="display: flex; gap: 0.5rem;">
+        <input type="text" id="chat-input" class="search-input transition-base" placeholder="Type your message..." aria-label="Chat message input">
+        <button id="send-chat-message" class="transition-base" style="background: var(--primary-purple); color: var(--white); padding: 0.5rem 1rem; border-radius: 9999px;" aria-label="Send message">Send</button>
+      </div>
+    </div>
+  </div>
+
+
+
+
+  
   <div class="spinner-overlay" id="spinner-overlay">
     <div class="spinner"></div>
   </div>
@@ -944,6 +1006,12 @@
   const weatherDrawer = document.getElementById("weather-drawer");
   const closeWeatherDrawer = document.getElementById("close-weather-drawer");
   const weatherInfo = document.getElementById("weather-info");
+  const chatModal = document.getElementById("chat-modal");
+    const closeChatModal = document.getElementById("close-chat-modal");
+    const chatMessages = document.getElementById("chat-messages");
+    const chatInput = document.getElementById("chat-input");
+    const sendChatMessage = document.getElementById("send-chat-message");
+    let activeIncidentId = null;
 
   let map;
   let userLocation = null;
@@ -1940,7 +2008,127 @@ function toggleTheme() {
     console.log("Weather drawer closed");
   });
 
- async function init() {
+
+
+    
+
+function openChatModal(incidentId) {
+      activeIncidentId = incidentId;
+      chatModal.classList.add("active");
+      chatModal.setAttribute("aria-hidden", "false");
+      chatMessages.innerHTML = "";
+      chatInput.value = "";
+      chatInput.focus();
+      console.log(`Chat modal opened for incident ${incidentId}`);
+      loadChatMessages(incidentId);
+    }
+
+    function closeChatModalFunc() {
+      chatModal.classList.remove("active");
+      chatModal.setAttribute("aria-hidden", "true");
+      activeIncidentId = null;
+      console.log("Chat modal closed");
+    }
+
+    async function sendMessage(incidentId, messageText) {
+      if (!auth.currentUser || !messageText.trim()) {
+        showAlert("Please sign in and enter a message to send.", false);
+        return;
+      }
+      showSpinner();
+      try {
+        const messageId = `message_${Date.now()}_${auth.currentUser.uid}`;
+        const messageRef = ref(db, `chatMessages/${incidentId}/${messageId}`);
+        const userData = await fetchUserData(auth.currentUser.uid);
+        const senderName = userData.displayName || userData.email?.split("@")[0] || "User";
+        await set(messageRef, {
+          senderId: auth.currentUser.uid,
+          senderName,
+          message: messageText,
+          timestamp: Date.now(),
+          isAdmin: false
+        });
+        console.log(`Message sent for incident ${incidentId}: ${messageText}`);
+        chatInput.value = "";
+      } catch (error) {
+        console.error("Error sending chat message:", error.code, error.message);
+        showAlert(`Failed to send message: ${error.message}`, false);
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    function loadChatMessages(incidentId) {
+      const messagesRef = ref(db, `chatMessages/${incidentId}`);
+      onValue(messagesRef, (snapshot) => {
+        chatMessages.innerHTML = "";
+        if (snapshot.exists()) {
+          const messages = snapshot.val();
+          Object.values(messages).sort((a, b) => a.timestamp - b.timestamp).forEach(msg => {
+            const messageEl = document.createElement("div");
+            messageEl.className = `chat-message ${msg.isAdmin ? "admin" : "user"}`;
+            messageEl.innerHTML = `
+              <div><strong>${msg.senderName}:</strong> ${msg.message}</div>
+              <div class="chat-message-timestamp">${new Date(msg.timestamp).toLocaleTimeString()}</div>
+            `;
+            chatMessages.appendChild(messageEl);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+          });
+        }
+      }, (error) => {
+        console.error("Error loading chat messages:", error.code, error.message);
+        showAlert(`Failed to load chat messages: ${error.message}`, false);
+      });
+    }
+
+    function monitorAdminMessages(userId) {
+      const incidentsRef = ref(db, "incidents");
+      onValue(incidentsRef, (snapshot) => {
+        if (snapshot.exists()) {
+          const incidents = snapshot.val();
+          for (let incidentId in incidents) {
+            const incident = incidents[incidentId];
+            if (incident.userId === userId && incident.status === "pending") {
+              const messagesRef = ref(db, `chatMessages/${incidentId}`);
+              onValue(messagesRef, (msgSnapshot) => {
+                if (msgSnapshot.exists()) {
+                  const messages = msgSnapshot.val();
+                  const hasAdminMessage = Object.values(messages).some(msg => msg.isAdmin && msg.timestamp > (Date.now() - 60000)); // Check for recent admin messages
+                  if (hasAdminMessage && !chatModal.classList.contains("active")) {
+                    openChatModal(incidentId);
+                  }
+                }
+              }, { onlyOnce: true });
+            }
+          }
+        }
+      }, (error) => {
+        console.error("Error monitoring incidents for admin messages:", error.code, error.message);
+      });
+    }
+
+    closeChatModal.addEventListener("click", closeChatModalFunc);
+    chatModal.addEventListener("click", (e) => {
+      if (e.target === chatModal) {
+        closeChatModalFunc();
+      }
+    });
+    sendChatMessage.addEventListener("click", () => {
+      if (activeIncidentId) {
+        sendMessage(activeIncidentId, chatInput.value.trim());
+      }
+    });
+    chatInput.addEventListener("keypress", (e) => {
+      if (e.key === "Enter" && activeIncidentId) {
+        sendMessage(activeIncidentId, chatInput.value.trim());
+      }
+    });
+
+
+
+
+    
+async function init() {
       const savedTheme = localStorage.getItem('theme') || 'light';
       document.documentElement.setAttribute('data-theme', savedTheme);
       console.log("Initial theme set to:", savedTheme);
@@ -1950,6 +2138,9 @@ function toggleTheme() {
 
       // Start cleanup for old notifications
       cleanupOldNotifications(displayUser.uid);
+
+      // Start monitoring for admin messages
+      monitorAdminMessages(displayUser.uid);
 
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
