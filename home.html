@@ -1836,60 +1836,88 @@
   }
 
   async function requestEmergency(type) {
-    if (!auth.currentUser || !userLocation) {
-      showAlert("Please sign in and allow location access to send an emergency request.", false);
-      sosModal.classList.remove("active");
-      return;
-    }
-    showSpinner();
-    try {
-      const incidentId = `incident_${Date.now()}_${auth.currentUser.uid}`;
-      const incidentRef = ref(db, `incidents/${incidentId}`);
-      const encryptedLng = encryptCoordinate(userLocation[0]);
-      const encryptedLat = encryptCoordinate(userLocation[1]);
-      if (!encryptedLng || !encryptedLat) {
-        throw new Error("Failed to encrypt coordinates");
+      if (!auth.currentUser || !userLocation) {
+        showAlert("Please sign in and allow location access to send an emergency request.", false);
+        sosModal.classList.remove("active");
+        return;
       }
-      const incidentData = {
-        userId: auth.currentUser.uid,
-        type,
-        location: {
-          encryptedLng,
-          encryptedLat
-        },
-        timestamp: Date.now(),
-        status: 'pending'
-      };
-      await set(incidentRef, incidentData);
-      console.log(`Emergency request sent: ${type} at`, userLocation);
-      showAlert(`Emergency request for ${type} sent successfully!`, true);
-      sosModal.classList.remove("active");
+      showSpinner();
+      try {
+        const incidentId = `incident_${Date.now()}_${auth.currentUser.uid}`;
+        const incidentRef = ref(db, `incidents/${incidentId}`);
+        const encryptedLng = encryptCoordinate(userLocation[0]);
+        const encryptedLat = encryptCoordinate(userLocation[1]);
+        if (!encryptedLng || !encryptedLat) {
+          throw new Error("Failed to encrypt coordinates");
+        }
+        const incidentData = {
+          userId: auth.currentUser.uid,
+          type,
+          location: {
+            encryptedLng,
+            encryptedLat
+          },
+          timestamp: Date.now(),
+          status: 'pending'
+        };
+        await set(incidentRef, incidentData);
+        console.log(`Emergency request sent: ${type} at`, userLocation);
+        showAlert(`Emergency request for ${type} sent successfully!`, true);
+        sosModal.classList.remove("active");
 
-      const usersRef = ref(db, 'users');
-      const usersSnap = await get(usersRef);
-      if (usersSnap.exists()) {
-        const users = usersSnap.val();
-        for (let userId in users) {
-          if (userId !== auth.currentUser.uid) {
-            const notificationRef = ref(db, `emergencyNotifications/${userId}/${incidentId}`);
-            await set(notificationRef, {
-              incidentId,
-              type,
-              timestamp: Date.now(),
-              read: false
-            });
-            console.log(`Notification sent to user ${userId}`);
+        const usersRef = ref(db, 'users');
+        const usersSnap = await get(usersRef);
+        if (usersSnap.exists()) {
+          const users = usersSnap.val();
+          const currentTime = Date.now();
+          for (let userId in users) {
+            if (userId !== auth.currentUser.uid) {
+              const notificationRef = ref(db, `emergencyNotifications/${userId}/${incidentId}`);
+              await set(notificationRef, {
+                incidentId,
+                type,
+                timestamp: currentTime,
+                read: false,
+                createdAt: currentTime // Added for expiration tracking
+              });
+              console.log(`Notification sent to user ${userId}`);
+            }
           }
         }
+      } catch (error) {
+        console.error("Error sending emergency request:", error.code, error.message);
+        showAlert(`Failed to send emergency request: ${error.message}`, false);
+      } finally {
+        hideSpinner();
       }
-    } catch (error) {
-      console.error("Error sending emergency request:", error.code, error.message);
-      showAlert(`Failed to send emergency request: ${error.message}`, false);
-    } finally {
-      hideSpinner();
     }
-  }
 
+    // Add cleanup function for old notifications
+    function cleanupOldNotifications(userId) {
+      const FIVE_MINUTES = 5 * 60 * 1000; // 5 minutes in milliseconds
+      const notificationsRef = ref(db, `emergencyNotifications/${userId}`);
+      onValue(notificationsRef, async (snapshot) => {
+        if (snapshot.exists()) {
+          const notifications = snapshot.val();
+          const currentTime = Date.now();
+          for (let notificationId in notifications) {
+            const notification = notifications[notificationId];
+            if (notification.createdAt && (currentTime - notification.createdAt) > FIVE_MINUTES) {
+              try {
+                const notificationRef = ref(db, `emergencyNotifications/${userId}/${notificationId}`);
+                await remove(notificationRef);
+                console.log(`Removed expired notification ${notificationId}`);
+                await updateNotificationBadge(userId); // Update badge after removal
+              } catch (error) {
+                console.error(`Error removing notification ${notificationId}:`, error);
+              }
+            }
+          }
+        }
+      }, (error) => {
+        console.error("Error monitoring notifications for cleanup:", error);
+      });
+    }
   function debounce(func, wait) {
     return function (...args) {
       clearTimeout(debounceTimeout);
@@ -1911,37 +1939,40 @@
     console.log("Weather drawer closed");
   });
 
-  async function init() {
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    document.documentElement.setAttribute('data-theme', savedTheme);
-    console.log("Initial theme set to:", savedTheme);
+ async function init() {
+      const savedTheme = localStorage.getItem('theme') || 'light';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+      console.log("Initial theme set to:", savedTheme);
 
-    const displayUser = await checkAuthState();
-    if (!displayUser) return;
+      const displayUser = await checkAuthState();
+      if (!displayUser) return;
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const { longitude, latitude } = position.coords;
-          console.log("User location obtained:", [longitude, latitude]);
-          await initializeMap(longitude, latitude, displayUser);
-          setupModal();
-        },
-        (error) => {
-          console.error("Geolocation error:", error);
-          showAlert("Failed to get your location. Using default location.", false);
-          initializeMap(-122.4194, 37.7749, displayUser); // Default to San Francisco
-          setupModal();
-        },
-        { enableHighAccuracy: true }
-      );
-    } else {
-      console.error("Geolocation not supported");
-      showAlert("Geolocation is not supported by your browser. Using default location.", false);
-      initializeMap(-122.4194, 37.7749, displayUser); // Default to San Francisco
-      setupModal();
+      // Start cleanup for old notifications
+      cleanupOldNotifications(displayUser.uid);
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const { longitude, latitude } = position.coords;
+            console.log("User location obtained:", [longitude, latitude]);
+            await initializeMap(longitude, latitude, displayUser);
+            setupModal();
+          },
+          (error) => {
+            console.error("Geolocation error:", error);
+            showAlert("Failed to get your location. Using default location.", false);
+            initializeMap(-122.4194, 37.7749, displayUser); // Default to San Francisco
+            setupModal();
+          },
+          { enableHighAccuracy: true }
+        );
+      } else {
+        console.error("Geolocation not supported");
+        showAlert("Geolocation is not supported by your browser. Using default location.", false);
+        initializeMap(-122.4194, 37.7749, displayUser); // Default to San Francisco
+        setupModal();
+      }
     }
-  }
 
   init().catch(error => {
     console.error("Initialization error:", error);
