@@ -739,7 +739,7 @@
       .bottom-nav { height: 60px; padding: 0.5rem 0; }
       .nav-item svg { width: 20px; height: 20px; }
       .nav-label { font-size: 0.7rem; }
-      .nav-item .badge { width: 16px; height: 16px; font-size: 0.65rem; }
+      .nav-item .badge { width: 16px; height apart: 16px; font-size: 0.65rem; }
       .map-attribution { bottom: 70px; font-size: 0.6rem; padding: 3px 6px; }
       .spinner { width: 40px; height: 40px; border-width: 4px; }
       .map-pin, .destination-pin, .emergency-pin { width: 32px; height: 48px; }
@@ -922,7 +922,7 @@
     console.log("Firebase initialized successfully at", new Date().toLocaleString());
   } catch (error) {
     console.error("Firebase initialization failed:", error.code, error.message);
-    showAlert("Failed to connect to Firebase. Please check your network.");
+    showAlert("Failed to connect to Firebase. Please check your network.", false);
   }
 
   const customAlert = document.getElementById("custom-alert");
@@ -953,7 +953,7 @@
   const reverseGeocodeCache = new Map();
   const weatherCache = new Map();
   let debounceTimeout = null;
-  const alertTimeouts = new Map();
+  let currentMapStyle = 'mapbox://styles/mapbox/light-v11';
 
   const ENCRYPTION_KEY = 'your-secure-key-1234567890123456';
 
@@ -1007,19 +1007,16 @@
       </svg>`
   };
 
-  function showAlert(message) {
-    const alertId = `alert_${Date.now()}`;
+  function showAlert(message, autoHide = true) {
     alertMessage.textContent = message;
     customAlert.classList.add("active");
     customAlert.setAttribute("aria-hidden", "false");
     console.log("Alert shown:", message);
-    
-    // Set timeout to automatically hide and remove alert after 5 minutes (300,000 ms)
-    const timeout = setTimeout(() => {
-      hideAlert();
-      alertTimeouts.delete(alertId);
-    }, 300000);
-    alertTimeouts.set(alertId, timeout);
+    if (autoHide) {
+      setTimeout(() => {
+        hideAlert();
+      }, 5000);
+    }
   }
 
   function hideAlert() {
@@ -1028,18 +1025,13 @@
     console.log("Alert hidden");
   }
 
-  document.querySelector(".custom-alert .close-btn").addEventListener("click", () => {
-    hideAlert();
-    // Clear all alert timeouts when manually closed
-    alertTimeouts.forEach((timeout, id) => clearTimeout(timeout));
-    alertTimeouts.clear();
-  });
+  document.querySelector(".custom-alert .close-btn").addEventListener("click", hideAlert);
 
   function setupModal() {
     sosButton.addEventListener("click", () => {
       sosModal.classList.add("active");
       console.log("SOS modal opened");
-      emergencyOptions.querySelector("li").focus();
+      emergencyOptions.querySelector("li").focus(); // Focus first option
     });
     closeSosModal.addEventListener("click", () => {
       sosModal.classList.remove("active");
@@ -1056,6 +1048,7 @@
       }
     });
 
+    // Add event listeners to emergency options
     emergencyOptions.querySelectorAll("li").forEach(option => {
       const type = option.dataset.type;
       option.addEventListener("click", () => {
@@ -1078,6 +1071,97 @@
     document.documentElement.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newTheme);
     console.log("Theme toggled to:", newTheme);
+
+    const newMapStyle = newTheme === 'light' ? 'mapbox://styles/mapbox/light-v11' : 'mapbox://styles/mapbox/dark-v11';
+    if (map && currentMapStyle !== newMapStyle) {
+      showSpinner();
+      const center = map.getCenter();
+      const zoom = map.getZoom();
+      const bearing = map.getBearing();
+      const pitch = map.getPitch();
+
+      const storedMarkers = {};
+      Object.keys(markers).forEach(key => {
+        storedMarkers[key] = {
+          lngLat: markers[key].getLngLat(),
+          popup: markers[key].getPopup()?.getHTML(),
+          element: markers[key].getElement().outerHTML
+        };
+      });
+      const storedDestination = destinationMarker ? {
+        lngLat: destinationMarker.getLngLat(),
+        popup: destinationMarker.getPopup()?.getHTML(),
+        element: destinationMarker.getElement().outerHTML
+      } : null;
+      const routeData = map.getSource('route') ? map.getSource('route')._data : null;
+
+      map.setStyle(newMapStyle);
+      currentMapStyle = newMapStyle;
+      console.log("Map style updated to:", newMapStyle);
+
+      map.on('style.load', () => {
+        map.setCenter(center);
+        map.setZoom(zoom);
+        map.setBearing(bearing);
+        map.setPitch(pitch);
+
+        if (routeData) {
+          map.addSource('route', {
+            type: 'geojson',
+            data: routeData
+          });
+          map.addLayer({
+            id: 'route',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round'
+            },
+            paint: {
+              'line-color': '#6D28D9',
+              'line-width': 6,
+              'line-opacity': 0.7
+            }
+          });
+        }
+
+        Object.keys(storedMarkers).forEach(key => {
+          const markerEl = document.createElement('div');
+          markerEl.innerHTML = storedMarkers[key].element;
+          const marker = new mapboxgl.Marker({ element: markerEl, anchor: 'bottom' })
+            .setLngLat(storedMarkers[key].lngLat)
+            .setPopup(new mapboxgl.Popup().setHTML(storedMarkers[key].popup))
+            .addTo(map);
+          markers[key] = marker;
+        });
+
+        if (storedDestination) {
+          const destEl = document.createElement('div');
+          destEl.innerHTML = storedDestination.element;
+          destinationMarker = new mapboxgl.Marker({ element: destEl, anchor: 'bottom', draggable: true })
+            .setLngLat(storedDestination.lngLat)
+            .setPopup(new mapboxgl.Popup().setHTML(storedDestination.popup))
+            .addTo(map);
+          destEl.addEventListener('mousedown', () => destEl.classList.add('dragging'));
+          destEl.addEventListener('mouseup', () => destEl.classList.remove('dragging'));
+          destinationMarker.on('dragend', debounce(async () => {
+            const newCoords = destinationMarker.getLngLat();
+            const newPlaceName = await reverseGeocode([newCoords.lng, newCoords.lat]);
+            destinationPlaceName = newPlaceName;
+            searchInput.value = newPlaceName;
+            destinationMarker.setPopup(new mapboxgl.Popup().setText(`Destination: ${newPlaceName}`));
+            saveRecentDestination([newCoords.lng, newCoords.lat], newPlaceName);
+            await updateRoute([newCoords.lng, newCoords.lat]);
+            const weatherData = await fetchWeatherData(newCoords.lng, newCoords.lat);
+            if (weatherData) {
+              addWeatherMarker(map, newCoords.lng, newCoords.lat, weatherData, newPlaceName);
+            }
+          }, 500));
+        }
+        hideSpinner();
+      });
+    }
   }
 
   themeToggle.addEventListener('click', toggleTheme);
@@ -1140,7 +1224,7 @@
       return { displayName: null, photoURL: null, email: "Unknown User" };
     } catch (error) {
       console.error("Error fetching user data:", error.code, error.message);
-      showAlert(`Failed to load user data: ${error.message}`);
+      showAlert(`Failed to load user data: ${error.message}`, false);
       return { displayName: null, photoURL: null, email: "Unknown User" };
     } finally {
       hideSpinner();
@@ -1177,7 +1261,7 @@
       console.log(`Community badge updated: ${unreadCount}`);
     } catch (error) {
       console.error("Error updating community badge:", error.code, error.message);
-      showAlert(`Failed to update community badge: ${error.message}`);
+      showAlert(`Failed to update community badge: ${error.message}`, false);
     } finally {
       hideSpinner();
     }
@@ -1203,7 +1287,7 @@
       console.log(`Notification badge updated: ${unreadCount}`);
     } catch (error) {
       console.error("Error updating notification badge:", error.code, error.message);
-      showAlert(`Failed to update notifications: ${error.message}`);
+      showAlert(`Failed to update notifications: ${error.message}`, false);
     } finally {
       hideSpinner();
     }
@@ -1218,7 +1302,7 @@
       return await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           console.error("Authentication check timed out");
-          showAlert("Authentication timed out. Please sign in.");
+          showAlert("Authentication timed out. Please sign in.", false);
           document.body.classList.add("fade-out");
           setTimeout(() => window.location.href = "signup.html", 500);
           reject(new Error("Authentication timed out"));
@@ -1228,7 +1312,7 @@
           clearTimeout(timeout);
           if (!user) {
             console.log("No authenticated user");
-            showAlert("Please sign in to continue.");
+            showAlert("Please sign in to continue.", false);
             document.body.classList.add("fade-out");
             setTimeout(() => window.location.href = "signup.html", 500);
             hideSpinner();
@@ -1253,7 +1337,7 @@
         }, (error) => {
           clearTimeout(timeout);
           console.error("Auth state error:", error.code, error.message);
-          showAlert(`Authentication failed: ${error.message}`);
+          showAlert(`Authentication failed: ${error.message}`, false);
           document.body.classList.add("fade-out");
           setTimeout(() => window.location.href = "signup.html", 500);
           hideSpinner();
@@ -1262,7 +1346,7 @@
       });
     } catch (error) {
       console.error("Auth check failed:", error.code, error.message);
-      showAlert(`Failed to verify authentication: ${error.message}`);
+      showAlert(`Failed to verify authentication: ${error.message}`, false);
       hideSpinner();
       return null;
     }
@@ -1295,7 +1379,7 @@
       return weatherData;
     } catch (error) {
       console.error("Error fetching weather data:", error);
-      showAlert("Failed to fetch weather data.");
+      showAlert("Failed to fetch weather data.", false);
       return null;
     }
   }
@@ -1348,7 +1432,7 @@
       }
     } catch (error) {
       console.error("Error displaying weather:", error);
-      showAlert("Failed to display weather information.");
+      showAlert("Failed to display weather information.", false);
     } finally {
       hideSpinner();
     }
@@ -1388,24 +1472,17 @@
       }
       userLocation = [lng, lat];
       console.log("Initializing Mapbox with center:", [lng, lat]);
-
-      // Preload map tiles
-      const preloadLink = document.createElement('link');
-      preloadLink.rel = 'preload';
-      preloadLink.href = 'mapbox://styles/mapbox/light-v11';
-      preloadLink.as = 'style';
-      document.head.appendChild(preloadLink);
+      const initialStyle = document.documentElement.getAttribute('data-theme') === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/light-v11';
+      currentMapStyle = initialStyle;
 
       map = new mapboxgl.Map({
         container: 'map',
-        style: 'mapbox://styles/mapbox/light-v11',
+        style: initialStyle,
         center: [lng, lat],
         zoom: 12,
-        pitch: 60,
+        pitch: 60, // 3D effect
         bearing: 0,
-        interactive: true,
-        antialias: false, // Optimize performance
-        maxBounds: [[lng - 0.5, lat - 0.5], [lng + 0.5, lat + 0.5]] // Limit map extent
+        interactive: true
       });
 
       map.on('load', async () => {
@@ -1489,13 +1566,13 @@
             }
           } catch (error) {
             console.error("Error processing incidents:", error.code, error.message);
-            showAlert(`Failed to load incidents: ${error.message}`);
+            showAlert(`Failed to load incidents: ${error.message}`, false);
           } finally {
             hideSpinner();
           }
         }, (error) => {
           console.error("onValue error for incidents:", error.code, error.message);
-          showAlert(`Failed to monitor incidents: ${error.message}`);
+          showAlert(`Failed to monitor incidents: ${error.message}`, false);
           hideSpinner();
         });
 
@@ -1505,12 +1582,12 @@
 
       map.on('error', (error) => {
         console.error("Mapbox error:", error);
-        showAlert("Failed to load the map. Please check your Mapbox access token or network.");
+        showAlert("Failed to load the map. Please check your Mapbox access token or network.", false);
         hideSpinner();
       });
     } catch (error) {
       console.error("Map initialization failed:", error);
-      showAlert("Failed to initialize map: " + error.message);
+      showAlert("Failed to initialize map: " + error.message, false);
       hideSpinner();
     }
   }
@@ -1598,7 +1675,7 @@
         clearButton.classList.toggle('active', query.length > 0);
       } catch (error) {
         console.error("Geocoding error:", error);
-        showAlert("Failed to fetch search suggestions.");
+        showAlert("Failed to fetch search suggestions.", false);
         suggestionsList.classList.remove('active');
         updateSuggestionsAria();
       } finally {
@@ -1629,8 +1706,7 @@
     });
   }
 
- // Continuation from the truncated selectDestination function
-async function selectDestination(coords, placeName) {
+ async function selectDestination(coords, placeName) {
   try {
     showSpinner();
     suggestionsList.classList.remove('active');
@@ -1669,202 +1745,208 @@ async function selectDestination(coords, placeName) {
       await updateRoute([newCoords.lng, newCoords.lat]);
       const weatherData = await fetchWeatherData(newCoords.lng, newCoords.lat);
       if (weatherData) {
-        // Remove existing weather markers except for user's location
-        Object.values(markers).forEach(marker => {
-          if (marker._element.className.includes('weather-marker')) {
-            marker.remove();
-          }
-        });
         addWeatherMarker(map, newCoords.lng, newCoords.lat, weatherData, newPlaceName);
-        console.log(`Weather marker updated for ${newPlaceName} at:`, [newCoords.lng, newCoords.lat]);
       }
     }, 500));
 
-    // Initial route and weather marker setup
+    console.log(`Destination marker added for ${placeName} at:`, coords);
     saveRecentDestination(coords, placeName);
     await updateRoute(coords);
     const weatherData = await fetchWeatherData(coords[0], coords[1]);
     if (weatherData) {
       addWeatherMarker(map, coords[0], coords[1], weatherData, placeName);
     }
-    map.flyTo({ center: coords, zoom: 14, duration: 1000 });
-    console.log(`Destination selected: ${placeName} at`, coords);
+    map.flyTo({ center: coords, zoom: 14, pitch: 60 });
   } catch (error) {
     console.error("Error selecting destination:", error);
-    showAlert("Failed to set destination. Please try again.");
+    showAlert("Failed to set destination.", false);
   } finally {
     hideSpinner();
   }
 }
 
-// Supporting functions
-async function reverseGeocode(coords) {
-  const cacheKey = `${coords[0].toFixed(6)},${coords[1].toFixed(6)}`;
-  if (reverseGeocodeCache.has(cacheKey)) {
-    console.log("Using cached reverse geocode for:", cacheKey);
-    return reverseGeocodeCache.get(cacheKey);
-  }
-  try {
-    const response = await fetch(
-      `https://api.mapbox.com/geocoding/v5/mapbox.places/${coords[0]},${coords[1]}.json?access_token=${mapboxgl.accessToken}`
-    );
-    if (!response.ok) {
-      throw new Error(`Reverse geocoding error: ${response.statusText}`);
+    async function reverseGeocode(coords) {
+    const cacheKey = `${coords[0].toFixed(6)},${coords[1].toFixed(6)}`;
+    if (reverseGeocodeCache.has(cacheKey)) {
+      console.log("Using cached reverse geocode for:", cacheKey);
+      return reverseGeocodeCache.get(cacheKey);
     }
-    const data = await response.json();
-    const placeName = data.features[0]?.place_name || "Unknown Location";
-    reverseGeocodeCache.set(cacheKey, placeName);
-    console.log(`Reverse geocoded: ${placeName} for`, coords);
-    return placeName;
-  } catch (error) {
-    console.error("Reverse geocoding error:", error);
-    showAlert("Failed to fetch location name.");
-    return "Unknown Location";
-  }
-}
-
-async function updateRoute(coords) {
-  if (!userLocation || !coords) return;
-  try {
-    const response = await fetch(
-      `https://api.mapbox.com/directions/v5/mapbox/walking/${userLocation[0]},${userLocation[1]};${coords[0]},${coords[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`
-    );
-    if (!response.ok) {
-      throw new Error(`Directions API error: ${response.statusText}`);
-    }
-    const data = await response.json();
-    if (data.routes.length === 0) {
-      throw new Error("No route found");
-    }
-    const route = data.routes[0].geometry;
-    if (map.getSource('route')) {
-      map.getSource('route').setData({
-        type: 'Feature',
-        geometry: route
-      });
-    } else {
-      map.addSource('route', {
-        type: 'geojson',
-        data: {
-          type: 'Feature',
-          geometry: route
-        }
-      });
-      map.addLayer({
-        id: 'route',
-        type: 'line',
-        source: 'route',
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round'
-        },
-        paint: {
-          'line-color': '#6D28D9',
-          'line-width': 5,
-          'line-opacity': 0.75
-        }
-      });
-    }
-    console.log("Route updated to:", coords);
-  } catch (error) {
-    console.error("Error updating route:", error);
-    showAlert("Failed to update route.");
-  }
-}
-
-function debounce(func, wait) {
-  return function (...args) {
-    clearTimeout(debounceTimeout);
-    debounceTimeout = setTimeout(() => func.apply(this, args), wait);
-  };
-}
-
-async function requestEmergency(type) {
-  if (!auth.currentUser || !userLocation) {
-    showAlert("You must be signed in and have location access to send an emergency alert.");
-    sosModal.classList.remove("active");
-    return;
-  }
-  showSpinner();
-  try {
-    const incidentId = `incident_${Date.now()}_${auth.currentUser.uid}`;
-    const incidentData = {
-      userId: auth.currentUser.uid,
-      type,
-      status: 'pending',
-      timestamp: Date.now(),
-      location: {
-        encryptedLng: encryptCoordinate(userLocation[0]),
-        encryptedLat: encryptCoordinate(userLocation[1])
-      }
-    };
-    const incidentRef = ref(db, `incidents/${incidentId}`);
-    await set(incidentRef, incidentData);
-    console.log(`Emergency requested: ${type} at`, userLocation);
-    showAlert(`Emergency alert sent: ${type}. Help is on the way.`);
-    sosModal.classList.remove("active");
-  } catch (error) {
-    console.error("Error sending emergency:", error.code, error.message);
-    showAlert(`Failed to send emergency alert: ${error.message}`);
-  } finally {
-    hideSpinner();
-  }
-}
-
-weatherButton.addEventListener('click', async () => {
-  const coords = destinationMarker ? destinationMarker.getLngLat() : { lng: userLocation[0], lat: userLocation[1] };
-  await displayWeatherDrawer(coords.lng, coords.lat);
-});
-
-closeWeatherDrawer.addEventListener('click', () => {
-  weatherDrawer.classList.remove('active');
-  weatherDrawer.setAttribute('aria-hidden', 'true');
-  console.log("Weather drawer closed");
-});
-
-async function initializeApp() {
-  showSpinner();
-  try {
-    const user = await checkAuthState();
-    if (!user) return;
-
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const { longitude, latitude } = position.coords;
-          await initializeMap(longitude, latitude, user);
-          setupModal();
-        },
-        (error) => {
-          console.error("Geolocation error:", error.code, error.message);
-          showAlert("Unable to access your location. Using default location.");
-          // Default to a central location (e.g., New York City)
-          initializeMap(-74.0060, 40.7128, user);
-          setupModal();
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
+    try {
+      const response = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${coords[0]},${coords[1]}.json?access_token=${mapboxgl.accessToken}`
       );
-    } else {
-      console.error("Geolocation not supported");
-      showAlert("Geolocation is not supported by your browser. Using default location.");
-      initializeMap(-74.0060, 40.7128, user);
-      setupModal();
+      if (!response.ok) {
+        throw new Error(`Reverse geocoding error: ${response.statusText}`);
+      }
+      const data = await response.json();
+      const placeName = data.features[0]?.place_name || 'Unknown Location';
+      reverseGeocodeCache.set(cacheKey, placeName);
+      console.log("Reverse geocode result:", placeName);
+      return placeName;
+    } catch (error) {
+      console.error("Reverse geocoding error:", error);
+      showAlert("Failed to fetch location name.", false);
+      return 'Unknown Location';
     }
+  }
 
-    // Load initial theme
+  async function updateRoute(coords) {
+    if (!userLocation || !coords) return;
+    try {
+      const response = await fetch(
+        `https://api.mapbox.com/directions/v5/mapbox/driving/${userLocation[0]},${userLocation[1]};${coords[0]},${coords[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`
+      );
+      if (!response.ok) {
+        throw new Error(`Directions API error: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.routes && data.routes.length > 0) {
+        const route = data.routes[0].geometry;
+        if (map.getSource('route')) {
+          map.getSource('route').setData(route);
+        } else {
+          map.addSource('route', {
+            type: 'geojson',
+            data: route
+          });
+          map.addLayer({
+            id: 'route',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round'
+            },
+            paint: {
+              'line-color': '#6D28D9',
+              'line-width': 6,
+              'line-opacity': 0.7
+            }
+          });
+        }
+        console.log("Route updated from", userLocation, "to", coords);
+      } else {
+        console.warn("No route found");
+        showAlert("No route found to the destination.", false);
+      }
+    } catch (error) {
+      console.error("Error updating route:", error);
+      showAlert("Failed to update route.", false);
+    }
+  }
+
+  async function requestEmergency(type) {
+    if (!auth.currentUser || !userLocation) {
+      showAlert("Please sign in and allow location access to send an emergency request.", false);
+      sosModal.classList.remove("active");
+      return;
+    }
+    showSpinner();
+    try {
+      const incidentId = `incident_${Date.now()}_${auth.currentUser.uid}`;
+      const incidentRef = ref(db, `incidents/${incidentId}`);
+      const encryptedLng = encryptCoordinate(userLocation[0]);
+      const encryptedLat = encryptCoordinate(userLocation[1]);
+      if (!encryptedLng || !encryptedLat) {
+        throw new Error("Failed to encrypt coordinates");
+      }
+      const incidentData = {
+        userId: auth.currentUser.uid,
+        type,
+        location: {
+          encryptedLng,
+          encryptedLat
+        },
+        timestamp: Date.now(),
+        status: 'pending'
+      };
+      await set(incidentRef, incidentData);
+      console.log(`Emergency request sent: ${type} at`, userLocation);
+      showAlert(`Emergency request for ${type} sent successfully!`, true);
+      sosModal.classList.remove("active");
+
+      const usersRef = ref(db, 'users');
+      const usersSnap = await get(usersRef);
+      if (usersSnap.exists()) {
+        const users = usersSnap.val();
+        for (let userId in users) {
+          if (userId !== auth.currentUser.uid) {
+            const notificationRef = ref(db, `emergencyNotifications/${userId}/${incidentId}`);
+            await set(notificationRef, {
+              incidentId,
+              type,
+              timestamp: Date.now(),
+              read: false
+            });
+            console.log(`Notification sent to user ${userId}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error sending emergency request:", error.code, error.message);
+      showAlert(`Failed to send emergency request: ${error.message}`, false);
+    } finally {
+      hideSpinner();
+    }
+  }
+
+  function debounce(func, wait) {
+    return function (...args) {
+      clearTimeout(debounceTimeout);
+      debounceTimeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
+  weatherButton.addEventListener('click', () => {
+    if (userLocation) {
+      displayWeatherDrawer(userLocation[0], userLocation[1]);
+    } else {
+      showAlert("Location not available. Please enable location services.", false);
+    }
+  });
+
+  closeWeatherDrawer.addEventListener('click', () => {
+    weatherDrawer.classList.remove('active');
+    weatherDrawer.setAttribute('aria-hidden', 'true');
+    console.log("Weather drawer closed");
+  });
+
+  async function init() {
     const savedTheme = localStorage.getItem('theme') || 'light';
     document.documentElement.setAttribute('data-theme', savedTheme);
     console.log("Initial theme set to:", savedTheme);
-  } catch (error) {
-    console.error("App initialization failed:", error);
-    showAlert("Failed to initialize app: " + error.message);
-  } finally {
-    hideSpinner();
-  }
-}
 
-// Initialize the app
-initializeApp();
+    const displayUser = await checkAuthState();
+    if (!displayUser) return;
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const { longitude, latitude } = position.coords;
+          console.log("User location obtained:", [longitude, latitude]);
+          await initializeMap(longitude, latitude, displayUser);
+          setupModal();
+        },
+        (error) => {
+          console.error("Geolocation error:", error);
+          showAlert("Failed to get your location. Using default location.", false);
+          initializeMap(-122.4194, 37.7749, displayUser); // Default to San Francisco
+          setupModal();
+        },
+        { enableHighAccuracy: true }
+      );
+    } else {
+      console.error("Geolocation not supported");
+      showAlert("Geolocation is not supported by your browser. Using default location.", false);
+      initializeMap(-122.4194, 37.7749, displayUser); // Default to San Francisco
+      setupModal();
+    }
+  }
+
+  init().catch(error => {
+    console.error("Initialization error:", error);
+    showAlert("Failed to initialize app: " + error.message, false);
+  });
 </script>
 </body>
 </html>
