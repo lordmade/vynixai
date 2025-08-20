@@ -8,9 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.24/dist/brain-browser.min.js"></script>
   <style>
-    /* Existing CSS remains unchanged */
     :root {
       --primary-purple: #6D28D9;
       --secondary-teal: #06B6D4;
@@ -859,8 +857,6 @@
     let touchTimeout = null;
     let conversationToDelete = null;
     let userLocation = null;
-    let brainNet = new brain.recurrent.LSTM();
-    let isModelTrained = false;
 
     // Fetch user's current location with reverse geolocation
     async function getUserLocation() {
@@ -901,130 +897,6 @@
           { timeout: 10000, enableHighAccuracy: true }
         );
       });
-    }
-
-    // Preprocess text for training
-    function preprocessText(text) {
-      return text.toLowerCase()
-        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
-        .split(/\s+/)
-        .filter(word => word.length > 0);
-    }
-
-    // Prepare training data from Firebase
-    async function prepareTrainingData() {
-      try {
-        const incidentsRef = ref(db, "incidents");
-        const conversationsRef = ref(db, "conversations");
-        const [incidentsSnap, conversationsSnap] = await Promise.all([
-          get(incidentsRef),
-          get(conversationsRef)
-        ]);
-
-        let trainingData = [];
-
-        // Process incident descriptions
-        if (incidentsSnap.exists()) {
-          const incidents = incidentsSnap.val();
-          Object.values(incidents).forEach(incident => {
-            if (incident.description) {
-              const words = preprocessText(incident.description);
-              for (let i = 0; i < words.length - 1; i++) {
-                trainingData.push({
-                  input: words.slice(0, i + 1).join(" "),
-                  output: words[i + 1]
-                });
-              }
-            }
-            if (incident.type && incident.location) {
-              const text = `${incident.type} at ${incident.location}`;
-              const words = preprocessText(text);
-              for (let i = 0; i < words.length - 1; i++) {
-                trainingData.push({
-                  input: words.slice(0, i + 1).join(" "),
-                  output: words[i + 1]
-                });
-              }
-            }
-          });
-        }
-
-        // Process conversation messages
-        if (conversationsSnap.exists()) {
-          const conversations = conversationsSnap.val();
-          Object.values(conversations).forEach(conv => {
-            if (conv.messages) {
-              Object.values(conv.messages).forEach(msg => {
-                if (msg.text) {
-                  const words = preprocessText(msg.text);
-                  for (let i = 0; i < words.length - 1; i++) {
-                    trainingData.push({
-                      input: words.slice(0, i + 1).join(" "),
-                      output: words[i + 1]
-                    });
-                  }
-                }
-              });
-            }
-          });
-        }
-
-        return trainingData;
-      } catch (error) {
-        console.error("Error preparing training data:", error);
-        showAlert("Failed to prepare training data.", false);
-        return [];
-      }
-    }
-
-    // Train Brain.js model
-    async function trainModel() {
-      if (isModelTrained) return;
-      showSpinner();
-      try {
-        const trainingData = await prepareTrainingData();
-        if (trainingData.length === 0) {
-          console.warn("No training data available");
-          hideSpinner();
-          return;
-        }
-
-        console.log(`Training on ${trainingData.length} data points`);
-        brainNet.train(trainingData, {
-          iterations: 200,
-          errorThresh: 0.005,
-          log: true,
-          logPeriod: 10,
-          learningRate: 0.01
-        });
-        isModelTrained = true;
-        console.log("Model training completed");
-        hideSpinner();
-      } catch (error) {
-        console.error("Error training model:", error);
-        showAlert("Failed to train AI model.", false);
-        hideSpinner();
-      }
-    }
-
-    // Generate response using Brain.js
-    function generateAIResponse(input) {
-      if (!isModelTrained) return null;
-      try {
-        const words = preprocessText(input);
-        let response = [];
-        let currentInput = words.join(" ");
-        for (let i = 0; i < 10; i++) { // Generate up to 10 words
-          const nextWord = brainNet.run(currentInput);
-          if (!nextWord || nextWord === " ") break;
-          response.push(nextWord);
-          currentInput = [...words, ...response].join(" ");
-        }
-        return response.join(" ");
-      } catch (error) {
-        console.error("Error generating AI response:", error);
-        return null;
-      }
     }
 
     conversationSidebar.addEventListener("mouseenter", () => {
@@ -1292,12 +1164,6 @@
         location: ["location of", "where is"],
         incidents: ["total incidents", "how many incidents", "resolved", "average response time", "response time", "types", "kinds of incidents", "incident types", "incidents in"]
       };
-
-      // Try AI-generated response for general queries
-      const aiResponse = generateAIResponse(question);
-      if (aiResponse && !Object.values(keywordCategories).flat().some(keyword => question.includes(keyword))) {
-        return `Based on community insights: ${aiResponse.charAt(0).toUpperCase() + aiResponse.slice(1)}.`;
-      }
 
       // About queries
       if (keywordCategories.about.some(keyword => question.includes(keyword))) {
@@ -1700,7 +1566,6 @@
         console.log("Initial theme set to:", savedTheme);
 
         userLocation = await getUserLocation();
-        await trainModel(); // Train the model on page load
 
         const displayUser = await checkAuthState();
         if (displayUser) {
@@ -1713,7 +1578,7 @@
             userAvatarImg.innerHTML = "";
             userAvatarImg.appendChild(img);
           } else {
-            userAvatarImg.textContent = displayName.charAt(0).toUpperCase();
+            userAvatarImg.textContent = displayUser.displayName.charAt(0).toUpperCase();
           }
           setupChatInput(displayUser);
           loadStats();
