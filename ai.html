@@ -110,7 +110,7 @@
       display: flex;
       flex-direction: column;
       gap: 1rem;
-      padding-bottom: 5rem; /* Add padding to prevent messages from being hidden under input */
+      padding-bottom: 5rem;
     }
 
     .message {
@@ -193,6 +193,34 @@
 
     .message.user .message-timestamp {
       color: var(--white-dark);
+    }
+
+    .thinking-dots {
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .thinking-dots span {
+      width: 8px;
+      height: 8px;
+      background: var(--text-light);
+      border-radius: 50%;
+      margin: 0 2px;
+      animation: blink 1.4s infinite both;
+    }
+
+    .thinking-dots span:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .thinking-dots span:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+
+    @keyframes blink {
+      0% { opacity: 0.2; }
+      20% { opacity: 1; }
+      100% { opacity: 0.2; }
     }
 
     .chat-input-container {
@@ -359,7 +387,7 @@
   <div class="chat-container">
     <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
     <div class="chat-input-container">
-      <input type="text" id="chat-input" class="chat-input" placeholder="Ask about community incidents..." aria-label="Ask about community incidents" maxlength="500">
+      <input type="text" id="chat-input" class="chat-input" placeholder="Ask about community incidents, weather, or locations..." aria-label="Ask about community incidents, weather, or locations" maxlength="500">
       <button class="send-button transition-base" id="send-button" aria-label="Send message">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -417,6 +445,9 @@
     const alertMessage = document.getElementById("alert-message");
     const spinnerOverlay = document.getElementById("spinner-overlay");
     const themeToggle = document.getElementById("theme-toggle");
+
+    const OPENWEATHER_API_KEY = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw'; // Replace with your OpenWeather API key
+    const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw'; // Replace with your Mapbox access token
 
     let stats = {
       totalIncidents: 0,
@@ -576,7 +607,40 @@
       }
     }
 
-    function appendMessage(text, sender, displayName, photoURL) {
+    function appendThinkingDots() {
+      const messageElement = document.createElement("div");
+      messageElement.className = "message ai";
+      messageElement.id = "thinking-message";
+      const contentElement = document.createElement("div");
+      contentElement.className = "message-content";
+      const avatarElement = document.createElement("div");
+      avatarElement.className = "message-avatar";
+      avatarElement.textContent = "AI";
+      const bodyElement = document.createElement("div");
+      bodyElement.className = "message-body";
+      const headerElement = document.createElement("div");
+      headerElement.className = "message-header";
+      headerElement.textContent = "AI Bot";
+      bodyElement.appendChild(headerElement);
+      const textElement = document.createElement("p");
+      textElement.className = "thinking-dots";
+      textElement.innerHTML = "<span></span><span></span><span></span>";
+      bodyElement.appendChild(textElement);
+      const timestampElement = document.createElement("div");
+      timestampElement.className = "message-timestamp";
+      timestampElement.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      bodyElement.appendChild(timestampElement);
+      contentElement.append(avatarElement, bodyElement);
+      messageElement.appendChild(contentElement);
+      chatMessages.appendChild(messageElement);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return messageElement;
+    }
+
+    function appendMessage(text, sender, displayName, photoURL, thinkingMessage = null) {
+      if (thinkingMessage) {
+        thinkingMessage.remove();
+      }
       const messageElement = document.createElement("div");
       messageElement.className = `message ${sender}`;
       const contentElement = document.createElement("div");
@@ -598,7 +662,6 @@
       headerElement.textContent = displayName;
       bodyElement.appendChild(headerElement);
       const textElement = document.createElement("p");
-      textElement.textContent = text;
       bodyElement.appendChild(textElement);
       const timestampElement = document.createElement("div");
       timestampElement.className = "message-timestamp";
@@ -607,11 +670,64 @@
       contentElement.append(avatarElement, bodyElement);
       messageElement.appendChild(contentElement);
       chatMessages.appendChild(messageElement);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      // Typing animation
+      let index = 0;
+      function typeCharacter() {
+        if (index < text.length) {
+          textElement.textContent += text[index];
+          index++;
+          setTimeout(typeCharacter, 30); // Adjust typing speed here (30ms per character)
+        } else {
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+      }
+      typeCharacter();
     }
 
-    function generateResponse(question) {
+    async function generateResponse(question) {
       question = question.toLowerCase();
+
+      // Handle weather queries
+      const weatherMatch = question.match(/weather in (.+)/);
+      if (weatherMatch) {
+        const location = weatherMatch[1].trim();
+        try {
+          const response = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(location)}&appid=${OPENWEATHER_API_KEY}&units=metric`);
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const data = await response.json();
+          return `The current weather in ${data.name} is ${data.weather[0].description} with a temperature of ${data.main.temp}°C, humidity ${data.main.humidity}%, and wind speed ${data.wind.speed} m/s.`;
+        } catch (error) {
+          console.error("Error fetching weather:", error);
+          return "Sorry, I couldn't fetch the weather information at the moment. Please make sure the API key is set correctly.";
+        }
+      }
+
+      // Handle location queries
+      const locationMatch = question.match(/(location of|where is) (.+)/);
+      if (locationMatch) {
+        const place = locationMatch[2].trim();
+        try {
+          const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(place)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const data = await response.json();
+          if (data.features && data.features.length > 0) {
+            const feature = data.features[0];
+            return `${feature.place_name} is located at latitude ${feature.center[1]} and longitude ${feature.center[0]}.`;
+          } else {
+            return "Sorry, I couldn't find information about that location.";
+          }
+        } catch (error) {
+          console.error("Error fetching location:", error);
+          return "Sorry, I couldn't fetch the location information at the moment. Please make sure the API key is set correctly.";
+        }
+      }
+
+      // Original statistics logic
       if (question.includes("total incidents") || question.includes("how many incidents")) {
         return `Hey! In our community, there have been a total of ${stats.totalIncidents} incidents reported.`;
       } else if (question.includes("resolved")) {
@@ -625,7 +741,7 @@
         const typesList = Object.entries(stats.incidentTypes).map(([type, count]) => `${count} ${type}`).join(", ");
         return `The incidents include: ${typesList}.`;
       } else {
-        return "I'm here to help with information about community emergencies and statistics. What specific info are you looking for? For example, ask about total incidents or types.";
+        return "I'm here to help with information about community emergencies, statistics, weather, or locations. What specific info are you looking for? For example, ask about total incidents, types, weather in a city, or where a place is.";
       }
     }
 
@@ -635,8 +751,19 @@
         if (question) {
           appendMessage(question, "user", displayUser.displayName, displayUser.photoURL);
           chatInput.value = "";
-          const response = generateResponse(question);
-          setTimeout(() => appendMessage(response, "ai", "AI Bot", null), 500); // Simulate thinking delay
+          showSpinner();
+          const thinkingMessage = appendThinkingDots();
+          try {
+            const response = await generateResponse(question);
+            setTimeout(() => {
+              hideSpinner();
+              appendMessage(response, "ai", "AI Bot", null, thinkingMessage);
+            }, 3000); // 3-second delay
+          } catch (error) {
+            hideSpinner();
+            thinkingMessage.remove();
+            showAlert("An error occurred while generating the response.");
+          }
         }
       });
 
@@ -659,7 +786,7 @@
           console.log("User authenticated, setting up chat input");
           setupChatInput(displayUser);
           loadStats();
-          appendMessage("Hello! I'm the AI Bot here to provide information about community incidents and statistics. What would you like to know?", "ai", "AI Bot", null);
+          appendMessage("Hello! I'm the AI Bot here to provide information about community incidents, statistics, weather, or locations. What would you like to know?", "ai", "AI Bot", null);
         } else {
           console.warn("No authenticated user, redirecting to signup");
         }
