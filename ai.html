@@ -8,6 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
   <style>
     :root {
       --primary-purple: #6D28D9;
@@ -858,6 +859,70 @@
     let conversationToDelete = null;
     let userLocation = null;
 
+    // Initialize Brain.js neural network
+    const net = new brain.NeuralNetwork({
+      hiddenLayers: [10, 10],
+      activation: 'sigmoid'
+    });
+
+    // Function to normalize input data
+    function normalize(value, min, max) {
+      return (value - min) / (max - min);
+    }
+
+    // Function to train neural network with Firebase incident data
+    async function trainNeuralNetwork(incidentArray) {
+      try {
+        const maxResponseTime = 120; // Assume max response time of 2 hours for normalization
+        const maxIncidentCount = 100; // Assume max incident count of 100 for normalization
+
+        const trainingData = incidentArray
+          .filter(incident => incident.timestamp && incident.updatedAt && incident.severity)
+          .map(incident => {
+            const responseTime = (incident.updatedAt - incident.timestamp) / (1000 * 60); // Minutes
+            const isResolved = incident.status === "resolved" ? 1 : 0;
+            const severity = incident.severity === "high" ? 1 : incident.severity === "medium" ? 0.5 : 0;
+            return {
+              input: {
+                responseTime: normalize(Math.min(responseTime, maxResponseTime), 0, maxResponseTime),
+                incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
+                isResolved
+              },
+              output: { severity }
+            };
+          });
+
+        if (trainingData.length > 0) {
+          net.train(trainingData, {
+            iterations: 1000,
+            learningRate: 0.05,
+            errorThresh: 0.005
+          });
+          console.log(`Neural network trained with ${trainingData.length} incidents`);
+        } else {
+          console.warn("No valid incident data for training");
+          // Fallback to mock data
+          const mockTrainingData = [
+            { input: { responseTime: 0.1, incidentCount: 0.2, isResolved: 0 }, output: { severity: 0 } },
+            { input: { responseTime: 0.3, incidentCount: 0.4, isResolved: 0 }, output: { severity: 0.5 } },
+            { input: { responseTime: 0.6, incidentCount: 0.7, isResolved: 0 }, output: { severity: 1 } },
+            { input: { responseTime: 0.2, incidentCount: 0.3, isResolved: 1 }, output: { severity: 0 } },
+            { input: { responseTime: 0.4, incidentCount: 0.5, isResolved: 1 }, output: { severity: 0.5 } },
+            { input: { responseTime: 0.8, incidentCount: 0.8, isResolved: 0 }, output: { severity: 1 } }
+          ];
+          net.train(mockTrainingData, {
+            iterations: 1000,
+            learningRate: 0.1,
+            errorThresh: 0.005
+          });
+          console.log("Neural network trained with mock data due to insufficient real data");
+        }
+      } catch (error) {
+        console.error("Error training neural network:", error);
+        showAlert("Failed to train AI model for severity prediction.", false);
+      }
+    }
+
     // Fetch user's current location with reverse geolocation
     async function getUserLocation() {
       return new Promise((resolve, reject) => {
@@ -1038,7 +1103,7 @@
     async function loadStats() {
       try {
         const incidentsRef = ref(db, "incidents");
-        onValue(incidentsRef, (snapshot) => {
+        onValue(incidentsRef, async (snapshot) => {
           try {
             if (snapshot.exists()) {
               const incidents = snapshot.val();
@@ -1061,8 +1126,13 @@
               });
 
               stats.avgResponseTime = responseTimeCount > 0 ? (totalResponseTime / responseTimeCount).toFixed(2) : "N/A";
+
+              // Train neural network with incident data
+              await trainNeuralNetwork(incidentArray);
             } else {
               stats = { totalIncidents: 0, resolvedIncidents: 0, avgResponseTime: "N/A", incidentTypes: {} };
+              // Train with mock data if no incidents
+              await trainNeuralNetwork([]);
             }
           } catch (error) {
             console.error("Error processing stats snapshot:", error, "Code:", error.code || "N/A");
@@ -1162,7 +1232,8 @@
         about: ["who are you", "what are you", "who created you", "what is your purpose", "why do you exist", "vynix company", "about vynix", "katlego phasha", "ceo"],
         weather: ["weather in my location", "weather here", "weather in", "forecast in", "weather forecast"],
         location: ["location of", "where is"],
-        incidents: ["total incidents", "how many incidents", "resolved", "average response time", "response time", "types", "kinds of incidents", "incident types", "incidents in"]
+        incidents: ["total incidents", "how many incidents", "resolved", "average response time", "response time", "types", "kinds of incidents", "incident types", "incidents in"],
+        severity: ["predict severity", "incident severity", "severity of incident"]
       };
 
       // About queries
@@ -1312,6 +1383,57 @@
         }
       }
 
+      // Incident severity prediction
+      if (keywordCategories.severity.some(keyword => question.includes(keyword))) {
+        try {
+          const maxResponseTime = 120; // Max response time in minutes
+          const maxIncidentCount = 100; // Max incident count
+          
+          // Fetch weather data for context (assuming severe weather might influence incident severity)
+          let weatherImpact = 0;
+          if (userLocation) {
+            const weatherResponse = await fetch(
+              `https://api.openweathermap.org/data/2.5/weather?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
+            );
+            if (weatherResponse.ok) {
+              const weatherData = await weatherResponse.json();
+              // Simple heuristic: severe weather (e.g., storm, rain) increases severity
+              const severeConditions = ["storm", "rain", "snow", "tornado"];
+              if (severeConditions.some(condition => weatherData.weather[0].description.toLowerCase().includes(condition))) {
+                weatherImpact = 0.2; // Increase severity by 20%
+              }
+            }
+          }
+
+          const input = {
+            responseTime: stats.avgResponseTime !== "N/A" ? normalize(parseFloat(stats.avgResponseTime), 0, maxResponseTime) : 0.5,
+            incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
+            isResolved: stats.resolvedIncidents / (stats.totalIncidents || 1)
+          };
+          const output = net.run(input);
+          let severity = output.severity + weatherImpact;
+          severity = Math.min(Math.max(severity, 0), 1); // Clamp between 0 and 1
+
+          let severityLabel;
+          if (severity < 0.33) {
+            severityLabel = "Low";
+          } else if (severity < 0.66) {
+            severityLabel = "Medium";
+          } else {
+            severityLabel = "High";
+          }
+
+          let response = `Based on current incident data and local conditions, the predicted incident severity is ${severityLabel} (confidence: ${(severity * 100).toFixed(2)}%).`;
+          if (weatherImpact > 0) {
+            response += `\nNote: Severe weather conditions in your area may have influenced this prediction.`;
+          }
+          return response;
+        } catch (error) {
+          console.error("Error predicting severity:", error);
+          return "I'm having trouble predicting incident severity right now. Please try again later.";
+        }
+      }
+
       // Incident queries
       if (keywordCategories.incidents.some(keyword => question.includes(keyword))) {
         try {
@@ -1357,7 +1479,7 @@
         }
       }
 
-      return "I'm still learning about that topic. Please try asking about community incidents, weather, locations, or about Vynix AI!";
+      return "I'm still learning about that topic. Please try asking about community incidents, weather, locations, incident severity, or about Vynix AI!";
     }
 
     async function saveMessage(conversationId, text, sender, displayName, photoURL) {
@@ -1583,7 +1705,7 @@
           setupChatInput(displayUser);
           loadStats();
           loadConversations(displayUser.uid);
-          appendMessage("Hello! I'm Vynix AI, My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. Ask me about community incidents, statistics, weather, locations, or about myself!", "ai", "Vynix AI", null);
+          appendMessage("Hello! I'm Vynix AI, My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. I can also predict incident severity using AI. Ask me about community incidents, statistics, weather, locations, or about myself!", "ai", "Vynix AI", null);
         } else {
           console.warn("No authenticated user, redirecting to signup");
         }
