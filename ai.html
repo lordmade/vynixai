@@ -8,6 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
   <style>
     :root {
@@ -801,6 +802,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, get, onValue, push, set, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getRemoteConfig, fetchAndActivate, getValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -813,11 +815,13 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    let app, auth, db;
+    let app, auth, db, remoteConfig;
     try {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
       db = getDatabase(app);
+      remoteConfig = getRemoteConfig(app);
+      remoteConfig.settings.minimumFetchIntervalMillis = 3600000; // 1 hour cache
       console.log("Firebase initialized successfully at", new Date().toLocaleString());
     } catch (error) {
       console.error("Firebase initialization failed:", error.code, error.message);
@@ -858,6 +862,7 @@
     let touchTimeout = null;
     let conversationToDelete = null;
     let userLocation = null;
+    let deepseekApiKey = '';
 
     // Initialize Brain.js neural network
     const net = new brain.NeuralNetwork({
@@ -1225,6 +1230,39 @@
       typeCharacter();
     }
 
+    async function callDeepSeek(userQuery, info) {
+      if (!deepseekApiKey) {
+        return 'API key not configured. Falling back to default response.';
+      }
+      const systemPrompt = `You are Vynix AI, created by Vynix Company under CEO Katlego Phasha. Your purpose is to enhance community safety with real-time insights on incidents, weather, and locations. You can predict incident severity using AI. Use the provided info to generate a friendly, helpful response to the user query.`;
+      const prompt = `User query: ${userQuery}\n\nInfo: ${info}`;
+      try {
+        const response = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${deepseekApiKey}`
+          },
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: prompt }
+            ],
+            stream: false
+          })
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data.choices[0].message.content;
+      } catch (error) {
+        console.error("DeepSeek API error:", error);
+        return "I'm having trouble generating a response right now. Please try again later.";
+      }
+    }
+
     async function generateResponse(question) {
       question = question.toLowerCase().trim();
 
@@ -1236,160 +1274,109 @@
         severity: ["predict severity", "incident severity", "severity of incident"]
       };
 
+      let info = '';
+
       // About queries
       if (keywordCategories.about.some(keyword => question.includes(keyword))) {
-        if (question.includes("who are you") || question.includes("what are you") || question.includes("who created you")) {
-          return "I am Vynix AI, created by Vynix Company under the leadership of CEO Katlego Phasha. My purpose is to empower communities with real-time, AI-driven solutions for safety and awareness, providing accurate information on incidents, weather, and locations to help you stay informed and secure.";
-        } else if (question.includes("what is your purpose") || question.includes("why do you exist")) {
-          return "My purpose as Vynix AI, developed by Vynix Company under CEO Katlego Phasha, is to enhance community safety and connectivity. I deliver real-time insights on incidents, weather updates, and location information, leveraging advanced AI to ensure you have the data you need to stay safe and informed.";
-        } else if (question.includes("vynix company") || question.includes("about vynix")) {
-          return "Vynix Company, led by CEO Katlego Phasha, is a leader in innovative digital solutions, specializing in AI-driven technologies. I'm Vynix AI, created to support communities with real-time data on incidents, weather, and locations, ensuring safety and informed decision-making.";
-        } else if (question.includes("katlego phasha") || question.includes("ceo")) {
-          return "Katlego Phasha is the CEO of Vynix Company, the innovative force behind my creation. As Vynix AI, I'm designed to provide real-time community safety insights, including incident reports, weather updates, and location information, reflecting Vynix’s commitment to cutting-edge AI solutions.";
-        }
+        info = "Vynix AI is created by Vynix Company under CEO Katlego Phasha. Purpose: empower communities with real-time, AI-driven solutions for safety and awareness, providing accurate information on incidents, weather, and locations.";
       }
 
       // Weather queries
-      if (keywordCategories.weather.some(keyword => question.includes(keyword))) {
+      else if (keywordCategories.weather.some(keyword => question.includes(keyword))) {
         if (question.includes("weather in my location") || question.includes("weather here") || question.includes("forecast in my location")) {
           if (!userLocation) {
             userLocation = await getUserLocation();
           }
           if (!userLocation) {
-            return "Please enable location services in your browser to get weather information for your current location.";
+            info = "Please enable location services to get weather information for your current location.";
+          } else {
+            try {
+              const currentResponse = await fetch(
+                `https://api.openweathermap.org/data/2.5/weather?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
+              );
+              const currentData = await currentResponse.json();
+              const forecastResponse = await fetch(
+                `https://api.openweathermap.org/data/2.5/forecast?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
+              );
+              const forecastData = await forecastResponse.json();
+              const tomorrow = forecastData.list.find(item => 
+                new Date(item.dt * 1000).toDateString() === new Date(Date.now() + 24 * 60 * 60 * 1000).toDateString()
+              );
+              info = `Location: ${userLocation.placeName}. Current weather: ${currentData.weather[0].description}, Temperature: ${currentData.main.temp}°C, Humidity: ${currentData.main.humidity}%, Wind Speed: ${currentData.wind.speed} m/s. Tomorrow's forecast: ${tomorrow ? tomorrow.weather[0].description + ', Temperature: ' + tomorrow.main.temp + '°C' : 'Not available'}. Suggest viewing detailed weather map.`;
+            } catch (error) {
+              info = "Trouble fetching weather data for your location.";
+            }
           }
-          try {
-            // Fetch current weather
-            const currentResponse = await fetch(
-              `https://api.openweathermap.org/data/2.5/weather?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
-            );
-            if (!currentResponse.ok) {
-              throw new Error(`HTTP error! status: ${currentResponse.status}`);
+        } else {
+          const weatherMatch = question.match(/(weather in|forecast in) (.+)/);
+          if (weatherMatch) {
+            const location = weatherMatch[2].trim();
+            try {
+              const geoResponse = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+              const geoData = await geoResponse.json();
+              if (!geoData.features || geoData.features.length === 0) {
+                info = `Couldn't find location: ${location}.`;
+              } else {
+                const { center, place_name } = geoData.features[0];
+                const [lon, lat] = center;
+                const currentResponse = await fetch(
+                  `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
+                );
+                const currentData = await currentResponse.json();
+                const forecastResponse = await fetch(
+                  `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
+                );
+                const forecastData = await forecastResponse.json();
+                const tomorrow = forecastData.list.find(item => 
+                  new Date(item.dt * 1000).toDateString() === new Date(Date.now() + 24 * 60 * 60 * 1000).toDateString()
+                );
+                info = `Location: ${place_name}. Current weather: ${currentData.weather[0].description}, Temperature: ${currentData.main.temp}°C, Humidity: ${currentData.main.humidity}%, Wind Speed: ${currentData.wind.speed} m/s. Tomorrow's forecast: ${tomorrow ? tomorrow.weather[0].description + ', Temperature: ' + tomorrow.main.temp + '°C' : 'Not available'}. Suggest viewing detailed weather map.`;
+              }
+            } catch (error) {
+              info = "Trouble fetching weather data for that location.";
             }
-            const currentData = await currentResponse.json();
-
-            // Fetch forecast
-            const forecastResponse = await fetch(
-              `https://api.openweathermap.org/data/2.5/forecast?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
-            );
-            if (!forecastResponse.ok) {
-              throw new Error(`HTTP error! status: ${forecastResponse.status}`);
-            }
-            const forecastData = await forecastResponse.json();
-
-            const tomorrow = forecastData.list.find(item => 
-              new Date(item.dt * 1000).toDateString() === new Date(Date.now() + 24 * 60 * 60 * 1000).toDateString()
-            );
-
-            let response = `Current weather in ${userLocation.placeName}: ${currentData.weather[0].description}, Temperature: ${currentData.main.temp}°C, Humidity: ${currentData.main.humidity}%, Wind Speed: ${currentData.wind.speed} m/s.`;
-            if (tomorrow) {
-              response += `\nTomorrow's forecast: ${tomorrow.weather[0].description}, Temperature: ${tomorrow.main.temp}°C.`;
-            } else {
-              response += `\nTomorrow's forecast not available.`;
-            }
-            response += `\nFor a detailed weather map, click the 'View Weather' button above.`;
-            return response;
-          } catch (error) {
-            console.error("Error fetching weather:", error);
-            return "I'm having trouble fetching weather information for your location. Please try again later or check the 'View Weather' page.";
-          }
-        }
-
-        const weatherMatch = question.match(/(weather in|forecast in) (.+)/);
-        if (weatherMatch) {
-          const location = weatherMatch[2].trim();
-          try {
-            // Geocode the location
-            const geoResponse = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
-            if (!geoResponse.ok) {
-              throw new Error(`HTTP error! status: ${geoResponse.status}`);
-            }
-            const geoData = await geoResponse.json();
-            if (!geoData.features || geoData.features.length === 0) {
-              return `I couldn't find ${location}. Please check the name and try again.`;
-            }
-            const { center, place_name } = geoData.features[0];
-            const [lon, lat] = center;
-
-            // Fetch current weather
-            const currentResponse = await fetch(
-              `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
-            );
-            if (!currentResponse.ok) {
-              throw new Error(`HTTP error! status: ${currentResponse.status}`);
-            }
-            const currentData = await currentResponse.json();
-
-            // Fetch forecast
-            const forecastResponse = await fetch(
-              `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
-            );
-            if (!forecastResponse.ok) {
-              throw new Error(`HTTP error! status: ${forecastResponse.status}`);
-            }
-            const forecastData = await forecastResponse.json();
-
-            const tomorrow = forecastData.list.find(item => 
-              new Date(item.dt * 1000).toDateString() === new Date(Date.now() + 24 * 60 * 60 * 1000).toDateString()
-            );
-
-            let response = `Current weather in ${place_name}: ${currentData.weather[0].description}, Temperature: ${currentData.main.temp}°C, Humidity: ${currentData.main.humidity}%, Wind Speed: ${currentData.wind.speed} m/s.`;
-            if (tomorrow) {
-              response += `\nTomorrow's forecast: ${tomorrow.weather[0].description}, Temperature: ${tomorrow.main.temp}°C.`;
-            } else {
-              response += `\nTomorrow's forecast not available.`;
-            }
-            response += `\nFor a detailed weather map, click the 'View Weather' button above.`;
-            return response;
-          } catch (error) {
-            console.error("Error fetching weather:", error);
-            return "I'm having trouble fetching weather information for that location. Please try again later or check if the location is correct.";
           }
         }
       }
 
       // Location queries
-      if (keywordCategories.location.some(keyword => question.includes(keyword))) {
+      else if (keywordCategories.location.some(keyword => question.includes(keyword))) {
         const locationMatch = question.match(/(location of|where is) (my location|here)/);
         if (locationMatch) {
           if (!userLocation) {
             userLocation = await getUserLocation();
           }
           if (!userLocation) {
-            return "Please enable location services in your browser to get information about your current location.";
+            info = "Please enable location services to get information about your current location.";
+          } else {
+            info = `Current location: ${userLocation.placeName} at latitude ${userLocation.latitude} and longitude ${userLocation.longitude}.`;
           }
-          return `You are currently located in ${userLocation.placeName} at latitude ${userLocation.latitude} and longitude ${userLocation.longitude}.`;
-        }
-
-        const placeMatch = question.match(/(location of|where is) (.+)/);
-        if (placeMatch) {
-          const place = placeMatch[2].trim();
-          try {
-            const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(place)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
+        } else {
+          const placeMatch = question.match(/(location of|where is) (.+)/);
+          if (placeMatch) {
+            const place = placeMatch[2].trim();
+            try {
+              const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(place)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+              const data = await response.json();
+              if (data.features && data.features.length > 0) {
+                const feature = data.features[0];
+                info = `${feature.place_name} is located at latitude ${feature.center[1]} and longitude ${feature.center[0]}.`;
+              } else {
+                info = "Couldn't find information for that location.";
+              }
+            } catch (error) {
+              info = "Trouble fetching location information.";
             }
-            const data = await response.json();
-            if (data.features && data.features.length > 0) {
-              const feature = data.features[0];
-              return `${feature.place_name} is located at latitude ${feature.center[1]} and longitude ${feature.center[0]}.`;
-            } else {
-              return "I'm still learning about that location. I couldn't find information for it at the moment.";
-            }
-          } catch (error) {
-            console.error("Error fetching location:", error);
-            return "I'm still learning how to fetch location information. Please try again later or check if the location name is correct.";
           }
         }
       }
 
       // Incident severity prediction
-      if (keywordCategories.severity.some(keyword => question.includes(keyword))) {
+      else if (keywordCategories.severity.some(keyword => question.includes(keyword))) {
         try {
-          const maxResponseTime = 120; // Max response time in minutes
-          const maxIncidentCount = 100; // Max incident count
+          const maxResponseTime = 120;
+          const maxIncidentCount = 100;
           
-          // Fetch weather data for context (assuming severe weather might influence incident severity)
           let weatherImpact = 0;
           if (userLocation) {
             const weatherResponse = await fetch(
@@ -1397,10 +1384,9 @@
             );
             if (weatherResponse.ok) {
               const weatherData = await weatherResponse.json();
-              // Simple heuristic: severe weather (e.g., storm, rain) increases severity
               const severeConditions = ["storm", "rain", "snow", "tornado"];
               if (severeConditions.some(condition => weatherData.weather[0].description.toLowerCase().includes(condition))) {
-                weatherImpact = 0.2; // Increase severity by 20%
+                weatherImpact = 0.2;
               }
             }
           }
@@ -1412,7 +1398,7 @@
           };
           const output = net.run(input);
           let severity = output.severity + weatherImpact;
-          severity = Math.min(Math.max(severity, 0), 1); // Clamp between 0 and 1
+          severity = Math.min(Math.max(severity, 0), 1);
 
           let severityLabel;
           if (severity < 0.33) {
@@ -1423,63 +1409,58 @@
             severityLabel = "High";
           }
 
-          let response = `Based on current incident data and local conditions, the predicted incident severity is ${severityLabel} (confidence: ${(severity * 100).toFixed(2)}%).`;
-          if (weatherImpact > 0) {
-            response += `\nNote: Severe weather conditions in your area may have influenced this prediction.`;
-          }
-          return response;
+          info = `Predicted incident severity: ${severityLabel} (confidence: ${(severity * 100).toFixed(2)}%). ${weatherImpact > 0 ? 'Note: Severe weather conditions may have influenced this prediction.' : ''}`;
         } catch (error) {
-          console.error("Error predicting severity:", error);
-          return "I'm having trouble predicting incident severity right now. Please try again later.";
+          info = "Trouble predicting incident severity.";
         }
       }
 
       // Incident queries
-      if (keywordCategories.incidents.some(keyword => question.includes(keyword))) {
+      else if (keywordCategories.incidents.some(keyword => question.includes(keyword))) {
         try {
           const incidentsRef = ref(db, "incidents");
           const snapshot = await get(incidentsRef);
           if (snapshot.exists()) {
             const incidents = snapshot.val();
             const incidentArray = Object.entries(incidents).map(([id, data]) => ({ id, ...data }));
-
             if (question.includes("total incidents") || question.includes("how many incidents")) {
-              return `Hey! In our community, there have been a total of ${stats.totalIncidents} incidents reported.`;
+              info = `Total incidents reported: ${stats.totalIncidents}.`;
             } else if (question.includes("resolved")) {
-              return `Out of those, ${stats.resolvedIncidents} incidents have been successfully resolved.`;
+              info = `Resolved incidents: ${stats.resolvedIncidents}.`;
             } else if (question.includes("average response time") || question.includes("response time")) {
-              return `The average time to respond to incidents is about ${stats.avgResponseTime} minutes.`;
+              info = `Average response time: ${stats.avgResponseTime} minutes.`;
             } else if (question.includes("types") || question.includes("kinds of incidents") || question.includes("incident types")) {
               if (Object.keys(stats.incidentTypes).length === 0) {
-                return "There are no incidents categorized yet.";
+                info = "No incidents categorized yet.";
+              } else {
+                const typesList = Object.entries(stats.incidentTypes).map(([type, count]) => `${count} ${type}`).join(", ");
+                info = `Incident types: ${typesList}.`;
               }
-              const typesList = Object.entries(stats.incidentTypes).map(([type, count]) => `${count} ${type}`).join(", ");
-              return `The incidents include: ${typesList}.`;
             } else if (question.includes("incidents in")) {
               const locationMatch = question.match(/incidents in (.+)/);
               if (locationMatch) {
                 const location = locationMatch[1].trim();
                 const matchingIncidents = incidentArray.filter(incident => incident.location && incident.location.toLowerCase().includes(location));
                 if (matchingIncidents.length > 0) {
-                  return `Found ${matchingIncidents.length} incidents in ${location}: ${matchingIncidents.map(i => `${i.type} at ${i.location} (${i.status})`).join(", ")}.`;
+                  info = `Found ${matchingIncidents.length} incidents in ${location}: ${matchingIncidents.map(i => `${i.type} at ${i.location} (${i.status})`).join(", ")}.`;
                 } else {
-                  return `No incidents found in ${location}.`;
+                  info = `No incidents found in ${location}.`;
                 }
               }
-            } else if (question.includes("details")) {
-              const recentIncidents = incidentArray.slice(-5);
-              return `Here are details of recent incidents: ${recentIncidents.map(i => `${i.type} at ${i.location} (${i.status})`).join(", ")}.`;
+            } else {
+              info = "No incident data available.";
             }
           } else {
-            return "No incident data available at the moment.";
+            info = "No incident data available.";
           }
         } catch (error) {
-          console.error("Error fetching incidents from Firebase:", error);
-          return "I'm having trouble accessing incident data right now. Please try again later.";
+          info = "Trouble accessing incident data.";
         }
+      } else {
+        info = "This is a general query. Respond helpfully about community incidents, weather, locations, incident severity, or about Vynix AI.";
       }
 
-      return "I'm still learning about that topic. Please try asking about community incidents, weather, locations, incident severity, or about Vynix AI!";
+      return await callDeepSeek(question, info);
     }
 
     async function saveMessage(conversationId, text, sender, displayName, photoURL) {
@@ -1637,17 +1618,12 @@
           appendMessage(question, "user", displayUser.displayName, displayUser.photoURL);
           await saveMessage(currentConversationId, question, "user", displayUser.displayName, displayUser.photoURL);
           chatInput.value = "";
-          showSpinner();
           const thinkingMessage = appendThinkingDots();
           try {
             const response = await generateResponse(question);
-            setTimeout(async () => {
-              hideSpinner();
-              appendMessage(response, "ai", "Vynix AI", null, thinkingMessage);
-              await saveMessage(currentConversationId, response, "ai", "Vynix AI", null);
-            }, 3000);
+            appendMessage(response, "ai", "Vynix AI", null, thinkingMessage);
+            await saveMessage(currentConversationId, response, "ai", "Vynix AI", null);
           } catch (error) {
-            hideSpinner();
             thinkingMessage.remove();
             showAlert("An error occurred while generating the response.");
           }
@@ -1701,6 +1677,13 @@
             userAvatarImg.appendChild(img);
           } else {
             userAvatarImg.textContent = displayUser.displayName.charAt(0).toUpperCase();
+          }
+          try {
+            await fetchAndActivate(remoteConfig);
+            deepseekApiKey = getValue(remoteConfig, 'deepseek_api_key').asString();
+          } catch (error) {
+            console.error("Remote Config fetch failed:", error);
+            showAlert("Failed to load configuration. Using default mode.", false);
           }
           setupChatInput(displayUser);
           loadStats();
