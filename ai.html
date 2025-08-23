@@ -9,7 +9,8 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@latest/dist/universal-sentence-encoder.min.js"></script>
   <style>
     :root {
       --primary-purple: #6D28D9;
@@ -862,20 +863,24 @@
     let touchTimeout = null;
     let conversationToDelete = null;
     let userLocation = null;
-    let deepseekApiKey = '';
 
-    // Initialize Brain.js neural network
-    const net = new brain.NeuralNetwork({
-      hiddenLayers: [10, 10],
-      activation: 'sigmoid'
-    });
+    let severityModel = null;
+    let useModel = null;
+
+    // Function to get USE model
+    async function getUseModel() {
+      if (!useModel) {
+        useModel = await use.load();
+      }
+      return useModel;
+    }
 
     // Function to normalize input data
     function normalize(value, min, max) {
       return (value - min) / (max - min);
     }
 
-    // Function to train neural network with Firebase incident data
+    // Function to train neural network with Firebase incident data using TensorFlow.js
     async function trainNeuralNetwork(incidentArray) {
       try {
         const maxResponseTime = 120; // Assume max response time of 2 hours for normalization
@@ -897,12 +902,20 @@
             };
           });
 
+        if (!severityModel) {
+          severityModel = tf.sequential();
+          severityModel.add(tf.layers.dense({ inputShape: [3], units: 10, activation: 'sigmoid' }));
+          severityModel.add(tf.layers.dense({ units: 10, activation: 'sigmoid' }));
+          severityModel.add(tf.layers.dense({ units: 1, activation: 'sigmoid' }));
+          severityModel.compile({ optimizer: tf.train.sgd(0.05), loss: 'meanSquaredError' });
+        }
+
         if (trainingData.length > 0) {
-          net.train(trainingData, {
-            iterations: 1000,
-            learningRate: 0.05,
-            errorThresh: 0.005
-          });
+          const xs = tf.tensor2d(trainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
+          const ys = tf.tensor2d(trainingData.map(d => [d.output.severity]));
+          await severityModel.fit(xs, ys, { epochs: 1000 });
+          xs.dispose();
+          ys.dispose();
           console.log(`Neural network trained with ${trainingData.length} incidents`);
         } else {
           console.warn("No valid incident data for training");
@@ -915,11 +928,11 @@
             { input: { responseTime: 0.4, incidentCount: 0.5, isResolved: 1 }, output: { severity: 0.5 } },
             { input: { responseTime: 0.8, incidentCount: 0.8, isResolved: 0 }, output: { severity: 1 } }
           ];
-          net.train(mockTrainingData, {
-            iterations: 1000,
-            learningRate: 0.1,
-            errorThresh: 0.005
-          });
+          const xs = tf.tensor2d(mockTrainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
+          const ys = tf.tensor2d(mockTrainingData.map(d => [d.output.severity]));
+          await severityModel.fit(xs, ys, { epochs: 1000 });
+          xs.dispose();
+          ys.dispose();
           console.log("Neural network trained with mock data due to insufficient real data");
         }
       } catch (error) {
@@ -1230,59 +1243,53 @@
       typeCharacter();
     }
 
-    async function callDeepSeek(userQuery, info) {
-      if (!deepseekApiKey) {
-        return 'API key not configured. Falling back to default response.';
-      }
-      const systemPrompt = `You are Vynix AI, created by Vynix Company under CEO Katlego Phasha. Your purpose is to enhance community safety with real-time insights on incidents, weather, and locations. You can predict incident severity using AI. Use the provided info to generate a friendly, helpful response to the user query.`;
-      const prompt = `User query: ${userQuery}\n\nInfo: ${info}`;
-      try {
-        const response = await fetch('https://api.deepseek.com/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${deepseekApiKey}`
-          },
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: prompt }
-            ],
-            stream: false
-          })
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
-        return data.choices[0].message.content;
-      } catch (error) {
-        console.error("DeepSeek API error:", error);
-        return "I'm having trouble generating a response right now. Please try again later.";
-      }
-    }
-
     async function generateResponse(question) {
       question = question.toLowerCase().trim();
 
-      const keywordCategories = {
+      // Use TensorFlow.js Universal Sentence Encoder for semantic matching
+      const use = await getUseModel();
+      const queryEmbed = await use.embed([question]);
+
+      const categoryPrototypes = {
         about: ["who are you", "what are you", "who created you", "what is your purpose", "why do you exist", "vynix company", "about vynix", "katlego phasha", "ceo"],
         weather: ["weather in my location", "weather here", "weather in", "forecast in", "weather forecast"],
         location: ["location of", "where is"],
         incidents: ["total incidents", "how many incidents", "resolved", "average response time", "response time", "types", "kinds of incidents", "incident types", "incidents in"],
-        severity: ["predict severity", "incident severity", "severity of incident"]
+        severity: ["predict severity", "incident severity", "severity of incident"],
+        general: ["hello", "how are you", "tell me something"]
       };
+
+      let maxSimilarity = -1;
+      let bestCategory = 'general';
+
+      for (const [cat, protos] of Object.entries(categoryPrototypes)) {
+        const protoEmbed = await use.embed(protos);
+        const simMatrix = tf.matMul(queryEmbed, protoEmbed.transpose());
+        const similarities = simMatrix.mean(1).dataSync();
+        const avgSim = similarities[0];
+        if (avgSim > maxSimilarity) {
+          maxSimilarity = avgSim;
+          bestCategory = cat;
+        }
+        simMatrix.dispose();
+        protoEmbed.dispose();
+      }
+
+      queryEmbed.dispose();
+
+      if (maxSimilarity < 0.3) {
+        bestCategory = 'general';
+      }
 
       let info = '';
 
       // About queries
-      if (keywordCategories.about.some(keyword => question.includes(keyword))) {
+      if (bestCategory === "about") {
         info = "Vynix AI is created by Vynix Company under CEO Katlego Phasha. Purpose: empower communities with real-time, AI-driven solutions for safety and awareness, providing accurate information on incidents, weather, and locations.";
       }
 
       // Weather queries
-      else if (keywordCategories.weather.some(keyword => question.includes(keyword))) {
+      else if (bestCategory === "weather") {
         if (question.includes("weather in my location") || question.includes("weather here") || question.includes("forecast in my location")) {
           if (!userLocation) {
             userLocation = await getUserLocation();
@@ -1340,7 +1347,7 @@
       }
 
       // Location queries
-      else if (keywordCategories.location.some(keyword => question.includes(keyword))) {
+      else if (bestCategory === "location") {
         const locationMatch = question.match(/(location of|where is) (my location|here)/);
         if (locationMatch) {
           if (!userLocation) {
@@ -1372,7 +1379,7 @@
       }
 
       // Incident severity prediction
-      else if (keywordCategories.severity.some(keyword => question.includes(keyword))) {
+      else if (bestCategory === "severity") {
         try {
           const maxResponseTime = 120;
           const maxIncidentCount = 100;
@@ -1396,9 +1403,12 @@
             incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
             isResolved: stats.resolvedIncidents / (stats.totalIncidents || 1)
           };
-          const output = net.run(input);
-          let severity = output.severity + weatherImpact;
+          const inputTensor = tf.tensor2d([[input.responseTime, input.incidentCount, input.isResolved]]);
+          const outputTensor = severityModel.predict(inputTensor);
+          let severity = (await outputTensor.data())[0] + weatherImpact;
           severity = Math.min(Math.max(severity, 0), 1);
+          inputTensor.dispose();
+          outputTensor.dispose();
 
           let severityLabel;
           if (severity < 0.33) {
@@ -1416,7 +1426,7 @@
       }
 
       // Incident queries
-      else if (keywordCategories.incidents.some(keyword => question.includes(keyword))) {
+      else if (bestCategory === "incidents") {
         try {
           const incidentsRef = ref(db, "incidents");
           const snapshot = await get(incidentsRef);
@@ -1460,7 +1470,7 @@
         info = "This is a general query. Respond helpfully about community incidents, weather, locations, incident severity, or about Vynix AI.";
       }
 
-      return await callDeepSeek(question, info);
+      return info;
     }
 
     async function saveMessage(conversationId, text, sender, displayName, photoURL) {
@@ -1677,13 +1687,6 @@
             userAvatarImg.appendChild(img);
           } else {
             userAvatarImg.textContent = displayUser.displayName.charAt(0).toUpperCase();
-          }
-          try {
-            await fetchAndActivate(remoteConfig);
-            deepseekApiKey = getValue(remoteConfig, 'deepseek_api_key').asString();
-          } catch (error) {
-            console.error("Remote Config fetch failed:", error);
-            showAlert("Failed to load configuration. Using default mode.", false);
           }
           setupChatInput(displayUser);
           loadStats();
