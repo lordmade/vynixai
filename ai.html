@@ -11,6 +11,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@latest/dist/universal-sentence-encoder.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
   <style>
     :root {
       --primary-purple: #6D28D9;
@@ -866,6 +867,9 @@
 
     let severityModel = null;
     let useModel = null;
+    let conversationModel = null; // New Brain.js model for self-learning
+
+    let trainingPairs = []; // To store conversation pairs for rollback
 
     // Function to get USE model
     async function getUseModel() {
@@ -880,7 +884,7 @@
       return (value - min) / (max - min);
     }
 
-    // Function to train neural network with Firebase incident data using TensorFlow.js
+    // Function to train neural network with Firebase incident data using Brain.js (severity prediction)
     async function trainNeuralNetwork(incidentArray) {
       try {
         const maxResponseTime = 120; // Assume max response time of 2 hours for normalization
@@ -893,46 +897,50 @@
             const isResolved = incident.status === "resolved" ? 1 : 0;
             const severity = incident.severity === "high" ? 1 : incident.severity === "medium" ? 0.5 : 0;
             return {
-              input: {
-                responseTime: normalize(Math.min(responseTime, maxResponseTime), 0, maxResponseTime),
-                incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
+              input: [
+                normalize(Math.min(responseTime, maxResponseTime), 0, maxResponseTime),
+                normalize(stats.totalIncidents, 0, maxIncidentCount),
                 isResolved
-              },
-              output: { severity }
+              ],
+              output: [severity]
             };
           });
 
         if (!severityModel) {
-          severityModel = tf.sequential();
-          severityModel.add(tf.layers.dense({ inputShape: [3], units: 10, activation: 'sigmoid' }));
-          severityModel.add(tf.layers.dense({ units: 10, activation: 'sigmoid' }));
-          severityModel.add(tf.layers.dense({ units: 1, activation: 'sigmoid' }));
-          severityModel.compile({ optimizer: tf.train.sgd(0.05), loss: 'meanSquaredError' });
+          severityModel = new brain.NeuralNetwork({
+            hiddenLayers: [10, 10], // Two hidden layers with 10 neurons each
+            activation: 'sigmoid' // Sigmoid activation function
+          });
         }
 
         if (trainingData.length > 0) {
-          const xs = tf.tensor2d(trainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
-          const ys = tf.tensor2d(trainingData.map(d => [d.output.severity]));
-          await severityModel.fit(xs, ys, { epochs: 1000 });
-          xs.dispose();
-          ys.dispose();
+          // Train the network
+          severityModel.train(trainingData, {
+            iterations: 10000, // Number of iterations
+            errorThresh: 0.005, // Error threshold to stop training
+            learningRate: 0.05, // Learning rate
+            log: true,
+            logPeriod: 100
+          });
           console.log(`Neural network trained with ${trainingData.length} incidents`);
         } else {
           console.warn("No valid incident data for training");
           // Fallback to mock data
           const mockTrainingData = [
-            { input: { responseTime: 0.1, incidentCount: 0.2, isResolved: 0 }, output: { severity: 0 } },
-            { input: { responseTime: 0.3, incidentCount: 0.4, isResolved: 0 }, output: { severity: 0.5 } },
-            { input: { responseTime: 0.6, incidentCount: 0.7, isResolved: 0 }, output: { severity: 1 } },
-            { input: { responseTime: 0.2, incidentCount: 0.3, isResolved: 1 }, output: { severity: 0 } },
-            { input: { responseTime: 0.4, incidentCount: 0.5, isResolved: 1 }, output: { severity: 0.5 } },
-            { input: { responseTime: 0.8, incidentCount: 0.8, isResolved: 0 }, output: { severity: 1 } }
+            { input: [0.1, 0.2, 0], output: [0] },
+            { input: [0.3, 0.4, 0], output: [0.5] },
+            { input: [0.6, 0.7, 0], output: [1] },
+            { input: [0.2, 0.3, 1], output: [0] },
+            { input: [0.4, 0.5, 1], output: [0.5] },
+            { input: [0.8, 0.8, 0], output: [1] }
           ];
-          const xs = tf.tensor2d(mockTrainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
-          const ys = tf.tensor2d(mockTrainingData.map(d => [d.output.severity]));
-          await severityModel.fit(xs, ys, { epochs: 1000 });
-          xs.dispose();
-          ys.dispose();
+          severityModel.train(mockTrainingData, {
+            iterations: 10000,
+            errorThresh: 0.005,
+            learningRate: 0.05,
+            log: true,
+            logPeriod: 100
+          });
           console.log("Neural network trained with mock data due to insufficient real data");
         }
       } catch (error) {
@@ -941,7 +949,54 @@
       }
     }
 
-    // Fetch user's current location with reverse geolocation
+    // Function to save conversation model state to localStorage
+    function saveConversationModelState() {
+      const state = conversationModel.toJSON();
+      localStorage.setItem('conversationModelState', JSON.stringify(state));
+      console.log("Conversation model state saved.");
+    }
+
+    // Function to train conversation model incrementally
+    async function trainConversationModel(userText, aiResponse) {
+      try {
+        const pair = { input: userText.trim(), output: aiResponse.trim() };
+        trainingPairs.push(pair); // Store for potential rollback
+        conversationModel.train([pair], {
+          iterations: 200,
+          errorThresh: 0.01,
+          learningRate: 0.05,
+          log: true,
+          logPeriod: 50
+        });
+        saveConversationModelState();
+        console.log("Conversation model trained on new pair.");
+      } catch (error) {
+        console.error("Error training conversation model:", error);
+      }
+    }
+
+    // Function to rollback last training (retrain without last pair)
+    async function rollbackLastTraining() {
+      if (trainingPairs.length > 0) {
+        trainingPairs.pop(); // Remove last pair
+        conversationModel = new brain.recurrent.LSTM();
+        if (trainingPairs.length > 0) {
+          conversationModel.train(trainingPairs, {
+            iterations: 200,
+            errorThresh: 0.01,
+            learningRate: 0.05,
+            log: true,
+            logPeriod: 50
+          });
+        }
+        saveConversationModelState();
+        console.log("Rolled back last training.");
+        return "I've forgotten the last exchange and retrained.";
+      }
+      return "No previous exchange to rollback.";
+    }
+
+    // Function to fetch user's current location with reverse geolocation
     async function getUserLocation() {
       return new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
@@ -1246,6 +1301,11 @@
     async function generateResponse(question) {
       question = question.toLowerCase().trim();
 
+      // Check for rollback command
+      if (question.includes("roll back") || question.includes("forget last")) {
+        return await rollbackLastTraining();
+      }
+
       // Use TensorFlow.js Universal Sentence Encoder for semantic matching
       const use = await getUseModel();
       const queryEmbed = await use.embed([question]);
@@ -1398,17 +1458,14 @@
             }
           }
 
-          const input = {
-            responseTime: stats.avgResponseTime !== "N/A" ? normalize(parseFloat(stats.avgResponseTime), 0, maxResponseTime) : 0.5,
-            incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
-            isResolved: stats.resolvedIncidents / (stats.totalIncidents || 1)
-          };
-          const inputTensor = tf.tensor2d([[input.responseTime, input.incidentCount, input.isResolved]]);
-          const outputTensor = severityModel.predict(inputTensor);
-          let severity = (await outputTensor.data())[0] + weatherImpact;
-          severity = Math.min(Math.max(severity, 0), 1);
-          inputTensor.dispose();
-          outputTensor.dispose();
+          const input = [
+            stats.avgResponseTime !== "N/A" ? normalize(parseFloat(stats.avgResponseTime), 0, maxResponseTime) : 0.5,
+            normalize(stats.totalIncidents, 0, maxIncidentCount),
+            stats.resolvedIncidents / (stats.totalIncidents || 1)
+          ];
+
+          const output = severityModel.run(input)[0] + weatherImpact;
+          let severity = Math.min(Math.max(output, 0), 1);
 
           let severityLabel;
           if (severity < 0.33) {
@@ -1466,8 +1523,20 @@
         } catch (error) {
           info = "Trouble accessing incident data.";
         }
-      } else {
-        info = "This is a general query. Respond helpfully about community incidents, weather, locations, incident severity, or about Vynix AI.";
+      } 
+      
+      // General queries: Use conversation model for learned responses
+      else {
+        try {
+          const learnedResponse = conversationModel.run(question);
+          if (learnedResponse && learnedResponse.trim().length > 0) {
+            info = learnedResponse;
+          } else {
+            info = "I'm not sure about that yet, but I can learn! Tell me more or ask about incidents, weather, or locations.";
+          }
+        } catch (error) {
+          info = "This is a general query. Respond helpfully about community incidents, weather, locations, incident severity, or about Vynix AI.";
+        }
       }
 
       return info;
@@ -1582,11 +1651,30 @@
         const messagesRef = ref(db, `conversations/${conversationId}/messages`);
         onValue(messagesRef, (snapshot) => {
           chatMessages.innerHTML = "";
+          trainingPairs = []; // Reset training pairs for this conversation
+          let lastUserText = null;
           if (snapshot.exists()) {
             const messages = snapshot.val();
             Object.values(messages).forEach(msg => {
               appendMessage(msg.text, msg.sender, msg.displayName, msg.photoURL);
+              if (msg.sender === 'user') {
+                lastUserText = msg.text;
+              } else if (msg.sender === 'ai' && lastUserText) {
+                trainingPairs.push({ input: lastUserText, output: msg.text });
+                lastUserText = null;
+              }
             });
+          }
+          // Retrain conversation model from this conversation's history
+          if (trainingPairs.length > 0) {
+            conversationModel.train(trainingPairs, {
+              iterations: 200,
+              errorThresh: 0.01,
+              learningRate: 0.05,
+              log: true,
+              logPeriod: 50
+            });
+            saveConversationModelState();
           }
         }, (error) => {
           console.error("Error loading messages:", error);
@@ -1613,6 +1701,8 @@
     });
 
     function setupChatInput(displayUser) {
+      let lastUserMessage = null;
+
       sendButton.addEventListener("click", async () => {
         const question = chatInput.value.trim();
         if (question) {
@@ -1627,12 +1717,18 @@
           }
           appendMessage(question, "user", displayUser.displayName, displayUser.photoURL);
           await saveMessage(currentConversationId, question, "user", displayUser.displayName, displayUser.photoURL);
+          lastUserMessage = question;
           chatInput.value = "";
           const thinkingMessage = appendThinkingDots();
           try {
             const response = await generateResponse(question);
             appendMessage(response, "ai", "Vynix AI", null, thinkingMessage);
             await saveMessage(currentConversationId, response, "ai", "Vynix AI", null);
+            // Train conversation model on this pair
+            if (lastUserMessage) {
+              await trainConversationModel(lastUserMessage, response);
+              lastUserMessage = null;
+            }
           } catch (error) {
             thinkingMessage.remove();
             showAlert("An error occurred while generating the response.");
@@ -1688,10 +1784,35 @@
           } else {
             userAvatarImg.textContent = displayUser.displayName.charAt(0).toUpperCase();
           }
+
+          // Initialize conversation model
+          conversationModel = new brain.recurrent.LSTM();
+          const savedState = localStorage.getItem('conversationModelState');
+          if (savedState) {
+            conversationModel.fromJSON(JSON.parse(savedState));
+            console.log("Loaded conversation model from localStorage.");
+          } else {
+            // Initial training with default pairs
+            const initialPairs = [
+              { input: "hello", output: "Hi there! How can I help?" },
+              { input: "how are you", output: "I'm doing great, thanks! What about you?" },
+              { input: "what is vynix ai", output: "Vynix AI is an AI for community safety, incidents, weather, and more." }
+            ];
+            conversationModel.train(initialPairs, {
+              iterations: 200,
+              errorThresh: 0.01,
+              learningRate: 0.05,
+              log: true,
+              logPeriod: 50
+            });
+            saveConversationModelState();
+            console.log("Initialized conversation model with default pairs.");
+          }
+
           setupChatInput(displayUser);
           loadStats();
           loadConversations(displayUser.uid);
-          appendMessage("Hello! I'm Vynix AI, My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. I can also predict incident severity using AI. Ask me about community incidents, statistics, weather, locations, or about myself!", "ai", "Vynix AI", null);
+          appendMessage("Hello! I'm Vynix AI, My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. I can also predict incident severity using AI. Ask me about community incidents, statistics, weather, locations, or about myself! I learn from our conversations word by word.", "ai", "Vynix AI", null);
         } else {
           console.warn("No authenticated user, redirecting to signup");
         }
@@ -1704,3 +1825,4 @@
   </script>
 </body>
 </html>
+```
