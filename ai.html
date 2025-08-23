@@ -862,7 +862,7 @@
     let touchTimeout = null;
     let conversationToDelete = null;
     let userLocation = null;
-    let deepseekApiKey = '';
+    let xaiApiKey = '';
 
     // Initialize Brain.js neural network
     const net = new brain.NeuralNetwork({
@@ -1230,21 +1230,22 @@
       typeCharacter();
     }
 
-    async function callDeepSeek(userQuery, info) {
-      if (!deepseekApiKey) {
-        return 'API key not configured. Falling back to default response.';
+    async function callXAIApi(userQuery, info) {
+      if (!xaiApiKey) {
+        console.warn("xAI API key not configured. Falling back to local response.");
+        return null;
       }
-      const systemPrompt = `You are Vynix AI, created by Vynix Company under CEO Katlego Phasha. Your purpose is to enhance community safety with real-time insights on incidents, weather, and locations. You can predict incident severity using AI. Use the provided info to generate a friendly, helpful response to the user query.`;
+      const systemPrompt = `You are Vynix AI, created by Vynix Company under CEO Katlego Phasha, powered by xAI's Grok. Your purpose is to enhance community safety with real-time insights on incidents, weather, and locations. You can predict incident severity using AI. Use the provided info to generate a friendly, helpful response to the user query.`;
       const prompt = `User query: ${userQuery}\n\nInfo: ${info}`;
       try {
-        const response = await fetch('https://api.deepseek.com/chat/completions', {
+        const response = await fetch('https://api.x.ai/v1/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${deepseekApiKey}`
+            'Authorization': `Bearer ${xaiApiKey}`
           },
           body: JSON.stringify({
-            model: 'deepseek-chat',
+            model: 'grok', // Adjust model name as per xAI API documentation
             messages: [
               { role: 'system', content: systemPrompt },
               { role: 'user', content: prompt }
@@ -1258,8 +1259,61 @@
         const data = await response.json();
         return data.choices[0].message.content;
       } catch (error) {
-        console.error("DeepSeek API error:", error);
-        return "I'm having trouble generating a response right now. Please try again later.";
+        console.error("xAI API error:", error);
+        return null;
+      }
+    }
+
+    function generateFallbackResponse(question, info) {
+      // Fallback for incident severity queries using Brain.js
+      if (question.includes("predict severity") || question.includes("incident severity") || question.includes("severity of incident")) {
+        try {
+          const maxResponseTime = 120;
+          const maxIncidentCount = 100;
+          const input = {
+            responseTime: stats.avgResponseTime !== "N/A" ? normalize(parseFloat(stats.avgResponseTime), 0, maxResponseTime) : 0.5,
+            incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
+            isResolved: stats.resolvedIncidents / (stats.totalIncidents || 1)
+          };
+          const output = net.run(input);
+          let severity = output.severity;
+          severity = Math.min(Math.max(severity, 0), 1);
+
+          let severityLabel;
+          if (severity < 0.33) {
+            severityLabel = "Low";
+          } else if (severity < 0.66) {
+            severityLabel = "Medium";
+          } else {
+            severityLabel = "High";
+          }
+
+          return `Predicted incident severity (local estimate): ${severityLabel} (confidence: ${(severity * 100).toFixed(2)}%). Note: This is a local prediction due to API unavailability.`;
+        } catch (error) {
+          console.error("Fallback severity prediction failed:", error);
+          return "Unable to predict incident severity locally. Please try again later.";
+        }
+      }
+
+      // Fallback for other queries
+      const staticResponses = {
+        about: "I'm Vynix AI, created by Vynix Company under CEO Katlego Phasha. My purpose is to enhance community safety with insights on incidents, weather, and locations.",
+        weather: "Weather information is unavailable locally. Please check the weather page for details.",
+        location: "Location information is unavailable locally. Please provide a specific location or enable location services.",
+        incidents: info || "Incident data is unavailable locally. Please try again later.",
+        default: "I'm sorry, I'm unable to process your request locally. Please try again later or check your network connection."
+      };
+
+      if (question.includes("who are you") || question.includes("what are you") || question.includes("vynix company") || question.includes("katlego phasha")) {
+        return staticResponses.about;
+      } else if (question.includes("weather")) {
+        return staticResponses.weather;
+      } else if (question.includes("location")) {
+        return staticResponses.location;
+      } else if (question.includes("incident")) {
+        return staticResponses.incidents;
+      } else {
+        return staticResponses.default;
       }
     }
 
@@ -1460,7 +1514,13 @@
         info = "This is a general query. Respond helpfully about community incidents, weather, locations, incident severity, or about Vynix AI.";
       }
 
-      return await callDeepSeek(question, info);
+      const xaiResponse = await callXAIApi(question, info);
+      if (xaiResponse) {
+        return xaiResponse;
+      } else {
+        showAlert("Unable to connect to xAI API. Using local response.", true);
+        return generateFallbackResponse(question, info);
+      }
     }
 
     async function saveMessage(conversationId, text, sender, displayName, photoURL) {
@@ -1680,15 +1740,15 @@
           }
           try {
             await fetchAndActivate(remoteConfig);
-            deepseekApiKey = getValue(remoteConfig, 'deepseek_api_key').asString();
+            xaiApiKey = getValue(remoteConfig, 'xai_api_key').asString();
           } catch (error) {
             console.error("Remote Config fetch failed:", error);
-            showAlert("Failed to load configuration. Using default mode.", false);
+            showAlert("Failed to load xAI API configuration. Using local mode.", false);
           }
           setupChatInput(displayUser);
           loadStats();
           loadConversations(displayUser.uid);
-          appendMessage("Hello! I'm Vynix AI, My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. I can also predict incident severity using AI. Ask me about community incidents, statistics, weather, locations, or about myself!", "ai", "Vynix AI", null);
+          appendMessage("Hello! I'm Vynix AI, powered by xAI's Grok. My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. I can also predict incident severity using AI. Ask me about community incidents, statistics, weather, locations, or about myself!", "ai", "Vynix AI", null);
         } else {
           console.warn("No authenticated user, redirecting to signup");
         }
