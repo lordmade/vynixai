@@ -863,163 +863,87 @@
     let touchTimeout = null;
     let conversationToDelete = null;
     let userLocation = null;
+
+    let severityModel = null;
     let useModel = null;
-    let prototypeEmbeddings = null;
-    let worker = null;
-    let isModelTrained = false;
 
-    // Initialize Web Worker
-    function initWorker() {
-      worker = new Worker(URL.createObjectURL(new Blob([`
-        importScripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js');
-        importScripts('https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@latest/dist/universal-sentence-encoder.min.js');
+    // Function to get USE model
+    async function getUseModel() {
+      if (!useModel) {
+        useModel = await use.load();
+      }
+      return useModel;
+    }
 
-        let severityModel = null;
-        let useModel = null;
+    // Function to normalize input data
+    function normalize(value, min, max) {
+      return (value - min) / (max - min);
+    }
 
-        async function initUSE() {
-          useModel = await use.load();
-          return true;
+    // Function to train neural network with Firebase incident data using TensorFlow.js
+    async function trainNeuralNetwork(incidentArray) {
+      try {
+        const maxResponseTime = 120; // Assume max response time of 2 hours for normalization
+        const maxIncidentCount = 100; // Assume max incident count of 100 for normalization
+
+        const trainingData = incidentArray
+          .filter(incident => incident.timestamp && incident.updatedAt && incident.severity)
+          .map(incident => {
+            const responseTime = (incident.updatedAt - incident.timestamp) / (1000 * 60); // Minutes
+            const isResolved = incident.status === "resolved" ? 1 : 0;
+            const severity = incident.severity === "high" ? 1 : incident.severity === "medium" ? 0.5 : 0;
+            return {
+              input: {
+                responseTime: normalize(Math.min(responseTime, maxResponseTime), 0, maxResponseTime),
+                incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
+                isResolved
+              },
+              output: { severity }
+            };
+          });
+
+        if (!severityModel) {
+          severityModel = tf.sequential();
+          severityModel.add(tf.layers.dense({ inputShape: [3], units: 10, activation: 'sigmoid' }));
+          severityModel.add(tf.layers.dense({ units: 10, activation: 'sigmoid' }));
+          severityModel.add(tf.layers.dense({ units: 1, activation: 'sigmoid' }));
+          severityModel.compile({ optimizer: tf.train.sgd(0.05), loss: 'meanSquaredError' });
         }
 
-        function normalize(value, min, max) {
-          return (value - min) / (max - min);
+        if (trainingData.length > 0) {
+          const xs = tf.tensor2d(trainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
+          const ys = tf.tensor2d(trainingData.map(d => [d.output.severity]));
+          await severityModel.fit(xs, ys, { epochs: 1000 });
+          xs.dispose();
+          ys.dispose();
+          console.log(`Neural network trained with ${trainingData.length} incidents`);
+        } else {
+          console.warn("No valid incident data for training");
+          // Fallback to mock data
+          const mockTrainingData = [
+            { input: { responseTime: 0.1, incidentCount: 0.2, isResolved: 0 }, output: { severity: 0 } },
+            { input: { responseTime: 0.3, incidentCount: 0.4, isResolved: 0 }, output: { severity: 0.5 } },
+            { input: { responseTime: 0.6, incidentCount: 0.7, isResolved: 0 }, output: { severity: 1 } },
+            { input: { responseTime: 0.2, incidentCount: 0.3, isResolved: 1 }, output: { severity: 0 } },
+            { input: { responseTime: 0.4, incidentCount: 0.5, isResolved: 1 }, output: { severity: 0.5 } },
+            { input: { responseTime: 0.8, incidentCount: 0.8, isResolved: 0 }, output: { severity: 1 } }
+          ];
+          const xs = tf.tensor2d(mockTrainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
+          const ys = tf.tensor2d(mockTrainingData.map(d => [d.output.severity]));
+          await severityModel.fit(xs, ys, { epochs: 1000 });
+          xs.dispose();
+          ys.dispose();
+          console.log("Neural network trained with mock data due to insufficient real data");
         }
-
-        async function trainNeuralNetwork(incidentArray) {
-          const maxResponseTime = 120;
-          const maxIncidentCount = 100;
-
-          const trainingData = incidentArray
-            .filter(incident => incident.timestamp && incident.updatedAt && incident.severity)
-            .map(incident => {
-              const responseTime = (incident.updatedAt - incident.timestamp) / (1000 * 60);
-              const isResolved = incident.status === "resolved" ? 1 : 0;
-              const severity = incident.severity === "high" ? 1 : incident.severity === "medium" ? 0.5 : 0;
-              return {
-                input: {
-                  responseTime: normalize(Math.min(responseTime, maxResponseTime), 0, maxResponseTime),
-                  incidentCount: normalize(incidentArray.length, 0, maxIncidentCount),
-                  isResolved
-                },
-                output: { severity }
-              };
-            });
-
-          if (!severityModel) {
-            severityModel = tf.sequential();
-            severityModel.add(tf.layers.dense({ inputShape: [3], units: 10, activation: 'sigmoid' }));
-            severityModel.add(tf.layers.dense({ units: 10, activation: 'sigmoid' }));
-            severityModel.add(tf.layers.dense({ units: 1, activation: 'sigmoid' }));
-            severityModel.compile({ optimizer: tf.train.sgd(0.05), loss: 'meanSquaredError' });
-          }
-
-          if (trainingData.length > 0) {
-            const xs = tf.tensor2d(trainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
-            const ys = tf.tensor2d(trainingData.map(d => [d.output.severity]));
-            await severityModel.fit(xs, ys, { epochs: 100 });
-            xs.dispose();
-            ys.dispose();
-            postMessage({ type: 'trainingComplete', success: true });
-          } else {
-            const mockTrainingData = [
-              { input: { responseTime: 0.1, incidentCount: 0.2, isResolved: 0 }, output: { severity: 0 } },
-              { input: { responseTime: 0.3, incidentCount: 0.4, isResolved: 0 }, output: { severity: 0.5 } },
-              { input: { responseTime: 0.6, incidentCount: 0.7, isResolved: 0 }, output: { severity: 1 } },
-              { input: { responseTime: 0.2, incidentCount: 0.3, isResolved: 1 }, output: { severity: 0 } },
-              { input: { responseTime: 0.4, incidentCount: 0.5, isResolved: 1 }, output: { severity: 0.5 } },
-              { input: { responseTime: 0.8, incidentCount: 0.8, isResolved: 0 }, output: { severity: 1 } }
-            ];
-            const xs = tf.tensor2d(mockTrainingData.map(d => [d.input.responseTime, d.input.incidentCount, d.input.isResolved]));
-            const ys = tf.tensor2d(mockTrainingData.map(d => [d.output.severity]));
-            await severityModel.fit(xs, ys, { epochs: 100 });
-            xs.dispose();
-            ys.dispose();
-            postMessage({ type: 'trainingComplete', success: true });
-          }
-        }
-
-        async function predictSeverity(input) {
-          if (!severityModel) {
-            postMessage({ type: 'predictError', error: 'Model not trained' });
-            return;
-          }
-          const inputTensor = tf.tensor2d([[input.responseTime, input.incidentCount, input.isResolved]]);
-          const outputTensor = severityModel.predict(inputTensor);
-          const severity = (await outputTensor.data())[0];
-          inputTensor.dispose();
-          outputTensor.dispose();
-          postMessage({ type: 'predictResult', severity });
-        }
-
-        async function computeSimilarity(query, prototypes) {
-          if (!useModel) await initUSE();
-          const queryEmbed = await useModel.embed([query]);
-          const similarities = {};
-          for (const [cat, protos] of Object.entries(prototypes)) {
-            const protoEmbed = await useModel.embed(protos);
-            const simMatrix = tf.matMul(queryEmbed, protoEmbed.transpose());
-            const sim = simMatrix.mean(1).dataSync()[0];
-            similarities[cat] = sim;
-            simMatrix.dispose();
-            protoEmbed.dispose();
-          }
-          queryEmbed.dispose();
-          postMessage({ type: 'similarityResult', similarities });
-        }
-
-        async function cachePrototypeEmbeddings(prototypes) {
-          if (!useModel) await initUSE();
-          const embeddings = {};
-          for (const [cat, protos] of Object.entries(prototypes)) {
-            const protoEmbed = await useModel.embed(protos);
-            embeddings[cat] = Array.from(protoEmbed.dataSync());
-            protoEmbed.dispose();
-          }
-          postMessage({ type: 'embeddingsCached', embeddings });
-        }
-
-        self.onmessage = async (e) => {
-          const { type, data } = e.data;
-          if (type === 'train') {
-            await trainNeuralNetwork(data);
-          } else if (type === 'predict') {
-            await predictSeverity(data);
-          } else if (type === 'computeSimilarity') {
-            await computeSimilarity(data.query, data.prototypes);
-          } else if (type === 'cacheEmbeddings') {
-            await cachePrototypeEmbeddings(data);
-          }
-        };
-      `], { type: 'text/javascript' })));
-
-      worker.onerror = (error) => {
-        console.error("Worker error:", error);
-        showAlert("Error in AI processing. Using fallback responses.", false);
-      };
-
-      worker.onmessage = (e) => {
-        const { type, success, error, severity, similarities, embeddings } = e.data;
-        if (type === 'trainingComplete') {
-          isModelTrained = success;
-          console.log("Neural network training completed in worker");
-        } else if (type === 'predictResult') {
-          pendingPrediction.resolve(severity);
-        } else if (type === 'predictError') {
-          pendingPrediction.reject(error);
-        } else if (type === 'similarityResult') {
-          pendingSimilarity.resolve(similarities);
-        } else if (type === 'embeddingsCached') {
-          prototypeEmbeddings = embeddings;
-          console.log("Prototype embeddings cached in worker");
-        }
-      };
+      } catch (error) {
+        console.error("Error training neural network:", error);
+        showAlert("Failed to train AI model for severity prediction.", false);
+      }
     }
 
     // Fetch user's current location with reverse geolocation
     async function getUserLocation() {
-      if (userLocation) return userLocation; // Cache location
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
           console.error("Geolocation not supported by browser");
           resolve(null);
@@ -1039,8 +963,7 @@
               if (data.features && data.features.length > 0) {
                 const placeName = data.features[0].place_name;
                 console.log(`User location fetched: ${placeName}`);
-                userLocation = { latitude, longitude, placeName };
-                resolve(userLocation);
+                resolve({ latitude, longitude, placeName });
               } else {
                 console.error("No place found for coordinates");
                 resolve(null);
@@ -1195,25 +1118,9 @@
       }
     }
 
-    // Debounce function to limit neural network training
-    function debounce(func, wait) {
-      let timeout;
-      return function (...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
-      };
-    }
-
     async function loadStats() {
       try {
         const incidentsRef = ref(db, "incidents");
-        const debouncedTrain = debounce(async (incidentArray) => {
-          if (!isModelTrained) {
-            worker.postMessage({ type: 'train', data: incidentArray });
-            isModelTrained = true;
-          }
-        }, 5000);
-
         onValue(incidentsRef, async (snapshot) => {
           try {
             if (snapshot.exists()) {
@@ -1238,10 +1145,12 @@
 
               stats.avgResponseTime = responseTimeCount > 0 ? (totalResponseTime / responseTimeCount).toFixed(2) : "N/A";
 
-              debouncedTrain(incidentArray);
+              // Train neural network with incident data
+              await trainNeuralNetwork(incidentArray);
             } else {
               stats = { totalIncidents: 0, resolvedIncidents: 0, avgResponseTime: "N/A", incidentTypes: {} };
-              debouncedTrain([]);
+              // Train with mock data if no incidents
+              await trainNeuralNetwork([]);
             }
           } catch (error) {
             console.error("Error processing stats snapshot:", error, "Code:", error.code || "N/A");
@@ -1287,7 +1196,7 @@
       return messageElement;
     }
 
-    function appendMessage(text, sender, displayName, photoURL, thinkingMessage = null, skipAnimation = false) {
+    function appendMessage(text, sender, displayName, photoURL, thinkingMessage = null) {
       if (thinkingMessage) {
         thinkingMessage.remove();
       }
@@ -1321,46 +1230,25 @@
       messageElement.appendChild(contentElement);
       chatMessages.appendChild(messageElement);
 
-      if (skipAnimation) {
-        textElement.textContent = text;
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-      } else {
-        let index = 0;
-        function typeCharacter() {
-          if (index < text.length) {
-            textElement.textContent += text[index];
-            index++;
-            setTimeout(typeCharacter, 10); // Reduced from 30ms to 10ms
-          } else {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-          }
+      let index = 0;
+      function typeCharacter() {
+        if (index < text.length) {
+          textElement.textContent += text[index];
+          index++;
+          setTimeout(typeCharacter, 30);
+        } else {
+          chatMessages.scrollTop = chatMessages.scrollHeight;
         }
-        typeCharacter();
       }
-    }
-
-    let pendingSimilarity = null;
-    let pendingPrediction = null;
-
-    async function computeSimilarity(query, prototypes) {
-      return new Promise((resolve, reject) => {
-        pendingSimilarity = { resolve, reject };
-        worker.postMessage({ type: 'computeSimilarity', data: { query, prototypes } });
-      });
-    }
-
-    async function predictSeverity(input) {
-      if (!isModelTrained) {
-        return 0.5; // Fallback severity
-      }
-      return new Promise((resolve, reject) => {
-        pendingPrediction = { resolve, reject };
-        worker.postMessage({ type: 'predict', data: input });
-      });
+      typeCharacter();
     }
 
     async function generateResponse(question) {
       question = question.toLowerCase().trim();
+
+      // Use TensorFlow.js Universal Sentence Encoder for semantic matching
+      const use = await getUseModel();
+      const queryEmbed = await use.embed([question]);
 
       const categoryPrototypes = {
         about: ["who are you", "what are you", "who created you", "what is your purpose", "why do you exist", "vynix company", "about vynix", "katlego phasha", "ceo"],
@@ -1371,22 +1259,23 @@
         general: ["hello", "how are you", "tell me something"]
       };
 
-      let similarities;
-      try {
-        similarities = await computeSimilarity(question, categoryPrototypes);
-      } catch (error) {
-        console.error("Similarity computation failed:", error);
-        return "Error processing your query. Please try again.";
-      }
-
       let maxSimilarity = -1;
       let bestCategory = 'general';
-      for (const [cat, sim] of Object.entries(similarities)) {
-        if (sim > maxSimilarity) {
-          maxSimilarity = sim;
+
+      for (const [cat, protos] of Object.entries(categoryPrototypes)) {
+        const protoEmbed = await use.embed(protos);
+        const simMatrix = tf.matMul(queryEmbed, protoEmbed.transpose());
+        const similarities = simMatrix.mean(1).dataSync();
+        const avgSim = similarities[0];
+        if (avgSim > maxSimilarity) {
+          maxSimilarity = avgSim;
           bestCategory = cat;
         }
+        simMatrix.dispose();
+        protoEmbed.dispose();
       }
+
+      queryEmbed.dispose();
 
       if (maxSimilarity < 0.3) {
         bestCategory = 'general';
@@ -1409,11 +1298,13 @@
             info = "Please enable location services to get weather information for your current location.";
           } else {
             try {
-              const [currentResponse, forecastResponse] = await Promise.all([
-                fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`),
-                fetch(`https://api.openweathermap.org/data/2.5/forecast?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`)
-              ]);
+              const currentResponse = await fetch(
+                `https://api.openweathermap.org/data/2.5/weather?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
+              );
               const currentData = await currentResponse.json();
+              const forecastResponse = await fetch(
+                `https://api.openweathermap.org/data/2.5/forecast?lat=${userLocation.latitude}&lon=${userLocation.longitude}&appid=${OPENWEATHER_API_KEY}&units=metric`
+              );
               const forecastData = await forecastResponse.json();
               const tomorrow = forecastData.list.find(item => 
                 new Date(item.dt * 1000).toDateString() === new Date(Date.now() + 24 * 60 * 60 * 1000).toDateString()
@@ -1435,11 +1326,13 @@
               } else {
                 const { center, place_name } = geoData.features[0];
                 const [lon, lat] = center;
-                const [currentResponse, forecastResponse] = await Promise.all([
-                  fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`),
-                  fetch(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`)
-                ]);
+                const currentResponse = await fetch(
+                  `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
+                );
                 const currentData = await currentResponse.json();
+                const forecastResponse = await fetch(
+                  `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
+                );
                 const forecastData = await forecastResponse.json();
                 const tomorrow = forecastData.list.find(item => 
                   new Date(item.dt * 1000).toDateString() === new Date(Date.now() + 24 * 60 * 60 * 1000).toDateString()
@@ -1510,8 +1403,12 @@
             incidentCount: normalize(stats.totalIncidents, 0, maxIncidentCount),
             isResolved: stats.resolvedIncidents / (stats.totalIncidents || 1)
           };
-          let severity = await predictSeverity(input);
-          severity = Math.min(Math.max(severity + weatherImpact, 0), 1);
+          const inputTensor = tf.tensor2d([[input.responseTime, input.incidentCount, input.isResolved]]);
+          const outputTensor = severityModel.predict(inputTensor);
+          let severity = (await outputTensor.data())[0] + weatherImpact;
+          severity = Math.min(Math.max(severity, 0), 1);
+          inputTensor.dispose();
+          outputTensor.dispose();
 
           let severityLabel;
           if (severity < 0.33) {
@@ -1602,7 +1499,7 @@
         if (currentConversationId === conversationId) {
           chatMessages.innerHTML = "";
           currentConversationId = null;
-          appendMessage("Start a new conversation or select an existing one.", "ai", "Vynix AI", null, true);
+          appendMessage("Start a new conversation or select an existing one.", "ai", "Vynix AI", null);
         }
       } catch (error) {
         console.error("Error deleting conversation:", error);
@@ -1688,7 +1585,7 @@
           if (snapshot.exists()) {
             const messages = snapshot.val();
             Object.values(messages).forEach(msg => {
-              appendMessage(msg.text, msg.sender, msg.displayName, msg.photoURL, null, true);
+              appendMessage(msg.text, msg.sender, msg.displayName, msg.photoURL);
             });
           }
         }, (error) => {
@@ -1728,13 +1625,13 @@
               timestamp: Date.now()
             });
           }
-          appendMessage(question, "user", displayUser.displayName, displayUser.photoURL, null, true);
+          appendMessage(question, "user", displayUser.displayName, displayUser.photoURL);
           await saveMessage(currentConversationId, question, "user", displayUser.displayName, displayUser.photoURL);
           chatInput.value = "";
           const thinkingMessage = appendThinkingDots();
           try {
             const response = await generateResponse(question);
-            appendMessage(response, "ai", "Vynix AI", null, thinkingMessage, true);
+            appendMessage(response, "ai", "Vynix AI", null, thinkingMessage);
             await saveMessage(currentConversationId, response, "ai", "Vynix AI", null);
           } catch (error) {
             thinkingMessage.remove();
@@ -1753,7 +1650,7 @@
     newConversationButton.addEventListener("click", () => {
       currentConversationId = null;
       chatMessages.innerHTML = "";
-      appendMessage("Start a new conversation by typing below.", "ai", "Vynix AI", null, true);
+      appendMessage("Start a new conversation by typing below.", "ai", "Vynix AI", null);
     });
 
     newConversationFab.addEventListener("click", () => {
@@ -1761,58 +1658,49 @@
       if (conversationSidebar.classList.contains("active")) {
         currentConversationId = null;
         chatMessages.innerHTML = "";
-        appendMessage("Start a new conversation by typing below.", "ai", "Vynix AI", null, true); } });
+        appendMessage("Start a new conversation by typing below.", "ai", "Vynix AI", null);
+      }
+    });
+
     closeSidebarBtn.addEventListener("click", () => {
-  conversationSidebar.classList.remove("active");
-});
+      conversationSidebar.classList.remove("active");
+    });
 
-async function initializeApp() {
-  showSpinner();
-  initWorker();
+    document.addEventListener("DOMContentLoaded", async () => {
+      console.log("DOMContentLoaded event fired at", new Date().toLocaleString());
+      try {
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        console.log("Initial theme set to:", savedTheme);
 
-  // Cache prototype embeddings
-  const categoryPrototypes = {
-    about: ["who are you", "what are you", "who created you", "what is your purpose", "why do you exist", "vynix company", "about vynix", "katlego phasha", "ceo"],
-    weather: ["weather in my location", "weather here", "weather in", "forecast in", "weather forecast"],
-    location: ["location of", "where is"],
-    incidents: ["total incidents", "how many incidents", "resolved", "average response time", "response time", "types", "kinds of incidents", "incident types", "incidents in"],
-    severity: ["predict severity", "incident severity", "severity of incident"],
-    general: ["hello", "how are you", "tell me something"]
-  };
-  worker.postMessage({ type: 'cacheEmbeddings', data: categoryPrototypes });
+        userLocation = await getUserLocation();
 
-  const savedTheme = localStorage.getItem('theme') || 'light';
-  document.documentElement.setAttribute('data-theme', savedTheme);
-
-  try {
-    await fetchAndActivate(remoteConfig);
-    const configValues = getValue(remoteConfig, 'feature_flags');
-    console.log("Remote config fetched:", configValues.asString());
-  } catch (error) {
-    console.error("Error fetching remote config:", error);
-  }
-
-  const user = await checkAuthState();
-  if (user) {
-    userAvatarName.textContent = user.displayName;
-    if (user.photoURL) {
-      userAvatarImg.innerHTML = `<img src="${user.photoURL}" alt="${user.displayName}'s avatar">`;
-    } else {
-      userAvatarImg.textContent = user.displayName.charAt(0).toUpperCase();
-    }
-    await loadStats();
-    loadConversations(user.uid);
-    setupChatInput(user);
-    appendMessage("Welcome! Ask about community incidents, weather, locations, or about Vynix AI.", "ai", "Vynix AI", null, null, true);
-  }
-  hideSpinner();
-}
-
-function normalize(value, min, max) {
-  return (value - min) / (max - min);
-}
-
-initializeApp();
-    </script>
+        const displayUser = await checkAuthState();
+        if (displayUser) {
+          console.log("User authenticated, setting up chat input");
+          userAvatarName.textContent = displayUser.displayName;
+          if (displayUser.photoURL) {
+            const img = document.createElement("img");
+            img.src = displayUser.photoURL;
+            img.alt = `${displayUser.displayName}'s avatar`;
+            userAvatarImg.innerHTML = "";
+            userAvatarImg.appendChild(img);
+          } else {
+            userAvatarImg.textContent = displayUser.displayName.charAt(0).toUpperCase();
+          }
+          setupChatInput(displayUser);
+          loadStats();
+          loadConversations(displayUser.uid);
+          appendMessage("Hello! I'm Vynix AI, My purpose is to enhance community safety with real-time insights on incidents, weather, and locations. I can also predict incident severity using AI. Ask me about community incidents, statistics, weather, locations, or about myself!", "ai", "Vynix AI", null);
+        } else {
+          console.warn("No authenticated user, redirecting to signup");
+        }
+      } catch (error) {
+        console.error("Error in DOMContentLoaded:", error);
+        showAlert("Failed to initialize app: " + error.message, false);
+        hideSpinner();
+      }
+    });
+  </script>
 </body>
 </html>
