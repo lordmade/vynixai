@@ -616,6 +616,65 @@
       outline: 2px solid var(--focus-ring);
     }
 
+    /* Custom Dialog Styles */
+    .dialog-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+
+    .dialog-overlay.active {
+      display: flex;
+    }
+
+    .dialog-box {
+      background: var(--card-background);
+      padding: 1.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      max-width: 300px;
+      text-align: center;
+    }
+
+    .dialog-title {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text-dark);
+      margin-bottom: 1rem;
+    }
+
+    .dialog-buttons {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+    }
+
+    .dialog-btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.3s ease;
+    }
+
+    .dialog-confirm {
+      background: var(--danger-red);
+      color: var(--white);
+    }
+
+    .dialog-cancel {
+      background: var(--border);
+      color: var(--text-dark);
+    }
+
     @keyframes pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.05); }
@@ -787,8 +846,19 @@
 
   <div id="bottom-sheet" class="bottom-sheet">
     <div class="bottom-sheet-content">
-      <p>You've reached the free query limit of 5. Please wait 30 minutes or upgrade to SuperVynix for unlimited queries.</p>
+      <p>You've reached the free query limit of 10. Please wait 15 minutes or upgrade to SuperVynix for unlimited queries.</p>
       <button class="upgrade-button transition-base" id="upgrade-button" aria-label="Upgrade to SuperVynix">Upgrade to SuperVynix</button>
+    </div>
+  </div>
+
+  <!-- Custom Delete Dialog -->
+  <div id="delete-dialog" class="dialog-overlay">
+    <div class="dialog-box">
+      <h3 class="dialog-title">Delete Conversation?</h3>
+      <div class="dialog-buttons">
+        <button class="dialog-btn dialog-confirm" id="dialog-confirm">Delete</button>
+        <button class="dialog-btn dialog-cancel" id="dialog-cancel">Cancel</button>
+      </div>
     </div>
   </div>
 
@@ -829,16 +899,21 @@
     const userAvatarImg = document.getElementById("user-avatar-img");
     const userAvatarInitial = document.getElementById("user-avatar-initial");
     const userAvatarName = document.getElementById("user-avatar-name");
+    const deleteDialog = document.getElementById("delete-dialog");
+    const dialogConfirm = document.getElementById("dialog-confirm");
+    const dialogCancel = document.getElementById("dialog-cancel");
 
     const GEMINI_API_KEY = 'AIzaSyDYmJAB7pwSvNOHTrGrs44-37Qw-O8I1C8'; // Replace with your Gemini API key
     const OPENWEATHER_API_KEY = '6d6aeaf0d5905985e878923cf9eb48af';
     const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
-    const QUERY_LIMIT = 5;
-    let queryCount = parseInt(localStorage.getItem('queryCount')) || 0;
+    const QUERY_LIMIT = 10;
+    const QUERY_WINDOW_MS = 15 * 60 * 1000; // 15 minutes in ms
+    let queryTimestamps = JSON.parse(localStorage.getItem('queryTimestamps')) || [];
     let isSuperVynix = false;
     let currentConversationId = null;
     let userLocation = null;
     let displayUser = null;
+    let pendingDeleteId = null;
 
     // Play notification sound
     function playNotificationSound() {
@@ -1014,6 +1089,30 @@
       setTimeout(() => window.location.href = "payment.html", 500);
     });
 
+    // Custom dialog handling
+    function showDeleteDialog(convoId) {
+      pendingDeleteId = convoId;
+      deleteDialog.classList.add("active");
+    }
+
+    dialogCancel.addEventListener("click", () => {
+      deleteDialog.classList.remove("active");
+      pendingDeleteId = null;
+    });
+
+    dialogConfirm.addEventListener("click", async () => {
+      deleteDialog.classList.remove("active");
+      if (pendingDeleteId) {
+        await remove(ref(db, `conversations/${pendingDeleteId}`));
+        if (currentConversationId === pendingDeleteId) {
+          chatMessages.innerHTML = "";
+          welcomeMessage.classList.remove("hidden");
+          currentConversationId = null;
+        }
+        pendingDeleteId = null;
+      }
+    });
+
     // Render a single message
     function renderMessage(msg, messageId, conversationId) {
       const messageElement = document.createElement("div");
@@ -1049,36 +1148,11 @@
       // Add actions (reactions and copy)
       const actionsElement = document.createElement("div");
       actionsElement.className = "message-actions";
-      const thumbsUpBtn = document.createElement("button");
-      thumbsUpBtn.className = `action-btn ${msg.reactions?.thumbsUp ? 'active' : ''}`;
-      thumbsUpBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>';
-      thumbsUpBtn.setAttribute("aria-label", "Thumbs up");
-      const thumbsDownBtn = document.createElement("button");
-      thumbsDownBtn.className = `action-btn ${msg.reactions?.thumbsDown ? 'active' : ''}`;
-      thumbsDownBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm7-13h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/></svg>';
-      thumbsDownBtn.setAttribute("aria-label", "Thumbs down");
+
       const copyBtn = document.createElement("button");
       copyBtn.className = "action-btn";
       copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
       copyBtn.setAttribute("aria-label", "Copy text");
-
-      thumbsUpBtn.addEventListener("click", async () => {
-        const active = thumbsUpBtn.classList.toggle("active");
-        thumbsDownBtn.classList.remove("active");
-        await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
-          thumbsUp: active,
-          thumbsDown: false
-        });
-      });
-
-      thumbsDownBtn.addEventListener("click", async () => {
-        const active = thumbsDownBtn.classList.toggle("active");
-        thumbsUpBtn.classList.remove("active");
-        await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
-          thumbsUp: false,
-          thumbsDown: active
-        });
-      });
 
       copyBtn.addEventListener("click", () => {
         navigator.clipboard.writeText(msg.text).then(() => {
@@ -1087,7 +1161,40 @@
         });
       });
 
-      actionsElement.append(thumbsUpBtn, thumbsDownBtn, copyBtn);
+      actionsElement.appendChild(copyBtn);
+
+      if (msg.sender === "ai") {
+        const thumbsUpBtn = document.createElement("button");
+        thumbsUpBtn.className = `action-btn ${msg.reactions?.thumbsUp ? 'active' : ''}`;
+        thumbsUpBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>';
+        thumbsUpBtn.setAttribute("aria-label", "Thumbs up");
+        const thumbsDownBtn = document.createElement("button");
+        thumbsDownBtn.className = `action-btn ${msg.reactions?.thumbsDown ? 'active' : ''}`;
+        thumbsDownBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm7-13h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/></svg>';
+        thumbsDownBtn.setAttribute("aria-label", "Thumbs down");
+
+        thumbsUpBtn.addEventListener("click", async () => {
+          const active = thumbsUpBtn.classList.toggle("active");
+          thumbsDownBtn.classList.remove("active");
+          await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
+            thumbsUp: active,
+            thumbsDown: false
+          });
+        });
+
+        thumbsDownBtn.addEventListener("click", async () => {
+          const active = thumbsDownBtn.classList.toggle("active");
+          thumbsUpBtn.classList.remove("active");
+          await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
+            thumbsUp: false,
+            thumbsDown: active
+          });
+        });
+
+        actionsElement.prepend(thumbsDownBtn);
+        actionsElement.prepend(thumbsUpBtn);
+      }
+
       messageElement.appendChild(actionsElement);
 
       chatMessages.appendChild(messageElement);
@@ -1148,11 +1255,6 @@
       welcomeMessage.classList.add("hidden");
     }
 
-    // Save message to Firebase
-    async function saveMessage(conversationId, text, sender, displayName) {
-      // Now handled in appendMessage
-    }
-
     // Load conversation messages
     function loadConversationMessages(conversationId) {
       currentConversationId = conversationId;
@@ -1196,16 +1298,9 @@
               deleteBtn.className = "delete-convo-btn";
               deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
               deleteBtn.setAttribute("aria-label", "Delete conversation");
-              deleteBtn.addEventListener("click", async (e) => {
+              deleteBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
-                if (confirm("Delete this conversation?")) {
-                  await remove(ref(db, `conversations/${id}`));
-                  if (currentConversationId === id) {
-                    chatMessages.innerHTML = "";
-                    welcomeMessage.classList.remove("hidden");
-                    currentConversationId = null;
-                  }
-                }
+                showDeleteDialog(id);
               });
               item.appendChild(deleteBtn);
               item.addEventListener("click", () => {
@@ -1218,15 +1313,18 @@
       });
     }
 
-    // Check query limit
+    // Check query limit (10 per 15 minutes)
     function checkQueryLimit() {
       if (isSuperVynix) return true;
-      if (queryCount >= QUERY_LIMIT) {
+
+      const now = Date.now();
+      queryTimestamps = queryTimestamps.filter(ts => now - ts < QUERY_WINDOW_MS);
+      if (queryTimestamps.length >= QUERY_LIMIT) {
         bottomSheet.classList.add("active");
         return false;
       }
-      queryCount++;
-      localStorage.setItem('queryCount', queryCount);
+      queryTimestamps.push(now);
+      localStorage.setItem('queryTimestamps', JSON.stringify(queryTimestamps));
       return true;
     }
 
@@ -1382,10 +1480,11 @@
       }
     }
 
-    // Send message
+    // Send message with duplicate prevention
     sendButton.addEventListener("click", async () => {
       const question = chatInput.value.trim();
-      if (question) {
+      if (question && !sendButton.disabled) {
+        sendButton.disabled = true;
         if (!currentConversationId) {
           const conversationsRef = ref(db, `conversations`);
           const newConversationRef = push(conversationsRef);
@@ -1402,11 +1501,12 @@
         if (response) {
           await appendMessage(response, "ai", "Vynix AI", currentConversationId);
         }
+        sendButton.disabled = false;
       }
     });
 
     chatInput.addEventListener("keypress", (e) => {
-      if (e.key === "Enter") {
+      if (e.key === "Enter" && !sendButton.disabled) {
         sendButton.click();
       }
     });
@@ -1417,8 +1517,6 @@
       chatMessages.innerHTML = "";
       welcomeMessage.classList.remove("hidden");
       bottomSheet.classList.remove("active");
-      queryCount = 0;
-      localStorage.setItem('queryCount', queryCount);
     });
 
     // Initialize
