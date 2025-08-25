@@ -873,7 +873,7 @@
   <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { getDatabase, ref, push, set, onValue, get, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+import { getDatabase, ref, push, set, onValue, get, remove, off } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
 // Firebase configuration
@@ -900,9 +900,9 @@ remoteConfig.settings = {
   fetchTimeoutMillis: 60000 // 60 seconds timeout
 };
 
-// Set default Remote Config values (use a safe fallback or remove in production)
+// Set default Remote Config values
 remoteConfig.defaultConfig = {
-  grok_api_key: "" // Avoid hardcoding in production; fallback to empty string
+  gemini_api_key: ""
 };
 
 const chatMessages = document.getElementById("chat-messages");
@@ -934,18 +934,30 @@ let currentConversationId = null;
 let userLocation = null;
 let displayUser = null;
 let pendingDeleteId = null;
+let cachedGeminiKey = null;
+let conversationListener = null;
+let messageListener = null;
 
 const AI_AVATAR_URL = 'https://i.postimg.cc/ZR0jj3Yr/Black-and-White-Minimalist-Simple-Modern-Technology-AI-Logo-20250824-182710-0000.png';
+
+// Show toast notification
+function showToast(message, type = 'error') {
+  const toast = document.createElement("div");
+  toast.className = `fixed top-4 right-4 p-4 rounded shadow text-white ${type === 'error' ? 'bg-red-500' : 'bg-green-500'}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
 
 // Play notification sound
 function playNotificationSound() {
   const context = new (window.AudioContext || window.webkitAudioContext)();
   const oscillator = context.createOscillator();
   oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(440, context.currentTime); // A4 note
+  oscillator.frequency.setValueAtTime(440, context.currentTime);
   oscillator.connect(context.destination);
   oscillator.start();
-  oscillator.stop(context.currentTime + 0.2); // 200ms chime
+  oscillator.stop(context.currentTime + 0.2);
 }
 
 // Fetch user data
@@ -954,10 +966,8 @@ async function fetchUserData(userId) {
     const userRef = ref(db, `users/${userId}`);
     const userSnap = await get(userRef);
     if (userSnap.exists()) {
-      console.log(`User data fetched for ${userId}:`, userSnap.val());
       return userSnap.val();
     }
-    console.warn(`No user data for ${userId}, creating default`);
     const defaultUser = {
       displayName: "User",
       photoURL: null,
@@ -968,7 +978,7 @@ async function fetchUserData(userId) {
     await set(userRef, defaultUser);
     return defaultUser;
   } catch (error) {
-    console.error("Error fetching user data:", error);
+    showToast("Failed to fetch user data.");
     return { displayName: "User", photoURL: null, email: "unknown@example.com", mobileNumber: null, subscription: "free" };
   }
 }
@@ -977,24 +987,21 @@ async function fetchUserData(userId) {
 async function checkAuthState() {
   try {
     await setPersistence(auth, browserLocalPersistence);
-    console.log("Persistence set to browserLocalPersistence");
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        console.error("Authentication check timed out");
+        showToast("Authentication timed out.");
         document.body.classList.add("fade-out");
         setTimeout(() => window.location.href = "signup.html", 500);
         reject(new Error("Authentication timed out"));
-      }, 10000);
+      }, 15000); // Increased timeout to 15s
 
       onAuthStateChanged(auth, async (user) => {
         clearTimeout(timeout);
         if (!user) {
-          console.log("No authenticated user");
           document.body.classList.add("fade-out");
           setTimeout(() => window.location.href = "signup.html", 500);
           resolve(null);
         } else {
-          console.log("Authenticated user:", user.uid, user.email);
           const userData = await fetchUserData(user.uid);
           const displayUser = {
             uid: user.uid,
@@ -1004,19 +1011,18 @@ async function checkAuthState() {
             mobileNumber: userData?.mobileNumber || null,
             subscription: userData?.subscription || "free"
           };
-          console.log("Display user:", displayUser);
           resolve(displayUser);
         }
       }, (error) => {
         clearTimeout(timeout);
-        console.error("Auth state error:", error);
+        showToast("Authentication error.");
         document.body.classList.add("fade-out");
         setTimeout(() => window.location.href = "signup.html", 500);
         reject(error);
       });
     });
   } catch (error) {
-    console.error("Auth check failed:", error);
+    showToast("Authentication setup failed.");
     return null;
   }
 }
@@ -1033,13 +1039,13 @@ function setupUserProfile(displayUser) {
     userAvatarImg.appendChild(img);
   }
   isSuperVynix = displayUser.subscription === "supervynix";
-  console.log("User profile set up:", displayUser);
 }
 
 // Fetch user's current location
 async function getUserLocation() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
+      showToast("Location services not supported.");
       resolve(null);
       return;
     }
@@ -1051,20 +1057,25 @@ async function getUserLocation() {
             `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${MAPBOX_ACCESS_TOKEN}`
           );
           if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            showToast("Failed to fetch location data.");
+            resolve(null);
+            return;
           }
           const data = await response.json();
           if (data.features && data.features.length > 0) {
             const placeName = data.features[0].place_name;
             resolve({ latitude, longitude, placeName });
           } else {
+            showToast("No location data found.");
             resolve(null);
           }
         } catch (error) {
+          showToast("Error fetching location.");
           resolve(null);
         }
       },
       () => {
+        showToast("Location access denied.");
         resolve(null);
       },
       { timeout: 10000, enableHighAccuracy: true }
@@ -1098,7 +1109,7 @@ conversationSidebar.addEventListener("mouseleave", () => {
 // Sidebar toggle for mobile
 newConversationFab.addEventListener("click", () => {
   conversationSidebar.classList.toggle("active");
-  bottomSheet.classList.remove("active"); // Close bottom sheet
+  bottomSheet.classList.remove("active");
 });
 
 closeSidebarBtn.addEventListener("click", () => {
@@ -1125,11 +1136,16 @@ dialogCancel.addEventListener("click", () => {
 dialogConfirm.addEventListener("click", async () => {
   deleteDialog.classList.remove("active");
   if (pendingDeleteId) {
-    await remove(ref(db, `conversations/${pendingDeleteId}`));
-    if (currentConversationId === pendingDeleteId) {
-      chatMessages.innerHTML = "";
-      welcomeMessage.classList.remove("hidden");
-      currentConversationId = null;
+    try {
+      await remove(ref(db, `conversations/${pendingDeleteId}`));
+      if (currentConversationId === pendingDeleteId) {
+        chatMessages.innerHTML = "";
+        welcomeMessage.classList.remove("hidden");
+        currentConversationId = null;
+      }
+      showToast("Conversation deleted.", "success");
+    } catch (error) {
+      showToast("Failed to delete conversation.");
     }
     pendingDeleteId = null;
   }
@@ -1188,8 +1204,11 @@ function renderMessage(msg, messageId, conversationId) {
 
   copyBtn.addEventListener("click", () => {
     navigator.clipboard.writeText(msg.text).then(() => {
-      copyBtn.style.color = "green"; // Feedback
+      copyBtn.style.color = "green";
       setTimeout(() => copyBtn.style.color = "", 1000);
+      showToast("Text copied to clipboard.", "success");
+    }).catch(() => {
+      showToast("Failed to copy text.");
     });
   });
 
@@ -1206,21 +1225,29 @@ function renderMessage(msg, messageId, conversationId) {
     thumbsDownBtn.setAttribute("aria-label", "Thumbs down");
 
     thumbsUpBtn.addEventListener("click", async () => {
-      const active = thumbsUpBtn.classList.toggle("active");
-      thumbsDownBtn.classList.remove("active");
-      await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
-        thumbsUp: active,
-        thumbsDown: false
-      });
+      try {
+        const active = thumbsUpBtn.classList.toggle("active");
+        thumbsDownBtn.classList.remove("active");
+        await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
+          thumbsUp: active,
+          thumbsDown: false
+        });
+      } catch (error) {
+        showToast("Failed to update reaction.");
+      }
     });
 
     thumbsDownBtn.addEventListener("click", async () => {
-      const active = thumbsDownBtn.classList.toggle("active");
-      thumbsUpBtn.classList.remove("active");
-      await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
-        thumbsUp: false,
-        thumbsDown: active
-      });
+      try {
+        const active = thumbsDownBtn.classList.toggle("active");
+        thumbsUpBtn.classList.remove("active");
+        await set(ref(db, `conversations/${conversationId}/messages/${messageId}/reactions`), {
+          thumbsUp: false,
+          thumbsDown: active
+        });
+      } catch (error) {
+        showToast("Failed to update reaction.");
+      }
     });
 
     actionsElement.prepend(thumbsDownBtn);
@@ -1228,7 +1255,6 @@ function renderMessage(msg, messageId, conversationId) {
   }
 
   messageElement.appendChild(actionsElement);
-
   chatMessages.appendChild(messageElement);
   chatMessages.scrollTop = chatMessages.scrollHeight;
   return messageElement;
@@ -1236,63 +1262,67 @@ function renderMessage(msg, messageId, conversationId) {
 
 // Append message with typing animation for AI
 async function appendMessage(text, sender, displayName, conversationId) {
-  const messageId = push(ref(db, `conversations/${conversationId}/messages`)).key;
-  await set(ref(db, `conversations/${conversationId}/messages/${messageId}`), {
-    text,
-    sender,
-    displayName,
-    timestamp: Date.now(),
-    reactions: { thumbsUp: false, thumbsDown: false }
-  });
+  try {
+    const messageId = push(ref(db, `conversations/${conversationId}/messages`)).key;
+    await set(ref(db, `conversations/${conversationId}/messages/${messageId}`), {
+      text,
+      sender,
+      displayName,
+      timestamp: Date.now(),
+      reactions: { thumbsUp: false, thumbsDown: false }
+    });
 
-  if (sender === "user") {
-    // For user, just render immediately
-    renderMessage({ text, sender, displayName, timestamp: Date.now(), reactions: { thumbsUp: false, thumbsDown: false } }, messageId, conversationId);
-  } else {
-    // For AI, typing animation
-    const tempMsg = { text: '', sender, displayName, timestamp: Date.now(), reactions: { thumbsUp: false, thumbsDown: false } };
-    const messageElement = renderMessage(tempMsg, messageId, conversationId);
-    const textElement = messageElement.querySelector("p");
+    if (sender === "user") {
+      renderMessage({ text, sender, displayName, timestamp: Date.now(), reactions: { thumbsUp: false, thumbsDown: false } }, messageId, conversationId);
+    } else {
+      const tempMsg = { text: '', sender, displayName, timestamp: Date.now(), reactions: { thumbsUp: false, thumbsDown: false } };
+      const messageElement = renderMessage(tempMsg, messageId, conversationId);
+      const textElement = messageElement.querySelector("p");
 
-    // Vibrate when AI starts responding
-    if ("vibrate" in navigator) {
-      navigator.vibrate(200);
-    }
-
-    const typingIndicator = document.createElement("div");
-    typingIndicator.className = "typing-indicator";
-    for (let i = 0; i < 3; i++) {
-      const dot = document.createElement("span");
-      dot.className = "typing-dot";
-      typingIndicator.appendChild(dot);
-    }
-    textElement.appendChild(typingIndicator);
-
-    let i = 0;
-    const typeText = () => {
-      if (i < text.length) {
-        textElement.textContent = text.slice(0, i + 1);
-        i++;
-        setTimeout(typeText, 30);
-      } else {
-        typingIndicator.remove();
-        textElement.textContent = text;
-        playNotificationSound();
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+      if ("vibrate" in navigator) {
+        navigator.vibrate(200);
       }
-    };
-    typeText();
-  }
 
-  welcomeMessage.classList.add("hidden");
+      const typingIndicator = document.createElement("div");
+      typingIndicator.className = "typing-indicator";
+      for (let i = 0; i < 3; i++) {
+        const dot = document.createElement("span");
+        dot.className = "typing-dot";
+        typingIndicator.appendChild(dot);
+      }
+      textElement.appendChild(typingIndicator);
+
+      let i = 0;
+      const typeText = () => {
+        if (i < text.length) {
+          textElement.textContent = text.slice(0, i + 1);
+          i++;
+          setTimeout(typeText, 30);
+        } else {
+          typingIndicator.remove();
+          textElement.textContent = text;
+          playNotificationSound();
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+      };
+      typeText();
+    }
+
+    welcomeMessage.classList.add("hidden");
+  } catch (error) {
+    showToast("Failed to send message.");
+  }
 }
 
 // Load conversation messages
 function loadConversationMessages(conversationId) {
+  if (messageListener) {
+    messageListener(); // Cleanup previous listener
+  }
   currentConversationId = conversationId;
   chatMessages.innerHTML = "";
   const messagesRef = ref(db, `conversations/${conversationId}/messages`);
-  onValue(messagesRef, (snapshot) => {
+  messageListener = () => onValue(messagesRef, (snapshot) => {
     chatMessages.innerHTML = "";
     if (snapshot.exists()) {
       const messages = snapshot.val();
@@ -1301,21 +1331,25 @@ function loadConversationMessages(conversationId) {
       });
     }
   }, (error) => {
-    console.error("Error loading messages:", error);
+    showToast("Error loading messages.");
   });
+  messageListener();
 }
 
 // Load conversations dynamically
 function loadConversations(userId) {
+  if (conversationListener) {
+    conversationListener(); // Cleanup previous listener
+  }
   const conversationList = document.getElementById("conversation-list");
   const conversationsRef = ref(db, `conversations`);
-  onValue(conversationsRef, (snapshot) => {
+  conversationListener = () => onValue(conversationsRef, (snapshot) => {
     conversationList.innerHTML = "";
     if (snapshot.exists()) {
       const conversations = snapshot.val();
       Object.entries(conversations)
         .filter(([_, convo]) => convo.userId === userId)
-        .sort((a, b) => b[1].timestamp - a[1].timestamp) // Sort by recent
+        .sort((a, b) => b[1].timestamp - a[1].timestamp)
         .forEach(([id, convo]) => {
           const item = document.createElement("div");
           item.className = "conversation-item";
@@ -1337,27 +1371,71 @@ function loadConversations(userId) {
           item.appendChild(deleteBtn);
           item.addEventListener("click", () => {
             loadConversationMessages(id);
-            conversationSidebar.classList.remove("active"); // Close on mobile
+            conversationSidebar.classList.remove("active");
           });
           conversationList.appendChild(item);
         });
     }
+  }, (error) => {
+    showToast("Error loading conversations.");
   });
+  conversationListener();
 }
 
-// Check query limit (10 per 15 minutes)
+// Update query limit timer
+function updateQueryLimitTimer() {
+  if (isSuperVynix) return;
+  const now = Date.now();
+  queryTimestamps = queryTimestamps.filter(ts => now - ts < QUERY_WINDOW_MS);
+  if (queryTimestamps.length >= QUERY_LIMIT) {
+    const oldestQuery = queryTimestamps[0];
+    if (oldestQuery) {
+      const timeLeft = QUERY_WINDOW_MS - (now - oldestQuery);
+      if (timeLeft > 0) {
+        const minutes = Math.floor(timeLeft / 60000);
+        const seconds = Math.floor((timeLeft % 60000) / 1000);
+        bottomSheet.querySelector("p").textContent = `Query limit reached. Resets in ${minutes}m ${seconds}s.`;
+        setTimeout(updateQueryLimitTimer, 1000);
+      } else {
+        queryTimestamps = [];
+        localStorage.setItem('queryTimestamps', JSON.stringify(queryTimestamps));
+        bottomSheet.classList.remove("active");
+        showToast("Query limit reset.", "success");
+      }
+    }
+  }
+}
+
+// Check query limit
 function checkQueryLimit() {
   if (isSuperVynix) return true;
-
   const now = Date.now();
   queryTimestamps = queryTimestamps.filter(ts => now - ts < QUERY_WINDOW_MS);
   if (queryTimestamps.length >= QUERY_LIMIT) {
     bottomSheet.classList.add("active");
+    updateQueryLimitTimer();
     return false;
   }
   queryTimestamps.push(now);
   localStorage.setItem('queryTimestamps', JSON.stringify(queryTimestamps));
   return true;
+}
+
+// Get cached Gemini API key
+async function getGeminiApiKey() {
+  if (cachedGeminiKey) return cachedGeminiKey;
+  try {
+    await fetchAndActivate(remoteConfig);
+    cachedGeminiKey = getString(remoteConfig, 'gemini_api_key');
+    if (!cachedGeminiKey) {
+      showToast("Gemini API key not available.");
+      throw new Error("Gemini API key not available");
+    }
+    return cachedGeminiKey;
+  } catch (error) {
+    showToast("Failed to fetch Gemini API key.");
+    throw error;
+  }
 }
 
 // Generate response
@@ -1384,6 +1462,7 @@ async function generateResponse(question) {
         const place = placeMatch[2].trim();
         try {
           const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(place)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+          if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
           const data = await response.json();
           if (data.features && data.features.length > 0) {
             const feature = data.features[0];
@@ -1414,6 +1493,7 @@ async function generateResponse(question) {
         const location = weatherMatch[1].trim();
         try {
           const geoResponse = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+          if (!geoResponse.ok) throw new Error(`HTTP error: ${geoResponse.status}`);
           const geoData = await geoResponse.json();
           if (geoData.features && geoData.features.length > 0) {
             const { center, place_name } = geoData.features[0];
@@ -1431,6 +1511,7 @@ async function generateResponse(question) {
     if (lat && lon) {
       try {
         const weatherResponse = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`);
+        if (!weatherResponse.ok) throw new Error(`HTTP error: ${weatherResponse.status}`);
         const weatherData = await weatherResponse.json();
         info = `Weather in ${placeName}: ${weatherData.weather[0].description}, Temperature: ${weatherData.main.temp}°C, Humidity: ${weatherData.main.humidity}%, Wind Speed: ${weatherData.wind.speed} m/s.`;
       } catch (error) {
@@ -1478,72 +1559,73 @@ async function generateResponse(question) {
     }
   }
 
-  const grokResponse = await callGrokApi(question, info);
-  return grokResponse;
+  const geminiResponse = await callGeminiApi(question, info);
+  return geminiResponse;
 }
 
-// Call xAI Grok API
-async function callGrokApi(userQuery, info) {
+// Call Gemini API
+async function callGeminiApi(userQuery, info) {
   const systemPrompt = `You are Vynix AI, a helpful chatbot created by Vynix Company. Provide friendly, concise, and accurate responses to user queries. Use the provided info if relevant.`;
-  const messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: `User query: ${userQuery}\n\nInfo: ${info}` }
-  ];
+  const prompt = `User query: ${userQuery}\n\nInfo: ${info}`;
 
   try {
-    await fetchAndActivate(remoteConfig);
-    const GROK_API_KEY = getString(remoteConfig, 'grok_api_key');
-    if (!GROK_API_KEY) {
-      throw new Error("Grok API key not available");
-    }
-
-    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+    const GEMINI_API_KEY = await getGeminiApiKey();
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GROK_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'grok-beta', // Use grok-beta as per public beta availability
-        messages: messages,
-        max_tokens: 500, // Adjust based on your needs
-        temperature: 0.7 // Adjust for creativity vs. determinism
+        contents: [{
+          parts: [
+            { text: systemPrompt },
+            { text: prompt }
+          ]
+        }]
       })
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      throw new Error(`HTTP error: ${response.status}`);
     }
     const data = await response.json();
-    return data.choices[0].message.content;
+    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+      throw new Error("Unexpected Gemini API response format");
+    }
+    return data.candidates[0].content.parts[0].text;
   } catch (error) {
-    console.error("Grok API or Remote Config error:", error);
+    showToast("Failed to process your request. Please try again.");
     return "Sorry, I couldn't process your request. Please try again.";
   }
 }
 
-// Send message with duplicate prevention
+// Send message
 sendButton.addEventListener("click", async () => {
   const question = chatInput.value.trim();
   if (question && !sendButton.disabled) {
     sendButton.disabled = true;
-    if (!currentConversationId) {
-      const conversationsRef = ref(db, `conversations`);
-      const newConversationRef = push(conversationsRef);
-      currentConversationId = newConversationRef.key;
-      await set(newConversationRef, {
-        userId: displayUser?.uid || "anonymous",
-        timestamp: Date.now(),
-        title: question.substring(0, 30) + (question.length > 30 ? '...' : '')
-      });
+    try {
+      if (!currentConversationId) {
+        const conversationsRef = ref(db, `conversations`);
+        const newConversationRef = push(conversationsRef);
+        currentConversationId = newConversationRef.key;
+        await set(newConversationRef, {
+          userId: displayUser?.uid || "anonymous",
+          timestamp: Date.now(),
+          title: question.substring(0, 30) + (question.length > 30 ? '...' : '')
+        });
+      }
+      await appendMessage(question, "user", displayUser?.displayName || "User", currentConversationId);
+      chatInput.value = "";
+      const response = await generateResponse(question);
+      if (response) {
+        await appendMessage(response, "ai", "Vynix AI", currentConversationId);
+      }
+    } catch (error) {
+      showToast("Error sending message.");
+    } finally {
+      sendButton.disabled = false;
     }
-    await appendMessage(question, "user", displayUser?.displayName || "User", currentConversationId);
-    chatInput.value = "";
-    const response = await generateResponse(question);
-    if (response) {
-      await appendMessage(response, "ai", "Vynix AI", currentConversationId);
-    }
-    sendButton.disabled = false;
   }
 });
 
@@ -1555,29 +1637,39 @@ chatInput.addEventListener("keypress", (e) => {
 
 // New conversation
 newConversationButton.addEventListener("click", () => {
+  if (messageListener) {
+    messageListener();
+    messageListener = null;
+  }
   currentConversationId = null;
   chatMessages.innerHTML = "";
   welcomeMessage.classList.remove("hidden");
   bottomSheet.classList.remove("active");
 });
 
+// Cleanup listeners on page unload
+window.addEventListener("unload", () => {
+  if (conversationListener) conversationListener();
+  if (messageListener) messageListener();
+});
+
 // Initialize
 document.addEventListener("DOMContentLoaded", async () => {
   const savedTheme = localStorage.getItem('theme') || 'light';
   document.documentElement.setAttribute('data-theme', savedTheme);
-  sendButton.disabled = true; // Disable send button initially
+  sendButton.disabled = true;
   try {
     await fetchAndActivate(remoteConfig);
-    sendButton.disabled = false; // Enable after fetching config
+    displayUser = await checkAuthState();
+    if (displayUser) {
+      setupUserProfile(displayUser);
+      userLocation = await getUserLocation();
+      loadConversations(displayUser.uid);
+    }
   } catch (error) {
-    console.error("Failed to fetch Remote Config:", error);
-    sendButton.disabled = true; // Keep disabled if fetch fails
-  }
-  displayUser = await checkAuthState();
-  if (displayUser) {
-    setupUserProfile(displayUser);
-    userLocation = await getUserLocation();
-    loadConversations(displayUser.uid);
+    showToast("Initialization failed.");
+  } finally {
+    sendButton.disabled = false;
   }
 });
   </script>
