@@ -3,11 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Vynix AI - Chatbot</title>
+  <title>Vynix AI - Emergency Assistant</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
   <style>
     :root {
       --primary-purple: #6D28D9;
@@ -624,7 +626,6 @@
       outline: 2px solid var(--focus-ring);
     }
 
-    /* Custom Dialog Styles */
     .dialog-overlay {
       position: fixed;
       top: 0;
@@ -647,7 +648,8 @@
       padding: 1.5rem;
       border-radius: 12px;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-      max-width: 300px;
+      max-width: 400px;
+      width: 90%;
       text-align: center;
     }
 
@@ -670,17 +672,46 @@
       border-radius: 8px;
       cursor: pointer;
       font-weight: 600;
-      transition: background 0.3s ease;
+      transition: background 0.3s ease, transform 0.2s ease;
+    }
+
+    .dialog-btn:hover, .dialog-btn:focus {
+      transform: scale(1.05);
+      outline: 2px solid var(--focus-ring);
     }
 
     .dialog-confirm {
-      background: var(--danger-red);
+      background: var(--primary-purple);
       color: var(--white);
     }
 
     .dialog-cancel {
       background: var(--border);
       color: var(--text-dark);
+    }
+
+    .emergency-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .emergency-form select,
+    .emergency-form input {
+      padding: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 1rem;
+      color: var(--text-dark);
+      background: var(--white);
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .emergency-form select:focus,
+    .emergency-form input:focus {
+      outline: 2px solid var(--focus-ring);
     }
 
     @keyframes pulse {
@@ -755,6 +786,9 @@
         font-size: 0.9rem;
       }
       .typing-dot { width: 5px; height: 5px; }
+      .dialog-box {
+        max-width: 90%;
+      }
     }
 
     @media (min-width: 768px) {
@@ -797,7 +831,7 @@
 </head>
 <body>
   <div class="top-bar" role="banner">
-    <h1 class="title">Vynix AI</h1>
+    <h1 class="title">Vynix AI - Emergency Assistant</h1>
     <button class="theme-toggle transition-base" id="theme-toggle" aria-label="Toggle dark mode">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
@@ -806,10 +840,12 @@
   </div>
 
   <div class="chat-container" id="chat-container">
-    <div class="welcome-message" id="welcome-message">Welcome to Vynix, how can I help you?</div>
+    <div class="welcome-message" id="welcome-message">Welcome to Vynix AI. I'm here to assist with emergencies or answer your questions.</div>
     <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+    <div id="emergency-announcements" aria-live="assertive" class="sr-only"></div>
     <div class="chat-input-container">
-      <input type="text" id="chat-input" class="chat-input" placeholder="Ask Vynix AI anything..." aria-label="Ask Vynix AI anything" maxlength="500">
+      <input type="text" id="chat-input" class="chat-input" placeholder="Report an emergency or ask a question..." aria-label="Type to report an emergency or ask a question" aria-describedby="chat-input-desc" maxlength="500">
+      <div id="chat-input-desc" class="sr-only">Enter your message to report an emergency or ask Vynix AI a question. Press Enter to send.</div>
       <button class="send-button transition-base" id="send-button" aria-label="Send message">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -854,18 +890,39 @@
 
   <div id="bottom-sheet" class="bottom-sheet">
     <div class="bottom-sheet-content">
-      <p>You've reached the free query limit of 10. Please wait 15 minutes or upgrade to SuperVynix for unlimited queries.</p>
+      <p id="bottom-sheet-message">You've reached the free query limit of 10. Please wait 15 minutes or upgrade to SuperVynix for unlimited queries.</p>
       <button class="upgrade-button transition-base" id="upgrade-button" aria-label="Upgrade to SuperVynix">Upgrade to SuperVynix</button>
     </div>
   </div>
 
-  <!-- Custom Delete Dialog -->
   <div id="delete-dialog" class="dialog-overlay">
-    <div class="dialog-box">
-      <h3 class="dialog-title">Delete Conversation?</h3>
+    <div class="dialog-box" role="dialog" aria-labelledby="delete-dialog-title">
+      <h3 id="delete-dialog-title" class="dialog-title">Delete Conversation?</h3>
       <div class="dialog-buttons">
         <button class="dialog-btn dialog-confirm" id="dialog-confirm">Delete</button>
         <button class="dialog-btn dialog-cancel" id="dialog-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="emergency-confirm-dialog" class="dialog-overlay">
+    <div class="dialog-box" role="dialog" aria-labelledby="emergency-dialog-title" aria-modal="true">
+      <h3 id="emergency-dialog-title" class="dialog-title">Confirm Emergency Details</h3>
+      <form class="emergency-form">
+        <label for="emergency-type" class="sr-only">Emergency Type</label>
+        <select id="emergency-type" aria-label="Select emergency type">
+          <option value="">Select Emergency Type</option>
+          <option value="Police Emergency">Police Emergency</option>
+          <option value="Ambulance">Ambulance</option>
+          <option value="Fire Fighter">Fire Fighter</option>
+          <option value="Environmental Hazard">Environmental Hazard</option>
+        </select>
+        <label for="emergency-location" class="sr-only">Location</label>
+        <input type="text" id="emergency-location" placeholder="Enter location or leave blank for current location" aria-label="Enter emergency location">
+      </form>
+      <div class="dialog-buttons">
+        <button class="dialog-btn dialog-confirm" id="emergency-confirm-btn">Confirm</button>
+        <button class="dialog-btn dialog-cancel" id="emergency-cancel-btn">Cancel</button>
       </div>
     </div>
   </div>
@@ -893,19 +950,14 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 const remoteConfig = getRemoteConfig(app);
-
-// Set Remote Config settings
 remoteConfig.settings = {
-  minimumFetchIntervalMillis: 3600000, // Fetch every hour
-  fetchTimeoutMillis: 60000 // 60 seconds timeout
+  minimumFetchIntervalMillis: 3600000,
+  fetchTimeoutMillis: 60000
 };
-
-// Set default Remote Config values
-remoteConfig.defaultConfig = {
-  gemini_api_key: ""
-};
+remoteConfig.defaultConfig = { gemini_api_key: "" };
 
 const chatMessages = document.getElementById("chat-messages");
+const emergencyAnnouncements = document.getElementById("emergency-announcements");
 const chatInput = document.getElementById("chat-input");
 const sendButton = document.getElementById("send-button");
 const themeToggle = document.getElementById("theme-toggle");
@@ -923,12 +975,16 @@ const userAvatarName = document.getElementById("user-avatar-name");
 const deleteDialog = document.getElementById("delete-dialog");
 const dialogConfirm = document.getElementById("dialog-confirm");
 const dialogCancel = document.getElementById("dialog-cancel");
+const emergencyConfirmDialog = document.getElementById("emergency-confirm-dialog");
+const emergencyConfirmBtn = document.getElementById("emergency-confirm-btn");
+const emergencyCancelBtn = document.getElementById("emergency-cancel-btn");
+const emergencyTypeSelect = document.getElementById("emergency-type");
+const emergencyLocationInput = document.getElementById("emergency-location");
 
-const OPENWEATHER_API_KEY = '6d6aeaf0d5905985e878923cf9eb48af';
 const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
 const QUERY_LIMIT = 10;
-const QUERY_WINDOW_MS = 15 * 60 * 1000; // 15 minutes in ms
-let queryTimestamps = JSON.parse(localStorage.getItem('queryTimestamps')) || [];
+const QUERY_WINDOW_MS = 15 * 60 * 1000;
+let queryTimestamps = JSON.parse(localStorage.getItem('queryTimestamps') || '[]');
 let isSuperVynix = false;
 let currentConversationId = null;
 let userLocation = null;
@@ -937,27 +993,26 @@ let pendingDeleteId = null;
 let cachedGeminiKey = null;
 let conversationListener = null;
 let messageListener = null;
+let incidentListeners = new Map();
+let pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
 
 const AI_AVATAR_URL = 'https://i.postimg.cc/ZR0jj3Yr/Black-and-White-Minimalist-Simple-Modern-Technology-AI-Logo-20250824-182710-0000.png';
+const NOTIFICATION_SOUND_URL = 'https://freesound.org/data/previews/316/316847_4939433-lq.mp3';
 
 // Show toast notification
 function showToast(message, type = 'error') {
   const toast = document.createElement("div");
   toast.className = `fixed top-4 right-4 p-4 rounded shadow text-white ${type === 'error' ? 'bg-red-500' : 'bg-green-500'}`;
   toast.textContent = message;
+  toast.setAttribute('role', 'alert');
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 3000);
 }
 
 // Play notification sound
 function playNotificationSound() {
-  const context = new (window.AudioContext || window.webkitAudioContext)();
-  const oscillator = context.createOscillator();
-  oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(440, context.currentTime);
-  oscillator.connect(context.destination);
-  oscillator.start();
-  oscillator.stop(context.currentTime + 0.2);
+  const audio = new Audio(NOTIFICATION_SOUND_URL);
+  audio.play().catch(() => console.error("Failed to play notification sound"));
 }
 
 // Fetch user data
@@ -965,9 +1020,7 @@ async function fetchUserData(userId) {
   try {
     const userRef = ref(db, `users/${userId}`);
     const userSnap = await get(userRef);
-    if (userSnap.exists()) {
-      return userSnap.val();
-    }
+    if (userSnap.exists()) return userSnap.val();
     const defaultUser = {
       displayName: "User",
       photoURL: null,
@@ -993,7 +1046,7 @@ async function checkAuthState() {
         document.body.classList.add("fade-out");
         setTimeout(() => window.location.href = "signup.html", 500);
         reject(new Error("Authentication timed out"));
-      }, 15000); // Increased timeout to 15s
+      }, 15000);
 
       onAuthStateChanged(auth, async (user) => {
         clearTimeout(timeout);
@@ -1013,13 +1066,7 @@ async function checkAuthState() {
           };
           resolve(displayUser);
         }
-      }, (error) => {
-        clearTimeout(timeout);
-        showToast("Authentication error.");
-        document.body.classList.add("fade-out");
-        setTimeout(() => window.location.href = "signup.html", 500);
-        reject(error);
-      });
+      }, reject);
     });
   } catch (error) {
     showToast("Authentication setup failed.");
@@ -1027,7 +1074,7 @@ async function checkAuthState() {
   }
 }
 
-// Setup user profile in sidebar
+// Setup user profile
 function setupUserProfile(displayUser) {
   userAvatarName.textContent = displayUser.displayName;
   userAvatarInitial.textContent = displayUser.displayName?.charAt(0).toUpperCase() || "U";
@@ -1041,9 +1088,9 @@ function setupUserProfile(displayUser) {
   isSuperVynix = displayUser.subscription === "supervynix";
 }
 
-// Fetch user's current location
+// Get user location
 async function getUserLocation() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (!navigator.geolocation) {
       showToast("Location services not supported.");
       resolve(null);
@@ -1058,20 +1105,15 @@ async function getUserLocation() {
           );
           if (!response.ok) {
             showToast("Failed to fetch location data.");
-            resolve(null);
+            resolve({ latitude, longitude, placeName: "Current Location" });
             return;
           }
           const data = await response.json();
-          if (data.features && data.features.length > 0) {
-            const placeName = data.features[0].place_name;
-            resolve({ latitude, longitude, placeName });
-          } else {
-            showToast("No location data found.");
-            resolve(null);
-          }
+          const placeName = data.features?.[0]?.place_name || "Current Location";
+          resolve({ latitude, longitude, placeName });
         } catch (error) {
-          showToast("Error fetching location.");
-          resolve(null);
+          showToast("Error fetching location name.");
+          resolve({ latitude, longitude, placeName: "Current Location" });
         }
       },
       () => {
@@ -1083,56 +1125,61 @@ async function getUserLocation() {
   });
 }
 
+// Encrypt coordinates
+function encryptCoordinate(coord) {
+  try {
+    const key = CryptoJS.enc.Utf8.parse("your-encryption-key-here");
+    const iv = CryptoJS.enc.Utf8.parse("your-iv-here");
+    const encrypted = CryptoJS.AES.encrypt(coord.toString(), key, { iv }).toString();
+    return encrypted;
+  } catch (error) {
+    console.error("Encryption error:", error);
+    return null;
+  }
+}
+
 // Theme toggle
-function toggleTheme() {
+themeToggle.addEventListener('click', () => {
   const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
   const newTheme = currentTheme === 'light' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', newTheme);
   localStorage.setItem('theme', newTheme);
-}
-
-themeToggle.addEventListener('click', toggleTheme);
+});
 
 // Sidebar hover for desktop
 conversationSidebar.addEventListener("mouseenter", () => {
-  if (window.innerWidth >= 768) {
-    chatContainer.classList.add("sidebar-expanded");
-  }
+  if (window.innerWidth >= 768) chatContainer.classList.add("sidebar-expanded");
 });
-
 conversationSidebar.addEventListener("mouseleave", () => {
-  if (window.innerWidth >= 768) {
-    chatContainer.classList.remove("sidebar-expanded");
-  }
+  if (window.innerWidth >= 768) chatContainer.classList.remove("sidebar-expanded");
 });
 
 // Sidebar toggle for mobile
 newConversationFab.addEventListener("click", () => {
   conversationSidebar.classList.toggle("active");
   bottomSheet.classList.remove("active");
+  emergencyConfirmDialog.classList.remove("active");
 });
-
 closeSidebarBtn.addEventListener("click", () => {
   conversationSidebar.classList.remove("active");
 });
 
 // Upgrade button
 upgradeButton.addEventListener("click", () => {
-  document.body.classList.add("fade-out");
-  setTimeout(() => window.location.href = "payment.html", 500);
+  window.location.href = "https://x.ai/grok";
 });
 
-// Custom dialog handling
+// Delete dialog handling
 function showDeleteDialog(convoId) {
   pendingDeleteId = convoId;
   deleteDialog.classList.add("active");
+  dialogConfirm.focus();
 }
-
 dialogCancel.addEventListener("click", () => {
   deleteDialog.classList.remove("active");
   pendingDeleteId = null;
+  chatInput.focus();
 });
-
 dialogConfirm.addEventListener("click", async () => {
   deleteDialog.classList.remove("active");
   if (pendingDeleteId) {
@@ -1148,13 +1195,81 @@ dialogConfirm.addEventListener("click", async () => {
       showToast("Failed to delete conversation.");
     }
     pendingDeleteId = null;
+    chatInput.focus();
   }
 });
 
-// Render a single message
+// Emergency confirmation dialog
+function showEmergencyConfirmDialog(suggestedType = '', suggestedLocation = '') {
+  emergencyTypeSelect.value = suggestedType || '';
+  emergencyLocationInput.value = suggestedLocation || (userLocation ? userLocation.placeName : '');
+  emergencyConfirmDialog.classList.add("active");
+  emergencyTypeSelect.focus();
+
+  // Trap focus within dialog
+  const focusableElements = emergencyConfirmDialog.querySelectorAll('select, input, button');
+  const firstFocusable = focusableElements[0];
+  const lastFocusable = focusableElements[focusableElements.length - 1];
+
+  emergencyConfirmDialog.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      if (e.shiftKey && document.activeElement === firstFocusable) {
+        e.preventDefault();
+        lastFocusable.focus();
+      } else if (!e.shiftKey && document.activeElement === lastFocusable) {
+        e.preventDefault();
+        firstFocusable.focus();
+      }
+    } else if (e.key === 'Escape') {
+      emergencyCancelBtn.click();
+    }
+  });
+}
+
+emergencyCancelBtn.addEventListener("click", () => {
+  emergencyConfirmDialog.classList.remove("active");
+  emergencyTypeSelect.value = '';
+  emergencyLocationInput.value = '';
+  pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+  chatInput.focus();
+});
+
+emergencyConfirmBtn.addEventListener("click", async () => {
+  const emergencyType = emergencyTypeSelect.value;
+  const locationText = emergencyLocationInput.value.trim() || (userLocation ? userLocation.placeName : "user's current location");
+  if (!emergencyType) {
+    showToast("Please select an emergency type.");
+    return;
+  }
+  emergencyConfirmDialog.classList.remove("active");
+  const location = locationText === userLocation?.placeName ? userLocation : await resolveLocation(locationText);
+  if (!location) {
+    await appendMessage("I couldn't determine the location. Please try again or use the SOS button.", "ai", "Vynix AI", currentConversationId);
+    return;
+  }
+  const incidentId = await reportEmergency(emergencyType, location, currentConversationId);
+  if (incidentId) {
+    const response = `I'm here to help. A ${emergencyType} has been dispatched to ${location.placeName}. Please stay safe and provide any additional details if needed.`;
+    await appendMessage(response, "ai", "Vynix AI", currentConversationId);
+    emergencyAnnouncements.textContent = `Emergency reported: ${emergencyType} at ${location.placeName}.`;
+  } else {
+    await appendMessage("I encountered an issue reporting the emergency. Please try again or use the SOS button.", "ai", "Vynix AI", currentConversationId);
+  }
+  emergencyTypeSelect.value = '';
+  emergencyLocationInput.value = '';
+  pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+  chatInput.focus();
+});
+
+emergencyConfirmDialog.addEventListener("keypress", (e) => {
+  if (e.key === "Enter") emergencyConfirmBtn.click();
+});
+
+// Render message
 function renderMessage(msg, messageId, conversationId) {
   const messageElement = document.createElement("div");
   messageElement.className = `message ${msg.sender}`;
+  messageElement.setAttribute('role', 'listitem');
   const contentElement = document.createElement("div");
   contentElement.className = "message-content";
   const avatarElement = document.createElement("div");
@@ -1180,6 +1295,7 @@ function renderMessage(msg, messageId, conversationId) {
   if (msg.sender === "ai") {
     const verifiedSpan = document.createElement("span");
     verifiedSpan.innerHTML = '<svg class="verified-icon" viewBox="0 0 24 24" fill="none" stroke="#1DA1F2" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M5 12l5 5l9-9"/></svg>';
+    verifiedSpan.setAttribute('aria-label', 'Verified Vynix AI');
     headerElement.appendChild(verifiedSpan);
   }
   bodyElement.appendChild(headerElement);
@@ -1193,36 +1309,30 @@ function renderMessage(msg, messageId, conversationId) {
   contentElement.append(avatarElement, bodyElement);
   messageElement.appendChild(contentElement);
 
-  // Add actions (reactions and copy)
   const actionsElement = document.createElement("div");
   actionsElement.className = "message-actions";
-
   const copyBtn = document.createElement("button");
   copyBtn.className = "action-btn";
   copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
-  copyBtn.setAttribute("aria-label", "Copy text");
-
+  copyBtn.setAttribute("aria-label", "Copy message text");
   copyBtn.addEventListener("click", () => {
     navigator.clipboard.writeText(msg.text).then(() => {
       copyBtn.style.color = "green";
       setTimeout(() => copyBtn.style.color = "", 1000);
       showToast("Text copied to clipboard.", "success");
-    }).catch(() => {
-      showToast("Failed to copy text.");
-    });
+    }).catch(() => showToast("Failed to copy text."));
   });
-
   actionsElement.appendChild(copyBtn);
 
   if (msg.sender === "ai") {
     const thumbsUpBtn = document.createElement("button");
     thumbsUpBtn.className = `action-btn ${msg.reactions?.thumbsUp ? 'active' : ''}`;
     thumbsUpBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3zM7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3"/></svg>';
-    thumbsUpBtn.setAttribute("aria-label", "Thumbs up");
+    thumbsUpBtn.setAttribute("aria-label", "Thumbs up reaction");
     const thumbsDownBtn = document.createElement("button");
     thumbsDownBtn.className = `action-btn ${msg.reactions?.thumbsDown ? 'active' : ''}`;
     thumbsDownBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3zm7-13h3a2 2 0 012 2v7a2 2 0 01-2 2h-3"/></svg>';
-    thumbsDownBtn.setAttribute("aria-label", "Thumbs down");
+    thumbsDownBtn.setAttribute("aria-label", "Thumbs down reaction");
 
     thumbsUpBtn.addEventListener("click", async () => {
       try {
@@ -1250,8 +1360,7 @@ function renderMessage(msg, messageId, conversationId) {
       }
     });
 
-    actionsElement.prepend(thumbsDownBtn);
-    actionsElement.prepend(thumbsUpBtn);
+    actionsElement.prepend(thumbsDownBtn, thumbsUpBtn);
   }
 
   messageElement.appendChild(actionsElement);
@@ -1260,7 +1369,7 @@ function renderMessage(msg, messageId, conversationId) {
   return messageElement;
 }
 
-// Append message with typing animation for AI
+// Append message with typing animation
 async function appendMessage(text, sender, displayName, conversationId) {
   try {
     const messageId = push(ref(db, `conversations/${conversationId}/messages`)).key;
@@ -1279,10 +1388,6 @@ async function appendMessage(text, sender, displayName, conversationId) {
       const messageElement = renderMessage(tempMsg, messageId, conversationId);
       const textElement = messageElement.querySelector("p");
 
-      if ("vibrate" in navigator) {
-        navigator.vibrate(200);
-      }
-
       const typingIndicator = document.createElement("div");
       typingIndicator.className = "typing-indicator";
       for (let i = 0; i < 3; i++) {
@@ -1292,6 +1397,7 @@ async function appendMessage(text, sender, displayName, conversationId) {
       }
       textElement.appendChild(typingIndicator);
 
+      await new Promise(resolve => setTimeout(resolve, 3000));
       let i = 0;
       const typeText = () => {
         if (i < text.length) {
@@ -1316,11 +1422,10 @@ async function appendMessage(text, sender, displayName, conversationId) {
 
 // Load conversation messages
 function loadConversationMessages(conversationId) {
-  if (messageListener) {
-    messageListener(); // Cleanup previous listener
-  }
+  if (messageListener) messageListener();
   currentConversationId = conversationId;
   chatMessages.innerHTML = "";
+  emergencyAnnouncements.textContent = "";
   const messagesRef = ref(db, `conversations/${conversationId}/messages`);
   messageListener = () => onValue(messagesRef, (snapshot) => {
     chatMessages.innerHTML = "";
@@ -1330,17 +1435,13 @@ function loadConversationMessages(conversationId) {
         renderMessage(msg, messageId, conversationId);
       });
     }
-  }, (error) => {
-    showToast("Error loading messages.");
-  });
+  }, (error) => showToast("Error loading messages."));
   messageListener();
 }
 
-// Load conversations dynamically
+// Load conversations
 function loadConversations(userId) {
-  if (conversationListener) {
-    conversationListener(); // Cleanup previous listener
-  }
+  if (conversationListener) conversationListener();
   const conversationList = document.getElementById("conversation-list");
   const conversationsRef = ref(db, `conversations`);
   conversationListener = () => onValue(conversationsRef, (snapshot) => {
@@ -1354,6 +1455,8 @@ function loadConversations(userId) {
           const item = document.createElement("div");
           item.className = "conversation-item";
           item.dataset.conversationId = id;
+          item.setAttribute('role', 'button');
+          item.setAttribute('aria-label', `Open conversation: ${convo.title || 'Untitled Chat'}`);
           item.innerHTML = `
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="conversation-icon">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -1376,9 +1479,7 @@ function loadConversations(userId) {
           conversationList.appendChild(item);
         });
     }
-  }, (error) => {
-    showToast("Error loading conversations.");
-  });
+  }, (error) => showToast("Error loading conversations."));
   conversationListener();
 }
 
@@ -1388,20 +1489,17 @@ function updateQueryLimitTimer() {
   const now = Date.now();
   queryTimestamps = queryTimestamps.filter(ts => now - ts < QUERY_WINDOW_MS);
   if (queryTimestamps.length >= QUERY_LIMIT) {
-    const oldestQuery = queryTimestamps[0];
-    if (oldestQuery) {
-      const timeLeft = QUERY_WINDOW_MS - (now - oldestQuery);
-      if (timeLeft > 0) {
-        const minutes = Math.floor(timeLeft / 60000);
-        const seconds = Math.floor((timeLeft % 60000) / 1000);
-        bottomSheet.querySelector("p").textContent = `Query limit reached. Resets in ${minutes}m ${seconds}s.`;
-        setTimeout(updateQueryLimitTimer, 1000);
-      } else {
-        queryTimestamps = [];
-        localStorage.setItem('queryTimestamps', JSON.stringify(queryTimestamps));
-        bottomSheet.classList.remove("active");
-        showToast("Query limit reset.", "success");
-      }
+    const timeLeft = QUERY_WINDOW_MS - (now - queryTimestamps[0]);
+    if (timeLeft > 0) {
+      const minutes = Math.floor(timeLeft / 60000);
+      const seconds = Math.floor((timeLeft % 60000) / 1000);
+      bottomSheet.querySelector("#bottom-sheet-message").textContent = `Query limit reached. Resets in ${minutes}m ${seconds}s.`;
+      setTimeout(updateQueryLimitTimer, 1000);
+    } else {
+      queryTimestamps = [];
+      localStorage.setItem('queryTimestamps', JSON.stringify(queryTimestamps));
+      bottomSheet.classList.remove("active");
+      showToast("Query limit reset.", "success");
     }
   }
 }
@@ -1421,16 +1519,13 @@ function checkQueryLimit() {
   return true;
 }
 
-// Get cached Gemini API key
+// Get Gemini API key
 async function getGeminiApiKey() {
   if (cachedGeminiKey) return cachedGeminiKey;
   try {
     await fetchAndActivate(remoteConfig);
     cachedGeminiKey = getString(remoteConfig, 'gemini_api_key');
-    if (!cachedGeminiKey) {
-      showToast("Gemini API key not available.");
-      throw new Error("Gemini API key not available");
-    }
+    if (!cachedGeminiKey) throw new Error("Gemini API key not available");
     return cachedGeminiKey;
   } catch (error) {
     showToast("Failed to fetch Gemini API key.");
@@ -1438,165 +1533,206 @@ async function getGeminiApiKey() {
   }
 }
 
-// Generate response
-async function generateResponse(question) {
-  if (!checkQueryLimit()) return;
-
-  question = question.toLowerCase().trim();
-  let info = '';
-
-  if (!userLocation && (question.includes("my location") || question.includes("current location") || question.includes("weather here") || question.includes("incidents here"))) {
-    userLocation = await getUserLocation();
-  }
-
-  if (question.includes("location of") || question.includes("where is")) {
-    if (question.includes("my location") || question.includes("current location")) {
-      if (userLocation) {
-        info = `Current location: ${userLocation.placeName} at latitude ${userLocation.latitude} and longitude ${userLocation.longitude}.`;
-      } else {
-        info = "Unable to determine current location. Please enable location services.";
-      }
-    } else {
-      const placeMatch = question.match(/(location of|where is) (.+)/);
-      if (placeMatch) {
-        const place = placeMatch[2].trim();
-        try {
-          const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(place)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
-          if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-          const data = await response.json();
-          if (data.features && data.features.length > 0) {
-            const feature = data.features[0];
-            info = `${feature.place_name} is located at latitude ${feature.center[1]} and longitude ${feature.center[0]}.`;
-          } else {
-            info = "Couldn't find information for that location.";
-          }
-        } catch (error) {
-          info = "Trouble fetching location information.";
-        }
-      }
-    }
-  }
-
-  if (question.includes("weather")) {
-    let lat, lon, placeName;
-    if (question.includes("my location") || question.includes("here")) {
-      if (userLocation) {
-        lat = userLocation.latitude;
-        lon = userLocation.longitude;
-        placeName = userLocation.placeName;
-      } else {
-        info = "Unable to fetch weather for current location. Please enable location services.";
-      }
-    } else {
-      const weatherMatch = question.match(/weather in (.+)/);
-      if (weatherMatch) {
-        const location = weatherMatch[1].trim();
-        try {
-          const geoResponse = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
-          if (!geoResponse.ok) throw new Error(`HTTP error: ${geoResponse.status}`);
-          const geoData = await geoResponse.json();
-          if (geoData.features && geoData.features.length > 0) {
-            const { center, place_name } = geoData.features[0];
-            lon = center[0];
-            lat = center[1];
-            placeName = place_name;
-          } else {
-            info = `Couldn't find location: ${location}.`;
-          }
-        } catch (error) {
-          info = "Trouble fetching location for weather.";
-        }
-      }
-    }
-    if (lat && lon) {
-      try {
-        const weatherResponse = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`);
-        if (!weatherResponse.ok) throw new Error(`HTTP error: ${weatherResponse.status}`);
-        const weatherData = await weatherResponse.json();
-        info = `Weather in ${placeName}: ${weatherData.weather[0].description}, Temperature: ${weatherData.main.temp}°C, Humidity: ${weatherData.main.humidity}%, Wind Speed: ${weatherData.wind.speed} m/s.`;
-      } catch (error) {
-        info = "Trouble fetching weather data.";
-      }
-    }
-  }
-
-  if (question.includes("incident") || question.includes("incidents")) {
-    try {
-      const incidentsRef = ref(db, "incidents");
-      const snapshot = await get(incidentsRef);
-      if (snapshot.exists()) {
-        const incidents = snapshot.val();
-        const incidentArray = Object.entries(incidents).map(([id, data]) => ({ id, ...data }));
-        let filteredIncidents = incidentArray;
-
-        if (question.includes("in")) {
-          const locationMatch = question.match(/incidents in (.+)/);
-          if (locationMatch) {
-            const location = locationMatch[1].trim().toLowerCase();
-            filteredIncidents = incidentArray.filter(incident => incident.location && incident.location.toLowerCase().includes(location));
-            if (filteredIncidents.length > 0) {
-              info = `Incidents in ${location}: ${filteredIncidents.map(i => `${i.type} at ${i.location} (status: ${i.status})`).join(", ")}.`;
-            } else {
-              info = `No incidents found in ${location}.`;
-            }
-          }
-        } else {
-          const total = incidentArray.length;
-          const resolved = incidentArray.filter(i => i.status === "resolved").length;
-          const types = {};
-          incidentArray.forEach(i => {
-            const type = i.type || "Unknown";
-            types[type] = (types[type] || 0) + 1;
-          });
-          const typesList = Object.entries(types).map(([type, count]) => `${count} ${type}`).join(", ");
-          info = `Total incidents: ${total}. Resolved: ${resolved}. Types: ${typesList}.`;
-        }
-      } else {
-        info = "No incident data available.";
-      }
-    } catch (error) {
-      info = "Trouble accessing incident data.";
-    }
-  }
-
-  const geminiResponse = await callGeminiApi(question, info);
-  return geminiResponse;
+// Sanitize input
+function sanitizeInput(input) {
+  return input.replace(/[<>&"]/g, (char) => ({
+    '<': '&lt;',
+    '>': '&gt;',
+    '&': '&amp;',
+    '"': '&quot;'
+  }[char]));
 }
 
-// Call Gemini API
-async function callGeminiApi(userQuery, info) {
-  const systemPrompt = `You are Vynix AI, a helpful chatbot created by Vynix Company. Provide friendly, concise, and accurate responses to user queries. Use the provided info if relevant.`;
-  const prompt = `User query: ${userQuery}\n\nInfo: ${info}`;
+// Resolve location to coordinates
+async function resolveLocation(locationText) {
+  if (locationText === "user's current location" && userLocation) {
+    return { latitude: userLocation.latitude, longitude: userLocation.longitude, placeName: userLocation.placeName };
+  }
+  try {
+    const response = await fetch(
+      `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(locationText)}.json?access_token=${MAPBOX_ACCESS_TOKEN}&limit=1`
+    );
+    if (!response.ok) throw new Error("Geocoding failed");
+    const data = await response.json();
+    if (data.features?.[0]) {
+      const { center, place_name } = data.features[0];
+      return { latitude: center[1], longitude: center[0], placeName: place_name };
+    }
+    return null;
+  } catch (error) {
+    showToast("Could not resolve location.");
+    return null;
+  }
+}
 
+// Report emergency to Firebase
+async function reportEmergency(emergencyType, location, conversationId) {
+  try {
+    const incidentId = `incident_${Date.now()}_${displayUser.uid}`;
+    const incidentRef = ref(db, `incidents/${incidentId}`);
+    const encryptedLng = encryptCoordinate(location.longitude);
+    const encryptedLat = encryptCoordinate(location.latitude);
+    if (!encryptedLng || !encryptedLat) throw new Error("Failed to encrypt coordinates");
+    const incidentData = {
+      userId: displayUser.uid,
+      type: emergencyType,
+      location: { encryptedLng, encryptedLat, placeName: location.placeName },
+      timestamp: Date.now(),
+      status: 'pending',
+      conversationId
+    };
+    await set(incidentRef, incidentData);
+    monitorIncidentStatus(incidentId, emergencyType, location.placeName, conversationId);
+    return incidentId;
+  } catch (error) {
+    showToast("Failed to report emergency.");
+    return null;
+  }
+}
+
+// Monitor incident status
+function monitorIncidentStatus(incidentId, emergencyType, placeName, conversationId) {
+  const statusRef = ref(db, `incidents/${incidentId}/status`);
+  const listener = onValue(statusRef, async (snapshot) => {
+    if (snapshot.exists() && currentConversationId === conversationId) {
+      const status = snapshot.val();
+      const message = `Update: The ${emergencyType} request at ${placeName} is now ${status}.`;
+      await appendMessage(message, "ai", "Vynix AI", conversationId);
+      emergencyAnnouncements.textContent = message;
+    }
+  });
+  incidentListeners.set(incidentId, listener);
+}
+
+// Process emergency request
+async function processEmergencyRequest(question) {
   try {
     const GEMINI_API_KEY = await getGeminiApiKey();
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{
-          parts: [
-            { text: systemPrompt },
-            { text: prompt }
-          ]
+          parts: [{
+            text: `You are an emergency assistant. Analyze the user message to identify if it is an emergency request. If it is, extract the emergency type (Police Emergency, Ambulance, Fire Fighter, Environmental Hazard) and location (use "user's current location" if not specified). If uncertain about the type or location, set them as null. Return a JSON object with { isEmergency, emergencyType, location, confidence } where confidence is a number from 0 to 1 indicating certainty (0.5 or less means uncertain).
+
+            Examples:
+            - "I need an ambulance at my location" → { isEmergency: true, emergencyType: "Ambulance", location: "user's current location", confidence: 0.9 }
+            - "Report a fire in New York" → { isEmergency: true, emergencyType: "Fire Fighter", location: "New York", confidence: 0.95 }
+            - "Help, emergency!" → { isEmergency: true, emergencyType: null, location: null, confidence: 0.4 }
+            - "What's the weather?" → { isEmergency: false, emergencyType: null, location: null, confidence: 0 }
+
+            User message: "${question}"`
+          }]
         }]
       })
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Gemini API error: ${response.statusText}`);
     const data = await response.json();
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      throw new Error("Unexpected Gemini API response format");
-    }
-    return data.candidates[0].content.parts[0].text;
+    const result = JSON.parse(data.candidates[0].content.parts[0].text.replace(/```json\n|\n```/g, ''));
+    return result;
   } catch (error) {
-    showToast("Failed to process your request. Please try again.");
-    return "Sorry, I couldn't process your request. Please try again.";
+    showToast("Failed to process emergency request.");
+    return { isEmergency: false, emergencyType: null, location: null, confidence: 0 };
   }
+}
+
+// Generate response
+async function generateResponse(question) {
+  if (!checkQueryLimit()) return null;
+
+  question = sanitizeInput(question.toLowerCase().trim());
+  if (!userLocation && (question.includes("my location") || question.includes("current location"))) {
+    userLocation = await getUserLocation();
+  }
+
+  // Handle follow-up questions
+  if (pendingEmergency.isPending) {
+    pendingEmergency.attempts += 1;
+    const followUpResult = await processEmergencyRequest(`${pendingEmergency.originalQuery} | Follow-up: ${question}`);
+    if (followUpResult.isEmergency && followUpResult.emergencyType && followUpResult.location && followUpResult.confidence > 0.5) {
+      const location = followUpResult.location === "user's current location" ? userLocation : await resolveLocation(followUpResult.location);
+      if (!location) {
+        pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+        return "I couldn't determine the location. Please specify the location or use the SOS button.";
+      }
+      const incidentId = await reportEmergency(followUpResult.emergencyType, location, currentConversationId);
+      if (incidentId) {
+        pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+        const response = `I'm here to help. A ${followUpResult.emergencyType} has been dispatched to ${location.placeName}. Please stay safe and provide any additional details if needed.`;
+        emergencyAnnouncements.textContent = `Emergency reported: ${followUpResult.emergencyType} at ${location.placeName}.`;
+        return response;
+      } else {
+        pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+        return "I encountered an issue reporting the emergency. Please try again or use the SOS button.";
+      }
+    } else if (pendingEmergency.attempts >= 2) {
+      pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+      showEmergencyConfirmDialog(followUpResult.emergencyType || '', followUpResult.location || '');
+      return "I need more details to proceed. Please confirm the emergency type and location.";
+    } else {
+      return "Can you describe the situation or specify the emergency type? For example, do you need an ambulance or police?";
+    }
+  }
+
+  // Process new query
+  const emergencyResult = await processEmergencyRequest(question);
+  if (emergencyResult.isEmergency) {
+    if (emergencyResult.emergencyType && emergencyResult.location && emergencyResult.confidence > 0.5) {
+      const location = emergencyResult.location === "user's current location" ? userLocation : await resolveLocation(emergencyResult.location);
+      if (!location) {
+        showEmergencyConfirmDialog(emergencyResult.emergencyType, emergencyResult.location);
+        return "I need to confirm the emergency details. Please select the emergency type and location.";
+      }
+      const incidentId = await reportEmergency(emergencyResult.emergencyType, location, currentConversationId);
+      if (incidentId) {
+        const response = `I'm here to help. A ${emergencyResult.emergencyType} has been dispatched to ${location.placeName}. Please stay safe and provide any additional details if needed.`;
+        emergencyAnnouncements.textContent = `Emergency reported: ${emergencyResult.emergencyType} at ${location.placeName}.`;
+        return response;
+      } else {
+        return "I encountered an issue reporting the emergency. Please try again or use the SOS button.";
+      }
+    } else {
+      pendingEmergency = { isPending: true, originalQuery: question, attempts: 0 };
+      showEmergencyConfirmDialog(emergencyResult.emergencyType || '', emergencyResult.location || '');
+      return "I need to confirm the emergency details. Please select the emergency type and location.";
+    }
+  }
+
+  // Handle non-emergency queries
+  let info = '';
+  if (question.includes("location of") || question.includes("where is")) {
+    if (question.includes("my location") || question.includes("current location")) {
+      info = userLocation ? `Current location: ${userLocation.placeName} at latitude ${userLocation.latitude}, longitude ${userLocation.longitude}.` : "Unable to determine current location.";
+    } else {
+      const placeMatch = question.match(/(location of|where is) (.+)/);
+      if (placeMatch) {
+        const place = placeMatch[2].trim();
+        const location = await resolveLocation(place);
+        info = location ? `${location.placeName} is at latitude ${location.latitude}, longitude ${location.longitude}.` : `Couldn't find ${place}.`;
+      }
+    }
+  } else {
+    const systemPrompt = `You are Vynix AI, a friendly emergency assistant. Respond in a calm, professional, and empathetic tone, as a human emergency dispatcher would. For non-emergency queries, provide concise, helpful answers. Use the provided info if relevant.`;
+    const prompt = `User query: ${question}\n\nInfo: ${info}`;
+    try {
+      const GEMINI_API_KEY = await getGeminiApiKey();
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: systemPrompt }, { text: prompt }] }]
+        })
+      });
+      if (!response.ok) throw new Error(`Gemini API error: ${response.statusText}`);
+      const data = await response.json();
+      return data.candidates[0].content.parts[0].text;
+    } catch (error) {
+      showToast("Failed to process your request.");
+      return "Sorry, I couldn't process your request. Please try again.";
+    }
+  }
+  return info || "I'm here to assist. Could you clarify your request or report an emergency if needed?";
 }
 
 // Send message
@@ -1625,14 +1761,13 @@ sendButton.addEventListener("click", async () => {
       showToast("Error sending message.");
     } finally {
       sendButton.disabled = false;
+      chatInput.focus();
     }
   }
 });
 
 chatInput.addEventListener("keypress", (e) => {
-  if (e.key === "Enter" && !sendButton.disabled) {
-    sendButton.click();
-  }
+  if (e.key === "Enter" && !sendButton.disabled) sendButton.click();
 });
 
 // New conversation
@@ -1643,14 +1778,19 @@ newConversationButton.addEventListener("click", () => {
   }
   currentConversationId = null;
   chatMessages.innerHTML = "";
+  emergencyAnnouncements.textContent = "";
   welcomeMessage.classList.remove("hidden");
   bottomSheet.classList.remove("active");
+  pendingEmergency = { isPending: false, originalQuery: '', attempts: 0 };
+  chatInput.focus();
 });
 
-// Cleanup listeners on page unload
+// Cleanup listeners
 window.addEventListener("unload", () => {
   if (conversationListener) conversationListener();
   if (messageListener) messageListener();
+  incidentListeners.forEach((listener, incidentId) => off(ref(db, `incidents/${incidentId}/status`), 'value', listener));
+  incidentListeners.clear();
 });
 
 // Initialize
@@ -1670,6 +1810,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     showToast("Initialization failed.");
   } finally {
     sendButton.disabled = false;
+    chatInput.focus();
   }
 });
   </script>
