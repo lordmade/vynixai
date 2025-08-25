@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Emergency Map</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
@@ -77,6 +77,7 @@
       height: 100px;
       object-fit: contain;
       animation: fadeInScale 1.2s ease-out forwards;
+      will-change: transform, opacity;
     }
 
     .loader {
@@ -259,28 +260,22 @@
         font-size: 0.9rem;
       }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      .app-logo, .dot, .action-icon, .splash-text {
+        animation: none;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="splash-container">
     <div class="logo-container">
-      <svg class="app-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Emergency Map Logo">
-        <circle cx="50" cy="50" r="40" fill="url(#gradient)" />
-        <circle cx="50" cy="50" r="45" fill="none" stroke="url(#gradient)" stroke-width="2" opacity="0.5">
-          <animate attributeName="r" from="45" to="50" dur="1.5s" repeatCount="indefinite" />
-          <animate attributeName="opacity" from="0.5" to="0" dur="1.5s" repeatCount="indefinite" />
-        </circle>
-        <path d="M50 30 L60 45 L55 45 L55 60 L45 60 L45 45 L40 45 Z" fill="white" />
-        <circle cx="50" cy="65" r="5" fill="white">
-          <animate attributeName="r" values="5;6;5" dur="1.5s" repeatCount="indefinite" />
-        </circle>
-        <defs>
-          <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" style="stop-color:#6D28D9;stop-opacity:1" />
-            <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:1" />
-          </linearGradient>
-        </defs>
-      </svg>
+      <img src="https://i.postimg.cc/CxF3ndKt/Blue-Black-and-White-Simple-Aircraft-Safety-Logo-20250825-181407-0000.png" 
+           class="app-logo" 
+           alt="Emergency Map Logo" 
+           aria-label="Emergency Map Logo" 
+           onerror="this.src='path/to/fallback-logo.png';">
       <div class="loader">
         <div class="dot"></div>
         <div class="dot"></div>
@@ -290,7 +285,7 @@
     <p class="splash-text">Stay safe, stay connected...</p>
   </div>
 
-  <div id="custom-alert" class="custom-alert" role="alert" aria-hidden="true">
+  <div id="custom-alert" class="custom-alert" role="dialog" aria-hidden="true" aria-labelledby="alert-message">
     <button class="close-btn" onclick="hideAlert()" aria-label="Close alert">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -318,14 +313,18 @@
     };
 
     let app, auth, db;
-    try {
-      app = initializeApp(firebaseConfig);
-      auth = getAuth(app);
-      db = getDatabase(app);
-      console.log("Firebase initialized successfully at", new Date().toLocaleString());
-    } catch (error) {
-      console.error("Firebase initialization failed:", error.code, error.message);
-      showAlert("Failed to connect to Firebase. Please check your network.", false);
+    function initializeFirebase() {
+      try {
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getDatabase(app);
+        console.log("Firebase initialized successfully at", new Date().toLocaleString());
+        checkAuthState();
+      } catch (error) {
+        console.error("Firebase initialization failed:", error.code, error.message);
+        showAlert("Failed to connect to Firebase. Please check your network.", false);
+        document.querySelector(".retry-btn").onclick = initializeFirebase;
+      }
     }
 
     const customAlert = document.getElementById("custom-alert");
@@ -345,6 +344,7 @@
       alertMessage.textContent = message;
       customAlert.classList.add("active");
       customAlert.setAttribute("aria-hidden", "false");
+      document.querySelector(".retry-btn").focus();
       console.log("Alert shown:", message);
       if (autoHide) {
         setTimeout(hideAlert, 5000);
@@ -354,51 +354,59 @@
     function hideAlert() {
       customAlert.classList.remove("active");
       customAlert.setAttribute("aria-hidden", "true");
+      document.querySelector(".splash-container").focus();
       console.log("Alert hidden");
     }
 
-    async function checkAuthState(retries = 3, delay = 1000) {
+    async function checkFileExists(url) {
+      try {
+        const response = await fetch(url, { method: "HEAD" });
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    async function redirectTo(destination) {
+      if (await checkFileExists(destination)) {
+        document.body.classList.add("fade-out");
+        setTimeout(() => {
+          window.location.href = destination;
+        }, 1500);
+      } else {
+        hideSpinner();
+        showAlert(`Page ${destination} not found. Please contact support.`, false);
+      }
+    }
+
+    async function checkAuthState(retries = 3, baseDelay = 1000) {
       showSpinner();
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
           await setPersistence(auth, browserLocalPersistence);
           console.log("Persistence set to browserLocalPersistence");
           return await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              console.error(`Authentication check timed out on attempt ${attempt}`);
-              reject(new Error("Authentication timed out"));
-            }, 10000);
-
             onAuthStateChanged(auth, async (user) => {
-              clearTimeout(timeout);
               try {
                 if (user) {
                   const userRef = ref(db, `users/${user.uid}`);
                   const snapshot = await get(userRef);
                   const destination = snapshot.exists() ? "home.html" : "signup.html";
                   console.log(`Authenticated user, redirecting to ${destination}`);
-                  document.body.classList.add("fade-out");
-                  setTimeout(() => {
-                    window.location.href = destination;
-                  }, 1500);
+                  await redirectTo(destination);
                 } else {
                   console.log("No authenticated user, redirecting to signup.html");
-                  document.body.classList.add("fade-out");
-                  setTimeout(() => {
-                    window.location.href = "signup.html";
-                  }, 1500);
+                  await redirectTo("signup.html");
                 }
                 resolve();
               } catch (error) {
                 reject(error);
               }
-            }, (error) => {
-              clearTimeout(timeout);
-              reject(error);
-            });
+            }, reject);
           });
         } catch (error) {
           console.error(`Auth attempt ${attempt} failed:`, error.code, error.message);
+          hideSpinner();
           if (attempt === retries) {
             let message = "Failed to connect to server. Please check your connection and try again.";
             if (error.code === "permission-denied") {
@@ -408,11 +416,10 @@
             }
             showAlert(message, false);
           } else {
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise(resolve => setTimeout(resolve, baseDelay * Math.pow(2, attempt)));
           }
         }
       }
-      hideSpinner();
     }
 
     function retryAuth() {
@@ -422,10 +429,10 @@
 
     document.addEventListener("DOMContentLoaded", () => {
       console.log("DOMContentLoaded event fired at", new Date().toLocaleString());
-      const savedTheme = localStorage.getItem('theme') || 'light';
-      document.documentElement.setAttribute('data-theme', savedTheme);
+      const savedTheme = localStorage.getItem("theme") || "light";
+      document.documentElement.setAttribute("data-theme", savedTheme);
       console.log("Initial theme set to:", savedTheme);
-      checkAuthState();
+      initializeFirebase();
     });
   </script>
 </body>
