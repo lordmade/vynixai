@@ -841,6 +841,65 @@
     50% { transform: scale(1.1); }
     100% { transform: scale(1); }
   }
+
+
+  
+#nearby-places {
+    scrollbar-width: thin;
+    scrollbar-color: var(--primary-purple) var(--background);
+  }
+  #nearby-places::-webkit-scrollbar {
+    height: 6px;
+  }
+  #nearby-places::-webkit-scrollbar-thumb {
+    background-color: var(--primary-purple);
+    border-radius: 9999px;
+  }
+  #nearby-places::-webkit-scrollbar-track {
+    background: var(--background);
+  }
+  .place-card {
+    flex: 0 0 auto;
+    background: var(--card-background);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--text-dark);
+    min-width: 150px;
+    transition: background 0.3s ease, transform 0.3s ease;
+  }
+  .place-card:hover,
+  .place-card:focus {
+    background: var(--highlight);
+    transform: scale(1.05);
+    outline: 2px solid var(--focus-ring);
+  }
+  .place-icon {
+    width: 20px;
+    height: 20px;
+    stroke: var(--primary-purple);
+  }
+  @media (max-width: 767px) {
+    #nearby-places {
+      top: 4rem;
+      padding: 0.5rem 1rem;
+    }
+    .place-card {
+      min-width: 120px;
+      font-size: 0.75rem;
+      padding: 0.4rem 0.8rem;
+    }
+    .place-icon {
+      width: 16px;
+      height: 16px;
+    }
+  }
+  
 </style>
 </head>
 <body>
@@ -874,6 +933,12 @@
       </svg>
     </button>
   </div>
+
+<div id="nearby-places" class="flex overflow-x-auto gap-2 px-4 py-2 bg-transparent z-10 absolute top-[4.5rem] left-0 right-0" role="list">
+  <!-- Nearby place cards will be populated here -->
+</div>
+
+  
   <div id="weather-drawer" class="weather-drawer" role="dialog" aria-hidden="true">
     <div class="weather-content">
       <button class="close-btn transition-base" id="close-weather-drawer" aria-label="Close weather drawer">
@@ -1576,7 +1641,7 @@ async function initializeMap(lng, lat, displayUser) {
     }
     userLocation = [lng, lat];
     console.log("Initializing Mapbox with center:", [lng, lat]);
-    const initialStyle = document.documentElement.getAttribute('data-theme') === 'dark' ? 'mapbox://styles/mapbox/dark-v11' : 'mapbox://styles/mapbox/streets-v12';
+    const initialStyle = document.documentElement.getAttribute('data-theme') === 'dark' ? 'mapbox://styles/mapbox/dark-vl1' : 'mapbox://styles/mapbox/streets-v12';
     currentMapStyle = initialStyle;
 
     map = new mapboxgl.Map({
@@ -1612,6 +1677,10 @@ async function initializeMap(lng, lat, displayUser) {
       if (weatherData) {
         addWeatherMarker(map, lng, lat, weatherData, 'Your Location');
       }
+
+      // Fetch and display nearby places
+      const nearbyPlaces = await fetchNearbyPlaces(lng, lat);
+      displayNearbyPlaces(nearbyPlaces);
 
       const incidentsRef = ref(db, 'incidents');
       onValue(incidentsRef, async (snapshot) => {
@@ -1691,7 +1760,7 @@ async function initializeMap(lng, lat, displayUser) {
     hideSpinner();
   }
 }
-
+   
 function updateSuggestionsAria() {
   suggestionsList.setAttribute("aria-expanded", suggestionsList.classList.contains("active"));
   console.log("Suggestions aria-expanded:", suggestionsList.classList.contains("active"));
@@ -2138,6 +2207,85 @@ async function init() {
     setupModal();
   }
 }
+
+
+
+async function fetchNearbyPlaces(lng, lat) {
+  const types = ['hospital', 'police'];
+  const places = [];
+  try {
+    for (const type of types) {
+      const response = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${type}.json?proximity=${lng},${lat}&limit=5&access_token=${mapboxgl.accessToken}`
+      );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${type} data: ${response.statusText}`);
+      }
+      const data = await response.json();
+      data.features.forEach(feature => {
+        const distance = calculateDistance(lng, lat, feature.geometry.coordinates[0], feature.geometry.coordinates[1]);
+        if (distance <= 20) {
+          places.push({
+            name: feature.place_name,
+            coords: feature.geometry.coordinates,
+            type: type === 'hospital' ? 'Hospital' : 'Police Station'
+          });
+        }
+      });
+    }
+    console.log("Nearby places fetched:", places);
+    return places;
+  } catch (error) {
+    console.error("Error fetching nearby places:", error);
+    showAlert(`Failed to fetch nearby places: ${error.message}`, false);
+    return [];
+  }
+}
+
+function calculateDistance(lng1, lat1, lng2, lat2) {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Distance in km
+}
+
+function displayNearbyPlaces(places) {
+  const nearbyPlacesContainer = document.getElementById('nearby-places');
+  nearbyPlacesContainer.innerHTML = '';
+  if (places.length === 0) {
+    nearbyPlacesContainer.innerHTML = '<div class="text-center text-sm text-gray-500 w-full">No nearby places found</div>';
+    return;
+  }
+  places.forEach(place => {
+    const card = document.createElement('div');
+    card.className = 'place-card';
+    card.setAttribute('role', 'listitem');
+    card.tabIndex = 0;
+    card.innerHTML = `
+      <svg class="place-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        ${place.type === 'Hospital' ? 
+          '<path d="M12 5v14M5 12h14"/>' : 
+          '<path d="M12 2l-9 5v8c0 3 3 4 9 7 6-3 9-4 9-7V7l-9-5z"/>'}
+      </svg>
+      <span>${place.name}</span>
+    `;
+    card.addEventListener('click', () => selectDestination(place.coords, place.name));
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectDestination(place.coords, place.name);
+      }
+    });
+    nearbyPlacesContainer.appendChild(card);
+  });
+}
+
+
+   
 
 init().catch(error => {
   console.error("Initialization error:", error);
