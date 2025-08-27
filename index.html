@@ -372,6 +372,7 @@
       font-weight: 500;
       animation: fadeIn 0.3s ease-out forwards;
       max-width: 90%;
+      position: relative;
     }
 
     .custom-alert.active {
@@ -437,6 +438,11 @@
       animation: fadeInUp 1s ease-out forwards;
       opacity: 0;
       position: relative;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      width: 100%;
+      text-align: left;
     }
 
     .entity-card:nth-child(1) { animation-delay: 0.1s; }
@@ -1075,12 +1081,28 @@
         entities = [];
         const data = snapshot.val();
         if (data) {
-          entities = Object.keys(data).map(key => ({
-            id: key,
-            ...data[key],
-            isFavorite: false,
-            cloudinaryImage: data[key].cloudinaryImage || (viewMode === 'restaurants' ? 'https://via.placeholder.com/300x180?text=Delicious+Food' : 'https://via.placeholder.com/300x180?text=Branded+Items')
-          }));
+          for (const key of Object.keys(data)) {
+            const entity = {
+              id: key,
+              ...data[key],
+              isFavorite: false,
+              cloudinaryImage: data[key].cloudinaryImage || (viewMode === 'restaurants' ? 'https://via.placeholder.com/300x180?text=Delicious+Food' : 'https://via.placeholder.com/300x180?text=Branded+Items'),
+              menuCategories: []
+            };
+            // Fetch menu to determine categories
+            const menuRef = ref(db, `${viewMode}/${key}/menu`);
+            const menuSnapshot = await get(menuRef);
+            if (menuSnapshot.exists()) {
+              const menuData = menuSnapshot.val();
+              entity.menuCategories = Object.values(menuData)
+                .map(item => item.category ? item.category.toLowerCase() : '')
+                .filter(category => category);
+              entity.primaryCategory = getPrimaryCategory(entity.menuCategories) || 'General';
+            } else {
+              entity.primaryCategory = 'General';
+            }
+            entities.push(entity);
+          }
           if (auth.currentUser) {
             const favoritesRef = ref(db, `users/${auth.currentUser.uid}/favorites`);
             const favoritesSnapshot = await get(favoritesRef);
@@ -1100,10 +1122,19 @@
       });
     }
 
+    function getPrimaryCategory(categories) {
+      if (!categories || categories.length === 0) return null;
+      const categoryCount = {};
+      categories.forEach(cat => {
+        categoryCount[cat] = (categoryCount[cat] || 0) + 1;
+      });
+      return Object.keys(categoryCount).reduce((a, b) => categoryCount[a] > categoryCount[b] ? a : b);
+    }
+
     function renderCategories() {
       const categories = viewMode === 'restaurants' ? restaurantCategories : shopCategories;
       categoriesContainer.innerHTML = categories.map(category => `
-        <button class="category-btn ${category === currentCategory ? 'active' : ''}" onclick="filterCategory('${category}')">${category}</button>
+        <button class="category-btn ${category.toLowerCase() === currentCategory ? 'active' : ''}" onclick="filterCategory('${category.toLowerCase()}')">${category}</button>
       `).join('');
     }
 
@@ -1117,12 +1148,37 @@
       return now >= open && now <= close;
     }
 
-    function renderEntities() {
-      const searchTerm = searchBar.value.toLowerCase();
+    async function filterEntities() {
+      const searchTerm = searchBar.value.toLowerCase().trim();
+      let filteredEntities = entities;
+
+      if (searchTerm) {
+        filteredEntities = [];
+        for (const entity of entities) {
+          let matches = entity.name.toLowerCase().includes(searchTerm);
+          if (!matches) {
+            const menuRef = ref(db, `${viewMode}/${entity.id}/menu`);
+            const menuSnapshot = await get(menuRef);
+            if (menuSnapshot.exists()) {
+              const menuData = menuSnapshot.val();
+              matches = Object.values(menuData).some(item =>
+                item.name && item.name.toLowerCase().includes(searchTerm)
+              );
+            }
+          }
+          if (matches) {
+            filteredEntities.push(entity);
+          }
+        }
+      }
+
+      renderEntities(filteredEntities);
+    }
+
+    function renderEntities(filteredEntities = entities) {
       const sortBy = document.getElementById("sort-by").value;
-      let filteredEntities = entities.filter(entity => {
-        const matchesSearch = entity.name.toLowerCase().includes(searchTerm);
-        const matchesCategory = currentCategory === 'all' || entity.category === currentCategory;
+      let entitiesToRender = filteredEntities.filter(entity => {
+        const matchesCategory = currentCategory === 'all' || entity.menuCategories.includes(currentCategory);
         let matchesDistance = true;
         if (userLocation && entity.latitude && entity.longitude) {
           const distance = calculateDistance(
@@ -1135,10 +1191,10 @@
         }
         const matchesOpenNow = !filters.openNow || isEntityOpen(entity.openHours);
         const matchesFastDelivery = !filters.fastDelivery || (entity.deliveryTime && entity.deliveryTime <= 30);
-        return matchesSearch && matchesCategory && matchesDistance && matchesOpenNow && matchesFastDelivery;
+        return matchesCategory && matchesDistance && matchesOpenNow && matchesFastDelivery;
       });
 
-      filteredEntities.sort((a, b) => {
+      entitiesToRender.sort((a, b) => {
         if (sortBy === 'rating') return b.rating - a.rating;
         if (sortBy === 'distance' && userLocation) {
           const distA = calculateDistance(userLocation.latitude, userLocation.longitude, a.latitude, a.longitude);
@@ -1148,19 +1204,20 @@
         return a.name.localeCompare(b.name);
       });
 
-      noEntities.textContent = `${viewMode.charAt(0).toUpperCase() + viewMode.slice(1)} coming soon from your area`;
-      if (filteredEntities.length === 0) {
+      noEntities.textContent = `No ${viewMode} available in your area`;
+      if (entitiesToRender.length === 0) {
         entityGrid.style.display = 'none';
         noEntities.classList.add('active');
       } else {
         entityGrid.style.display = 'grid';
         noEntities.classList.remove('active');
-        entityGrid.innerHTML = filteredEntities.map(entity => {
+        entityGrid.innerHTML = entitiesToRender.map(entity => {
           const distance = userLocation && entity.latitude && entity.longitude
             ? calculateDistance(userLocation.latitude, userLocation.longitude, entity.latitude, entity.longitude).toFixed(1)
             : "N/A";
+          const deliveryTime = entity.deliveryTime ? `${entity.deliveryTime} min` : "N/A";
           return `
-            <div class="entity-card">
+            <button class="entity-card" onclick="viewMenu('${entity.id}')">
               <img
                 src="${entity.cloudinaryImage}"
                 alt="${entity.name}"
@@ -1170,37 +1227,31 @@
               <div class="entity-content">
                 <h2 class="entity-name">${entity.name}</h2>
                 <p class="entity-info">
-                  <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
-                  </svg>
-                  ${entity.category}
-                </p>
-                <p class="entity-info">
                   <svg viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 2L15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2z"/>
                   </svg>
-                  ${entity.rating} ★
+                  ${entity.rating.toFixed(1)} ★
                 </p>
                 <p class="entity-info">
                   <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                     <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
                   </svg>
-                  ${distance} km
+                  ${entity.primaryCategory} • ${distance} km • ${deliveryTime}
                 </p>
                 ${entity.popularItem ? `
                   <div class="popular-item">
-                    <p>${entity.popularItem.name} - $${entity.popularItem.price}</p>
-                    <button class="add-to-cart-btn" onclick="addToCart('${entity.id}', '${entity.popularItem.name}', ${entity.popularItem.price})">Add to Cart</button>
+                    <p>Popular: ${entity.popularItem.name} - $${entity.popularItem.price.toFixed(2)}</p>
+                    <button class="add-to-cart-btn" onclick="event.stopPropagation(); addToCart('${entity.id}', '${entity.popularItem.name}', ${entity.popularItem.price})">Add to Cart</button>
                   </div>
                 ` : ''}
-                <button class="view-menu-btn" onclick="viewMenu('${entity.id}')">View ${viewMode === 'restaurants' ? 'Menu' : 'Items'}</button>
+                <button class="view-menu-btn" onclick="event.stopPropagation(); viewMenu('${entity.id}')">View ${viewMode === 'restaurants' ? 'Menu' : 'Items'}</button>
               </div>
-              <button class="favorite-btn ${entity.isFavorite ? 'favorited' : ''}" onclick="toggleFavorite('${entity.id}')">
+              <button class="favorite-btn ${entity.isFavorite ? 'favorited' : ''}" onclick="event.stopPropagation(); toggleFavorite('${entity.id}')">
                 <svg viewBox="0 0 24 24" fill="${entity.isFavorite ? 'var(--danger-red)' : 'none'}" stroke="currentColor" stroke-width="2">
                   <path d="M12 2L15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2z"/>
                 </svg>
               </button>
-            </div>
+            </button>
           `;
         }).join("");
       }
@@ -1220,38 +1271,46 @@
       }
     };
 
-    window.filterEntities = function () {
-      renderEntities();
-    };
-
-    window.filterCategory = function (category) {
+    window.filterCategory = function(category) {
       currentCategory = category;
       document.querySelectorAll(".category-btn").forEach(btn => {
-        btn.classList.toggle("active", btn.textContent === category);
+        btn.classList.toggle("active", btn.textContent.toLowerCase() === category);
       });
       renderEntities();
     };
 
-    window.sortEntities = function () {
+    window.sortEntities = function() {
       renderEntities();
     };
 
-    window.toggleFilter = function (filter) {
+    window.toggleFilter = function(filter) {
       filters[filter] = !filters[filter];
       document.getElementById(`${filter}-filter`).classList.toggle('active', filters[filter]);
       renderEntities();
     };
 
-    window.viewMenu = function (entityId) {
-      showAlert(`View ${viewMode === 'restaurants' ? 'menu' : 'items'} for ${viewMode.slice(0, -1)} ID: ${entityId}`, true);
-      console.log(`Viewing ${viewMode === 'restaurants' ? 'menu' : 'items'} for ${viewMode.slice(0, -1)}: ${entityId}`);
+    window.viewMenu = function(entityId) {
+      document.body.classList.add("fade-out");
+      setTimeout(() => {
+        window.location.href = `restaurant.html?id=${entityId}&type=${viewMode}`;
+      }, 500);
     };
 
-    window.switchTab = function (tab) {
+    window.switchTab = function(tab) {
       document.querySelectorAll(".sidebar-tab").forEach(t => t.classList.remove("active"));
       document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
       document.querySelector(`.sidebar-tab[onclick="switchTab('${tab}')"]`).classList.add("active");
       document.querySelector(`.nav-item[onclick="switchTab('${tab}')"]`).classList.add("active");
+      document.body.classList.add("fade-out");
+      setTimeout(() => {
+        if (tab === 'home') {
+          window.location.href = "index.html";
+        } else if (tab === 'favorites') {
+          window.location.href = "favorites.html";
+        } else if (tab === 'orders') {
+          window.location.href = "orders.html";
+        }
+      }, 500);
       showAlert(`Switched to ${tab} tab`, true);
       console.log(`Switched to ${tab} tab`);
     };
