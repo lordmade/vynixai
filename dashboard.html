@@ -456,6 +456,33 @@
       color: var(--text-light);
     }
 
+    .image-upload-container {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .image-upload-progress {
+      display: none;
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .image-upload-progress.active {
+      display: block;
+    }
+
+    .image-upload-progress-bar {
+      width: 0%;
+      height: 100%;
+      background: var(--primary-orange);
+      transition: width 0.2s ease;
+    }
+
     @keyframes pulse {
       0%, 100% { transform: scale(1); opacity: 0.8; }
       50% { transform: scale(1.5); opacity: 0.4; }
@@ -740,8 +767,14 @@
             <input type="text" id="new-item-name" placeholder="Item Name" aria-label="New Item Name" required>
             <input type="number" id="new-item-price" placeholder="Price (R)" aria-label="New Item Price" step="0.01" required>
             <input type="text" id="new-item-category" placeholder="Category" aria-label="New Item Category" required>
-            <input type="url" id="new-item-image" placeholder="Image URL (Cloudinary)" aria-label="New Item Image">
-            <input type="file" id="new-item-image-upload" accept="image/*" aria-label="Upload Menu Item Image" style="margin-top: 0.5rem;">
+            <div class="image-upload-container">
+              <input type="url" id="new-item-image" placeholder="Image URL (Cloudinary)" aria-label="New Item Image">
+              <input type="file" id="new-item-image-upload" accept="image/jpeg,image/png" aria-label="Upload Menu Item Image" style="margin-top: 0.5rem;">
+              <div class="image-upload-progress" id="new-item-image-progress">
+                <div class="image-upload-progress-bar" id="new-item-image-progress-bar"></div>
+              </div>
+              <img id="new-item-image-preview" class="menu-item-image-preview" style="display: none;" alt="New Menu Item Preview">
+            </div>
             <button class="action-btn add-btn" onclick="addMenuItem()" aria-label="Add Menu Item">Add</button>
           </div>
         </div>
@@ -799,6 +832,7 @@
 
     const CLOUDINARY_UPLOAD_PRESET = 'banter_box'; // Replace with your Cloudinary upload preset
     const CLOUDINARY_CLOUD_NAME = 'dqkujefxj'; // Replace with your Cloudinary cloud name
+    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB max file size
 
     let app, auth, db;
     let currentTab = 'business-details';
@@ -1034,17 +1068,46 @@
       }
     }
 
-    async function uploadImage(file) {
+    async function uploadImage(file, progressBarId = null) {
       if (isSuspended) {
         showAlert("Cannot upload image: Business is suspended.", false);
         return null;
       }
+      if (!file) {
+        showAlert("No file selected for upload.", false);
+        return null;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        showAlert("File size exceeds 5MB limit.", false);
+        return null;
+      }
+      if (!['image/jpeg', 'image/png'].includes(file.type)) {
+        showAlert("Only JPEG and PNG images are supported.", false);
+        return null;
+      }
       showSpinner();
+      if (progressBarId) {
+        const progressBar = document.getElementById(progressBarId);
+        const progressContainer = progressBar?.parentElement;
+        if (progressContainer) progressContainer.classList.add('active');
+      }
       try {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-        const response = await axios.post(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, formData);
+        const response = await axios.post(
+          `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+          formData,
+          {
+            onUploadProgress: (progressEvent) => {
+              if (progressBarId) {
+                const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                const progressBar = document.getElementById(progressBarId);
+                if (progressBar) progressBar.style.width = `${percent}%`;
+              }
+            }
+          }
+        );
         const imageUrl = response.data.secure_url;
         console.log("Image uploaded to Cloudinary:", imageUrl);
         return imageUrl;
@@ -1054,6 +1117,12 @@
         return null;
       } finally {
         hideSpinner();
+        if (progressBarId) {
+          const progressBar = document.getElementById(progressBarId);
+          const progressContainer = progressBar?.parentElement;
+          if (progressContainer) progressContainer.classList.remove('active');
+          if (progressBar) progressBar.style.width = '0%';
+        }
       }
     }
 
@@ -1086,9 +1155,14 @@
                 <input type="text" value="${item.name}" aria-label="Item Name" ${isSuspended ? 'disabled' : ''}>
                 <input type="number" value="${item.price.toFixed(2)}" step="0.01" aria-label="Item Price" ${isSuspended ? 'disabled' : ''}>
                 <input type="text" value="${item.category}" aria-label="Item Category" ${isSuspended ? 'disabled' : ''}>
-                <input type="url" value="${item.image || ''}" placeholder="Image URL (Cloudinary)" aria-label="Item Image" ${isSuspended ? 'disabled' : ''}>
-                <input type="file" accept="image/*" aria-label="Upload Image for ${item.name}" style="margin-top: 0.5rem;" ${isSuspended ? 'disabled' : ''}>
-                ${item.image ? `<img src="${item.image}" alt="${item.name}" class="menu-item-image-preview" />` : ''}
+                <div class="image-upload-container">
+                  <input type="url" value="${item.image || ''}" placeholder="Image URL (Cloudinary)" aria-label="Item Image" ${isSuspended ? 'disabled' : ''}>
+                  <input type="file" accept="image/jpeg,image/png" aria-label="Upload Image for ${item.name}" style="margin-top: 0.5rem;" ${isSuspended ? 'disabled' : ''}>
+                  <div class="image-upload-progress" id="image-progress-${itemId}">
+                    <div class="image-upload-progress-bar" id="image-progress-bar-${itemId}"></div>
+                  </div>
+                  ${item.image ? `<img src="${item.image}" alt="${item.name}" class="menu-item-image-preview" />` : ''}
+                </div>
                 <button class="action-btn save-btn" onclick="updateMenuItem('${itemId}')" aria-label="Save ${item.name}" ${isSuspended ? 'disabled' : ''}>Save</button>
                 <button class="action-btn delete-btn" onclick="deleteMenuItem('${itemId}')" aria-label="Delete ${item.name}" ${isSuspended ? 'disabled' : ''}>Delete</button>
               `;
@@ -1100,11 +1174,22 @@
                 fileInput.addEventListener("change", async (event) => {
                   const file = event.target.files[0];
                   if (file) {
-                    const imageUrl = await uploadImage(file);
+                    const imageUrl = await uploadImage(file, `image-progress-bar-${itemId}`);
                     if (imageUrl) {
                       const urlInput = menuItem.querySelector('input[type="url"]');
                       if (urlInput) {
                         urlInput.value = imageUrl;
+                        const previewImg = menuItem.querySelector('.menu-item-image-preview');
+                        if (previewImg) {
+                          previewImg.src = imageUrl;
+                          previewImg.style.display = 'block';
+                        } else {
+                          const newImg = document.createElement('img');
+                          newImg.src = imageUrl;
+                          newImg.alt = item.name;
+                          newImg.className = 'menu-item-image-preview';
+                          fileInput.parentElement.appendChild(newImg);
+                        }
                       }
                     }
                   }
@@ -1135,12 +1220,22 @@
         const name = document.getElementById("new-item-name").value.trim();
         const price = parseFloat(document.getElementById("new-item-price").value);
         const category = document.getElementById("new-item-category").value.trim();
-        const image = document.getElementById("new-item-image").value.trim();
+        let image = document.getElementById("new-item-image").value.trim();
+        const fileInput = document.getElementById("new-item-image-upload");
+        const file = fileInput.files[0];
 
         if (!name || !price || !category) {
           showAlert("Please fill in all required fields for the new menu item.", false);
           hideSpinner();
           return;
+        }
+
+        if (file) {
+          image = await uploadImage(file, 'new-item-image-progress-bar');
+          if (!image) {
+            hideSpinner();
+            return;
+          }
         }
 
         if (image && !isValidUrl(image)) {
@@ -1161,7 +1256,12 @@
         document.getElementById("new-item-price").value = "";
         document.getElementById("new-item-category").value = "";
         document.getElementById("new-item-image").value = "";
-        document.getElementById("new-item-image-upload").value = "";
+        fileInput.value = "";
+        const previewImg = document.getElementById("new-item-image-preview");
+        if (previewImg) {
+          previewImg.src = "";
+          previewImg.style.display = "none";
+        }
         showAlert(`Menu item "${name}" added successfully for R${price.toFixed(2)}!`, true);
         console.log("Menu item added:", name);
       } catch (error) {
@@ -1485,9 +1585,15 @@
     document.getElementById("new-item-image-upload").addEventListener("change", async (event) => {
       const file = event.target.files[0];
       if (file) {
-        const imageUrl = await uploadImage(file);
+        const imageUrl = await uploadImage(file, 'new-item-image-progress-bar');
         if (imageUrl) {
-          document.getElementById("new-item-image").value = imageUrl;
+          const urlInput = document.getElementById("new-item-image");
+          const previewImg = document.getElementById("new-item-image-preview");
+          if (urlInput) urlInput.value = imageUrl;
+          if (previewImg) {
+            previewImg.src = imageUrl;
+            previewImg.style.display = 'block';
+          }
         }
       }
     });
