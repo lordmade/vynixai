@@ -144,6 +144,12 @@
       border-color: var(--primary-orange);
     }
 
+    .tab-btn[disabled] {
+      background: var(--highlight);
+      color: var(--text-light);
+      cursor: not-allowed;
+    }
+
     .search-bar {
       margin: 0.75rem 1rem;
       padding: 0.5rem 1rem;
@@ -504,6 +510,24 @@
       animation-delay: 0.4s;
     }
 
+    .rating-section {
+      margin: 1.5rem 1rem;
+    }
+
+    .rating-input-container {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .rating-input {
+      width: 60px;
+      padding: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      text-align: center;
+    }
+
     @keyframes pulse {
       0%, 100% { transform: scale(1); opacity: 0.8; }
       50% { transform: scale(1.5); opacity: 0.4; }
@@ -618,6 +642,15 @@
         </svg>
       </button>
     </div>
+    <!-- Rating Section -->
+    <section class="rating-section">
+      <h2 class="section-title">Rate this Restaurant</h2>
+      <div class="rating-input-container">
+        <input type="number" id="rating-input" class="rating-input" min="1" max="5" step="1" placeholder="1-5" aria-label="Enter rating from 1 to 5">
+        <button class="action-btn save-btn" onclick="submitRating()" aria-label="Submit Rating">Submit</button>
+      </div>
+      <p>Current Average Rating: <span id="average-rating">Calculating...</span></p>
+    </section>
     <!-- Featured Items -->
     <section class="featured-section">
       <h2 class="section-title">Featured</h2>
@@ -655,7 +688,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, get, set, push, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue, get, set, push, remove, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -672,8 +705,11 @@
     let restaurantId, restaurantName, entityType, restaurantData;
     let menuItems = [];
     let featuredItems = [];
-    let userLocation = { latitude: -23.8980905, longitude: 29.4499945 }; // Polokwane
+    let userLocation = { latitude: -23.8980905, longitude: 29.4499945 }; // Default fallback: Polokwane
     let cartCount = 0;
+    let currentMode = 'PICKUP';
+    let locationLoaded = false;
+    let dataLoaded = false;
 
     const fallbackImages = {
       default: 'https://via.placeholder.com/600x300?text=Honchos+Polokwane',
@@ -694,7 +730,9 @@
       loader: document.getElementById('loader'),
       searchBar: document.getElementById('search-bar'),
       cartBtn: document.getElementById('cart-btn'),
-      cartCount: document.getElementById('cart-count')
+      cartCount: document.getElementById('cart-count'),
+      ratingInput: document.getElementById('rating-input'),
+      averageRating: document.getElementById('average-rating')
     };
 
     function initializeFirebase() {
@@ -742,6 +780,21 @@
       return R * c;
     }
 
+    async function geocodeAddress(address) {
+      try {
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address)}`);
+        const data = await response.json();
+        if (data.length > 0) {
+          const { lat, lon } = data[0];
+          return { latitude: parseFloat(lat), longitude: parseFloat(lon) };
+        }
+        return null;
+      } catch (error) {
+        console.error('Geocoding error:', error);
+        return null;
+      }
+    }
+
     async function checkAuthState() {
       showLoader();
       try {
@@ -757,11 +810,28 @@
       }
     }
 
+    function getUserLocation() {
+      return new Promise((resolve) => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => resolve({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+            (error) => {
+              console.error('Geolocation error:', error);
+              resolve({ latitude: -23.8980905, longitude: 29.4499945 }); // Fallback
+            },
+            { timeout: 5000 }
+          );
+        } else {
+          resolve({ latitude: -23.8980905, longitude: 29.4499945 });
+        }
+      });
+    }
+
     async function loadRestaurantData() {
       const urlParams = new URLSearchParams(window.location.search);
       restaurantId = urlParams.get('id') || 'honchos-polokwane';
       entityType = urlParams.get('type') || 'restaurants';
-      const diningMode = urlParams.get('diningMode') || 'PICKUP';
+      currentMode = urlParams.get('diningMode') || 'PICKUP';
 
       if (!restaurantId) {
         showAlert('No restaurant selected. Redirecting...', false);
@@ -770,7 +840,7 @@
       }
 
       const entityRef = ref(db, `${entityType}/${restaurantId}`);
-      onValue(entityRef, (snapshot) => {
+      onValue(entityRef, async (snapshot) => {
         const data = snapshot.val();
         if (data) {
           restaurantName = data.name || 'Honchos Polokwane Halaal';
@@ -778,38 +848,48 @@
             id: restaurantId,
             name: restaurantName,
             image: data.cloudinaryImage || fallbackImages.default,
-            latitude: data.latitude || -23.8980905,
-            longitude: data.longitude || 29.4499945,
-            rating: data.rating || 4.5,
-            category: data.primaryCategory || 'Fast Food',
+            latitude: data.latitude,
+            longitude: data.longitude,
+            address: data.address || 'Unknown Address',
+            rating: data.rating || 0,
+            category: data.type || 'Fast Food',
             deliveryTime: data.deliveryTime || 30,
             isOpen: data.isOpen !== undefined ? data.isOpen : true,
-            promotion: data.promotion || 'New'
+            promotion: data.promotion || 'New',
+            deliveryFee: 0
           };
 
-          elements.restaurantName.textContent = restaurantName;
-          document.title = `${restaurantName} - My Two Minutes Food`;
-          elements.banner.style.backgroundImage = `url('${restaurantData.image}')`;
-          elements.bannerTitle.textContent = restaurantName;
+          // If no lat/lon stored, geocode address and save
+          if (!restaurantData.latitude || !restaurantData.longitude) {
+            const geo = await geocodeAddress(restaurantData.address);
+            if (geo) {
+              restaurantData.latitude = geo.latitude;
+              restaurantData.longitude = geo.longitude;
+              await update(ref(db, `${entityType}/${restaurantId}`), {
+                latitude: geo.latitude,
+                longitude: geo.longitude
+              });
+            } else {
+              // Use fallback coordinates if geocoding fails
+              restaurantData.latitude = -23.8980905;
+              restaurantData.longitude = 29.4499945;
+            }
+          }
 
-          const distance = calculateDistance(userLocation.latitude, userLocation.longitude, restaurantData.latitude, restaurantData.longitude).toFixed(1);
-          const status = restaurantData.isOpen ? 'Open' : 'Closed';
-          elements.bannerInfo.innerHTML = `
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2L15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2z"/>
-            </svg>
-            ${restaurantData.rating} • ${restaurantData.category} • ${distance} km • ${diningMode}, ${restaurantData.deliveryTime} min • ${status}
-            ${restaurantData.promotion ? `<span style="background: var(--gradient-orange); color: var(--white); padding: 0.25rem 0.5rem; border-radius: 4px;">${restaurantData.promotion}</span>` : ''}
-          `;
-
-          if (auth.currentUser) {
-            get(ref(db, `users/${auth.currentUser.uid}/favorites/${restaurantId}`)).then(snapshot => {
-              elements.favoriteBtn.classList.toggle('favorited', snapshot.exists());
-              elements.favoriteBtn.setAttribute('aria-label', snapshot.exists() ? 'Remove from favorites' : 'Add to favorites');
-            });
+          dataLoaded = true;
+          if (locationLoaded) {
+            updateUI();
           }
 
           loadMenuItems();
+          loadRatings();
+          if (auth.currentUser) {
+            loadUserRating();
+            get(ref(db, `users/${auth.currentUser.uid}/favorites/${restaurantId}`)).then(snap => {
+              elements.favoriteBtn.classList.toggle('favorited', snap.exists());
+              elements.favoriteBtn.setAttribute('aria-label', snap.exists() ? 'Remove from favorites' : 'Add to favorites');
+            });
+          }
         } else {
           showAlert('Restaurant not found. Redirecting...', false);
           setTimeout(() => window.location.href = 'index.html', 1500);
@@ -819,6 +899,48 @@
         showAlert('Failed to load restaurant data.', false);
         hideLoader();
       });
+    }
+
+    function updateUI() {
+      elements.restaurantName.textContent = restaurantName;
+      document.title = `${restaurantName} - My Two Minutes Food`;
+      elements.banner.style.backgroundImage = `url('${restaurantData.image}')`;
+      elements.bannerTitle.textContent = restaurantName;
+
+      const distance = calculateDistance(userLocation.latitude, userLocation.longitude, restaurantData.latitude, restaurantData.longitude).toFixed(1);
+
+      // Check if delivery is available
+      const deliveryBtn = document.querySelector('.tab-btn[onclick="switchMode(\'DELIVERY\')"]');
+      if (parseFloat(distance) > 15) {
+        deliveryBtn.disabled = true;
+        deliveryBtn.textContent = 'Delivery (Not Available)';
+        if (currentMode === 'DELIVERY') {
+          showAlert('Delivery not available for this distance. Switching to Pickup.', false);
+          switchMode('PICKUP');
+        }
+      } else {
+        deliveryBtn.disabled = false;
+        deliveryBtn.textContent = 'Delivery';
+      }
+
+      updateBannerInfo(currentMode, distance);
+    }
+
+    function updateBannerInfo(mode, distance) {
+      let fee = 0;
+      if (mode === 'DELIVERY' && parseFloat(distance) <= 15) {
+        fee = 35;
+      }
+      restaurantData.deliveryFee = fee;
+
+      const status = restaurantData.isOpen ? 'Open' : 'Closed';
+      elements.bannerInfo.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2L15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2z"/>
+        </svg>
+        ${restaurantData.rating} • ${restaurantData.category} • ${restaurantData.address} • ${distance} km • ${mode}, ${restaurantData.deliveryTime} min • Delivery Fee: R${fee} • ${status}
+        ${restaurantData.promotion ? `<span style="background: var(--gradient-orange); color: var(--white); padding: 0.25rem 0.5rem; border-radius: 4px;">${restaurantData.promotion}</span>` : ''}
+      `;
     }
 
     async function loadMenuItems() {
@@ -833,7 +955,7 @@
             name: item.name,
             price: item.price || 0,
             category: item.category || 'General',
-            image: item.cloudinaryImage || fallbackImages.menu,
+            image: item.image || fallbackImages.menu,
             isFeatured: item.isFeatured || false
           }));
           featuredItems = menuItems.filter(item => item.isFeatured);
@@ -920,6 +1042,27 @@
       }
     };
 
+    window.submitRating = async function() {
+      if (!auth.currentUser) {
+        showAlert('Please sign in to rate.', false);
+        document.body.classList.add('fade-out');
+        setTimeout(() => window.location.href = 'signup.html', 500);
+        return;
+      }
+      const rating = parseInt(elements.ratingInput.value);
+      if (isNaN(rating) || rating < 1 || rating > 5) {
+        showAlert('Please enter a valid rating between 1 and 5.', false);
+        return;
+      }
+      try {
+        await set(ref(db, `${entityType}/${restaurantId}/ratings/${auth.currentUser.uid}`), rating);
+        showAlert('Rating submitted successfully!', true);
+      } catch (error) {
+        console.error('Submit rating error:', error);
+        showAlert('Failed to submit rating.', false);
+      }
+    };
+
     window.toggleFavorite = async function() {
       if (!auth.currentUser) {
         showAlert('Please sign in to favorite.', false);
@@ -958,12 +1101,21 @@
     };
 
     window.switchMode = function(mode) {
+      if (mode === 'DELIVERY') {
+        const distance = calculateDistance(userLocation.latitude, userLocation.longitude, restaurantData.latitude, restaurantData.longitude);
+        if (distance > 15) {
+          showAlert('Delivery not available for this distance.', false);
+          mode = 'PICKUP';
+        }
+      }
+      currentMode = mode;
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelector(`.tab-btn[onclick="switchMode('${mode}')"]`).classList.add('active');
       const urlParams = new URLSearchParams(window.location.search);
       urlParams.set('diningMode', mode);
       window.history.replaceState({}, '', `${window.location.pathname}?${urlParams}`);
-      loadMenuItems();
+      const distance = calculateDistance(userLocation.latitude, userLocation.longitude, restaurantData.latitude, restaurantData.longitude).toFixed(1);
+      updateBannerInfo(mode, distance);
     };
 
     async function loadCart() {
@@ -988,8 +1140,39 @@
       });
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    function loadRatings() {
+      const ratingsRef = ref(db, `${entityType}/${restaurantId}/ratings`);
+      onValue(ratingsRef, (snapshot) => {
+        let avg = 0;
+        if (snapshot.exists()) {
+          const ratings = Object.values(snapshot.val());
+          avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+        }
+        restaurantData.rating = avg > 0 ? avg.toFixed(1) : 'No ratings yet';
+        elements.averageRating.textContent = restaurantData.rating;
+        const distance = calculateDistance(userLocation.latitude, userLocation.longitude, restaurantData.latitude, restaurantData.longitude).toFixed(1);
+        updateBannerInfo(currentMode, distance);
+      }, (error) => {
+        console.error('Load ratings error:', error);
+      });
+    }
+
+    async function loadUserRating() {
+      if (!auth.currentUser) return;
+      const userRatingRef = ref(db, `${entityType}/${restaurantId}/ratings/${auth.currentUser.uid}`);
+      const snapshot = await get(userRatingRef);
+      if (snapshot.exists()) {
+        elements.ratingInput.value = snapshot.val();
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
       initializeFirebase();
+      userLocation = await getUserLocation();
+      locationLoaded = true;
+      if (dataLoaded) {
+        updateUI();
+      }
     });
   </script>
 </body>
