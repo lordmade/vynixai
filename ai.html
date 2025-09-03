@@ -13,20 +13,20 @@
   <style>
     :root {
       --primary: #1E3A8A;
-      --accent: #F97316; /* Changed from purple #A855F7 to orange */
+      --accent: #F97316;
       --bg: #0A0A0A;
       --card-bg: #1A1A1A;
       --text-primary: #F3F4F6;
       --text-secondary: #A3A3A3;
       --border: #2D2D2D;
       --highlight: #2A2A2A;
-      --focus: #FB923C; /* Changed from purple #C084FC to lighter orange */
+      --focus: #FB923C;
       --white: #FFFFFF;
       --error: #EF4444;
       --success: #10B981;
-      --glow: rgba(249, 115, 22, 0.5); /* Changed to orange glow */
+      --glow: rgba(249, 115, 22, 0.5);
       --nebula-blue: rgba(30, 58, 138, 0.5);
-      --nebula-orange: rgba(249, 115, 22, 0.3); /* Changed from --nebula-purple */
+      --nebula-orange: rgba(249, 115, 22, 0.3);
     }
 
     [data-theme="light"] {
@@ -36,9 +36,9 @@
       --text-secondary: #6B7280;
       --border: #D1D5DB;
       --highlight: #E5E7EB;
-      --glow: rgba(249, 115, 22, 0.3); /* Changed to orange */
+      --glow: rgba(249, 115, 22, 0.3);
       --nebula-blue: rgba(59, 130, 246, 0.3);
-      --nebula-orange: rgba(249, 115, 22, 0.2); /* Changed from --nebula-purple */
+      --nebula-orange: rgba(249, 115, 22, 0.2);
     }
 
     body {
@@ -420,7 +420,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, get, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, get, set, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -438,13 +438,14 @@
       theme: localStorage.getItem('theme') || 'dark',
       language: localStorage.getItem('language') || 'en',
       voiceEnabled: localStorage.getItem('voiceEnabled') === 'true' || false,
-      elevenLabsApiKey: 'sk_64558ca8f960edcb2df650f8a728ff31840f3678b280c369', // SECURITY WARNING: Move to backend
-      geminiApiKey: 'AIzaSyBZb3DQUktOdE_3IKDKdGLOB2B75nc9zjw', // SECURITY WARNING: Move to backend
+      elevenLabsApiKey: 'YOUR_ELEVENLABS_API_KEY', // Move to backend for security
+      geminiApiKey: 'YOUR_GEMINI_API_KEY', // Move to backend for security
       aiAvatar: 'https://i.postimg.cc/ZR0jj3Yr/Black-and-White-Minimalist-Simple-Modern-Technology-AI-Logo-20250824-182710-0000.png',
       userName: 'User',
-      nebulaAnimationFrame: null,
+      userId: null,
       businessId: null,
-      businessType: null
+      businessType: null,
+      nebulaAnimationFrame: null
     };
 
     const elements = {
@@ -487,23 +488,25 @@
         onAuthStateChanged(auth, async (user) => {
           if (user) {
             console.log("Authenticated user detected:", user.uid);
+            state.userId = user.uid;
             const userRef = ref(db, `users/${user.uid}`);
             const userSnapshot = await get(userRef);
-            if (userSnapshot.exists() && userSnapshot.val().approvedBusinessId) {
-              state.businessId = userSnapshot.val().approvedBusinessId;
-              state.userName = userSnapshot.val().contactName || 'User';
-              await loadBusinessType();
-              elements.chatInput.disabled = false;
-              elements.sendButton.disabled = false;
-              showToast("Welcome, business owner! I'm ready to assist with your orders and menu.", 'success');
+            if (userSnapshot.exists()) {
+              state.userName = userSnapshot.val().contactName || user.email || 'User';
+              state.businessId = userSnapshot.val().approvedBusinessId || null;
+              if (state.businessId) {
+                await loadBusinessType();
+                showToast(`Welcome, ${state.userName}! I'm ready to assist with your business or general queries.`, 'success');
+              } else {
+                showToast(`Welcome, ${state.userName}! How can I assist you today?`, 'success');
+              }
             } else {
-              console.log("No approved business, redirecting to signup.html");
-              showToast("No approved business found. Please register your business.", 'error');
-              document.body.classList.add("fade-out");
-              setTimeout(() => {
-                window.location.href = "signup.html";
-              }, 1500);
+              await set(userRef, { contactName: user.email || 'User', createdAt: new Date().toISOString() });
+              state.userName = user.email || 'User';
+              showToast(`Welcome, ${state.userName}! How can I assist you today?`, 'success');
             }
+            elements.chatInput.disabled = false;
+            elements.sendButton.disabled = false;
           } else {
             console.log("No authenticated user, redirecting to signup.html");
             showToast("Please sign in to access Vynix AI.", 'error');
@@ -526,14 +529,15 @@
       try {
         const restaurantRef = ref(db, `restaurants/${state.businessId}`);
         const shopRef = ref(db, `shops/${state.businessId}`);
-        const restaurantSnapshot = await get(restaurantRef);
-        const shopSnapshot = await get(shopRef);
+        const [restaurantSnapshot, shopSnapshot] = await Promise.all([get(restaurantRef), get(shopRef)]);
         if (restaurantSnapshot.exists()) {
           state.businessType = 'restaurants';
         } else if (shopSnapshot.exists()) {
           state.businessType = 'shops';
         } else {
-          showToast("Business not found.", 'error');
+          state.businessId = null;
+          state.businessType = null;
+          console.log("No business found for this user");
         }
       } catch (error) {
         console.error("Error loading business type:", error);
@@ -618,7 +622,7 @@
         radius: Math.random() * 5 + 2,
         angle: Math.random() * Math.PI * 2,
         speed: Math.random() * 0.02 + 0.01,
-        color: `hsl(${Math.random() * 60 + 20}, 70%, 50%)`, // Orange hues
+        color: `hsl(${Math.random() * 60 + 20}, 70%, 50%)`,
       }));
 
       function animateNebula() {
@@ -805,10 +809,34 @@
       return div.innerHTML;
     }
 
-    async function getAIResponse(question) {
-      if (!state.businessId || !state.businessType) {
-        return "Please wait, your business details are still loading.";
+    async function placeOrder(entityId, businessType, items, userAddress) {
+      try {
+        const orderRef = ref(db, `users/${state.userId}/orders`);
+        const orderId = push(orderRef).key;
+        const itemsList = items.reduce((acc, item) => {
+          acc[item.name] = { name: item.name, quantity: item.quantity, price: item.price };
+          return acc;
+        }, {});
+        const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+        const orderData = {
+          entityId,
+          businessType,
+          items: itemsList,
+          total,
+          deliveryAddress: userAddress || 'Not provided',
+          paymentMethod: 'pending',
+          status: 'Pending',
+          timestamp: new Date().toISOString()
+        };
+        await set(ref(db, `users/${state.userId}/orders/${orderId}`), orderData);
+        return { orderId, total };
+      } catch (error) {
+        console.error("Error placing order:", error);
+        throw new Error("Failed to place order.");
       }
+    }
+
+    async function getAIResponse(question) {
       try {
         const languageNames = {
           en: 'English',
@@ -826,9 +854,9 @@
         const lang = languageNames[state.language] || 'English';
         const questionLower = question.toLowerCase().trim();
 
-        // Handle orders query
-        if (questionLower.includes("orders") || questionLower.includes("list orders")) {
-          const orders = await fetchOrders();
+        // Handle orders query (business owners only)
+        if ((questionLower.includes("orders") || questionLower.includes("list orders")) && state.businessId) {
+          const orders = await fetchOrders(state.businessId);
           if (!orders.length) {
             return "No orders found for your business.";
           }
@@ -839,30 +867,30 @@
           return markdown;
         }
 
-        // Handle order status tracking
+        // Handle order status tracking (user-specific)
         if (questionLower.includes("order status") || questionLower.includes("track order")) {
           const orderIdMatch = questionLower.match(/order\s+(?:id\s+)?([a-z0-9_-]+)/i);
-          const customerMatch = questionLower.match(/customer\s+([^\s].*)/i);
           const orders = await fetchOrders();
           let filteredOrders = orders;
           if (orderIdMatch) {
             filteredOrders = orders.filter(o => o.orderId === orderIdMatch[1]);
-          } else if (customerMatch) {
-            filteredOrders = orders.filter(o => o.customer.toLowerCase().includes(customerMatch[1].toLowerCase()));
           }
           if (!filteredOrders.length) {
             return "No matching orders found.";
           }
-          let markdown = `## Order Status\n\n| Order ID | Customer | Status | Timestamp |\n|----------|----------|--------|-----------|\n`;
-          filteredOrders.forEach(order => {
-            markdown += `| ${order.orderId} | ${order.customer} | ${order.status} | ${order.timestamp} |\n`;
-          });
+          let markdown = `## Order Status\n\n| Order ID | Business | Status | Timestamp |\n|----------|----------|--------|-----------|\n`;
+          for (const order of filteredOrders) {
+            const businessRef = ref(db, `${order.businessType}/${order.entityId}`);
+            const businessSnapshot = await get(businessRef);
+            const businessName = businessSnapshot.exists() ? businessSnapshot.val().name : 'Unknown';
+            markdown += `| ${order.orderId} | ${businessName} | ${order.status} | ${order.timestamp} |\n`;
+          }
           return markdown;
         }
 
-        // Handle cart insights
-        if (questionLower.includes("cart insights") || questionLower.includes("order analytics")) {
-          const orders = await fetchOrders();
+        // Handle cart insights (business owners only)
+        if ((questionLower.includes("cart insights") || questionLower.includes("order analytics")) && state.businessId) {
+          const orders = await fetchOrders(state.businessId);
           if (!orders.length) {
             return "No order data available for insights.";
           }
@@ -881,42 +909,23 @@
           return `## Cart Insights\n\n- **Total Orders**: ${totalOrders}\n- **Total Revenue**: R${totalRevenue.toFixed(2)}\n- **Average Order Value**: R${avgOrderValue}\n- **Most Popular Item**: ${popularItem ? `${popularItem[0]} (${popularItem[1]} units)` : 'None'}`;
         }
 
-        // Handle menu/ordering query
-        if (questionLower.includes("menu") || questionLower.includes("order") || questionLower.includes("items")) {
+        // Handle menu query
+        if (questionLower.includes("menu") || questionLower.includes("items")) {
           let entityId = state.businessId;
           let businessType = state.businessType;
+          let entityName = state.businessId ? 'your business' : 'unspecified';
           const entityMatch = questionLower.match(/from\s+([^\s].*)/i);
           if (entityMatch) {
-            const entityName = entityMatch[1].trim();
-            const restaurantRef = ref(db, `restaurants`);
-            const shopRef = ref(db, `shops`);
-            const [restaurantSnapshot, shopSnapshot] = await Promise.all([get(restaurantRef), get(shopRef)]);
-            let found = false;
-            if (restaurantSnapshot.exists()) {
-              const restaurants = restaurantSnapshot.val();
-              for (const [id, data] of Object.entries(restaurants)) {
-                if (data.name.toLowerCase().includes(entityName.toLowerCase())) {
-                  entityId = id;
-                  businessType = 'restaurants';
-                  found = true;
-                  break;
-                }
-              }
+            entityName = entityMatch[1].trim();
+            const { foundId, foundType } = await findEntityByName(entityName);
+            if (foundId) {
+              entityId = foundId;
+              businessType = foundType;
+            } else {
+              return `No business found matching "${entityName}". Please check the name or try a general query.`;
             }
-            if (!found && shopSnapshot.exists()) {
-              const shops = shopSnapshot.val();
-              for (const [id, data] of Object.entries(shops)) {
-                if (data.name.toLowerCase().includes(entityName.toLowerCase())) {
-                  entityId = id;
-                  businessType = 'shops';
-                  found = true;
-                  break;
-                }
-              }
-            }
-            if (!found) {
-              return `No business found matching "${entityName}". Showing your business menu instead.`;
-            }
+          } else if (!entityId) {
+            return "Please specify a business name (e.g., 'menu from Joe's Pizzeria') or provide more details.";
           }
           const menuItems = await fetchMenuItems(entityId, businessType);
           const businessRef = ref(db, `${businessType}/${entityId}`);
@@ -932,8 +941,55 @@
           return markdown;
         }
 
+        // Handle order placement
+        if (questionLower.includes("order ") && !questionLower.includes("status") && !questionLower.includes("track")) {
+          let entityId = state.businessId;
+          let businessType = state.businessType;
+          let entityName = state.businessId ? 'your business' : 'unspecified';
+          const entityMatch = questionLower.match(/from\s+([^\s].*)/i);
+          if (entityMatch) {
+            entityName = entityMatch[1].trim();
+            const { foundId, foundType } = await findEntityByName(entityName);
+            if (foundId) {
+              entityId = foundId;
+              businessType = foundType;
+            } else {
+              return `No business found matching "${entityName}". Please check the name or try a general query.`;
+            }
+          } else if (!entityId) {
+            return "Please specify a business name (e.g., 'order pizza from Joe's Pizzeria') or provide more details.";
+          }
+          const menuItems = await fetchMenuItems(entityId, businessType);
+          if (!menuItems.length) {
+            return "No menu items available to place an order.";
+          }
+          const itemsMatch = questionLower.match(/order\s+(.+?)(?:from\s|$)/i);
+          if (!itemsMatch) {
+            return "Please specify items to order (e.g., 'order pizza and soda').";
+          }
+          const requestedItems = itemsMatch[1].toLowerCase().split(/,\s*|\s+and\s+/).map(item => item.trim());
+          const matchedItems = [];
+          requestedItems.forEach(reqItem => {
+            const item = menuItems.find(menuItem => menuItem.name.toLowerCase().includes(reqItem));
+            if (item) {
+              matchedItems.push({ name: item.name, quantity: 1, price: item.price });
+            }
+          });
+          if (!matchedItems.length) {
+            return "No matching items found on the menu. Please check the menu and try again.";
+          }
+          const userRef = ref(db, `users/${state.userId}`);
+          const userSnapshot = await get(userRef);
+          const userAddress = userSnapshot.exists() ? userSnapshot.val().address || 'Not provided' : 'Not provided';
+          const { orderId, total } = await placeOrder(entityId, businessType, matchedItems, userAddress);
+          const businessRef = ref(db, `${businessType}/${entityId}`);
+          const businessSnapshot = await get(businessRef);
+          const businessName = businessSnapshot.exists() ? businessSnapshot.val().name : 'the business';
+          return `Order placed successfully! Order ID: ${orderId}\nTotal: R${total.toFixed(2)}\nItems: ${matchedItems.map(item => `${item.name} (x${item.quantity})`).join(", ")}\nDelivery Address: ${userAddress}\nStatus: Pending\nYou'll receive a confirmation from ${businessName} soon.`;
+        }
+
         // Fallback to Gemini API for general queries
-        const prompt = `You are Vynix AI, a helpful assistant for business owners. Respond in ${lang} and focus on assisting with orders, order status tracking, cart insights, or menu/ordering information. Query: ${question}`;
+        const prompt = `You are Vynix AI, a helpful assistant for all users. Respond in ${lang} and assist with general queries, order placement, order status tracking, or menu information. Use the business context if available (businessId: ${state.businessId || 'none'}, businessType: ${state.businessType || 'none'}). Query: ${question}`;
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${state.geminiApiKey}`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -949,33 +1005,91 @@
       }
     }
 
-    async function fetchOrders() {
-      if (!state.businessId) return [];
+    async function findEntityByName(entityName) {
       try {
-        const usersRef = ref(db, "users");
-        const snapshot = await get(usersRef);
+        const restaurantRef = ref(db, `restaurants`);
+        const shopRef = ref(db, `shops`);
+        const [restaurantSnapshot, shopSnapshot] = await Promise.all([get(restaurantRef), get(shopRef)]);
+        let foundId = null, foundType = null;
+        if (restaurantSnapshot.exists()) {
+          const restaurants = restaurantSnapshot.val();
+          for (const [id, data] of Object.entries(restaurants)) {
+            if (data.name.toLowerCase().includes(entityName.toLowerCase())) {
+              foundId = id;
+              foundType = 'restaurants';
+              break;
+            }
+          }
+        }
+        if (!foundId && shopSnapshot.exists()) {
+          const shops = shopSnapshot.val();
+          for (const [id, data] of Object.entries(shops)) {
+            if (data.name.toLowerCase().includes(entityName.toLowerCase())) {
+              foundId = id;
+              foundType = 'shops';
+              break;
+            }
+          }
+        }
+        return { foundId, foundType };
+      } catch (error) {
+        console.error("Error finding entity:", error);
+        return { foundId: null, foundType: null };
+      }
+    }
+
+    async function fetchOrders(businessId = null) {
+      try {
+        const userOrdersRef = ref(db, `users/${state.userId}/orders`);
+        const snapshot = await get(userOrdersRef);
         const orders = [];
         if (snapshot.exists()) {
-          const users = snapshot.val();
-          Object.entries(users).forEach(([userId, userData]) => {
-            if (userData.orders && Object.keys(userData.orders).length > 0) {
-              Object.entries(userData.orders).forEach(([orderId, order]) => {
-                if (order.entityId === state.businessId) {
-                  const itemsList = Object.values(order.items || {}).map(item => `${item.name} (x${item.quantity})`).join(", ");
-                  orders.push({
-                    orderId,
-                    customer: userData.email || "Unknown",
-                    items: itemsList || "No items",
-                    total: order.total || 0,
-                    address: order.deliveryAddress || "Not provided",
-                    paymentMethod: order.paymentMethod ? order.paymentMethod.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : "Not provided",
-                    status: order.status || "Pending",
-                    timestamp: order.timestamp ? new Date(order.timestamp).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' }) : "Unknown"
-                  });
-                }
+          const userOrders = snapshot.val();
+          Object.entries(userOrders).forEach(([orderId, order]) => {
+            if (!businessId || order.entityId === businessId) {
+              const itemsList = Object.values(order.items || {}).map(item => `${item.name} (x${item.quantity})`).join(", ");
+              orders.push({
+                orderId,
+                entityId: order.entityId,
+                businessType: order.businessType,
+                customer: state.userName,
+                items: itemsList || "No items",
+                total: order.total || 0,
+                address: order.deliveryAddress || "Not provided",
+                paymentMethod: order.paymentMethod ? order.paymentMethod.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : "Not provided",
+                status: order.status || "Pending",
+                timestamp: order.timestamp ? new Date(order.timestamp).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' }) : "Unknown"
               });
             }
           });
+        }
+        if (businessId) {
+          const usersRef = ref(db, "users");
+          const usersSnapshot = await get(usersRef);
+          if (usersSnapshot.exists()) {
+            const users = usersSnapshot.val();
+            Object.entries(users).forEach(([userId, userData]) => {
+              if (userData.orders && Object.keys(userData.orders).length > 0) {
+                Object.entries(userData.orders).forEach(([orderId, order]) => {
+                  if (order.entityId === businessId) {
+                    const itemsList = Object.values(order.items || {}).map(item => `${item.name} (x${item.quantity})`).join(", ");
+                    orders.push({
+                      orderId,
+                      entityId: order.entityId,
+                      businessType: order.businessType,
+                      customer: userData.contactName || userData.email || "Unknown",
+                      items: itemsList || "No items",
+                      total: order.total || 0,
+                      address: order.deliveryAddress || "Not provided",
+                      paymentMethod: order.paymentMethod ? order.paymentMethod.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : "Not provided",
+                      status: order.status || "Pending",
+                      timestamp: order.timestamp ? new Date(order.timestamp).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' }) : "Unknown"
+                    });
+                  }
+                });
+              }
+            });
+          }
         }
         return orders;
       } catch (error) {
@@ -1011,7 +1125,7 @@
 
     async function playElevenLabsAudio(text) {
       if (!state.elevenLabsApiKey || state.elevenLabsApiKey === 'YOUR_ELEVENLABS_API_KEY') {
-        showToast('Please set your ElevenLabs API key in the code', 'error');
+        showToast('Please configure ElevenLabs API key on the backend.', 'error');
         return;
       }
       try {
