@@ -8,7 +8,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
 
@@ -985,7 +984,6 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, updateProfile, updatePassword, deleteUser, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, get, set, push, remove, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-    import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -998,7 +996,11 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    let app, auth, db, storage;
+    const CLOUDINARY_UPLOAD_PRESET = 'banter_box'; // Replace with your Cloudinary upload preset
+    const CLOUDINARY_CLOUD_NAME = 'dqkujefxj'; // Replace with your Cloudinary cloud name
+    const MAPBOX_ACCESS_TOKEN = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw'; // Replace with your Mapbox access token
+
+    let app, auth, db;
     let userData = {};
     let addresses = [];
     let payments = [];
@@ -1051,7 +1053,6 @@
         app = initializeApp(firebaseConfig);
         auth = getAuth(app);
         db = getDatabase(app);
-        storage = getStorage(app);
         console.log("Firebase initialized successfully at", new Date().toLocaleString());
         checkAuthState();
       } catch (error) {
@@ -1061,8 +1062,7 @@
 
     function handleError(error, message) {
       console.error(`${message}:`, error.message);
-      showAlert(`${message}: ${error.message}`, false);
-      hideSpinner();
+      showAlert(`${message}: ${error.message}`);
     }
 
     function showSpinner() {
@@ -1115,7 +1115,7 @@
           if (user) {
             await loadUserData(user);
           } else {
-            showAlert("Please sign in to view your profile.", false);
+            showAlert("Please sign in to view your profile.");
             document.body.classList.add("fade-out");
             setTimeout(() => {
               window.location.href = "signup.html";
@@ -1172,7 +1172,7 @@
       if (cachedElements.addressList) {
         cachedElements.addressList.innerHTML = addresses.map((addr, index) => `
           <div class="list-item">
-            <span class="item-name">${addr}</span>
+            <span class="item-name">${addr.formatted_address}</span>
             <div class="item-actions">
               <button class="btn-secondary edit-address" data-index="${index}">Edit</button>
               <button class="btn-danger remove-address" data-index="${index}">Remove</button>
@@ -1263,12 +1263,18 @@
       if (!user) return;
       showSpinner();
       try {
-        const avatarRef = storageRef(storage, `avatars/${user.uid}`);
-        await uploadBytes(avatarRef, file);
-        const url = await getDownloadURL(avatarRef);
-        await updateProfile(user, { photoURL: url });
-        await update(ref(db, `users/${user.uid}`), { photoURL: url });
-        cachedElements.profileAvatar.src = url;
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+        const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        if (!data.secure_url) throw new Error('Image upload failed');
+        await updateProfile(user, { photoURL: data.secure_url });
+        await update(ref(db, `users/${user.uid}`), { photoURL: data.secure_url });
+        cachedElements.profileAvatar.src = data.secure_url;
         showAlert("Avatar updated successfully!");
       } catch (error) {
         handleError(error, "Failed to upload avatar");
@@ -1277,26 +1283,62 @@
       }
     }
 
-    function addAddress() {
+    async function addAddress() {
       const newAddress = prompt("Enter new address:");
       if (newAddress) {
-        addresses.push(newAddress);
-        updateAddresses();
+        showSpinner();
+        try {
+          const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(newAddress)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+          const data = await response.json();
+          if (data.features && data.features.length > 0) {
+            const address = {
+              formatted_address: data.features[0].place_name,
+              coordinates: data.features[0].geometry.coordinates
+            };
+            addresses.push(address);
+            await updateAddresses();
+            showAlert("Address added successfully!");
+          } else {
+            showAlert("Invalid address, please try again.");
+          }
+        } catch (error) {
+          handleError(error, "Failed to validate address");
+        } finally {
+          hideSpinner();
+        }
       }
     }
 
-    function editAddress(index) {
-      const newAddress = prompt("Edit address:", addresses[index]);
+    async function editAddress(index) {
+      const newAddress = prompt("Edit address:", addresses[index].formatted_address);
       if (newAddress) {
-        addresses[index] = newAddress;
-        updateAddresses();
+        showSpinner();
+        try {
+          const response = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(newAddress)}.json?access_token=${MAPBOX_ACCESS_TOKEN}`);
+          const data = await response.json();
+          if (data.features && data.features.length > 0) {
+            addresses[index] = {
+              formatted_address: data.features[0].place_name,
+              coordinates: data.features[0].geometry.coordinates
+            };
+            await updateAddresses();
+            showAlert("Address updated successfully!");
+          } else {
+            showAlert("Invalid address, please try again.");
+          }
+        } catch (error) {
+          handleError(error, "Failed to update address");
+        } finally {
+          hideSpinner();
+        }
       }
     }
 
-    function removeAddress(index) {
+    async function removeAddress(index) {
       if (confirm("Remove this address?")) {
         addresses.splice(index, 1);
-        updateAddresses();
+        await updateAddresses();
+        showAlert("Address removed successfully!");
       }
     }
 
@@ -1306,7 +1348,6 @@
       try {
         await update(ref(db, `users/${user.uid}`), { addresses });
         renderAddresses();
-        showAlert("Addresses updated!");
       } catch (error) {
         handleError(error, "Failed to update addresses");
       }
@@ -1317,6 +1358,7 @@
       if (last4) {
         payments.push({ last4 });
         updatePayments();
+        showAlert("Payment method added!");
       }
     }
 
@@ -1324,6 +1366,7 @@
       if (confirm("Remove this payment method?")) {
         payments.splice(index, 1);
         updatePayments();
+        showAlert("Payment method removed!");
       }
     }
 
@@ -1333,7 +1376,6 @@
       try {
         await update(ref(db, `users/${user.uid}`), { payments });
         renderPayments();
-        showAlert("Payment methods updated!");
       } catch (error) {
         handleError(error, "Failed to update payments");
       }
@@ -1344,6 +1386,7 @@
       if (amount > 0) {
         walletBalance += amount;
         updateWallet();
+        showAlert("Wallet topped up!");
       }
     }
 
@@ -1353,7 +1396,6 @@
       try {
         await update(ref(db, `users/${user.uid}`), { walletBalance });
         renderWalletAndRewards();
-        showAlert("Wallet topped up!");
       } catch (error) {
         handleError(error, "Failed to update wallet");
       }
@@ -1530,5 +1572,3 @@
 
     window.addEventListener('DOMContentLoaded', initialize);
   </script>
-</body>
-</html>
