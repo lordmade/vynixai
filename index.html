@@ -1098,6 +1098,18 @@
     color: var(--text-dark);
     border: 1px solid var(--border);
   }
+   .pre-order-badge {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    background: var(--accent-green);
+    color: var(--white);
+    padding: 0.4rem 1rem;
+    border-radius: 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    z-index: 2;
+  }
 </style>
 </head>
 <body>
@@ -1463,79 +1475,80 @@
     }
 
     async function loadEntities() {
-      if (!db) {
-        handleError(new Error("Database not initialized"), "Server connection not initialized");
-        return;
+  if (!db) {
+    handleError(new Error("Database not initialized"), "Server connection not initialized");
+    return;
+  }
+  const entityRef = ref(db, viewMode);
+  try {
+    const snapshot = await Promise.race([
+      get(entityRef),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Database fetch timeout")), 15000))
+    ]);
+    entities = [];
+    const data = snapshot.val();
+    if (data && typeof data === 'object') {
+      for (const key of Object.keys(data)) {
+        const entityData = data[key] || {};
+        const entity = {
+          id: key,
+          name: entityData.name || "Unknown",
+          latitude: entityData.latitude || null,
+          longitude: entityData.longitude || null,
+          isFavorite: false,
+          isOpen: entityData.isOpen !== undefined ? entityData.isOpen : true,
+          acceptsPreOrders: entityData.acceptsPreOrders !== undefined ? entityData.acceptsPreOrders : false,
+          cloudinaryImage: entityData.cloudinaryImage || fallbackImages[entityData.primaryCategory?.toLowerCase()] || (viewMode === 'restaurants' ? fallbackImages.default : fallbackImages.shop_default),
+          menuCategories: [],
+          promotion: entityData.promotion || (entityData.isNew ? 'New' : null),
+          rating: entityData.rating || null,
+          deliveryTime: entityData.deliveryTime || null,
+          popularItem: entityData.popularItem || null
+        };
+        const menuRef = ref(db, `${viewMode}/${key}/menu`);
+        try {
+          const menuSnapshot = await get(menuRef);
+          if (menuSnapshot.exists()) {
+            const menuData = menuSnapshot.val();
+            entity.menuCategories = menuData
+              ? Object.values(menuData)
+                  .map(item => item.category ? item.category.toLowerCase() : '')
+                  .filter(category => category)
+              : [];
+            entity.primaryCategory = getPrimaryCategory(entity.menuCategories) || 'General';
+          } else {
+            entity.primaryCategory = 'General';
+          }
+          entities.push(entity);
+        } catch (menuError) {
+          handleError(menuError, `Failed to load menu for entity ${key}`);
+          entity.primaryCategory = 'General';
+          entities.push(entity);
+        }
       }
-      const entityRef = ref(db, viewMode);
-      try {
-        const snapshot = await Promise.race([
-          get(entityRef),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Database fetch timeout")), 15000))
-        ]);
-        entities = [];
-        const data = snapshot.val();
-        if (data && typeof data === 'object') {
-          for (const key of Object.keys(data)) {
-            const entityData = data[key] || {};
-            const entity = {
-              id: key,
-              name: entityData.name || "Unknown",
-              latitude: entityData.latitude || null,
-              longitude: entityData.longitude || null,
-              isFavorite: false,
-              isOpen: entityData.isOpen !== undefined ? entityData.isOpen : true,
-              cloudinaryImage: entityData.cloudinaryImage || fallbackImages[entityData.primaryCategory?.toLowerCase()] || (viewMode === 'restaurants' ? fallbackImages.default : fallbackImages.shop_default),
-              menuCategories: [],
-              promotion: entityData.promotion || (entityData.isNew ? 'New' : null),
-              rating: entityData.rating || null,
-              deliveryTime: entityData.deliveryTime || null,
-              popularItem: entityData.popularItem || null
-            };
-            const menuRef = ref(db, `${viewMode}/${key}/menu`);
-            try {
-              const menuSnapshot = await get(menuRef);
-              if (menuSnapshot.exists()) {
-                const menuData = menuSnapshot.val();
-                entity.menuCategories = menuData
-                  ? Object.values(menuData)
-                      .map(item => item.category ? item.category.toLowerCase() : '')
-                      .filter(category => category)
-                  : [];
-                entity.primaryCategory = getPrimaryCategory(entity.menuCategories) || 'General';
-              } else {
-                entity.primaryCategory = 'General';
-              }
-              entities.push(entity);
-            } catch (menuError) {
-              handleError(menuError, `Failed to load menu for entity ${key}`);
-              entity.primaryCategory = 'General';
-              entities.push(entity);
-            }
-          }
-          if (auth.currentUser) {
-            const favoritesRef = ref(db, `users/${auth.currentUser.uid}/favorites`);
-            try {
-              const favoritesSnapshot = await get(favoritesRef);
-              const favorites = favoritesSnapshot.val() || {};
-              entities.forEach(e => {
-                e.isFavorite = !!favorites[e.id];
-              });
-            } catch (favError) {
-              handleError(favError, "Failed to load favorites");
-            }
-          }
+      if (auth.currentUser) {
+        const favoritesRef = ref(db, `users/${auth.currentUser.uid}/favorites`);
+        try {
+          const favoritesSnapshot = await get(favoritesRef);
+          const favorites = favoritesSnapshot.val() || {};
+          entities.forEach(e => {
+            e.isFavorite = !!favorites[e.id];
+          });
+        } catch (favError) {
+          handleError(favError, "Failed to load favorites");
         }
-        renderCategories();
-        renderEntities();
-        hideSpinner();
-        if (entities.length === 0) {
-          showAlert(`No ${viewMode} found in your area.`, false);
-        }
-      } catch (error) {
-        handleError(error, `Failed to load ${viewMode}`);
       }
     }
+    renderCategories();
+    renderEntities();
+    hideSpinner();
+    if (entities.length === 0) {
+      showAlert(`No ${viewMode} found in your area.`, false);
+    }
+  } catch (error) {
+    handleError(error, `Failed to load ${viewMode}`);
+  }
+}
 
     function getPrimaryCategory(categories) {
       if (!categories || !Array.isArray(categories) || categories.length === 0) return null;
@@ -1684,7 +1697,7 @@
 
     const debounceFilterEntities = debounce(filterEntities, 300);
 
-   function renderEntities(filteredEntities = entities) {
+  function renderEntities(filteredEntities = entities) {
   if (!cachedElements.entityGrid || !cachedElements.noEntities) return;
   const sortBy = cachedElements.sortBy?.value || 'name';
   let entitiesToRender = filteredEntities.filter(entity => {
@@ -1732,6 +1745,7 @@
       return `
         <button class="entity-card ${isOpen ? '' : 'closed'}" data-entity-id="${entity.id}" ${isOpen ? '' : 'tabindex="-1"'} aria-label="View ${entity.name} menu">
           ${entity.promotion ? `<span class="badge">${entity.promotion}</span>` : ''}
+          ${entity.acceptsPreOrders ? `<span class="pre-order-badge">Pre-order</span>` : ''}
           ${isOpen ? '' : '<div class="closed-overlay"><span>Closed</span></div>'}
           <img
             src="${entity.cloudinaryImage || (viewMode === 'restaurants' ? fallbackImages.default : fallbackImages.shop_default)}"
