@@ -10,6 +10,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <link href="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css" rel="stylesheet">
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
+  <script src="https://www.paypal.com/sdk/js?client-id=ECQ-lBwzVUodk7j-xWq0gojZ2MCfT5JdQZMevvbFjxZNP-Ybpdf1UzBdqOTrUcp4wrvizxSVJ2lw7mUU&currency=ZAR"></script>
   <style>
     :root {
       --primary-orange: #ff6200;
@@ -809,12 +810,14 @@
         </button>
         <div class="form-group">
           <label for="payment-method">Payment Method</label>
-          <select id="payment-method" aria-label="Payment method" required>
+          <select id="payment-method" aria-label="Payment method" required onchange="togglePayPalButton()">
             <option value="credit-card">Credit Card</option>
             <option value="cash">Cash on Delivery</option>
             <option value="digital-wallet">Digital Wallet</option>
+            <option value="paypal">PayPal</option>
           </select>
         </div>
+        <div id="paypal-button-container" style="display: none; margin-top: 1rem;"></div>
         <button class="place-order-btn" onclick="confirmOrder()" aria-label="Place order">Place Order</button>
       </div>
     </div>
@@ -861,7 +864,8 @@
       themeIcon: document.getElementById("theme-icon"),
       backToTop: document.getElementById("back-to-top"),
       bottomSheet: document.getElementById("bottom-sheet"),
-      bottomSheetIcon: document.getElementById("bottom-sheet-icon")
+      bottomSheetIcon: document.getElementById("bottom-sheet-icon"),
+      paypalButtonContainer: document.getElementById("paypal-button-container")
     };
 
     function initializeFirebase() {
@@ -973,6 +977,7 @@
           if (user) {
             loadCart();
             getUserLocation();
+            initializePayPalButton();
           } else {
             showAlert("Please sign in.", false);
             document.body.classList.add("fade-out");
@@ -1018,6 +1023,7 @@
           }
         }
         renderCart();
+        initializePayPalButton();
         hideSpinner();
       }, (error) => {
         console.error("Failed to load cart:", error);
@@ -1086,6 +1092,123 @@
       elements.cartSection.innerHTML += `<div class="grand-total">Total: R${grandTotal.toFixed(2)} ${entities.some(id => cart[id].deliveryFee > 0) ? '(includes delivery)' : ''}</div>`;
     }
 
+    function initializePayPalButton() {
+      if (!auth.currentUser || Object.keys(cart).length === 0) {
+        elements.paypalButtonContainer.style.display = 'none';
+        return;
+      }
+      const grandTotal = Object.keys(cart).reduce((sum, entityId) => {
+        const items = Object.values(cart[entityId].items);
+        const entityTotal = items.reduce((subSum, item) => subSum + item.price * item.quantity, 0);
+        return sum + entityTotal + (cart[entityId].deliveryFee || 0);
+      }, 0);
+
+      elements.paypalButtonContainer.innerHTML = '';
+      paypal.Buttons({
+        style: {
+          layout: 'vertical',
+          color: 'gold',
+          shape: 'rect',
+          label: 'paypal'
+        },
+        createOrder: (data, actions) => {
+          return actions.order.create({
+            purchase_units: [{
+              amount: {
+                currency_code: 'ZAR',
+                value: grandTotal.toFixed(2),
+                breakdown: {
+                  item_total: {
+                    currency_code: 'ZAR',
+                    value: Object.keys(cart).reduce((sum, entityId) => {
+                      const items = Object.values(cart[entityId].items);
+                      return sum + items.reduce((subSum, item) => subSum + item.price * item.quantity, 0);
+                    }, 0).toFixed(2)
+                  },
+                  shipping: {
+                    currency_code: 'ZAR',
+                    value: Object.keys(cart).reduce((sum, entityId) => sum + (cart[entityId].deliveryFee || 0), 0).toFixed(2)
+                  }
+                }
+              },
+              items: Object.keys(cart).flatMap(entityId => {
+                const entity = cart[entityId];
+                return Object.values(entity.items).map(item => ({
+                  name: item.name,
+                  unit_amount: {
+                    currency_code: 'ZAR',
+                    value: item.price.toFixed(2)
+                  },
+                  quantity: item.quantity
+                }));
+              })
+            }]
+          });
+        },
+        onApprove: async (data, actions) => {
+          try {
+            showSpinner();
+            const order = await actions.order.capture();
+            await saveOrderToFirebase(order);
+            showAlert("Payment successful! Order placed!", true);
+            document.body.classList.add("fade-out");
+            setTimeout(() => {
+              window.location.href = "orders.html";
+            }, 1500);
+          } catch (error) {
+            console.error("Payment capture failed:", error);
+            showAlert("Payment failed. Please try again.", false);
+          } finally {
+            isSubmitting = false;
+            elements.placeOrderBtn.disabled = Object.keys(cart).length === 0;
+            hideSpinner();
+          }
+        },
+        onError: (err) => {
+          console.error("PayPal error:", err);
+          showAlert("An error occurred with PayPal. Please try again.", false);
+          isSubmitting = false;
+          elements.placeOrderBtn.disabled = Object.keys(cart).length === 0;
+          hideSpinner();
+        }
+      }).render('#paypal-button-container');
+    }
+
+    window.togglePayPalButton = function() {
+      const paymentMethod = elements.paymentMethodSelect.value;
+      elements.paypalButtonContainer.style.display = paymentMethod === 'paypal' ? 'block' : 'none';
+      elements.placeOrderBtn.style.display = paymentMethod === 'paypal' ? 'none' : 'block';
+    };
+
+    async function saveOrderToFirebase(paypalOrder) {
+      if (!auth.currentUser) return;
+      const ordersRef = ref(db, `users/${auth.currentUser.uid}/orders`);
+      const cartRef = ref(db, `users/${auth.currentUser.uid}/cart`);
+      const deliveryAddress = elements.deliveryAddressInput.value.trim();
+      for (const entityId of Object.keys(cart)) {
+        const entity = cart[entityId];
+        const items = Object.values(entity.items);
+        const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0) + (entity.deliveryFee || 0);
+        await push(ordersRef, {
+          entityId,
+          entityType: entity.entityType,
+          entityName: entity.entityName,
+          items: entity.items,
+          total,
+          status: "pending",
+          timestamp: Date.now(),
+          deliveryAddress,
+          paymentMethod: 'paypal',
+          deliveryFee: entity.deliveryFee || 0,
+          paypalOrderId: paypalOrder.id,
+          paypalStatus: paypalOrder.status
+        });
+      }
+      await remove(cartRef);
+      cart = {};
+      renderCart();
+    }
+
     let quantityTimeout;
     window.debounceUpdateQuantity = function(entityId, itemId, quantity) {
       clearTimeout(quantityTimeout);
@@ -1108,6 +1231,7 @@
         await set(itemRef, { ...cart[entityId].items[itemId], quantity });
         cart[entityId].items[itemId].quantity = quantity;
         renderCart();
+        initializePayPalButton();
         showAlert("Quantity updated!", true);
       } catch (error) {
         console.error("Failed to update quantity:", error);
@@ -1132,6 +1256,7 @@
           await remove(ref(db, `users/${auth.currentUser.uid}/cart/${entityId}`));
         }
         renderCart();
+        initializePayPalButton();
         showAlert("Item removed!", true);
       } catch (error) {
         console.error("Failed to remove item:", error);
@@ -1153,6 +1278,7 @@
         await remove(cartRef);
         delete cart[entityId];
         renderCart();
+        initializePayPalButton();
         showAlert("Cart cleared!", true);
       } catch (error) {
         console.error("Failed to clear cart:", error);
@@ -1168,6 +1294,11 @@
         return;
       }
       if (isSubmitting) return;
+      const paymentMethod = elements.paymentMethodSelect.value;
+      if (paymentMethod === 'paypal') {
+        showAlert("Please use the PayPal button to complete your payment.", false);
+        return;
+      }
       if (confirm("Place this order?")) {
         placeOrder();
       }
@@ -1216,6 +1347,7 @@
         await remove(cartRef);
         cart = {};
         renderCart();
+        initializePayPalButton();
         showAlert("Order placed!", true);
         document.body.classList.add("fade-out");
         setTimeout(() => {
