@@ -168,6 +168,13 @@
       stroke: var(--text-primary);
     }
 
+    .message.processing {
+      background: var(--ai-msg-bg);
+      color: var(--text-primary);
+      font-style: italic;
+      opacity: 0.7;
+    }
+
     .typing-indicator {
       display: inline-flex;
       gap: 0.25rem;
@@ -310,9 +317,10 @@
 
     const state = {
       messages: [],
-      geminiApiKey: 'AIzaSyBZb3DQUktOdE_3IKDKdGLOB2B75nc9zjw',
+      geminiApiKey: 'AIzaSyD79iPuCs7sW4DQJ7ij9SZZXtEJm6po8K8', // Move to environment variable in production
       hasChatted: false,
-      conversationId: null
+      conversationId: null,
+      ttsCache: new Map() // Cache TTS responses
     };
 
     const elements = {
@@ -351,22 +359,26 @@
 
     function appendMessage(text, sender, isTyping = false, audioUrl = null) {
       const div = document.createElement('div');
-      div.className = `message ${sender}${audioUrl ? ' audio' : ''}`;
+      div.className = `message ${sender}${audioUrl ? ' audio' : ''}${isTyping ? ' processing' : ''}`;
       if (isTyping && sender === 'ai') {
-        const indicator = document.createElement('div');
-        indicator.className = 'typing-indicator';
-        for (let i = 0; i < 3; i++) {
-          const dot = document.createElement('span');
-          dot.className = 'typing-dot';
-          indicator.appendChild(dot);
-        }
-        div.appendChild(indicator);
+        div.textContent = 'Processing...';
       } else {
         div.textContent = text;
         if (audioUrl) {
           const playButton = document.createElement('button');
           playButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18l15-9z"/></svg>';
-          playButton.onclick = () => new Audio(audioUrl).play();
+          playButton.onclick = () => {
+            if (sender === 'ai') {
+              const cached = state.ttsCache.get(text);
+              if (cached) {
+                new Audio(cached).play();
+              } else {
+                generateTTS(text);
+              }
+            } else {
+              new Audio(audioUrl).play();
+            }
+          };
           div.prepend(playButton);
         }
         div.style.opacity = '0';
@@ -376,12 +388,12 @@
       elements.chatMessages.appendChild(div);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
       if (sender === 'ai' && !isTyping && audioUrl) {
-        new Audio(audioUrl).play(); // Auto-play AI response
+        new Audio(audioUrl).play();
       }
       if (sender === 'ai' && !isTyping) {
         div.classList.add('vibrate');
         if ('vibrate' in navigator) {
-          navigator.vibrate(200);
+          navigator.vibrate(100); // Reduced vibration duration
         }
       }
       return div;
@@ -406,52 +418,58 @@
           tempMsg.textContent = data.candidates[0].content.parts[0].text || 'Image generation failed.';
           return;
         }
-        return 'Image generation canceled.';
+        tempMsg.textContent = 'Image generation canceled.';
+        return;
       }
       const tempMsg = appendMessage('', 'ai', true);
       const query = isVoice ? `Transcribe this voice note and respond to the content: ${audioUrl}` : 
-        `You are Vynix AI, crafted by Katlego in Mokopane, South Africa. Respond as a general AI assistant like Grok, handling chats, image generation, and more. Query: ${prompt}`;
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${state.geminiApiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: query }] }] })
-      });
-      const data = await res.json();
-      let response = data.candidates[0].content.parts[0].text || 'Sorry, something went wrong.';
-      
-      // For voice input, extract transcription if present
-      let transcription = prompt;
-      if (isVoice) {
-        const match = response.match(/Transcription: (.+?)\n/);
-        transcription = match ? match[1] : 'Transcription failed.';
-        response = response.replace(/Transcription: .+?\n/, '').trim();
-      }
+        `You are Vynix AI, crafted by Katlego in Mokopane, South Africa. Respond concisely as a general AI assistant like Grok. Query: ${prompt}`;
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${state.geminiApiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: query }] }] })
+        });
+        const data = await res.json();
+        let response = data.candidates[0].content.parts[0].text || 'Sorry, something went wrong.';
+        
+        let transcription = prompt;
+        if (isVoice) {
+          const match = response.match(/Transcription: (.+?)\n/);
+          transcription = match ? match[1] : 'Transcription failed.';
+          response = response.replace(/Transcription: .+?\n/, '').trim();
+        }
 
-      // Generate TTS for AI response
-      const ttsUrl = await generateTTS(response);
-      
-      // Update message with transcription for voice input or original prompt
-      tempMsg.textContent = isVoice ? transcription : response;
-      if (isVoice) {
-        appendMessage('AI Response: ' + response, 'ai', false, ttsUrl);
-      } else {
-        appendMessage(response, 'ai', false, ttsUrl);
+        // Generate TTS
+        const ttsUrl = await generateTTS(response);
+        
+        // Update message
+        tempMsg.textContent = isVoice ? transcription : response;
+        if (isVoice) {
+          appendMessage('AI Response: ' + response, 'ai', false, ttsUrl);
+        } else {
+          appendMessage(response, 'ai', false, ttsUrl);
+        }
+      } catch (error) {
+        tempMsg.textContent = 'Error: Failed to get response.';
+        console.error('API Error:', error);
       }
     }
 
     async function generateTTS(text) {
-      // Use Web Speech API for TTS
+      if (state.ttsCache.has(text)) {
+        return state.ttsCache.get(text);
+      }
       return new Promise((resolve) => {
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'en-US';
-        utterance.rate = 1;
+        utterance.rate = 1.1; // Slightly faster for snappier feel
         utterance.pitch = 1;
         utterance.volume = 0.9;
-        // Select a natural-sounding voice (browser-dependent)
         const voices = window.speechSynthesis.getVoices();
         const naturalVoice = voices.find(v => v.name.includes('Natural') || v.name.includes('Google')) || voices[0];
         if (naturalVoice) utterance.voice = naturalVoice;
-        utterance.onend = () => resolve(null); // No URL needed for Web Speech API
+        utterance.onend = () => resolve(null);
         window.speechSynthesis.speak(utterance);
       });
     }
@@ -462,8 +480,7 @@
       const title = firstMessage.split(' ').slice(0, 3).join(' ');
       const user = auth.currentUser;
       if (user) {
-        const ref = ref(db, `users/${user.uid}/conversations`);
-        push(ref, { title, messages: state.messages });
+        push(ref(db, `users/${user.uid}/conversations`), { title, messages: state.messages });
       }
     }
 
@@ -479,8 +496,8 @@
     function loadConversations() {
       const user = auth.currentUser;
       if (user) {
-        const ref = ref(db, `users/${user.uid}/conversations`);
-        onValue(ref, snapshot => {
+        const refConversations = ref(db, `users/${user.uid}/conversations`);
+        onValue(refConversations, snapshot => {
           elements.conversationList.innerHTML = '';
           snapshot.forEach(child => {
             const convo = child.val();
@@ -496,7 +513,7 @@
             });
             elements.conversationList.appendChild(div);
           });
-        });
+        }, { onlyOnce: true }); // Load once to reduce listeners
       }
     }
 
@@ -531,14 +548,16 @@
     elements.micButton.addEventListener('mousedown', async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' }); // Use Opus for smaller files
         mediaRecorder.start();
         audioChunks = [];
         mediaRecorder.addEventListener('dataavailable', e => {
           audioChunks.push(e.data);
         });
+        appendMessage('Recording...', 'user', true);
       } catch (err) {
         console.error('Mic access denied:', err);
+        appendMessage('Mic access denied', 'user');
       }
     });
 
@@ -549,15 +568,26 @@
           const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
           const formData = new FormData();
           formData.append('file', audioBlob, 'voice-note.webm');
-          const uploadResponse = await fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', {
-            method: 'POST',
-            body: formData,
-            headers: { 'Authorization': 'Basic ' + btoa('YOUR_API_KEY:YOUR_API_SECRET') }
-          });
-          const uploadData = await uploadResponse.json();
-          const audioUrl = uploadData.secure_url;
-          appendMessage('Voice note sent', 'user', false, audioUrl);
-          await getAIResponse('', true, audioUrl);
+          formData.append('upload_preset', 'banter_box');
+          const tempMsg = appendMessage('Uploading voice note...', 'user', true);
+          try {
+            const uploadResponse = await fetch('https://api.cloudinary.com/v1_1/dqkujefxj/upload', {
+              method: 'POST',
+              body: formData
+            });
+            const uploadData = await uploadResponse.json();
+            const audioUrl = uploadData.secure_url;
+            tempMsg.textContent = 'Voice note sent';
+            tempMsg.className = 'message user audio';
+            const playButton = document.createElement('button');
+            playButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18l15-9z"/></svg>';
+            playButton.onclick = () => new Audio(audioUrl).play();
+            tempMsg.prepend(playButton);
+            await getAIResponse('', true, audioUrl);
+          } catch (error) {
+            tempMsg.textContent = 'Upload failed';
+            console.error('Upload Error:', error);
+          }
         });
       }
     });
@@ -572,14 +602,20 @@
         const formData = new FormData();
         formData.append('file', file);
         formData.append('upload_preset', 'YOUR_UPLOAD_PRESET');
-        const uploadResponse = await fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/image/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const uploadData = await uploadResponse.json();
-        const imageUrl = uploadData.secure_url;
-        appendMessage(`Image uploaded: ${imageUrl}`, 'user');
-        await getAIResponse(`Analyze this image: ${imageUrl}`);
+        const tempMsg = appendMessage('Uploading image...', 'user', true);
+        try {
+          const uploadResponse = await fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/image/upload', {
+            method: 'POST',
+            body: formData
+          });
+          const uploadData = await uploadResponse.json();
+          const imageUrl = uploadData.secure_url;
+          tempMsg.textContent = `Image uploaded: ${imageUrl}`;
+          await getAIResponse(`Analyze this image: ${imageUrl}`);
+        } catch (error) {
+          tempMsg.textContent = 'Image upload failed';
+          console.error('Upload Error:', error);
+        }
       };
       input.click();
     });
@@ -591,7 +627,7 @@
       });
     });
 
-    // Load voices for TTS
+    // Preload voices
     window.speechSynthesis.onvoiceschanged = () => {
       window.speechSynthesis.getVoices();
     };
