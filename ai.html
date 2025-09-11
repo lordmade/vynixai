@@ -150,6 +150,24 @@
       border-bottom-left-radius: 0.25rem;
     }
 
+    .message.audio {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .message.audio button {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+    }
+
+    .message.audio svg {
+      width: 1.5rem;
+      height: 1.5rem;
+      stroke: var(--text-primary);
+    }
+
     .typing-indicator {
       display: inline-flex;
       gap: 0.25rem;
@@ -222,35 +240,6 @@
     #new-chat-button:hover, #hamburger-button:hover {
       background: var(--highlight);
     }
-
-    #waveform {
-      position: absolute;
-      bottom: 4rem;
-      left: 0;
-      right: 0;
-      height: 3rem;
-      background: #2D3748;
-      border-radius: 0.75rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    .wave-bar {
-      width: 4px;
-      height: 20px;
-      background: var(--highlight);
-      margin: 0 2px;
-      border-radius: 2px;
-      animation: wave 0.8s ease-in-out infinite;
-      animation-delay: calc(0.1s * var(--i));
-    }
-
-    @keyframes wave {
-      0%, 100% { height: 20px; }
-      50% { height: 40px; }
-    }
   </style>
 </head>
 <body>
@@ -301,13 +290,6 @@
           <path d="M5 12h14M5 12l6-6m-6 6l6 6"/>
         </svg>
       </button>
-      <div id="waveform" class="hidden absolute bottom-16 left-0 right-0 h-12 bg-gray-900 rounded-lg flex items-center justify-center">
-        <div class="wave-bar" style="--i:1;"></div>
-        <div class="wave-bar" style="--i:2;"></div>
-        <div class="wave-bar" style="--i:3;"></div>
-        <div class="wave-bar" style="--i:4;"></div>
-        <div class="wave-bar" style="--i:5;"></div>
-      </div>
     </div>
   </main>
   <script type="module">
@@ -349,8 +331,7 @@
       closeSidebar: document.getElementById('close-sidebar'),
       conversationList: document.getElementById('conversation-list'),
       micButton: document.getElementById('mic-button'),
-      imageUploadButton: document.getElementById('image-upload-button'),
-      waveform: document.getElementById('waveform')
+      imageUploadButton: document.getElementById('image-upload-button')
     };
 
     let app, auth, db;
@@ -368,9 +349,9 @@
       });
     }
 
-    function appendMessage(text, sender, isTyping = false) {
+    function appendMessage(text, sender, isTyping = false, audioUrl = null) {
       const div = document.createElement('div');
-      div.className = `message ${sender}`;
+      div.className = `message ${sender}${audioUrl ? ' audio' : ''}`;
       if (isTyping && sender === 'ai') {
         const indicator = document.createElement('div');
         indicator.className = 'typing-indicator';
@@ -382,12 +363,21 @@
         div.appendChild(indicator);
       } else {
         div.textContent = text;
+        if (audioUrl) {
+          const playButton = document.createElement('button');
+          playButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18l15-9z"/></svg>';
+          playButton.onclick = () => new Audio(audioUrl).play();
+          div.prepend(playButton);
+        }
         div.style.opacity = '0';
         setTimeout(() => div.style.opacity = '1', 10);
-        state.messages.push({ text, sender, timestamp: Date.now() });
+        state.messages.push({ text, sender, timestamp: Date.now(), audioUrl });
       }
       elements.chatMessages.appendChild(div);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+      if (sender === 'ai' && !isTyping && audioUrl) {
+        new Audio(audioUrl).play(); // Auto-play AI response
+      }
       if (sender === 'ai' && !isTyping) {
         div.classList.add('vibrate');
         if ('vibrate' in navigator) {
@@ -397,7 +387,7 @@
       return div;
     }
 
-    async function getAIResponse(prompt) {
+    async function getAIResponse(prompt, isVoice = false, audioUrl = null) {
       if (!state.hasChatted) {
         state.hasChatted = true;
         elements.welcomeContainer.classList.add('hidden');
@@ -419,14 +409,51 @@
         return 'Image generation canceled.';
       }
       const tempMsg = appendMessage('', 'ai', true);
+      const query = isVoice ? `Transcribe this voice note and respond to the content: ${audioUrl}` : 
+        `You are Vynix AI, crafted by Katlego in Mokopane, South Africa. Respond as a general AI assistant like Grok, handling chats, image generation, and more. Query: ${prompt}`;
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${state.geminiApiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: `You are Vynix AI, crafted by Katlego in Mokopane, South Africa. Respond as a general AI assistant like Grok, handling chats, image generation, and more. Query: ${prompt}` }] }] })
+        body: JSON.stringify({ contents: [{ parts: [{ text: query }] }] })
       });
       const data = await res.json();
-      const response = data.candidates[0].content.parts[0].text || 'Sorry, something went wrong.';
-      tempMsg.textContent = response;
+      let response = data.candidates[0].content.parts[0].text || 'Sorry, something went wrong.';
+      
+      // For voice input, extract transcription if present
+      let transcription = prompt;
+      if (isVoice) {
+        const match = response.match(/Transcription: (.+?)\n/);
+        transcription = match ? match[1] : 'Transcription failed.';
+        response = response.replace(/Transcription: .+?\n/, '').trim();
+      }
+
+      // Generate TTS for AI response
+      const ttsUrl = await generateTTS(response);
+      
+      // Update message with transcription for voice input or original prompt
+      tempMsg.textContent = isVoice ? transcription : response;
+      if (isVoice) {
+        appendMessage('AI Response: ' + response, 'ai', false, ttsUrl);
+      } else {
+        appendMessage(response, 'ai', false, ttsUrl);
+      }
+    }
+
+    async function generateTTS(text) {
+      // Use Web Speech API for TTS
+      return new Promise((resolve) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'en-US';
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        utterance.volume = 0.9;
+        // Select a natural-sounding voice (browser-dependent)
+        const voices = window.speechSynthesis.getVoices();
+        const naturalVoice = voices.find(v => v.name.includes('Natural') || v.name.includes('Google')) || voices[0];
+        if (naturalVoice) utterance.voice = naturalVoice;
+        utterance.onend = () => resolve(null); // No URL needed for Web Speech API
+        window.speechSynthesis.speak(utterance);
+      });
     }
 
     function saveConversation() {
@@ -463,7 +490,7 @@
             div.addEventListener('click', () => {
               state.messages = convo.messages;
               elements.chatMessages.innerHTML = '';
-              state.messages.forEach(msg => appendMessage(msg.text, msg.sender));
+              state.messages.forEach(msg => appendMessage(msg.text, msg.sender, false, msg.audioUrl));
               elements.sidebar.classList.remove('open');
               state.conversationId = child.key;
             });
@@ -502,7 +529,6 @@
     let audioChunks = [];
 
     elements.micButton.addEventListener('mousedown', async () => {
-      elements.waveform.classList.remove('hidden');
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaRecorder = new MediaRecorder(stream);
@@ -513,14 +539,12 @@
         });
       } catch (err) {
         console.error('Mic access denied:', err);
-        elements.waveform.classList.add('hidden');
       }
     });
 
     elements.micButton.addEventListener('mouseup', async () => {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
-        elements.waveform.classList.add('hidden');
         mediaRecorder.addEventListener('stop', async () => {
           const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
           const formData = new FormData();
@@ -532,8 +556,8 @@
           });
           const uploadData = await uploadResponse.json();
           const audioUrl = uploadData.secure_url;
-          appendMessage('Voice note recorded', 'user');
-          await getAIResponse(`Transcribe and respond to this voice note: ${audioUrl}`);
+          appendMessage('Voice note sent', 'user', false, audioUrl);
+          await getAIResponse('', true, audioUrl);
         });
       }
     });
@@ -566,6 +590,11 @@
         elements.chatInput.focus();
       });
     });
+
+    // Load voices for TTS
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.getVoices();
+    };
 
     document.addEventListener('DOMContentLoaded', initializeFirebase);
   </script>
