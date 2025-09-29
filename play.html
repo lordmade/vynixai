@@ -346,7 +346,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set, get, query, orderByChild, equalTo, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, push, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -389,7 +389,7 @@
           if (user) {
             currentUser = user;
             setUserAvatar(user);
-            loadRecommendedVideos();
+            loadVideos();
             setupNotifications();
           } else {
             showAlert('Please log in to view videos.');
@@ -461,210 +461,17 @@
       });
     }
 
-    // New: Fisher-Yates shuffle for randomization
+    // New: Fisher-Yates shuffle (excluding first element)
     function shuffleArray(array) {
-      for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
+      const newArray = [...array]; // Copy to avoid mutating original
+      for (let i = newArray.length - 1; i > 1; i--) { // Start from index 1 to keep first element
+        const j = Math.floor(Math.random() * (i - 1)) + 1; // Random index from 1 to i
+        [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
       }
-      return array;
+      return newArray;
     }
 
-    // New: Simple caption similarity (Jaccard-like)
-    function captionSimilarity(caption1, caption2) {
-      if (!caption1 || !caption2) return 0;
-      const words1 = caption1.toLowerCase().split(/\s+/);
-      const words2 = caption2.toLowerCase().split(/\s+/);
-      const intersect = words1.filter(w => words2.includes(w)).length;
-      const union = new Set([...words1, ...words2]).size;
-      return union ? intersect / union : 0;
-    }
-
-    // New: Fetch user data
-    async function fetchUserData(userId) {
-      const userRef = ref(db, `users/${userId}`);
-      return new Promise(resolve => onValue(userRef, snap => resolve(snap.val()), { onlyOnce: true }));
-    }
-
-    async function loadRecommendedVideos(searchQuery = '') {
-      showSpinner();
-      const videoGrid = document.getElementById('video-grid');
-      try {
-        // Step 1: Candidate Generation
-        const allVideos = [];
-
-        // A: Subscriptions (40%)
-        const subsRef = ref(db, `users/${currentUser?.uid}/subscriptions`);
-        const subsSnapshot = await new Promise(resolve => onValue(subsRef, resolve, { onlyOnce: true }));
-        const subscriptions = subsSnapshot.val() || {};
-        for (const subId of Object.keys(subscriptions)) {
-          const subVideosRef = query(ref(db, 'shorts'), orderByChild('userId'), equalTo(subId), limitToLast(10));
-          await new Promise(resolve => onValue(subVideosRef, snapshot => {
-            snapshot.forEach(child => {
-              const video = { videoId: child.key, ...child.val() };
-              if (video.mediaType === 'video') allVideos.push({ ...video, source: 'subscriptions' });
-            });
-            resolve();
-          }, { onlyOnce: true }));
-        }
-
-        // B: Watch history (30%)
-        if (currentUser) {
-          const watchRef = ref(db, `users/${currentUser.uid}/watchHistory`);
-          await new Promise(resolve => onValue(watchRef, async snapshot => {
-            const history = snapshot.val() || {};
-            const recentWatches = Object.entries(history).sort((a, b) => new Date(b[1].timestamp) - new Date(a[1].timestamp)).slice(0, 5);
-            for (const [vidId, data] of recentWatches) {
-              const videoRef = ref(db, `shorts/${vidId}`);
-              const vidSnap = await new Promise(r => onValue(videoRef, r, { onlyOnce: true }));
-              const watchedVideo = { videoId: vidId, ...vidSnap.val() };
-              const similarRef = query(ref(db, 'shorts'), orderByChild('userId'), equalTo(watchedVideo.userId), limitToLast(5));
-              await new Promise(r => onValue(similarRef, snap => {
-                snap.forEach(child => {
-                  const simVideo = { videoId: child.key, ...child.val() };
-                  if (simVideo.videoId !== vidId && simVideo.mediaType === 'video') {
-                    allVideos.push({ ...simVideo, source: 'watch_history' });
-                  }
-                });
-                r();
-              }, { onlyOnce: true }));
-            }
-            resolve();
-          }, { onlyOnce: true }));
-        }
-
-        // C: Likes (20%) - Collaborative filtering
-        if (currentUser) {
-          const likesRef = ref(db, `users/${currentUser.uid}/likes`);
-          await new Promise(resolve => onValue(likesRef, async snapshot => {
-            const myLikes = Object.keys(snapshot.val() || {}).slice(0, 3);
-            for (const likedId of myLikes) {
-              const likedVideoRef = ref(db, `shorts/${likedId}`);
-              const likedSnap = await new Promise(r => onValue(likedVideoRef, r, { onlyOnce: true }));
-              const likedVideo = { videoId: likedId, ...likedSnap.val() };
-              const likersRef = ref(db, `shorts/${likedId}/likes`);
-              await new Promise(r => onValue(likersRef, async likersSnap => {
-                const likers = Object.keys(likersSnap.val() || {}).slice(0, 2);
-                for (const likerId of likers) {
-                  if (likerId === currentUser.uid) continue;
-                  const likerLikesRef = ref(db, `users/${likerId}/likes`);
-                  await new Promise(rr => onValue(likerLikesRef, snap => {
-                    const theirLikes = Object.keys(snap.val() || {});
-                    for (const theirLikeId of theirLikes) {
-                      if (theirLikeId !== likedId) {
-                        const recRef = ref(db, `shorts/${theirLikeId}`);
-                        onValue(recRef, childSnap => {
-                          const recVideo = { videoId: theirLikeId, ...childSnap.val() };
-                          if (recVideo.mediaType === 'video') allVideos.push({ ...recVideo, source: 'likes' });
-                        }, { onlyOnce: true });
-                      }
-                    }
-                    rr();
-                  }, { onlyOnce: true }));
-                }
-                r();
-              }, { onlyOnce: true }));
-            }
-            resolve();
-          }, { onlyOnce: true }));
-        }
-
-        // D: Fresh/explore (10%)
-        const freshRef = query(ref(db, 'shorts'), orderByChild('timestamp'), limitToLast(20));
-        await new Promise(resolve => onValue(freshRef, snapshot => {
-          snapshot.forEach(child => {
-            const video = { videoId: child.key, ...child.val() };
-            if (video.mediaType === 'video' && Object.keys(video.views || {}).length > 10) {
-              allVideos.push({ ...video, source: 'trending' });
-            }
-          });
-          resolve();
-        }, { onlyOnce: true }));
-
-        // Dedupe and limit to 100 candidates
-        const uniqueVideos = [...new Map(allVideos.map(v => [v.videoId, v])).values()].slice(0, 100);
-
-        // Step 2: Ranking
-        const scoredVideos = [];
-        for (const video of uniqueVideos) {
-          const ageInDays = (Date.now() - new Date(video.timestamp).getTime()) / (1000 * 60 * 60 * 24);
-          const likeRatio = (video.likeCount || 0) / Math.max(1, Object.keys(video.views || {}).length);
-          let watchScore = 0;
-          if (currentUser) {
-            const watchRef = ref(db, `users/${currentUser.uid}/watchHistory/${video.videoId}`);
-            const watchSnap = await new Promise(r => onValue(watchRef, r, { onlyOnce: true }));
-            watchScore = watchSnap.val()?.watchTime ? watchSnap.val().watchTime / 60 : 0; // Assume 60s max
-          }
-          let similarity = 0;
-          if (currentUser) {
-            const watchRef = ref(db, `users/${currentUser.uid}/watchHistory`);
-            const watchSnap = await new Promise(r => onValue(watchRef, r, { onlyOnce: true }));
-            const history = watchSnap.val() || {};
-            const recentCaptions = await Promise.all(
-              Object.keys(history).slice(0, 5).map(async vidId => {
-                const vidRef = ref(db, `shorts/${vidId}`);
-                const vidSnap = await new Promise(r => onValue(vidRef, r, { onlyOnce: true }));
-                return vidSnap.val()?.caption || '';
-              })
-            );
-            similarity = recentCaptions.reduce((sum, cap) => sum + captionSimilarity(cap, video.caption), 0) / Math.max(1, recentCaptions.length);
-          }
-          const score = watchScore * 0.4 + likeRatio * 0.3 + (1 / Math.max(1, ageInDays)) * 0.2 + similarity * 0.1;
-          scoredVideos.push({ ...video, score });
-        }
-        let rankedVideos = scoredVideos.sort((a, b) => b.score - a.score).slice(0, 20);
-
-        // Step 3: Randomize top videos
-        rankedVideos = shuffleArray(rankedVideos);
-
-        // Step 4: Apply search filter if query
-        if (searchQuery) {
-          rankedVideos = [];
-          for (const video of scoredVideos) {
-            const userData = await fetchUserData(video.userId);
-            const captionMatch = video.caption?.toLowerCase().includes(searchQuery.toLowerCase());
-            const usernameMatch = userData?.displayName?.toLowerCase().includes(searchQuery.toLowerCase());
-            if (captionMatch || usernameMatch) rankedVideos.push(video);
-          }
-          rankedVideos = shuffleArray(rankedVideos.slice(0, 20)); // Re-randomize filtered results
-        }
-
-        // Step 5: Render videos
-        videoGrid.innerHTML = '';
-        for (const video of rankedVideos) {
-          const userData = await fetchUserData(video.userId);
-          const card = document.createElement('div');
-          card.className = 'video-card cursor-pointer';
-          card.addEventListener('click', () => {
-            window.location.href = `videoplay.html?videoId=${video.videoId}`;
-          });
-          card.innerHTML = `
-            <video class="thumbnail" muted loop playsinline src="${video.mediaURL}?w=320&h=180"></video>
-            <div class="flex mt-2">
-              ${userData?.photoURL
-                ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
-                : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
-              <div class="flex-1">
-                <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
-                <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'}</p>
-                <p class="text-gray-600 text-xs">${Object.keys(video.views || {}).length} views • ${formatTimestamp(video.timestamp)}</p>
-              </div>
-              <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library">bookmark_add</button>
-            </div>
-          `;
-          videoGrid.appendChild(card);
-        }
-        setupIntersectionObserver();
-        hideSpinner();
-      } catch (error) {
-        console.error('Recommendation error:', error);
-        showAlert('Failed to load videos. Showing all videos.');
-        loadVideosFallback(searchQuery);
-      }
-    }
-
-    // Fallback: Original loadVideos for non-logged-in users or errors
-    async function loadVideosFallback(searchQuery = '') {
+    async function loadVideos(searchQuery = '') {
       showSpinner();
       const videosRef = ref(db, 'shorts');
       const videoGrid = document.getElementById('video-grid');
@@ -678,40 +485,60 @@
           let videoArray = Object.entries(snapshot.val())
             .map(([videoId, videoData]) => ({ videoId, ...videoData }))
             .filter(video => video.mediaType === 'video')
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // Newest first
+
+          // Apply search filter if query exists
           if (searchQuery) {
-            videoArray = [];
-            for (const video of Object.entries(snapshot.val()).map(([videoId, videoData]) => ({ videoId, ...videoData }))) {
-              const userData = await fetchUserData(video.userId);
+            const filteredVideos = [];
+            for (const video of videoArray) {
+              const userRef = ref(db, `users/${video.userId}`);
+              const userSnapshot = await new Promise((resolve) => {
+                onValue(userRef, resolve, { onlyOnce: true });
+              });
+              const userData = userSnapshot.val();
               const captionMatch = video.caption?.toLowerCase().includes(searchQuery.toLowerCase());
               const usernameMatch = userData?.displayName?.toLowerCase().includes(searchQuery.toLowerCase());
-              if (captionMatch || usernameMatch) videoArray.push(video);
+              if (captionMatch || usernameMatch) {
+                filteredVideos.push(video);
+              }
             }
+            videoArray = filteredVideos;
           }
-          videoArray = shuffleArray(videoArray.slice(0, 20));
+
+          // Randomize but keep the most recent video at the top
+          if (videoArray.length > 1) {
+            videoArray = shuffleArray(videoArray);
+          }
+
           videoGrid.innerHTML = '';
           for (const video of videoArray) {
-            const userData = await fetchUserData(video.userId);
-            const card = document.createElement('div');
-            card.className = 'video-card cursor-pointer';
-            card.addEventListener('click', () => {
-              window.location.href = `videoplay.html?videoId=${video.videoId}`;
+            const userRef = ref(db, `users/${video.userId}`);
+            await new Promise((resolve) => {
+              onValue(userRef, (userSnapshot) => {
+                const userData = userSnapshot.val();
+                const card = document.createElement('div');
+                card.className = 'video-card cursor-pointer';
+                card.addEventListener('click', () => {
+                  window.location.href = `videoplay.html?videoId=${video.videoId}`;
+                });
+                card.innerHTML = `
+                  <video class="thumbnail" muted loop playsinline src="${video.mediaURL}?w=320&h=180"></video>
+                  <div class="flex mt-2">
+                    ${userData?.photoURL
+                      ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
+                      : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
+                    <div class="flex-1">
+                      <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
+                      <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'}</p>
+                      <p class="text-gray-600 text-xs">${Object.keys(video.views || {}).length} views • ${formatTimestamp(video.timestamp)}</p>
+                    </div>
+                    <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library">bookmark_add</button>
+                  </div>
+                `;
+                videoGrid.appendChild(card);
+                resolve();
+              }, { onlyOnce: true });
             });
-            card.innerHTML = `
-              <video class="thumbnail" muted loop playsinline src="${video.mediaURL}?w=320&h=180"></video>
-              <div class="flex mt-2">
-                ${userData?.photoURL
-                  ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
-                  : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
-                <div class="flex-1">
-                  <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
-                  <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'}</p>
-                  <p class="text-gray-600 text-xs">${Object.keys(video.views || {}).length} views • ${formatTimestamp(video.timestamp)}</p>
-                </div>
-                <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library">bookmark_add</button>
-              </div>
-            `;
-            videoGrid.appendChild(card);
           }
           setupIntersectionObserver();
           hideSpinner();
@@ -785,9 +612,7 @@
           caption: caption || 'Untitled Video',
           userId: currentUser.uid,
           timestamp: new Date().toISOString(),
-          views: {},
-          likes: {},
-          likeCount: 0
+          views: {}
         });
 
         const subscribersRef = ref(db, `users/${currentUser.uid}/subscribers`);
@@ -820,7 +645,7 @@
 
     document.getElementById('search-input').addEventListener('input', (e) => {
       const searchQuery = e.target.value.trim();
-      loadRecommendedVideos(searchQuery);
+      loadVideos(searchQuery);
     });
 
     document.getElementById('menu-btn').addEventListener('click', (e) => {
