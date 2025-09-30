@@ -21,6 +21,8 @@
       --gradient: linear-gradient(45deg, #3b82f6, #a855f7);
       --progress-bar: #3b82f6;
       --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+      --subscribed-bg: #d1d5db;
+      --unsubscribed-bg: #000000;
     }
 
     [data-theme="dark"] {
@@ -30,6 +32,8 @@
       --text-secondary: #9ca3af;
       --border: #4b5563;
       --progress-bar: #60a5fa;
+      --subscribed-bg: #6b7280;
+      --unsubscribed-bg: #000000;
     }
 
     body {
@@ -199,6 +203,23 @@
       transform: translateY(-1px);
     }
 
+    .subscribe-btn.subscribed {
+      background-color: var(--subscribed-bg);
+    }
+
+    .subscribe-btn:not(.subscribed) {
+      background-color: var(--unsubscribed-bg);
+      color: #ffffff;
+    }
+
+    .like-btn.liked {
+      background-color: var(--subscribed-bg);
+    }
+
+    .like-btn.liked .material-icons {
+      content: 'thumb_up';
+    }
+
     .theme-toggle {
       position: fixed;
       top: 0.5rem;
@@ -324,12 +345,12 @@
           </div>
         </div>
         <div class="video-actions">
-          <button id="subscribe-btn" class="action-btn" title="Subscribe to Channel">Subscribe</button>
+          <button id="subscribe-btn" class="action-btn subscribe-btn" title="Subscribe to Channel">Subscribe</button>
           <button id="save-btn" class="action-btn" title="Save to Library">
             <span class="material-icons text-sm">bookmark_add</span> Save
           </button>
-          <button id="like-btn" class="action-btn" title="Like Video">
-            <span class="material-icons text-sm">thumb_up</span> Like
+          <button id="like-btn" class="action-btn like-btn" title="Like Video">
+            <span class="material-icons text-sm">thumb_up</span> Like <span id="like-count">0</span>
           </button>
           <button id="share-btn" class="action-btn" title="Share Video">
             <span class="material-icons text-sm">share</span> Share
@@ -404,6 +425,12 @@
       localStorage.setItem('theme', currentTheme);
     }
 
+    function formatNumber(count) {
+      if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+      if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
+      return count.toString();
+    }
+
     function initializeFirebase() {
       try {
         app = initializeApp(firebaseConfig);
@@ -457,18 +484,35 @@
       }
     }
 
-    async function likeVideo(videoId) {
+    async function likeVideo(videoId, likeBtn, likeCountEl) {
       if (!currentUser) {
         showAlert('Please log in to like videos.');
         return;
       }
       try {
         const likeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
-        await set(likeRef, true);
-        showAlert('Video liked!');
+        const snapshot = await new Promise((resolve) => onValue(likeRef, resolve, { onlyOnce: true }));
+        const isLiked = snapshot.exists();
+        if (isLiked) {
+          await set(likeRef, null); // Unlike
+          likeBtn.classList.remove('liked');
+          likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+          showAlert('Video unliked.');
+        } else {
+          await set(likeRef, true); // Like
+          likeBtn.classList.add('liked');
+          likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+          showAlert('Video liked!');
+        }
+        // Update like count
+        const likesRef = ref(db, `shorts/${videoId}/likes`);
+        onValue(likesRef, (snapshot) => {
+          const likes = snapshot.val() || {};
+          likeCountEl.textContent = formatNumber(Object.keys(likes).length);
+        }, { onlyOnce: true });
       } catch (error) {
-        console.error('Error liking video:', error);
-        showAlert('Failed to like video. Please try again.');
+        console.error('Error liking/unliking video:', error);
+        showAlert('Failed to update like status. Please try again.');
       }
     }
 
@@ -482,20 +526,39 @@
       }
     }
 
-    async function subscribeToChannel(channelId) {
+    async function subscribeToChannel(channelId, subscribeBtn) {
       if (!currentUser) {
         showAlert('Please log in to subscribe.');
         return;
       }
       try {
         const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${channelId}`);
-        await set(subscriptionRef, true);
-        showAlert('Subscribed successfully!');
+        const snapshot = await new Promise((resolve) => onValue(subscriptionRef, resolve, { onlyOnce: true }));
+        const isSubscribed = snapshot.exists();
+        if (isSubscribed) {
+          await set(subscriptionRef, null); // Unsubscribe
+          subscribeBtn.classList.remove('subscribed');
+          subscribeBtn.textContent = 'Subscribe';
+          showAlert('Unsubscribed successfully!');
+        } else {
+          await set(subscriptionRef, true); // Subscribe
+          subscribeBtn.classList.add('subscribed');
+          subscribeBtn.textContent = 'Subscribed';
+          showAlert('Subscribed successfully!');
+        }
+        // Update subscriber count
+        const subscribersRef = ref(db, `users/${channelId}/subscribers`);
+        onValue(subscribersRef, (snapshot) => {
+          const subscribers = snapshot.val() || {};
+          document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
+        }, { onlyOnce: true });
       } catch (error) {
-        console.error('Error subscribing to channel:', error);
-        showAlert('Failed to subscribe. Please try again.');
+        console.error('Error subscribing/unsubscribing:', error);
+        showAlert('Failed to update subscription. Please try again.');
       }
     }
+
+    let channelData; // Store channel data for subscriber count updates
 
     async function loadVideo() {
       showSpinner();
@@ -516,28 +579,69 @@
           }
           const videoData = snapshot.val();
           const userRef = ref(db, `users/${videoData.userId}`);
+          const subscribeBtn = document.getElementById('subscribe-btn');
+          const likeBtn = document.getElementById('like-btn');
+          const likeCountEl = document.getElementById('like-count');
           await new Promise((resolve) => {
             onValue(userRef, (userSnapshot) => {
-              const userData = userSnapshot.val();
+              channelData = userSnapshot.val();
               document.getElementById('video-player').src = videoData.mediaURL;
               document.getElementById('video-title').textContent = videoData.caption || 'Untitled Video';
-              document.getElementById('channel-name').textContent = userData?.displayName || 'Unknown Channel';
-              document.getElementById('video-meta').textContent = `${Object.keys(videoData.views || {}).length} views • ${formatTimestamp(videoData.timestamp)}`;
+              document.getElementById('video-meta').textContent = `${formatNumber(Object.keys(videoData.views || {}).length)} views • ${formatTimestamp(videoData.timestamp)}`;
               const channelAvatar = document.getElementById('channel-avatar');
-              if (userData?.photoURL) {
+              if (channelData?.photoURL) {
                 channelAvatar.style.background = 'none';
-                channelAvatar.innerHTML = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-8 w-8 rounded-full">`;
+                channelAvatar.innerHTML = `<img src="${channelData.photoURL}" alt="${channelData.displayName || 'User'} avatar" class="h-8 w-8 rounded-full">`;
               } else {
-                const initial = userData?.displayName ? userData.displayName[0].toUpperCase() : 'U';
+                const initial = channelData?.displayName ? channelData.displayName[0].toUpperCase() : 'U';
                 channelAvatar.textContent = initial;
                 channelAvatar.classList.add('avatar');
               }
+              // Set data attributes
               document.getElementById('save-btn').setAttribute('data-video-id', videoId);
-              document.getElementById('subscribe-btn').setAttribute('data-channel-id', videoData.userId);
-              document.getElementById('like-btn').setAttribute('data-video-id', videoId);
+              subscribeBtn.setAttribute('data-channel-id', videoData.userId);
+              likeBtn.setAttribute('data-video-id', videoId);
+              // Update subscriber count
+              const subscribersRef = ref(db, `users/${videoData.userId}/subscribers`);
+              onValue(subscribersRef, (snapshot) => {
+                const subscribers = snapshot.val() || {};
+                document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
+              }, { onlyOnce: true });
+              // Check subscription status
+              if (currentUser) {
+                const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${videoData.userId}`);
+                onValue(subscriptionRef, (snapshot) => {
+                  if (snapshot.exists()) {
+                    subscribeBtn.classList.add('subscribed');
+                    subscribeBtn.textContent = 'Subscribed';
+                  } else {
+                    subscribeBtn.classList.remove('subscribed');
+                    subscribeBtn.textContent = 'Subscribe';
+                  }
+                }, { onlyOnce: true });
+              }
+              // Update like count and status
+              const likesRef = ref(db, `shorts/${videoId}/likes`);
+              onValue(likesRef, (snapshot) => {
+                const likes = snapshot.val() || {};
+                likeCountEl.textContent = formatNumber(Object.keys(likes).length);
+                if (currentUser) {
+                  const userLikeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
+                  onValue(userLikeRef, (userSnapshot) => {
+                    if (userSnapshot.exists()) {
+                      likeBtn.classList.add('liked');
+                      likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+                    } else {
+                      likeBtn.classList.remove('liked');
+                      likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+                    }
+                  }, { onlyOnce: true });
+                }
+              }, { onlyOnce: true });
               resolve();
             }, { onlyOnce: true });
           });
+          // Update view count
           const viewsRef = ref(db, `shorts/${videoId}/views/${currentUser.uid}`);
           await set(viewsRef, true);
           hideSpinner();
@@ -636,11 +740,14 @@
 
     document.getElementById('subscribe-btn').addEventListener('click', () => {
       const channelId = document.getElementById('subscribe-btn').getAttribute('data-channel-id');
-      subscribeToChannel(channelId);
+      const subscribeBtn = document.getElementById('subscribe-btn');
+      subscribeToChannel(channelId, subscribeBtn);
     });
 
     document.getElementById('like-btn').addEventListener('click', () => {
-      likeVideo(videoId);
+      const likeBtn = document.getElementById('like-btn');
+      const likeCountEl = document.getElementById('like-count');
+      likeVideo(videoId, likeBtn, likeCountEl);
     });
 
     document.getElementById('share-btn').addEventListener('click', () => {
