@@ -53,11 +53,12 @@
       align-items: center;
       background: var(--gradient);
       color: #ffffff;
-      border-radius: 8px;
-      padding: 8px;
+      border-radius: 9999px; /* Pill shape */
+      padding: 8px 12px;
       margin: 4px;
       transition: transform 0.2s ease;
       width: calc(100% - 8px);
+      justify-content: flex-start;
     }
     .sidebar button:hover {
       transform: scale(1.05);
@@ -110,13 +111,26 @@
     .header-controls input {
       padding: 0.5rem;
       border: 1px solid var(--border);
-      border-radius: 0.5rem;
+      border-radius: 9999px; /* Pill shape */
       background: #f1f1f1;
       font-size: 0.875rem;
     }
     .header-controls input:focus {
       border-color: var(--accent);
       outline: none;
+    }
+    .manage-subs-btn {
+      background: var(--gradient);
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 9999px; /* Pill shape */
+      font-weight: 500;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+    .manage-subs-btn:hover {
+      transform: scale(1.05);
     }
     .bottom-nav {
       position: fixed;
@@ -144,10 +158,14 @@
       font-size: 10px;
       font-weight: 500;
       transition: transform 0.2s ease, color 0.2s ease;
+      border-radius: 9999px; /* Pill shape for nav buttons */
+      padding: 0.25rem;
+      margin: 0 0.25rem;
     }
     .bottom-nav button.active, .bottom-nav button:hover {
       color: var(--accent);
       transform: scale(1.1);
+      background: rgba(98, 0, 234, 0.1); /* Subtle bg on active */
     }
     .bottom-nav button .material-icons {
       font-size: 24px;
@@ -192,13 +210,46 @@
     .bottom-sheet button[type="submit"], .bottom-sheet button#select-video {
       background: var(--gradient);
       color: #ffffff;
-      border-radius: 8px;
+      border-radius: 9999px; /* Pill shape */
       padding: 8px 16px;
       font-weight: 500;
       text-align: center;
     }
     .bottom-sheet button#select-video:hover, .bottom-sheet button[type="submit"]:hover {
       transform: scale(1.05);
+    }
+    .channel-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .channel-info {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex: 1;
+    }
+    .channel-unsub {
+      background: #ef4444;
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 9999px; /* Pill shape */
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: opacity 0.2s ease;
+    }
+    .channel-unsub:hover {
+      opacity: 0.8;
+    }
+    .verified-badge {
+      color: #000000;
+      font-size: 16px;
+      margin-left: 4px;
+      vertical-align: middle;
     }
     #video-file {
       display: none;
@@ -268,12 +319,6 @@
       align-items: center;
       justify-content: center;
     }
-    .verified-badge {
-      color: #000000;
-      font-size: 16px;
-      margin-left: 4px;
-      vertical-align: middle;
-    }
     @media (min-width: 768px) {
       .sidebar {
         display: block;
@@ -302,6 +347,10 @@
       .header-controls input,
       .header-controls select {
         width: 100%; /* Full width on mobile */
+      }
+      .manage-subs-btn {
+        width: 100%;
+        margin-top: 0.5rem;
       }
     }
   </style>
@@ -344,6 +393,10 @@
         <option value="recent">Most Recent</option>
         <option value="views">Most Viewed</option>
       </select>
+      <button class="manage-subs-btn" id="manage-subs-btn">
+        <span class="material-icons">manage_accounts</span>
+        Manage
+      </button>
     </div>
     <h1 class="text-2xl font-bold mb-4 px-4">Subscriptions</h1>
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" id="video-grid">
@@ -399,6 +452,17 @@
     </form>
   </div>
 
+  <!-- New: Channel Management Bottom Sheet -->
+  <div class="bottom-sheet" id="manage-subs-sheet">
+    <div class="bottom-sheet-header">
+      <h2 class="text-lg font-medium">Manage Subscriptions</h2>
+      <button id="close-manage-sheet" class="text-black material-icons">close</button>
+    </div>
+    <div id="channel-list" class="p-4">
+      <p class="text-center text-gray-600">Loading subscriptions...</p>
+    </div>
+  </div>
+
   <div id="spinner-overlay" class="spinner-overlay">
     <div class="spinner"></div>
   </div>
@@ -407,7 +471,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, push, set, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -630,6 +694,74 @@
       }
     }
 
+    // New: Load and display subscribed channels in management sheet
+    async function loadManageSubscriptions() {
+      const channelList = document.getElementById('channel-list');
+      if (!channelList || !currentUser) return;
+      showSpinner();
+      try {
+        const subsRef = ref(db, `users/${currentUser.uid}/subscriptions`);
+        onValue(subsRef, async (subsSnapshot) => {
+          if (!subsSnapshot.exists()) {
+            channelList.innerHTML = '<p class="text-center text-gray-600">No subscriptions yet.</p>';
+            hideSpinner();
+            return;
+          }
+          const subscribedUserIds = Object.keys(subsSnapshot.val());
+          channelList.innerHTML = '';
+          for (const userId of subscribedUserIds) {
+            const userRef = ref(db, `users/${userId}`);
+            await new Promise((resolve) => {
+              onValue(userRef, (userSnapshot) => {
+                const userData = userSnapshot.val();
+                const subscriberCount = Object.keys(userData?.subscribers || {}).length;
+                const isVerified = subscriberCount >= 500;
+                const channelItem = document.createElement('div');
+                channelItem.className = 'channel-item';
+                channelItem.innerHTML = `
+                  <div class="channel-info">
+                    ${userData?.photoURL
+                      ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'Channel'}" class="h-10 w-10 rounded-full">`
+                      : `<div class="h-10 w-10 rounded-full avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'C'}</div>`}
+                    <div>
+                      <p class="font-medium">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified">verified</span>' : ''}</p>
+                      <p class="text-sm text-[var(--text-secondary)]">${formatNumber(subscriberCount)} subscribers</p>
+                    </div>
+                  </div>
+                  <button class="channel-unsub" onclick="unsubscribeFromChannel('${userId}')">Unsubscribe</button>
+                `;
+                channelList.appendChild(channelItem);
+                resolve();
+              }, { onlyOnce: true });
+            });
+          }
+          hideSpinner();
+        });
+      } catch (error) {
+        console.error('Error loading manage subscriptions:', error);
+        channelList.innerHTML = '<p class="text-center text-red-500">Failed to load subscriptions.</p>';
+        hideSpinner();
+      }
+    }
+
+    // New: Unsubscribe function
+    window.unsubscribeFromChannel = async (channelId) => {
+      if (!currentUser) return;
+      try {
+        const unsubRef = ref(db, `users/${currentUser.uid}/subscriptions/${channelId}`);
+        await remove(unsubRef);
+        // Also remove from channel's subscribers if needed (optional)
+        const channelSubRef = ref(db, `users/${channelId}/subscribers/${currentUser.uid}`);
+        await remove(channelSubRef);
+        showAlert('Unsubscribed successfully!');
+        // Refresh the list
+        loadManageSubscriptions();
+      } catch (error) {
+        console.error('Error unsubscribing:', error);
+        showAlert('Failed to unsubscribe. Please try again.');
+      }
+    };
+
     function setupIntersectionObserver() {
       const videos = document.querySelectorAll('.video-card video');
       const observer = new IntersectionObserver(
@@ -741,6 +873,8 @@
       const uploadForm = document.getElementById('upload-form');
       const subSearchInput = document.getElementById('sub-search-input');
       const sortSelect = document.getElementById('sort-select');
+      const manageSubsBtn = document.getElementById('manage-subs-btn');
+      const closeManageSheet = document.getElementById('close-manage-sheet');
 
       if (uploadBtn) {
         uploadBtn.addEventListener('click', () => {
@@ -800,10 +934,33 @@
         });
       }
 
+      // New: Manage Subscriptions Sheet
+      if (manageSubsBtn) {
+        manageSubsBtn.addEventListener('click', () => {
+          const manageSheet = document.getElementById('manage-subs-sheet');
+          if (manageSheet) {
+            manageSheet.classList.toggle('active');
+            if (manageSheet.classList.contains('active')) {
+              loadManageSubscriptions();
+            }
+          }
+        });
+      }
+
+      if (closeManageSheet) {
+        closeManageSheet.addEventListener('click', () => {
+          const manageSheet = document.getElementById('manage-subs-sheet');
+          if (manageSheet) manageSheet.classList.remove('active');
+        });
+      }
+
+      // Close sheet on outside click
       document.addEventListener('click', (e) => {
         const uploadSheet = document.getElementById('upload-sheet');
+        const manageSheet = document.getElementById('manage-subs-sheet');
         const uploadBtn = document.getElementById('upload-btn');
         const uploadBtnMobile = document.getElementById('upload-btn-mobile');
+        const manageSubsBtn = document.getElementById('manage-subs-btn');
         if (uploadSheet && uploadBtn && uploadBtnMobile &&
             uploadSheet.classList.contains('active') &&
             !uploadSheet.contains(e.target) &&
@@ -816,6 +973,12 @@
             uploadForm.reset();
             selectedFile.textContent = '';
           }
+        }
+        if (manageSheet && manageSubsBtn &&
+            manageSheet.classList.contains('active') &&
+            !manageSheet.contains(e.target) &&
+            !manageSubsBtn.contains(e.target)) {
+          manageSheet.classList.remove('active');
         }
         if (e.target.classList.contains('save-btn')) {
           const videoId = e.target.getAttribute('data-video-id');
