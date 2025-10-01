@@ -418,10 +418,11 @@
     <div class="header-controls">
 </div>
     <div class="status-bar" id="status-bar">
-      <div class="status-item" id="my-status" onclick="openStatusUploadModal()">
+      <div class="status-item" id="my-status">
         <div class="status-avatar">+</div>
         <p class="status-label">My Status</p>
       </div>
+      <div id="subscribed-statuses-container"></div>
     </div>
     <h1 class="text-2xl font-bold mb-4 px-4">Subscriptions</h1>
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" id="video-grid">
@@ -636,6 +637,82 @@
     // Load Status Bar
     async function loadStatusBar() {
       if (!currentUser) return;
+
+      // Update my status item
+      const myStatusItem = document.getElementById('my-status');
+      if (!myStatusItem) return;
+      const avatarDiv = myStatusItem.querySelector('.status-avatar');
+      const myStatusesRef = ref(db, `users/${currentUser.uid}/statuses`);
+      onValue(myStatusesRef, (snapshot) => {
+        const statuses = snapshot.val() || {};
+        const now = new Date().getTime();
+        const recentStatuses = Object.entries(statuses)
+          .filter(([id, status]) => now - new Date(status.timestamp).getTime() < 24 * 60 * 60 * 1000)
+          .sort((a, b) => new Date(b[1].timestamp) - new Date(a[1].timestamp));
+        if (recentStatuses.length > 0) {
+          const latestStatus = recentStatuses[0][1];
+          avatarDiv.innerHTML = `<img src="${latestStatus.imageURL}" alt="My Status" class="w-full h-full rounded-full object-cover">`;
+          myStatusItem.onclick = () => openStatusView(currentUser.uid, currentUser.displayName || 'Me');
+        } else {
+          avatarDiv.innerHTML = '+';
+          myStatusItem.onclick = openStatusUploadModal;
+        }
+      }, { onlyOnce: true });
+
+      // Load subscribed statuses
+      const container = document.getElementById('subscribed-statuses-container');
+      if (!container) return;
+      const subsRef = ref(db, `users/${currentUser.uid}/subscriptions`);
+      onValue(subsRef, async (subsSnapshot) => {
+        container.innerHTML = '';
+        if (!subsSnapshot.exists()) return;
+        const subscribedUserIds = Object.keys(subsSnapshot.val());
+        for (const userId of subscribedUserIds) {
+          const userRef = ref(db, `users/${userId}`);
+          await new Promise((resolve) => {
+            onValue(userRef, async (userSnapshot) => {
+              const userData = userSnapshot.val();
+              if (!userData) {
+                resolve();
+                return;
+              }
+              let statusImage = null;
+              // Fetch recent status
+              const statusesRef = ref(db, `users/${userId}/statuses`);
+              await new Promise((statusResolve) => {
+                onValue(statusesRef, (statusSnapshot) => {
+                  const statuses = statusSnapshot.val() || {};
+                  const now = new Date().getTime();
+                  const recentStatuses = Object.entries(statuses)
+                    .filter(([id, status]) => now - new Date(status.timestamp).getTime() < 24 * 60 * 60 * 1000)
+                    .sort((a, b) => new Date(b[1].timestamp) - new Date(a[1].timestamp));
+                  if (recentStatuses.length > 0) {
+                    statusImage = recentStatuses[0][1].imageURL;
+                  }
+                  statusResolve();
+                }, { onlyOnce: true });
+              });
+              const item = document.createElement('div');
+              item.className = 'status-item';
+              item.onclick = () => openStatusView(userId, userData.displayName || 'Unknown User');
+              let avatarHtml;
+              if (statusImage) {
+                avatarHtml = `<img src="${statusImage}" alt="Status" class="w-full h-full rounded-full object-cover">`;
+              } else if (userData.photoURL) {
+                avatarHtml = `<img src="${userData.photoURL}" alt="${userData.displayName}" class="w-full h-full rounded-full object-cover">`;
+              } else {
+                avatarHtml = `<div class="w-full h-full flex items-center justify-center bg-[var(--gradient)] text-white text-sm font-bold">${userData.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`;
+              }
+              item.innerHTML = `
+                <div class="status-avatar relative">${avatarHtml}</div>
+                <p class="status-label">${userData.displayName || 'Unknown User'}</p>
+              `;
+              container.appendChild(item);
+              resolve();
+            }, { onlyOnce: true });
+          });
+        }
+      }, { onlyOnce: true });
     }
 
     // Open Status View
@@ -716,7 +793,7 @@
 
             videoGrid.innerHTML = '';
             if (videoArray.length === 0) {
-              videoGrid.innerHTML = '<p class="text-center text-gray-600 col-span-full">No videos match your search.</p>';
+              videoGrid.innerHTML = '<p class="text-center text-gray-600 col-span-full">No videos from subscribed channels.</p>';
               hideSpinner();
               return;
             }
