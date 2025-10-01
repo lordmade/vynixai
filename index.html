@@ -534,7 +534,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, push, set, get, onDisconnect } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -645,7 +645,9 @@
           offer: {
             type: offer.type,
             sdp: offer.sdp
-          }
+          },
+          viewers: {},
+          comments: {}
         });
 
         // Note: For full 1:many WebRTC, implement multiple peer connections for viewers' answers.
@@ -658,7 +660,8 @@
           btn.classList.add('end-live');
         }
         showAlert('Live stream started!');
-        // Optionally, open broadcaster view: window.open('liveplay.html?broadcaster=true&uid=' + currentUser.uid);
+        // Redirect to broadcaster view
+        window.location.href = `liveplay.html?liveId=${currentUser.uid}&broadcaster=true`;
       } catch (error) {
         console.error('Error starting live:', error);
         showAlert('Failed to start live: ' + error.message);
@@ -792,83 +795,90 @@
             .filter(video => video.mediaType === 'video')
             .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-          // Load active lives
-          const livesSnapshot = await get(ref(db, 'lives'));
-          let liveArray = [];
-          if (livesSnapshot.exists()) {
-            livesSnapshot.forEach((child) => {
-              const data = child.val();
-              if (data.active) {
-                liveArray.push({ liveId: child.key, mediaType: 'live', caption: data.caption || 'Live Stream', ...data });
-              }
-            });
-          }
-          liveArray.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-          let contentArray = [...videoArray, ...liveArray];
-
-          if (searchQuery) {
-            contentArray = contentArray.filter(item => {
-              if (item.mediaType === 'video') {
-                return item.caption?.toLowerCase().includes(searchQuery.toLowerCase());
-              } else {
-                return item.caption?.toLowerCase().includes(searchQuery.toLowerCase());
-              }
-            });
-            // For full search with username, similar to videos
-          }
-
-          if (contentArray.length > 1) {
-            contentArray = shuffleArray(contentArray);
-          }
-
-          videoGrid.innerHTML = ''; // Clear skeletons
-          let videoCount = 0;
-          for (const item of contentArray) {
-            const userId = item.userId || item.liveId; // For live, userId is liveId
-            const userRef = ref(db, `users/${userId}`);
-            await new Promise((resolve) => {
-              onValue(userRef, (userSnapshot) => {
-                const userData = userSnapshot.val();
-                const subscriberCount = Object.keys(userData?.subscribers || {}).length;
-                const isVerified = subscriberCount >= 500;
-                const card = document.createElement('div');
-                card.className = 'video-card cursor-pointer';
-                card.addEventListener('click', () => {
-                  if (item.mediaType === 'live') {
-                    window.location.href = `liveplay.html?liveId=${item.liveId}`;
-                  } else {
-                    window.location.href = `videoplay.html?videoId=${item.videoId}`;
-                  }
-                });
-                const thumbnailHtml = item.mediaType === 'live' 
-                  ? '<div class="thumbnail live-placeholder">LIVE</div>'
-                  : `<video class="thumbnail" muted loop playsinline title="${item.caption || 'Untitled Video'}" src="${item.mediaURL}?w=320&h=180"></video>`;
-                card.innerHTML = `
-                  ${thumbnailHtml}
-                  <div class="flex mt-2">
-                    ${userData?.photoURL
-                      ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
-                      : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
-                    <div class="flex-1">
-                      <h3 class="text-black text-sm font-medium line-clamp-2">${item.caption || 'Untitled Video'}</h3>
-                      <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified account">verified</span>' : ''} ${item.mediaType === 'live' ? '<span class="live-badge">LIVE</span>' : ''}</p>
-                      <p class="text-gray-600 text-xs">${formatNumber(Object.keys(item.views || {}).length)} views • ${formatTimestamp(item.timestamp)}</p>
-                    </div>
-                    ${item.mediaType === 'video' ? `<button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${item.videoId}" title="Save to Library" aria-label="Save to library">bookmark_add</button>` : ''}
-                  </div>
-                `;
-                videoGrid.appendChild(card);
-                videoCount++;
-                if (videoCount % 3 === 0) {
-                  videoGrid.appendChild(createAdCard());
+          // Load active lives with real-time updates
+          const livesRef = ref(db, 'lives');
+          onValue(livesRef, async (livesSnapshot) => {
+            let liveArray = [];
+            if (livesSnapshot.exists()) {
+              livesSnapshot.forEach((child) => {
+                const data = child.val();
+                if (data.active) {
+                  liveArray.push({ liveId: child.key, mediaType: 'live', caption: data.caption || 'Live Stream', ...data });
                 }
-                resolve();
-              }, { onlyOnce: true });
-            });
-          }
-          setupIntersectionObserver();
-          hideSpinner();
+              });
+            }
+            liveArray.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            let contentArray = [...videoArray, ...liveArray];
+
+            if (searchQuery) {
+              contentArray = contentArray.filter(item => {
+                if (item.mediaType === 'video') {
+                  return item.caption?.toLowerCase().includes(searchQuery.toLowerCase());
+                } else {
+                  return item.caption?.toLowerCase().includes(searchQuery.toLowerCase());
+                }
+              });
+              // For full search with username, similar to videos
+            }
+
+            if (contentArray.length > 1) {
+              contentArray = shuffleArray(contentArray);
+            }
+
+            videoGrid.innerHTML = ''; // Clear skeletons
+            let videoCount = 0;
+            for (const item of contentArray) {
+              const userId = item.mediaType === 'live' ? item.liveId : item.userId;
+              const userRef = ref(db, `users/${userId}`);
+              await new Promise((resolve) => {
+                onValue(userRef, (userSnapshot) => {
+                  const userData = userSnapshot.val();
+                  const subscriberCount = Object.keys(userData?.subscribers || {}).length;
+                  const isVerified = subscriberCount >= 500;
+                  const card = document.createElement('div');
+                  card.className = 'video-card cursor-pointer';
+                  card.addEventListener('click', () => {
+                    if (item.mediaType === 'live') {
+                      const url = currentUser && currentUser.uid === item.liveId 
+                        ? `liveplay.html?liveId=${item.liveId}&broadcaster=true`
+                        : `liveplay.html?liveId=${item.liveId}`;
+                      window.location.href = url;
+                    } else {
+                      window.location.href = `videoplay.html?videoId=${item.videoId}`;
+                    }
+                  });
+                  const thumbnailHtml = item.mediaType === 'live' 
+                    ? '<div class="thumbnail live-placeholder">LIVE</div>'
+                    : `<video class="thumbnail" muted loop playsinline title="${item.caption || 'Untitled Video'}" src="${item.mediaURL}?w=320&h=180"></video>`;
+                  const viewerCount = item.mediaType === 'live' ? formatNumber(Object.keys(item.viewers || {}).length) : formatNumber(Object.keys(item.views || {}).length);
+                  const viewerText = item.mediaType === 'live' ? 'viewers' : 'views';
+                  card.innerHTML = `
+                    ${thumbnailHtml}
+                    <div class="flex mt-2">
+                      ${userData?.photoURL
+                        ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
+                        : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
+                      <div class="flex-1">
+                        <h3 class="text-black text-sm font-medium line-clamp-2">${item.caption || 'Untitled Video'}</h3>
+                        <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified account">verified</span>' : ''} ${item.mediaType === 'live' ? '<span class="live-badge">LIVE</span>' : ''}</p>
+                        <p class="text-gray-600 text-xs">${viewerCount} ${viewerText} • ${formatTimestamp(item.timestamp)}</p>
+                      </div>
+                      ${item.mediaType === 'video' ? `<button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${item.videoId}" title="Save to Library" aria-label="Save to library">bookmark_add</button>` : ''}
+                    </div>
+                  `;
+                  videoGrid.appendChild(card);
+                  videoCount++;
+                  if (videoCount % 3 === 0) {
+                    videoGrid.appendChild(createAdCard());
+                  }
+                  resolve();
+                }, { onlyOnce: true });
+              });
+            }
+            setupIntersectionObserver();
+            hideSpinner();
+          });
         }, (error) => {
           console.error('Error loading videos:', error.message, error.stack);
           showAlert('Failed to load videos. Please try again.');
