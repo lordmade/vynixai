@@ -132,6 +132,56 @@
     .manage-subs-btn:hover {
       transform: scale(1.05);
     }
+    .status-bar {
+      display: flex;
+      overflow-x: auto;
+      padding: 8px 16px;
+      gap: 16px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .status-bar::-webkit-scrollbar {
+      display: none;
+    }
+    .status-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 72px;
+      cursor: pointer;
+      flex-shrink: 0;
+      scroll-snap-align: start;
+    }
+    .status-avatar {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 3px solid #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      background: var(--gradient);
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .status-avatar img {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+    .status-label {
+      font-size: 12px;
+      text-align: center;
+      margin-top: 4px;
+      color: var(--text-secondary);
+      max-width: 72px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .bottom-nav {
       position: fixed;
       bottom: 0;
@@ -207,7 +257,7 @@
       padding: 8px 16px;
       border-bottom: 1px solid var(--border);
     }
-    .bottom-sheet button[type="submit"], .bottom-sheet button#select-video {
+    .bottom-sheet button[type="submit"], .bottom-sheet button#select-video, .bottom-sheet button#select-status-image {
       background: var(--gradient);
       color: #ffffff;
       border-radius: 9999px; /* Pill shape */
@@ -215,7 +265,7 @@
       font-weight: 500;
       text-align: center;
     }
-    .bottom-sheet button#select-video:hover, .bottom-sheet button[type="submit"]:hover {
+    .bottom-sheet button#select-video:hover, .bottom-sheet button#select-status-image:hover, .bottom-sheet button[type="submit"]:hover {
       transform: scale(1.05);
     }
     .channel-item {
@@ -251,7 +301,7 @@
       margin-left: 4px;
       vertical-align: middle;
     }
-    #video-file {
+    #video-file, #status-image-file {
       display: none;
     }
     .spinner-overlay {
@@ -318,6 +368,17 @@
       display: flex;
       align-items: center;
       justify-content: center;
+    }
+    .status-image-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 8px;
+    }
+    .status-image {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      border-radius: 8px;
     }
     @media (min-width: 768px) {
       .sidebar {
@@ -400,6 +461,13 @@
   </div>
   
 </div>
+    <div class="status-bar" id="status-bar">
+      <div class="status-item" id="my-status" onclick="openStatusUploadModal()">
+        <div class="status-avatar">+</div>
+        <p class="status-label">My Status</p>
+      </div>
+      <div id="subscribed-statuses-container"></div>
+    </div>
     <h1 class="text-2xl font-bold mb-4 px-4">Subscriptions</h1>
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" id="video-grid">
       <p class="text-center text-gray-600 col-span-full">Loading videos...</p>
@@ -454,6 +522,34 @@
     </form>
   </div>
 
+  <!-- Status Upload Modal -->
+  <div class="bottom-sheet" id="status-upload-sheet">
+    <div class="bottom-sheet-header">
+      <h2 class="text-lg font-medium">Set Status</h2>
+      <button id="close-status-upload" class="text-black material-icons">close</button>
+    </div>
+    <form id="status-upload-form" class="flex flex-col gap-4 p-4">
+      <div>
+        <label for="status-image-file" class="block text-sm font-medium mb-2">Status Image</label>
+        <button type="button" id="select-status-image">Choose Image</button>
+        <input type="file" id="status-image-file" accept="image/*">
+        <p id="selected-status-file" class="text-sm text-gray-600 mt-2"></p>
+      </div>
+      <button type="submit">Set Status</button>
+    </form>
+  </div>
+
+  <!-- View Status Modal -->
+  <div class="bottom-sheet" id="view-status-sheet">
+    <div class="bottom-sheet-header">
+      <h2 class="text-lg font-medium" id="view-status-title">Statuses</h2>
+      <button id="close-view-status" class="text-black material-icons">close</button>
+    </div>
+    <div id="status-images" class="status-image-grid p-4">
+      <p class="text-center text-gray-600 col-span-full">Loading...</p>
+    </div>
+  </div>
+
   <!-- New: Channel Management Bottom Sheet -->
   <div class="bottom-sheet" id="manage-subs-sheet">
     <div class="bottom-sheet-header">
@@ -488,7 +584,8 @@
 
     const CLOUDINARY_UPLOAD_PRESET = 'banter_box';
     const CLOUDINARY_CLOUD_NAME = 'dqkujefxj';
-    const CLOUDINARY_API_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
+    const CLOUDINARY_VIDEO_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
+    const CLOUDINARY_IMAGE_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
 
     let app, auth, db, currentUser;
 
@@ -539,6 +636,7 @@
         onAuthStateChanged(auth, (user) => {
           if (user) {
             currentUser = user;
+            loadStatusBar();
             loadSubscribedVideos();
             setupNotifications();
           } else {
@@ -590,6 +688,87 @@
         console.error('Error setting up notifications:', error.message, error.stack);
       });
     }
+
+    // Load Status Bar
+    async function loadStatusBar() {
+      if (!currentUser) return;
+      const container = document.getElementById('subscribed-statuses-container');
+      if (!container) return;
+      const subsRef = ref(db, `users/${currentUser.uid}/subscriptions`);
+      onValue(subsRef, async (subsSnapshot) => {
+        container.innerHTML = '';
+        if (!subsSnapshot.exists()) return;
+        const subscribedUserIds = Object.keys(subsSnapshot.val());
+        for (const userId of subscribedUserIds) {
+          const userRef = ref(db, `users/${userId}`);
+          await new Promise((resolve) => {
+            onValue(userRef, (userSnapshot) => {
+              const userData = userSnapshot.val();
+              if (!userData) {
+                resolve();
+                return;
+              }
+              const item = document.createElement('div');
+              item.className = 'status-item';
+              item.onclick = () => openStatusView(userId, userData.displayName || 'Unknown User');
+              const avatarHtml = userData.photoURL 
+                ? `<img src="${userData.photoURL}" alt="${userData.displayName}" class="w-full h-full rounded-full object-cover">`
+                : `<div class="w-full h-full flex items-center justify-center bg-[var(--gradient)] text-white text-sm font-bold">${userData.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`;
+              item.innerHTML = `
+                <div class="status-avatar relative">${avatarHtml}</div>
+                <p class="status-label">${userData.displayName || 'Unknown User'}</p>
+              `;
+              container.appendChild(item);
+              resolve();
+            }, { onlyOnce: true });
+          });
+        }
+      }, (error) => {
+        console.error('Error loading status bar:', error);
+      });
+    }
+
+    // Open Status View
+    window.openStatusView = async (userId, displayName) => {
+      const sheet = document.getElementById('view-status-sheet');
+      const title = document.getElementById('view-status-title');
+      const imagesContainer = document.getElementById('status-images');
+      if (!sheet || !title || !imagesContainer) return;
+      title.textContent = `${displayName}'s Statuses`;
+      imagesContainer.innerHTML = '<p class="text-center text-gray-600">Loading...</p>';
+      sheet.classList.add('active');
+      try {
+        const statusesRef = ref(db, `users/${userId}/statuses`);
+        onValue(statusesRef, (snapshot) => {
+          const statuses = snapshot.val() || {};
+          const now = Date.now();
+          const recentStatuses = Object.entries(statuses)
+            .filter(([id, status]) => now - new Date(status.timestamp).getTime() < 24 * 60 * 60 * 1000)
+            .map(([id, status]) => ({ id, ...status }));
+          imagesContainer.innerHTML = '';
+          if (recentStatuses.length === 0) {
+            imagesContainer.innerHTML = '<p class="text-center text-gray-600">No recent statuses</p>';
+            return;
+          }
+          recentStatuses.forEach(status => {
+            const img = document.createElement('img');
+            img.src = status.imageURL;
+            img.className = 'status-image';
+            img.alt = 'Status';
+            imagesContainer.appendChild(img);
+          });
+        }, { onlyOnce: true });
+      } catch (error) {
+        console.error('Error loading statuses:', error);
+        imagesContainer.innerHTML = '<p class="text-center text-red-500">Failed to load statuses</p>';
+      }
+    };
+
+    // Open Status Upload Modal
+    window.openStatusUploadModal = () => {
+      const sheet = document.getElementById('status-upload-sheet');
+      if (sheet) sheet.classList.add('active');
+    };
 
     // Updated: Support for sorting and searching
     let currentSort = 'recent'; // Default sort
@@ -706,7 +885,7 @@
         // Fetch current user's subscriber count
         const mySubRef = ref(db, `users/${currentUser.uid}/subscribers`);
         onValue(mySubRef, (mySnapshot) => {
-          const mySubCount = Object.keys(mySnapshot.val() || {}).length;
+          const mySubCount = Object.keys(mySnapshot.val() || {}).length + 1; // Including self
           manageHeader.textContent = `Manage Subscriptions • ${formatNumber(mySubCount)} Subscribers`;
         }, { onlyOnce: true });
 
@@ -819,7 +998,7 @@
         formData.append('folder', `videos/${currentUser.uid}`);
         formData.append('resource_type', 'video');
 
-        const response = await fetch(CLOUDINARY_API_URL, {
+        const response = await fetch(CLOUDINARY_VIDEO_URL, {
           method: 'POST',
           body: formData
         });
@@ -874,6 +1053,67 @@
       }
     }
 
+    // Handle Status Upload
+    async function handleStatusUpload(e) {
+      e.preventDefault();
+      if (!currentUser) {
+        showAlert('Please log in to set status.');
+        return;
+      }
+      const imageFileInput = document.getElementById('status-image-file');
+      if (!imageFileInput) {
+        console.error('Status upload form elements not found');
+        showAlert('Status upload form error. Please try again.');
+        return;
+      }
+      const imageFile = imageFileInput.files[0];
+      if (!imageFile) {
+        showAlert('Please select an image file.');
+        return;
+      }
+      showSpinner();
+      try {
+        const formData = new FormData();
+        formData.append('file', imageFile);
+        formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+        formData.append('folder', `statuses/${currentUser.uid}`);
+        formData.append('resource_type', 'image');
+
+        const response = await fetch(CLOUDINARY_IMAGE_URL, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error?.message || 'Cloudinary upload failed');
+        }
+        const imageURL = data.secure_url;
+
+        const statusesRef = ref(db, `users/${currentUser.uid}/statuses`);
+        const newStatusRef = push(statusesRef);
+        await set(newStatusRef, {
+          imageURL,
+          timestamp: new Date().toISOString()
+        });
+
+        const statusUploadSheet = document.getElementById('status-upload-sheet');
+        const statusUploadForm = document.getElementById('status-upload-form');
+        const selectedStatusFile = document.getElementById('selected-status-file');
+        if (statusUploadSheet && statusUploadForm && selectedStatusFile) {
+          statusUploadSheet.classList.remove('active');
+          statusUploadForm.reset();
+          selectedStatusFile.textContent = '';
+        }
+        showAlert('Status set successfully!');
+        loadStatusBar(); // Refresh to update my status if needed
+      } catch (error) {
+        console.error('Error uploading status:', error.message, error.stack);
+        showAlert('Failed to set status. Please try again.');
+      } finally {
+        hideSpinner();
+      }
+    }
+
     function setupEventListeners() {
       const uploadBtn = document.getElementById('upload-btn');
       const uploadBtnMobile = document.getElementById('upload-btn-mobile');
@@ -885,6 +1125,16 @@
       const sortSelect = document.getElementById('sort-select');
       const manageSubsBtn = document.getElementById('manage-subs-btn');
       const closeManageSheet = document.getElementById('close-manage-sheet');
+
+      // Status Upload Listeners
+      const closeStatusUpload = document.getElementById('close-status-upload');
+      const selectStatusImage = document.getElementById('select-status-image');
+      const statusImageFile = document.getElementById('status-image-file');
+      const statusUploadForm = document.getElementById('status-upload-form');
+      const selectedStatusFile = document.getElementById('selected-status-file');
+
+      // View Status Listeners
+      const closeViewStatus = document.getElementById('close-view-status');
 
       if (uploadBtn) {
         uploadBtn.addEventListener('click', () => {
@@ -931,6 +1181,44 @@
         uploadForm.addEventListener('submit', handleVideoUpload);
       }
 
+      // Status Upload Events
+      if (selectStatusImage && statusImageFile) {
+        selectStatusImage.addEventListener('click', () => {
+          statusImageFile.click();
+        });
+      }
+
+      if (statusImageFile) {
+        statusImageFile.addEventListener('change', () => {
+          const file = statusImageFile.files[0];
+          if (selectedStatusFile) selectedStatusFile.textContent = file ? file.name : '';
+        });
+      }
+
+      if (statusUploadForm) {
+        statusUploadForm.addEventListener('submit', handleStatusUpload);
+      }
+
+      if (closeStatusUpload) {
+        closeStatusUpload.addEventListener('click', () => {
+          const sheet = document.getElementById('status-upload-sheet');
+          const form = document.getElementById('status-upload-form');
+          const fileEl = document.getElementById('selected-status-file');
+          if (sheet && form && fileEl) {
+            sheet.classList.remove('active');
+            form.reset();
+            fileEl.textContent = '';
+          }
+        });
+      }
+
+      if (closeViewStatus) {
+        closeViewStatus.addEventListener('click', () => {
+          const sheet = document.getElementById('view-status-sheet');
+          if (sheet) sheet.classList.remove('active');
+        });
+      }
+
       // New: Event listeners for search and sort
       if (subSearchInput) {
         subSearchInput.addEventListener('input', (e) => {
@@ -967,10 +1255,13 @@
       // Close sheet on outside click
       document.addEventListener('click', (e) => {
         const uploadSheet = document.getElementById('upload-sheet');
+        const statusUploadSheet = document.getElementById('status-upload-sheet');
+        const viewStatusSheet = document.getElementById('view-status-sheet');
         const manageSheet = document.getElementById('manage-subs-sheet');
         const uploadBtn = document.getElementById('upload-btn');
         const uploadBtnMobile = document.getElementById('upload-btn-mobile');
         const manageSubsBtn = document.getElementById('manage-subs-btn');
+        const myStatus = document.getElementById('my-status');
         if (uploadSheet && uploadBtn && uploadBtnMobile &&
             uploadSheet.classList.contains('active') &&
             !uploadSheet.contains(e.target) &&
@@ -983,6 +1274,23 @@
             uploadForm.reset();
             selectedFile.textContent = '';
           }
+        }
+        if (statusUploadSheet && myStatus &&
+            statusUploadSheet.classList.contains('active') &&
+            !statusUploadSheet.contains(e.target) &&
+            !myStatus.contains(e.target)) {
+          statusUploadSheet.classList.remove('active');
+          const statusForm = document.getElementById('status-upload-form');
+          const statusFile = document.getElementById('selected-status-file');
+          if (statusForm && statusFile) {
+            statusForm.reset();
+            statusFile.textContent = '';
+          }
+        }
+        if (viewStatusSheet &&
+            viewStatusSheet.classList.contains('active') &&
+            !viewStatusSheet.contains(e.target)) {
+          viewStatusSheet.classList.remove('active');
         }
         if (manageSheet && manageSubsBtn &&
             manageSheet.classList.contains('active') &&
