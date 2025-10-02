@@ -9,6 +9,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
   <!-- Add AdSense JavaScript Library -->
@@ -491,6 +492,7 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, onValue, push, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getAnalytics, logEvent, setUserId, setUserProperties } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -507,7 +509,7 @@
     const CLOUDINARY_CLOUD_NAME = 'dqkujefxj';
     const CLOUDINARY_API_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
 
-    let app, auth, db, currentUser;
+    let app, auth, db, analytics, currentUser, ads = [];
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -539,12 +541,19 @@
         app = initializeApp(firebaseConfig);
         auth = getAuth(app);
         db = getDatabase(app);
+        analytics = getAnalytics(app);
+        logEvent(analytics, 'app_open');
         onAuthStateChanged(auth, (user) => {
           if (user) {
             currentUser = user;
+            setUserId(analytics, user.uid);
+            setUserProperties(analytics, { user_type: 'authenticated' });
+            logEvent(analytics, 'login');
             loadVideos();
+            loadAds();
             setupNotifications();
           } else {
+            setUserProperties(analytics, { user_type: 'anonymous' });
             showAlert('Please log in to view videos.');
             window.location.href = 'signup.html';
           }
@@ -556,6 +565,19 @@
         console.error('Firebase initialization error:', error.message, error.stack);
         showAlert('Failed to initialize Firebase. Please check your connection.');
       }
+    }
+
+    function loadAds() {
+      const adsRef = ref(db, 'ads');
+      onValue(adsRef, (snapshot) => {
+        if (snapshot.exists()) {
+          ads = Object.entries(snapshot.val()).map(([adId, adData]) => ({ adId, ...adData })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        } else {
+          ads = [];
+        }
+      }, (error) => {
+        console.error('Error loading ads:', error);
+      });
     }
 
     function formatTimestamp(timestamp) {
@@ -580,6 +602,7 @@
       try {
         const libraryRef = ref(db, `users/${currentUser.uid}/library/${videoId}`);
         await set(libraryRef, true);
+        logEvent(analytics, 'save_video', { video_id: videoId });
         showAlert('Video saved to library!');
       } catch (error) {
         console.error('Error saving video to library:', error.message, error.stack);
@@ -595,6 +618,7 @@
       try {
         const videoRef = ref(db, `shorts/${videoId}`);
         await set(videoRef, null);
+        logEvent(analytics, 'delete_video', { video_id: videoId });
         showAlert('Video deleted successfully!');
       } catch (error) {
         console.error('Error deleting video:', error.message, error.stack);
@@ -658,35 +682,56 @@
     }
 
     function createAdCard() {
-      const adCard = document.createElement('div');
-      adCard.className = 'ad-card';
-      adCard.innerHTML = `
-        <div class="ad-badge">Sponsored</div>
-        <div class="ad-thumbnail">
-          <ins class="adsbygoogle"
-               style="display:block"
-               data-ad-client="pub-1322747625222761"
-               data-ad-slot="YOUR-AD-UNIT-ID"
-               data-ad-format="auto"
-               data-full-width-responsive="true"></ins>
-        </div>
-        <div class="flex mt-2">
-          <div class="h-9 w-9 rounded-full mr-3 avatar">A</div>
-          <div class="flex-1">
-            <h3 class="text-black text-sm font-medium line-clamp-2">Sponsored Ad</h3>
-            <p class="text-gray-600 text-xs mt-1">Ad Network</p>
-            <p class="text-gray-600 text-xs">Promoted Content</p>
+      if (ads.length > 0) {
+        const randomAd = ads[Math.floor(Math.random() * ads.length)];
+        const adCard = document.createElement('div');
+        adCard.className = 'ad-card';
+        adCard.innerHTML = `
+          <div class="ad-badge">Ad</div>
+          <div class="ad-thumbnail">
+            <img src="${randomAd.mediaURL}?w=320&h=180" alt="${randomAd.title || 'Ad'}" class="thumbnail">
           </div>
-        </div>
-      `;
-      setTimeout(() => {
-        try {
-          (adsbygoogle = window.adsbygoogle || []).push({});
-        } catch (e) {
-          console.error('AdSense push error:', e.message, e.stack);
-        }
-      }, 0);
-      return adCard;
+          <div class="flex mt-2">
+            <div class="h-9 w-9 rounded-full mr-3 avatar">${randomAd.displayName ? randomAd.displayName[0].toUpperCase() : 'A'}</div>
+            <div class="flex-1">
+              <h3 class="text-black text-sm font-medium line-clamp-2">${randomAd.title || 'Sponsored Ad'}</h3>
+              <p class="text-gray-600 text-xs mt-1">${randomAd.displayName || 'Advertiser'}</p>
+              <p class="text-gray-600 text-xs">${randomAd.description || 'Promoted Content'}</p>
+            </div>
+          </div>
+        `;
+        return adCard;
+      } else {
+        const adCard = document.createElement('div');
+        adCard.className = 'ad-card';
+        adCard.innerHTML = `
+          <div class="ad-badge">Sponsored</div>
+          <div class="ad-thumbnail">
+            <ins class="adsbygoogle"
+                 style="display:block"
+                 data-ad-client="pub-1322747625222761"
+                 data-ad-slot="YOUR-AD-UNIT-ID"
+                 data-ad-format="auto"
+                 data-full-width-responsive="true"></ins>
+          </div>
+          <div class="flex mt-2">
+            <div class="h-9 w-9 rounded-full mr-3 avatar">A</div>
+            <div class="flex-1">
+              <h3 class="text-black text-sm font-medium line-clamp-2">Sponsored Ad</h3>
+              <p class="text-gray-600 text-xs mt-1">Ad Network</p>
+              <p class="text-gray-600 text-xs">Promoted Content</p>
+            </div>
+          </div>
+        `;
+        setTimeout(() => {
+          try {
+            (adsbygoogle = window.adsbygoogle || []).push({});
+          } catch (e) {
+            console.error('AdSense push error:', e.message, e.stack);
+          }
+        }, 0);
+        return adCard;
+      }
     }
 
     async function loadVideos(searchQuery = '') {
@@ -711,6 +756,7 @@
             .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
           if (searchQuery) {
+            logEvent(analytics, 'search', { search_term: searchQuery });
             const filteredVideos = [];
             for (const video of videoArray) {
               const userRef = ref(db, `users/${video.userId}`);
@@ -745,10 +791,11 @@
                 card.className = 'video-card cursor-pointer';
                 card.style.position = 'relative';
                 card.addEventListener('click', () => {
+                  logEvent(analytics, 'video_click', { video_id: video.videoId });
                   window.location.href = `videoplay.html?videoId=${video.videoId}`;
                 });
                 card.innerHTML = `
-                  <video class="thumbnail" muted loop playsinline title="${video.caption || 'Untitled Video'}" src="${video.mediaURL}?w=320&h=180"></video>
+                  <video class="thumbnail" muted loop playsinline title="${video.caption || 'Untitled Video'}" data-video-id="${video.videoId}" src="${video.mediaURL}?w=320&h=180"></video>
                   <div class="flex mt-2">
                     ${userData?.photoURL
                       ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
@@ -804,10 +851,12 @@
         (entries) => {
           entries.forEach((entry) => {
             const video = entry.target;
+            const videoId = video.dataset.videoId;
             if (entry.isIntersecting) {
               video.play().catch((error) => {
                 console.error('Error playing video:', error.message, error.stack);
               });
+              logEvent(analytics, 'video_start', { video_id: videoId });
             } else {
               video.pause();
             }
@@ -866,6 +915,8 @@
           views: {}
         });
 
+        logEvent(analytics, 'video_upload', { video_title: caption || 'Untitled Video' });
+
         const subscribersRef = ref(db, `users/${currentUser.uid}/subscribers`);
         onValue(subscribersRef, async (snapshot) => {
           if (snapshot.exists()) {
@@ -917,7 +968,11 @@
       if (searchInput) {
         searchInput.addEventListener('input', (e) => {
           const searchQuery = e.target.value.trim();
-          loadVideos(searchQuery);
+          if (searchQuery) {
+            loadVideos(searchQuery);
+          } else {
+            loadVideos();
+          }
         });
       }
 
@@ -968,12 +1023,14 @@
 
       if (notificationBtn) {
         notificationBtn.addEventListener('click', () => {
+          logEvent(analytics, 'view_notifications');
           window.location.href = 'notifications.html';
         });
       }
 
       if (settingsBtn) {
         settingsBtn.addEventListener('click', () => {
+          logEvent(analytics, 'view_settings');
           window.location.href = 'settings.html';
         });
       }
@@ -1006,6 +1063,7 @@
       try {
         initializeFirebase();
         setupEventListeners();
+        logEvent(analytics, 'screen_view', { screen_name: 'home' });
       } catch (error) {
         console.error('DOMContentLoaded error:', error.message, error.stack);
         showAlert('Failed to initialize application. Please refresh the page.');
