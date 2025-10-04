@@ -244,10 +244,47 @@
       margin-bottom: 0.5rem;
       transition: transform 0.2s;
       cursor: pointer;
+      position: relative;
+      overflow: hidden;
     }
 
     .suggested-video-card:hover {
       transform: translateY(-2px);
+    }
+
+    .suggested-video-preview {
+      width: 16rem;
+      height: 9rem;
+      border-radius: 4px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .suggested-video-preview video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .suggested-video-info {
+      flex: 1;
+      padding: 0.5rem 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .suggested-video-info h3 {
+      font-size: 0.875rem;
+      font-weight: 500;
+      line-clamp: 2;
+      margin: 0 0 0.25rem 0;
+    }
+
+    .suggested-video-meta {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
     }
 
     .bottom-sheet {
@@ -391,10 +428,6 @@
       background-color: var(--subscribed-bg);
     }
 
-    .like-btn.liked .material-icons {
-      content: 'thumb_up';
-    }
-
     .theme-toggle {
       position: fixed;
       top: 0.5rem;
@@ -526,6 +559,10 @@
         width: 2.5rem;
         height: 2.5rem;
       }
+      .suggested-video-preview {
+        width: 12rem;
+        height: 6.75rem;
+      }
     }
 
     @media (max-width: 640px) {
@@ -566,6 +603,10 @@
       .play-pause-btn, .fullscreen-btn, .subtitle-btn {
         width: 2.5rem;
         height: 2.5rem;
+      }
+      .suggested-video-preview {
+        width: 10rem;
+        height: 5.625rem;
       }
     }
   </style>
@@ -679,6 +720,8 @@
 
     let app, auth, db, currentUser, videoId, videoDataGlobal;
 
+    const PREVIEW_DURATION = 5; // seconds
+
     const showSpinner = () => {
       document.getElementById('spinner-overlay').classList.add('active');
     };
@@ -774,6 +817,38 @@
       }
     }
 
+    function setupPreviewLoop(previewVideo) {
+      previewVideo.muted = true;
+      previewVideo.loop = false; // We'll handle looping manually
+      previewVideo.preload = 'auto';
+
+      previewVideo.addEventListener('loadedmetadata', () => {
+        previewVideo.currentTime = 0;
+        previewVideo.play().catch(e => console.warn('Preview play failed:', e));
+      });
+
+      previewVideo.addEventListener('timeupdate', () => {
+        if (previewVideo.currentTime >= PREVIEW_DURATION) {
+          previewVideo.currentTime = 0;
+          previewVideo.play().catch(e => console.warn('Preview replay failed:', e));
+        }
+      });
+
+      previewVideo.addEventListener('ended', () => {
+        previewVideo.currentTime = 0;
+        previewVideo.play().catch(e => console.warn('Preview ended, replay failed:', e));
+      });
+
+      // Pause when not visible or sheet opens
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          previewVideo.pause();
+        } else if (previewVideo.paused && !bottomSheet.classList.contains('collapsed')) {
+          previewVideo.play().catch(e => console.warn('Visibility play failed:', e));
+        }
+      });
+    }
+
     async function loadSuggestedVideos() {
       const videosRef = ref(db, 'shorts');
       const suggContainer = document.getElementById('suggestions-container');
@@ -794,7 +869,15 @@
                 const card = document.createElement('div');
                 card.className = 'suggested-video-card';
                 card.style.cursor = 'pointer';
-                card.onclick = () => window.location.href = `videoplay.html?videoId=${video.videoId}`;
+                card.onclick = (e) => {
+                  if (e.target.tagName !== 'VIDEO') {
+                    window.location.href = `videoplay.html?videoId=${video.videoId}`;
+                  }
+                };
+                const previewVideo = document.createElement('video');
+                previewVideo.className = 'suggested-video-preview';
+                previewVideo.src = video.mediaURL;
+                setupPreviewLoop(previewVideo);
                 let avatarHtml = '';
                 if (uData?.photoURL) {
                   avatarHtml = `<img src="${uData.photoURL}" alt="${uData.displayName || 'User'} avatar" class="w-16 h-9 rounded object-cover">`;
@@ -803,12 +886,13 @@
                   avatarHtml = `<div class="w-16 h-9 rounded bg-gray-300 flex items-center justify-center text-sm font-medium">${initial}</div>`;
                 }
                 card.innerHTML = `
-                  <div class="flex-shrink-0 w-1/3">${avatarHtml}</div>
-                  <div class="flex-1 px-2 py-1">
+                  <div class="flex-shrink-0">${avatarHtml}</div>
+                  <div class="suggested-video-info">
                     <h3 class="text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
-                    <p class="text-xs text-[var(--text-secondary)]">${uData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
+                    <p class="suggested-video-meta">${uData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
                   </div>
                 `;
+                card.insertBefore(previewVideo, card.firstChild);
                 suggContainer.appendChild(card);
                 resolveUser();
               }, { onlyOnce: true });
@@ -1117,7 +1201,7 @@
           userId: currentUser.uid,
           timestamp: new Date().toISOString()
         });
-        document.getElementById('comment-form').reset();
+        document.getElementById('comment-input').value = '';
         showAlert('Comment posted successfully!');
       } catch (error) {
         console.error('Error posting comment:', error);
@@ -1125,6 +1209,42 @@
       } finally {
         hideSpinner();
       }
+    }
+
+    // Swipe gesture for bottom sheet
+    let touchStartY = 0;
+    let touchStartX = 0;
+    const SWIPE_THRESHOLD = 50; // pixels
+    const BOTTOM_SWIPE_ZONE = 100; // pixels from bottom
+
+    function handleTouchStart(e) {
+      touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      if (touchStartY > window.innerHeight - BOTTOM_SWIPE_ZONE && bottomSheet.classList.contains('collapsed')) {
+        // Potential upward swipe from bottom
+      }
+    }
+
+    function handleTouchMove(e) {
+      if (touchStartY === 0) return;
+      const touchY = e.touches[0].clientY;
+      const deltaY = touchStartY - touchY;
+      const deltaX = Math.abs(e.touches[0].clientX - touchStartX);
+      if (touchStartY > window.innerHeight - BOTTOM_SWIPE_ZONE && deltaY > SWIPE_THRESHOLD && deltaY > deltaX) {
+        // Upward swipe detected
+        e.preventDefault();
+        bottomSheet.classList.remove('collapsed');
+        toggleBtn.textContent = 'keyboard_arrow_up';
+        videoPlayer.style.paddingBottom = window.innerWidth >= 1024 ? '30vh' : '40vh';
+        suggestedVideos.classList.remove('active');
+        // Pause previews
+        document.querySelectorAll('.suggested-video-preview').forEach(v => v.pause());
+      }
+    }
+
+    function handleTouchEnd() {
+      touchStartY = 0;
+      touchStartX = 0;
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -1148,6 +1268,8 @@
           toggleBtn.textContent = 'keyboard_arrow_up';
           videoPlayer.style.paddingBottom = window.innerWidth >= 1024 ? '30vh' : '40vh';
           suggestedVideos.classList.remove('active');
+          // Pause previews
+          document.querySelectorAll('.suggested-video-preview').forEach(v => v.pause());
         } else {
           bottomSheet.classList.add('collapsed');
           toggleBtn.textContent = 'keyboard_arrow_down';
@@ -1156,8 +1278,20 @@
           if (videoPlayer.classList.contains('collapsed')) {
             videoPlayer.classList.remove('collapsed');
           }
+          // Start previews
+          document.querySelectorAll('.suggested-video-preview').forEach(v => {
+            if (v.paused) {
+              v.currentTime = 0;
+              v.play().catch(e => console.warn('Preview play on collapse:', e));
+            }
+          });
         }
       });
+
+      // Swipe events
+      document.addEventListener('touchstart', handleTouchStart, { passive: true });
+      document.addEventListener('touchmove', handleTouchMove, { passive: false });
+      document.addEventListener('touchend', handleTouchEnd, { passive: true });
 
       // Load suggested videos
       loadSuggestedVideos();
@@ -1210,7 +1344,7 @@
       const progressHandle = document.getElementById('progress-handle');
       const currentTimeEl = document.getElementById('current-time');
       const durationEl = document.getElementById('duration');
-      const previewVideo = document.getElementById('preview-video');
+      const previewVideoMain = document.getElementById('preview-video');
       const previewCanvas = document.getElementById('preview-canvas');
       const thumbnailPreview = document.getElementById('thumbnail-preview');
       const previewImg = document.getElementById('preview-img');
@@ -1218,9 +1352,9 @@
       previewCanvas.width = 160;
       previewCanvas.height = 90;
 
-      previewVideo.addEventListener('seeked', () => {
+      previewVideoMain.addEventListener('seeked', () => {
         const ctx = previewCanvas.getContext('2d');
-        ctx.drawImage(previewVideo, 0, 0, 160, 90);
+        ctx.drawImage(previewVideoMain, 0, 0, 160, 90);
         previewImg.src = previewCanvas.toDataURL('image/jpeg', 0.8);
         thumbnailPreview.style.display = 'block';
       });
@@ -1233,9 +1367,7 @@
           progressBar.style.width = `${progress}%`;
           progressHandle.style.left = `${progress}%`;
           currentTimeEl.textContent = formatTime(video.currentTime);
-          if (durationEl.textContent === '0:00') {
-            durationEl.textContent = formatTime(video.duration);
-          }
+          durationEl.textContent = formatTime(video.duration);
         }
       }
 
@@ -1266,7 +1398,7 @@
         const percent = pos / rect.width;
         const time = percent * video.duration;
         if (video.duration > 0 && time >= 0 && time <= video.duration) {
-          previewVideo.currentTime = time;
+          previewVideoMain.currentTime = time;
           updatePreviewPosition(clientX);
         }
       }
@@ -1404,6 +1536,11 @@
 
       // Theme toggle
       document.querySelector('.theme-toggle').addEventListener('click', toggleTheme);
+
+      // Error handling for main video
+      video.addEventListener('error', () => {
+        showAlert('Video failed to load. Please try again.');
+      });
     });
   </script>
 </body>
