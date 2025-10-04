@@ -84,6 +84,21 @@
       border-radius: 8px;
     }
 
+    .subtitle-overlay {
+      position: absolute;
+      bottom: 20%;
+      left: 5%;
+      right: 5%;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      text-align: center;
+      font-size: 1.5rem;
+      padding: 1rem;
+      border-radius: 8px;
+      display: none;
+      z-index: 5;
+    }
+
     .custom-controls {
       position: absolute;
       bottom: 0;
@@ -117,7 +132,7 @@
       gap: 0.5rem;
     }
 
-    .play-pause-btn, .fullscreen-btn {
+    .play-pause-btn, .fullscreen-btn, .subtitle-btn {
       background: rgba(255,255,255,0.2);
       border: none;
       color: white;
@@ -131,7 +146,7 @@
       transition: background 0.2s;
     }
 
-    .play-pause-btn:hover, .fullscreen-btn:hover {
+    .play-pause-btn:hover, .fullscreen-btn:hover, .subtitle-btn:hover {
       background: rgba(255,255,255,0.3);
     }
 
@@ -537,7 +552,7 @@
         width: 120px;
         height: 68px;
       }
-      .play-pause-btn, .fullscreen-btn {
+      .play-pause-btn, .fullscreen-btn, .subtitle-btn {
         width: 2.5rem;
         height: 2.5rem;
       }
@@ -549,12 +564,16 @@
   <main class="video-player">
     <div class="main-content">
       <div class="video-container">
-        <video id="video-player" autoplay aria-label="Video player"></video>
+        <video id="video-player" autoplay aria-label="Video player">
+          <track id="subtitle-track" kind="subtitles" srclang="en" label="English" default>
+        </video>
+        <div id="subtitle-overlay" class="subtitle-overlay"></div>
         <div class="custom-controls">
           <div class="control-top">
             <div class="control-left">
               <button id="play-pause-btn" class="play-pause-btn material-icons" title="Play/Pause">play_arrow</button>
             </div>
+            <button id="subtitle-btn" class="subtitle-btn material-icons" title="Toggle Subtitles">closed_caption</button>
             <button id="fullscreen-btn" class="fullscreen-btn material-icons" title="Fullscreen">fullscreen</button>
           </div>
           <div class="time-display">
@@ -650,7 +669,7 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    let app, auth, db, currentUser, videoId;
+    let app, auth, db, currentUser, videoId, videoDataGlobal;
 
     const showSpinner = () => {
       document.getElementById('spinner-overlay').classList.add('active');
@@ -716,6 +735,26 @@
       const mins = Math.floor(seconds / 60);
       const secs = Math.floor(seconds % 60);
       return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function toggleSubtitles() {
+      const subtitleOverlay = document.getElementById('subtitle-overlay');
+      const subtitleBtn = document.getElementById('subtitle-btn');
+      const isVisible = subtitleOverlay.style.display === 'block';
+      if (isVisible) {
+        subtitleOverlay.style.display = 'none';
+        subtitleBtn.title = 'Show Subtitles';
+        subtitleBtn.textContent = 'closed_caption';
+      } else {
+        if (videoDataGlobal && videoDataGlobal.caption) {
+          subtitleOverlay.textContent = videoDataGlobal.caption;
+          subtitleOverlay.style.display = 'block';
+          subtitleBtn.title = 'Hide Subtitles';
+          subtitleBtn.textContent = 'closed_caption_off';
+        } else {
+          showAlert('No subtitles available for this video.');
+        }
+      }
     }
 
     function initializeFirebase() {
@@ -861,8 +900,8 @@
             showAlert('Video not found.', { onOk: () => window.location.href = 'index.html' });
             return;
           }
-          const videoData = snapshot.val();
-          const userRef = ref(db, `users/${videoData.userId}`);
+          videoDataGlobal = snapshot.val();
+          const userRef = ref(db, `users/${videoDataGlobal.userId}`);
           const subscribeBtn = document.getElementById('subscribe-btn');
           const likeBtn = document.getElementById('like-btn');
           const likeCountEl = document.getElementById('like-count');
@@ -871,11 +910,11 @@
           await new Promise((resolve) => {
             onValue(userRef, (userSnapshot) => {
               channelData = userSnapshot.val();
-              video.src = videoData.mediaURL;
-              previewVideo.src = videoData.mediaURL;
+              video.src = videoDataGlobal.mediaURL;
+              previewVideo.src = videoDataGlobal.mediaURL;
               previewVideo.muted = true;
-              document.getElementById('video-title').textContent = videoData.caption || 'Untitled Video';
-              document.getElementById('video-meta').textContent = `${formatNumber(Object.keys(videoData.views || {}).length)} views • ${formatTimestamp(videoData.timestamp)}`;
+              document.getElementById('video-title').textContent = videoDataGlobal.caption || 'Untitled Video';
+              document.getElementById('video-meta').textContent = `${formatNumber(Object.keys(videoDataGlobal.views || {}).length)} views • ${formatTimestamp(videoDataGlobal.timestamp)}`;
               const channelAvatar = document.getElementById('channel-avatar');
               if (channelData?.photoURL) {
                 channelAvatar.style.background = 'none';
@@ -887,17 +926,17 @@
               }
               // Set data attributes
               document.getElementById('save-btn').setAttribute('data-video-id', videoId);
-              subscribeBtn.setAttribute('data-channel-id', videoData.userId);
+              subscribeBtn.setAttribute('data-channel-id', videoDataGlobal.userId);
               likeBtn.setAttribute('data-video-id', videoId);
               // Update subscriber count
-              const subscribersRef = ref(db, `users/${videoData.userId}/subscribers`);
+              const subscribersRef = ref(db, `users/${videoDataGlobal.userId}/subscribers`);
               onValue(subscribersRef, (snapshot) => {
                 const subscribers = snapshot.val() || {};
                 document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
               }, { onlyOnce: true });
               // Check subscription status
               if (currentUser) {
-                const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${videoData.userId}`);
+                const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${videoDataGlobal.userId}`);
                 onValue(subscriptionRef, (snapshot) => {
                   if (snapshot.exists()) {
                     subscribeBtn.classList.add('subscribed');
@@ -1049,6 +1088,7 @@
       document.body.setAttribute('data-theme', savedTheme);
       initializeFirebase();
       document.getElementById('comment-form').addEventListener('submit', handleCommentSubmit);
+      document.getElementById('subtitle-btn').addEventListener('click', toggleSubtitles);
 
       // Custom controls: play/pause
       const video = document.getElementById('video-player');
