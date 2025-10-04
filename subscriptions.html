@@ -41,7 +41,7 @@
       left: 0;
       transition: width 0.3s ease;
       z-index: 20;
-      padding-top: 56px;
+      padding-top: 16px;
       overflow-y: auto;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     }
@@ -80,7 +80,7 @@
     }
     .video-grid {
       padding: 16px;
-      margin-top: 56px; /* Adjusted for header */
+      margin-top: 16px;
       margin-left: 72px;
       margin-bottom: 64px;
       transition: margin-left 0.3s ease;
@@ -282,6 +282,24 @@
       align-items: center;
       justify-content: center;
     }
+    .skeleton {
+      background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+      background-size: 200% 100%;
+      animation: loading 1.5s infinite;
+    }
+    @keyframes loading {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .skeleton-thumbnail {
+      height: 180px;
+      border-radius: 8px;
+    }
+    .skeleton-text {
+      height: 12px;
+      border-radius: 4px;
+      margin: 4px 0;
+    }
     @media (min-width: 768px) {
       .sidebar {
         display: block;
@@ -301,7 +319,7 @@
       .video-grid {
         margin-left: 0;
         padding: 12px;
-        margin-top: 56px; /* Adjusted for header */
+        margin-top: 16px;
         margin-bottom: 64px;
       }
       .header-controls {
@@ -347,10 +365,40 @@
 
   <main class="video-grid">
     <div class="header-controls">
-</div>
+      <input type="text" id="search-input" placeholder="Search subscriptions...">
+      <select id="sort-select">
+        <option value="all">All time</option>
+        <option value="today">Today</option>
+        <option value="week">This week</option>
+      </select>
+    </div>
     <h1 class="text-2xl font-bold mb-4 px-4">Subscriptions</h1>
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" id="video-grid">
-      <p class="text-center text-gray-600 col-span-full">Loading videos...</p>
+      <!-- Initial skeleton loaders -->
+      <div class="video-card skeleton">
+        <div class="skeleton-thumbnail"></div>
+        <div class="p-2">
+          <div class="skeleton-text w-3/4"></div>
+          <div class="skeleton-text w-1/2 mt-1"></div>
+          <div class="skeleton-text w-1/3 mt-1 h-3"></div>
+        </div>
+      </div>
+      <div class="video-card skeleton">
+        <div class="skeleton-thumbnail"></div>
+        <div class="p-2">
+          <div class="skeleton-text w-3/4"></div>
+          <div class="skeleton-text w-1/2 mt-1"></div>
+          <div class="skeleton-text w-1/3 mt-1 h-3"></div>
+        </div>
+      </div>
+      <div class="video-card skeleton">
+        <div class="skeleton-thumbnail"></div>
+        <div class="p-2">
+          <div class="skeleton-text w-3/4"></div>
+          <div class="skeleton-text w-1/2 mt-1"></div>
+          <div class="skeleton-text w-1/3 mt-1 h-3"></div>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -428,6 +476,10 @@
     const CLOUDINARY_VIDEO_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
 
     let app, auth, db, currentUser;
+    let currentSearchQuery = '';
+    let currentSortFilter = 'all';
+    let subscribedUserIds = [];
+    let allVideos = {};
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -466,6 +518,80 @@
       if (diffMin < 60) return `${diffMin} minute${diffMin === 1 ? '' : 's'} ago`;
       if (diffHr < 24) return `${diffHr} hour${diffHr === 1 ? '' : 's'} ago`;
       return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
+    };
+
+    const filterVideosByDate = (videoArray, filter) => {
+      const now = new Date();
+      return videoArray.filter(video => {
+        const videoDate = new Date(video.timestamp);
+        const diffDays = Math.floor((now - videoDate) / (1000 * 60 * 60 * 24));
+        switch (filter) {
+          case 'today':
+            return videoDate.toDateString() === now.toDateString();
+          case 'week':
+            return diffDays < 7;
+          case 'all':
+          default:
+            return true;
+        }
+      });
+    };
+
+    const searchVideos = (videoArray, query) => {
+      if (!query) return videoArray;
+      const lowerQuery = query.toLowerCase();
+      return videoArray.filter(video => {
+        return video.caption?.toLowerCase().includes(lowerQuery) ||
+               allVideos[video.videoId]?.userData?.displayName?.toLowerCase().includes(lowerQuery);
+      });
+    };
+
+    const renderVideos = async (videoArray) => {
+      const videoGrid = document.getElementById('video-grid');
+      if (!videoGrid) return;
+
+      let filteredVideos = filterVideosByDate([...videoArray], currentSortFilter);
+      filteredVideos = searchVideos(filteredVideos, currentSearchQuery);
+      filteredVideos.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      videoGrid.innerHTML = '';
+      if (filteredVideos.length === 0) {
+        const message = currentSearchQuery ? 'No matching videos found.' : 'No videos from subscribed channels.';
+        videoGrid.innerHTML = `<p class="text-center text-gray-600 col-span-full">${message}</p>`;
+        return;
+      }
+
+      for (const video of filteredVideos) {
+        if (!allVideos[video.videoId]?.userData) {
+          const userRef = ref(db, `users/${video.userId}`);
+          const userSnapshot = await new Promise(resolve => onValue(userRef, resolve, { onlyOnce: true }));
+          allVideos[video.videoId] = { ...allVideos[video.videoId], userData: userSnapshot.val() };
+        }
+        const userData = allVideos[video.videoId].userData;
+        const subscriberCount = Object.keys(userData?.subscribers || {}).length;
+        const isVerified = subscriberCount >= 500;
+        const card = document.createElement('div');
+        card.className = 'video-card cursor-pointer';
+        card.addEventListener('click', () => {
+          window.location.href = `videoplay.html?videoId=${video.videoId}`;
+        });
+        card.innerHTML = `
+          <video class="thumbnail" muted loop playsinline src="${video.mediaURL}?w=320&h=180"></video>
+          <div class="flex mt-2">
+            ${userData?.photoURL
+              ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
+              : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
+            <div class="flex-1">
+              <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
+              <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified account">verified</span>' : ''}</p>
+              <p class="text-gray-600 text-xs">${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
+            </div>
+            <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library">bookmark_add</button>
+          </div>
+        `;
+        videoGrid.appendChild(card);
+      }
+      setupIntersectionObserver();
     };
 
     function initializeFirebase() {
@@ -539,12 +665,12 @@
       try {
         const subsRef = ref(db, `users/${currentUser.uid}/subscriptions`);
         onValue(subsRef, async (subsSnapshot) => {
-          if (!subsSnapshot.exists()) {
+          subscribedUserIds = subsSnapshot.exists() ? Object.keys(subsSnapshot.val()) : [];
+          if (subscribedUserIds.length === 0) {
             videoGrid.innerHTML = '<p class="text-center text-gray-600 col-span-full">You have no subscriptions.</p>';
             hideSpinner();
             return;
           }
-          const subscribedUserIds = Object.keys(subsSnapshot.val());
           const videosRef = ref(db, 'shorts');
           onValue(videosRef, async (videosSnapshot) => {
             if (!videosSnapshot.exists()) {
@@ -552,51 +678,11 @@
               hideSpinner();
               return;
             }
-            let videoArray = Object.entries(videosSnapshot.val())
+            allVideos = {};
+            const videoArray = Object.entries(videosSnapshot.val())
               .map(([videoId, videoData]) => ({ videoId, ...videoData }))
               .filter(video => video.mediaType === 'video' && subscribedUserIds.includes(video.userId));
-
-            // Apply sorting
-            videoArray.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-            videoGrid.innerHTML = '';
-            if (videoArray.length === 0) {
-              videoGrid.innerHTML = '<p class="text-center text-gray-600 col-span-full">No videos from subscribed channels.</p>';
-              hideSpinner();
-              return;
-            }
-            for (const video of videoArray) {
-              const userRef = ref(db, `users/${video.userId}`);
-              await new Promise((resolve) => {
-                onValue(userRef, (userSnapshot) => {
-                  const userData = userSnapshot.val();
-                  const subscriberCount = Object.keys(userData?.subscribers || {}).length;
-                  const isVerified = subscriberCount >= 500; // Dynamic verified check
-                  const card = document.createElement('div');
-                  card.className = 'video-card cursor-pointer';
-                  card.addEventListener('click', () => {
-                    window.location.href = `videoplay.html?videoId=${video.videoId}`;
-                  });
-                  card.innerHTML = `
-                    <video class="thumbnail" muted loop playsinline src="${video.mediaURL}?w=320&h=180"></video>
-                    <div class="flex mt-2">
-                      ${userData?.photoURL
-                        ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3">`
-                        : `<div class="h-9 w-9 rounded-full mr-3 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
-                      <div class="flex-1">
-                        <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
-                        <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified account">verified</span>' : ''}</p>
-                        <p class="text-gray-600 text-xs">${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
-                      </div>
-                      <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library">bookmark_add</button>
-                    </div>
-                  `;
-                  videoGrid.appendChild(card);
-                  resolve();
-                }, { onlyOnce: true });
-              });
-            }
-            setupIntersectionObserver();
+            await renderVideos(videoArray);
             hideSpinner();
           }, (error) => {
             console.error('Error loading videos:', error.message, error.stack);
@@ -724,6 +810,8 @@
       const selectVideo = document.getElementById('select-video');
       const videoFile = document.getElementById('video-file');
       const uploadForm = document.getElementById('upload-form');
+      const searchInput = document.getElementById('search-input');
+      const sortSelect = document.getElementById('sort-select');
 
       if (uploadBtn) {
         uploadBtn.addEventListener('click', () => {
@@ -768,6 +856,30 @@
 
       if (uploadForm) {
         uploadForm.addEventListener('submit', handleVideoUpload);
+      }
+
+      if (searchInput) {
+        let searchTimeout;
+        searchInput.addEventListener('input', (e) => {
+          clearTimeout(searchTimeout);
+          currentSearchQuery = e.target.value.trim();
+          searchTimeout = setTimeout(() => {
+            const videoArray = Object.entries(allVideos)
+              .map(([videoId, data]) => ({ videoId, ...data.videoData }))
+              .filter(video => subscribedUserIds.includes(video.userId));
+            renderVideos(videoArray);
+          }, 300);
+        });
+      }
+
+      if (sortSelect) {
+        sortSelect.addEventListener('change', (e) => {
+          currentSortFilter = e.target.value;
+          const videoArray = Object.entries(allVideos)
+            .map(([videoId, data]) => ({ videoId, ...data.videoData }))
+            .filter(video => subscribedUserIds.includes(video.userId));
+          renderVideos(videoArray);
+        });
       }
 
       // Close sheet on outside click
