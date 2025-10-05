@@ -116,7 +116,8 @@
     }
 
     .video-container:hover .custom-controls,
-    .video-container.touched .custom-controls {
+    .video-container.touched .custom-controls,
+    .video-container.paused .custom-controls {
       opacity: 1;
     }
 
@@ -702,7 +703,7 @@
   <main class="video-player">
     <div class="main-content">
       <div class="video-container">
-        <video id="video-player" autoplay aria-label="Video player" loop>
+        <video id="video-player" autoplay playsinline aria-label="Video player" loop>
           <track id="subtitle-track" kind="subtitles" srclang="en" label="English" default>
         </video>
         <div id="video-spinner-overlay" class="video-spinner-overlay">
@@ -801,7 +802,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -971,7 +972,7 @@
       const videosRef = ref(db, 'shorts');
       const suggContainer = document.getElementById('suggestions-container');
       try {
-        const snapshot = await new Promise(resolve => onValue(videosRef, resolve, { onlyOnce: true }));
+        const snapshot = await get(videosRef);
         if (snapshot.exists()) {
           let videoArray = Object.entries(snapshot.val())
             .map(([vidId, data]) => ({ videoId: vidId, ...data }))
@@ -981,33 +982,29 @@
           suggContainer.innerHTML = '';
           for (const video of videoArray) {
             const userRef = ref(db, `users/${video.userId}`);
-            await new Promise(resolveUser => {
-              onValue(userRef, userSnap => {
-                const uData = userSnap.val();
-                const card = document.createElement('div');
-                card.className = 'suggested-video-card';
-                card.style.cursor = 'pointer';
-                card.onclick = (e) => {
-                  window.location.href = `videoplay.html?videoId=${video.videoId}`;
-                };
-                const previewVideoEl = document.createElement('div');
-                previewVideoEl.className = 'suggested-video-preview';
-                const previewVideo = document.createElement('video');
-                previewVideo.src = video.mediaURL;
-                setupPreviewLoop(previewVideo);
-                previewVideoEl.appendChild(previewVideo);
-                const infoDiv = document.createElement('div');
-                infoDiv.className = 'suggested-video-info';
-                infoDiv.innerHTML = `
-                  <h3 class="suggested-video-title">${video.caption || 'Untitled Video'}</h3>
-                  <p class="suggested-video-meta">${uData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
-                `;
-                card.appendChild(previewVideoEl);
-                card.appendChild(infoDiv);
-                suggContainer.appendChild(card);
-                resolveUser();
-              }, { onlyOnce: true });
-            });
+            const userSnapshot = await get(userRef);
+            const uData = userSnapshot.val();
+            const card = document.createElement('div');
+            card.className = 'suggested-video-card';
+            card.style.cursor = 'pointer';
+            card.onclick = (e) => {
+              window.location.href = `videoplay.html?videoId=${video.videoId}`;
+            };
+            const previewVideoEl = document.createElement('div');
+            previewVideoEl.className = 'suggested-video-preview';
+            const previewVideo = document.createElement('video');
+            previewVideo.src = video.mediaURL;
+            setupPreviewLoop(previewVideo);
+            previewVideoEl.appendChild(previewVideo);
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'suggested-video-info';
+            infoDiv.innerHTML = `
+              <h3 class="suggested-video-title">${video.caption || 'Untitled Video'}</h3>
+              <p class="suggested-video-meta">${uData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
+            `;
+            card.appendChild(previewVideoEl);
+            card.appendChild(infoDiv);
+            suggContainer.appendChild(card);
           }
         } else {
           suggContainer.innerHTML = '<p class="text-center text-[var(--text-secondary)] py-4">No suggested videos available.</p>';
@@ -1077,7 +1074,7 @@
       }
       try {
         const likeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
-        const snapshot = await new Promise((resolve) => onValue(likeRef, resolve, { onlyOnce: true }));
+        const snapshot = await get(likeRef);
         const isLiked = snapshot.exists();
         if (isLiked) {
           await set(likeRef, null); // Unlike
@@ -1092,10 +1089,9 @@
         }
         // Update like count
         const likesRef = ref(db, `shorts/${videoId}/likes`);
-        onValue(likesRef, (snapshot) => {
-          const likes = snapshot.val() || {};
-          likeCountEl.textContent = formatNumber(Object.keys(likes).length);
-        }, { onlyOnce: true });
+        const likesSnapshot = await get(likesRef);
+        const likes = likesSnapshot.val() || {};
+        likeCountEl.textContent = formatNumber(Object.keys(likes).length);
       } catch (error) {
         console.error('Error liking/unliking video:', error);
         showAlert('Failed to update like status. Please try again.');
@@ -1119,7 +1115,7 @@
       }
       try {
         const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${channelId}`);
-        const snapshot = await new Promise((resolve) => onValue(subscriptionRef, resolve, { onlyOnce: true }));
+        const snapshot = await get(subscriptionRef);
         const isSubscribed = snapshot.exists();
         const channelSubRef = ref(db, `users/${channelId}/subscribers/${currentUser.uid}`);
         if (isSubscribed) {
@@ -1135,12 +1131,11 @@
           subscribeBtn.textContent = 'Subscribed';
           showAlert('Subscribed successfully!');
         }
-        // Update subscriber count (now listens for real-time changes)
+        // Update subscriber count
         const subscribersRef = ref(db, `users/${channelId}/subscribers`);
-        onValue(subscribersRef, (snapshot) => {
-          const subscribers = snapshot.val() || {};
-          document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
-        });
+        const subscribersSnapshot = await get(subscribersRef);
+        const subscribers = subscribersSnapshot.val() || {};
+        document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
       } catch (error) {
         console.error('Error subscribing/unsubscribing:', error);
         showAlert('Failed to update subscription. Please try again.');
@@ -1159,92 +1154,79 @@
       }
       const videoRef = ref(db, `shorts/${videoId}`);
       try {
-        onValue(videoRef, async (snapshot) => {
-          if (!snapshot.exists()) {
-            showAlert('Video not found.', { onOk: () => window.location.href = 'index.html' });
-            return;
+        const videoSnapshot = await get(videoRef);
+        if (!videoSnapshot.exists()) {
+          showAlert('Video not found.', { onOk: () => window.location.href = 'index.html' });
+          return;
+        }
+        videoDataGlobal = videoSnapshot.val();
+        const userRef = ref(db, `users/${videoDataGlobal.userId}`);
+        const userSnapshot = await get(userRef);
+        channelData = userSnapshot.val();
+        const subscribeBtn = document.getElementById('subscribe-btn');
+        const likeBtn = document.getElementById('like-btn');
+        const likeCountEl = document.getElementById('like-count');
+        const video = document.getElementById('video-player');
+        const previewVideo = document.getElementById('preview-video');
+        const loopBtn = document.getElementById('loop-btn');
+        video.src = videoDataGlobal.mediaURL;
+        previewVideo.src = videoDataGlobal.mediaURL;
+        previewVideo.muted = true;
+        document.getElementById('video-title').textContent = videoDataGlobal.caption || 'Untitled Video';
+        document.getElementById('video-meta').textContent = `${formatNumber(Object.keys(videoDataGlobal.views || {}).length)} views • ${formatTimestamp(videoDataGlobal.timestamp)}`;
+        const channelAvatar = document.getElementById('channel-avatar');
+        if (channelData?.photoURL) {
+          channelAvatar.style.background = 'none';
+          channelAvatar.innerHTML = `<img src="${channelData.photoURL}" alt="${channelData.displayName || 'User'} avatar" class="h-8 w-8 rounded-full">`;
+        } else {
+          const initial = channelData?.displayName ? channelData.displayName[0].toUpperCase() : 'U';
+          channelAvatar.textContent = initial;
+          channelAvatar.classList.add('avatar');
+        }
+        // Set data attributes
+        document.getElementById('save-btn').setAttribute('data-video-id', videoId);
+        subscribeBtn.setAttribute('data-channel-id', videoDataGlobal.userId);
+        likeBtn.setAttribute('data-video-id', videoId);
+        // Update subscriber count
+        const subscribersRef = ref(db, `users/${videoDataGlobal.userId}/subscribers`);
+        const subscribersSnapshot = await get(subscribersRef);
+        const subscribers = subscribersSnapshot.val() || {};
+        document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
+        // Check subscription status
+        if (currentUser) {
+          const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${videoDataGlobal.userId}`);
+          const subscriptionSnapshot = await get(subscriptionRef);
+          if (subscriptionSnapshot.exists()) {
+            subscribeBtn.classList.add('subscribed');
+            subscribeBtn.textContent = 'Subscribed';
+          } else {
+            subscribeBtn.classList.remove('subscribed');
+            subscribeBtn.textContent = 'Subscribe';
           }
-          videoDataGlobal = snapshot.val();
-          const userRef = ref(db, `users/${videoDataGlobal.userId}`);
-          const subscribeBtn = document.getElementById('subscribe-btn');
-          const likeBtn = document.getElementById('like-btn');
-          const likeCountEl = document.getElementById('like-count');
-          const video = document.getElementById('video-player');
-          const previewVideo = document.getElementById('preview-video');
-          const loopBtn = document.getElementById('loop-btn');
-          await new Promise((resolve) => {
-            onValue(userRef, (userSnapshot) => {
-              channelData = userSnapshot.val();
-              video.src = videoDataGlobal.mediaURL;
-              previewVideo.src = videoDataGlobal.mediaURL;
-              previewVideo.muted = true;
-              document.getElementById('video-title').textContent = videoDataGlobal.caption || 'Untitled Video';
-              document.getElementById('video-meta').textContent = `${formatNumber(Object.keys(videoDataGlobal.views || {}).length)} views • ${formatTimestamp(videoDataGlobal.timestamp)}`;
-              const channelAvatar = document.getElementById('channel-avatar');
-              if (channelData?.photoURL) {
-                channelAvatar.style.background = 'none';
-                channelAvatar.innerHTML = `<img src="${channelData.photoURL}" alt="${channelData.displayName || 'User'} avatar" class="h-8 w-8 rounded-full">`;
-              } else {
-                const initial = channelData?.displayName ? channelData.displayName[0].toUpperCase() : 'U';
-                channelAvatar.textContent = initial;
-                channelAvatar.classList.add('avatar');
-              }
-              // Set data attributes
-              document.getElementById('save-btn').setAttribute('data-video-id', videoId);
-              subscribeBtn.setAttribute('data-channel-id', videoDataGlobal.userId);
-              likeBtn.setAttribute('data-video-id', videoId);
-              // Update subscriber count (now listens for real-time changes)
-              const subscribersRef = ref(db, `users/${videoDataGlobal.userId}/subscribers`);
-              onValue(subscribersRef, (snapshot) => {
-                const subscribers = snapshot.val() || {};
-                document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
-              });
-              // Check subscription status
-              if (currentUser) {
-                const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${videoDataGlobal.userId}`);
-                onValue(subscriptionRef, (snapshot) => {
-                  if (snapshot.exists()) {
-                    subscribeBtn.classList.add('subscribed');
-                    subscribeBtn.textContent = 'Subscribed';
-                  } else {
-                    subscribeBtn.classList.remove('subscribed');
-                    subscribeBtn.textContent = 'Subscribe';
-                  }
-                }, { onlyOnce: true });
-              }
-              // Update like count and status
-              const likesRef = ref(db, `shorts/${videoId}/likes`);
-              onValue(likesRef, (snapshot) => {
-                const likes = snapshot.val() || {};
-                likeCountEl.textContent = formatNumber(Object.keys(likes).length);
-                if (currentUser) {
-                  const userLikeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
-                  onValue(userLikeRef, (userSnapshot) => {
-                    if (userSnapshot.exists()) {
-                      likeBtn.classList.add('liked');
-                      likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
-                    } else {
-                      likeBtn.classList.remove('liked');
-                      likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
-                    }
-                  }, { onlyOnce: true });
-                }
-              }, { onlyOnce: true });
-              resolve();
-            }, { onlyOnce: true });
-          });
-          // Update view count
-          const viewsRef = ref(db, `shorts/${videoId}/views/${currentUser.uid}`);
-          await set(viewsRef, true);
-          hideSpinner();
-        }, (error) => {
-          console.error('Error loading video:', error);
-          showAlert('Failed to load video. Please try again.');
-          hideSpinner();
-        });
+        }
+        // Update like count and status
+        const likesRef = ref(db, `shorts/${videoId}/likes`);
+        const likesSnapshot = await get(likesRef);
+        const likes = likesSnapshot.val() || {};
+        likeCountEl.textContent = formatNumber(Object.keys(likes).length);
+        if (currentUser) {
+          const userLikeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
+          const userLikeSnapshot = await get(userLikeRef);
+          if (userLikeSnapshot.exists()) {
+            likeBtn.classList.add('liked');
+            likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+          } else {
+            likeBtn.classList.remove('liked');
+            likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+          }
+        }
+        // Update view count
+        const viewsRef = ref(db, `shorts/${videoId}/views/${currentUser.uid}`);
+        await set(viewsRef, true);
+        hideSpinner();
       } catch (error) {
-        console.error('Error fetching video:', error);
-        showAlert('Failed to load video. Please check your connection.');
+        console.error('Error loading video:', error);
+        showAlert('Failed to load video. Please try again.');
         hideSpinner();
       }
     }
@@ -1253,46 +1235,38 @@
       const commentsRef = ref(db, `shorts/${videoId}/comments`);
       const commentsList = document.getElementById('comments-list');
       try {
-        onValue(commentsRef, async (snapshot) => {
-          commentsList.innerHTML = '';
-          if (!snapshot.exists()) {
-            commentsList.innerHTML = '<p class="text-[var(--text-secondary)] text-sm">No comments yet.</p>';
-            return;
-          }
-          const comments = snapshot.val();
-          const commentArray = Object.entries(comments)
-            .map(([commentId, commentData]) => ({ commentId, ...commentData }))
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-          for (const comment of commentArray) {
-            const userRef = ref(db, `users/${comment.userId}`);
-            await new Promise((resolve) => {
-              onValue(userRef, (userSnapshot) => {
-                const userData = userSnapshot.val();
-                const commentCard = document.createElement('div');
-                commentCard.className = 'comment-card';
-                commentCard.innerHTML = `
-                  <div class="flex">
-                    ${userData?.photoURL
-                      ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-6 w-6 rounded-full mr-2">`
-                      : `<div class="h-6 w-6 rounded-full mr-2 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
-                    <div class="flex-1">
-                      <p class="text-sm font-semibold">${userData?.displayName || 'Unknown User'} • <span class="text-xs text-[var(--text-secondary)]">${formatTimestamp(comment.timestamp)}</span></p>
-                      <p class="text-sm mt-1">${comment.text}</p>
-                    </div>
-                  </div>
-                `;
-                commentsList.appendChild(commentCard);
-                resolve();
-              }, { onlyOnce: true });
-            });
-          }
-        }, (error) => {
-          console.error('Error loading comments:', error);
-          showAlert('Failed to load comments. Please try again.');
-        });
+        const snapshot = await get(commentsRef);
+        commentsList.innerHTML = '';
+        if (!snapshot.exists()) {
+          commentsList.innerHTML = '<p class="text-[var(--text-secondary)] text-sm">No comments yet.</p>';
+          return;
+        }
+        const comments = snapshot.val();
+        const commentArray = Object.entries(comments)
+          .map(([commentId, commentData]) => ({ commentId, ...commentData }))
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        for (const comment of commentArray) {
+          const userRef = ref(db, `users/${comment.userId}`);
+          const userSnapshot = await get(userRef);
+          const userData = userSnapshot.val();
+          const commentCard = document.createElement('div');
+          commentCard.className = 'comment-card';
+          commentCard.innerHTML = `
+            <div class="flex">
+              ${userData?.photoURL
+                ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-6 w-6 rounded-full mr-2">`
+                : `<div class="h-6 w-6 rounded-full mr-2 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
+              <div class="flex-1">
+                <p class="text-sm font-semibold">${userData?.displayName || 'Unknown User'} • <span class="text-xs text-[var(--text-secondary)]">${formatTimestamp(comment.timestamp)}</span></p>
+                <p class="text-sm mt-1">${comment.text}</p>
+              </div>
+            </div>
+          `;
+          commentsList.appendChild(commentCard);
+        }
       } catch (error) {
-        console.error('Error fetching comments:', error);
-        showAlert('Failed to load comments. Please check your connection.');
+        console.error('Error loading comments:', error);
+        showAlert('Failed to load comments. Please try again.');
       }
     }
 
@@ -1318,6 +1292,7 @@
         });
         document.getElementById('comment-input').value = '';
         showAlert('Comment posted successfully!');
+        await loadComments(); // Reload comments after posting
       } catch (error) {
         console.error('Error posting comment:', error);
         showAlert('Failed to post comment. Please try again.');
@@ -1430,6 +1405,7 @@
       // Custom controls: play/pause
       const video = document.getElementById('video-player');
       const playPauseBtn = document.getElementById('play-pause-btn');
+      const videoContainer = document.querySelector('.video-container');
       playPauseBtn.addEventListener('click', () => {
         if (video.paused) {
           if (video.ended) {
@@ -1443,8 +1419,17 @@
         }
       });
 
-      video.addEventListener('play', () => playPauseBtn.textContent = 'pause');
-      video.addEventListener('pause', () => playPauseBtn.textContent = 'play_arrow');
+      video.addEventListener('play', () => {
+        playPauseBtn.textContent = 'pause';
+        videoContainer.classList.remove('paused');
+      });
+      video.addEventListener('pause', () => {
+        playPauseBtn.textContent = 'play_arrow';
+        videoContainer.classList.add('paused');
+      });
+      video.addEventListener('ended', () => {
+        videoContainer.classList.add('paused');
+      });
 
       // Buffering spinner events
       video.addEventListener('waiting', showVideoSpinner);
@@ -1453,7 +1438,6 @@
 
       // Fullscreen functionality
       const fullscreenBtn = document.getElementById('fullscreen-btn');
-      const videoContainer = document.querySelector('.video-container');
 
       function toggleFullscreen() {
         if (!document.fullscreenElement) {
