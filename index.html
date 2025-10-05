@@ -814,7 +814,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, query, orderByChild, get, onChildAdded, onChildChanged, onChildRemoved, push, set, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, push, set, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId, setUserProperties } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -835,8 +835,6 @@
 
     let app, auth, db, analytics, currentUser, ads = [];
     let currentPostId = null;
-    let postElements = new Map();
-    let childListeners = null;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -865,113 +863,6 @@
       if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
       if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
       return count.toString();
-    }
-
-    function createPostCard(post, userData) {
-      const card = document.createElement('div');
-      card.className = 'post-card cursor-pointer';
-      card.dataset.postId = post.postId;
-      const isOwner = currentUser && currentUser.uid === post.userId;
-      const likes = post.likes || {};
-      const likeCount = Object.keys(likes).length;
-      const isLiked = likes[currentUser?.uid];
-      const commentCount = Object.keys(post.comments || {}).length;
-      const repostCount = Object.keys(post.reposts || {}).length;
-      let avatarHtml = '';
-      let headerHtml = '';
-      let caption = post.caption || '';
-      let mediaHtml = '';
-      let repostAttribution = '';
-      if (post.type === 'repost') {
-        const originalUser = post.originalUser || {};
-        avatarHtml = originalUser.photoURL ? `<img src="${originalUser.photoURL}" alt="${originalUser.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${originalUser.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
-        headerHtml = `
-          <div class="flex-1">
-            <h3 class="text-sm font-medium">${userData?.displayName || 'User'} reposted</h3>
-            <p class="text-xs text-gray-500"><strong>${originalUser.displayName || 'User'}</strong> • ${formatTimestamp(post.originalTimestamp)}</p>
-          </div>
-        `;
-        caption = post.originalCaption || '';
-        if (post.originalType === 'video') {
-          mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${post.originalMediaURL}?q=auto,f=auto,fl=progressive"></video>`;
-        } else if (post.originalType === 'image') {
-          mediaHtml = `<img src="${post.originalMediaURL}?q=auto,f=auto,w=400" alt="${caption}" class="post-media">`;
-        }
-      } else {
-        avatarHtml = userData?.photoURL ? `<img src="${userData.photoURL}" alt="${userData.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${userData?.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
-        headerHtml = `
-          <div class="flex-1">
-            <h3 class="text-sm font-medium">${userData?.displayName || 'Anonymous'} ${Object.keys(userData?.subscribers || {}).length >= 500 ? '<span class="verified-badge material-icons">verified</span>' : ''}</h3>
-            <p class="text-xs text-gray-500">${formatTimestamp(post.timestamp)}</p>
-          </div>
-        `;
-        if (post.type === 'video') {
-          mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${post.mediaURL}?q=auto,f=auto,fl=progressive"></video>`;
-        } else if (post.type === 'image') {
-          mediaHtml = `<img src="${post.mediaURL}?q=auto,f=auto,w=400" alt="${caption}" class="post-media">`;
-        }
-      }
-      const menuHtml = isOwner ? `
-        <div class="post-menu" data-post-id="${post.postId}">
-          <button class="delete-btn" onclick="deletePost('${post.postId}')">Delete Post</button>
-        </div>
-      ` : '';
-      card.innerHTML = `
-        ${mediaHtml ? `<div>${mediaHtml}</div>` : ''}
-        <div class="post-header">
-          ${avatarHtml}
-          ${headerHtml}
-          <button class="more-menu-btn" data-post-id="${post.postId}">
-            <span class="material-icons">more_vert</span>
-          </button>
-          ${menuHtml}
-        </div>
-        <div class="post-content">
-          <p class="text-sm">${caption}</p>
-        </div>
-        <div class="post-actions">
-          <button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike('${post.postId}')" data-post-id="${post.postId}">
-            <span class="material-icons">favorite</span>
-            <span class="action-count">${formatNumber(likeCount)}</span>
-          </button>
-          <button class="action-btn" onclick="openComments('${post.postId}')" data-post-id="${post.postId}">
-            <span class="material-icons">chat_bubble_outline</span>
-            <span class="action-count">${formatNumber(commentCount)}</span>
-          </button>
-          <button class="action-btn" onclick="repost('${post.postId}')">
-            <span class="material-icons">repeat</span>
-            <span class="action-count">${formatNumber(repostCount)}</span>
-          </button>
-        </div>
-      `;
-      card.addEventListener('click', (e) => {
-        if (!e.target.closest('.action-btn') && !e.target.closest('.more-menu-btn') && !e.target.closest('.post-menu') && !e.target.closest('.post-menu button')) {
-          logEvent(analytics, 'post_click', { post_id: post.postId });
-          window.location.href = `post.html?postId=${post.postId}`;
-        }
-      });
-      return card;
-    }
-
-    function updatePostCard(card, post) {
-      const likes = post.likes || {};
-      const likeCount = Object.keys(likes).length;
-      const isLiked = likes[currentUser?.uid];
-      const commentCount = Object.keys(post.comments || {}).length;
-      const repostCount = Object.keys(post.reposts || {}).length;
-      const likeBtn = card.querySelector('.action-btn[onclick*="toggleLike"]');
-      const commentBtn = card.querySelector('.action-btn[onclick*="openComments"]');
-      const repostBtn = card.querySelector('.action-btn[onclick*="repost"]');
-      if (likeBtn) {
-        likeBtn.classList.toggle('liked', isLiked);
-        likeBtn.querySelector('.action-count').textContent = formatNumber(likeCount);
-      }
-      if (commentBtn) {
-        commentBtn.querySelector('.action-count').textContent = formatNumber(commentCount);
-      }
-      if (repostBtn) {
-        repostBtn.querySelector('.action-count').textContent = formatNumber(repostCount);
-      }
     }
 
     function initializeFirebase() {
@@ -1038,8 +929,9 @@
         return;
       }
       try {
+        const likesRef = ref(db, `posts/${postId}/likes/${currentUser.uid}`);
         const postRef = ref(db, `posts/${postId}`);
-        const snapshot = await get(postRef);
+        const snapshot = await new Promise((resolve) => onValue(postRef, resolve, { onlyOnce: true }));
         const post = snapshot.val();
         const likes = post.likes || {};
         if (likes[currentUser.uid]) {
@@ -1118,10 +1010,10 @@
       }
       try {
         const postRef = ref(db, `posts/${postId}`);
-        const originalSnapshot = await get(postRef);
+        const originalSnapshot = await new Promise((resolve) => onValue(postRef, resolve, { onlyOnce: true }));
         const originalPost = originalSnapshot.val();
         const originalUserRef = ref(db, `users/${originalPost.userId}`);
-        const originalUserSnapshot = await get(originalUserRef);
+        const originalUserSnapshot = await new Promise((resolve) => onValue(originalUserRef, resolve, { onlyOnce: true }));
         const originalUser = originalUserSnapshot.val();
         const postsRef = ref(db, 'posts');
         const newPostRef = push(postsRef);
@@ -1244,105 +1136,145 @@
 
     async function loadPosts(searchQuery = '') {
       showSpinner();
-      const feed = document.getElementById('feed');
-      postElements.clear();
-      if (childListeners) {
-        childListeners();
-        childListeners = null;
-      }
-      feed.innerHTML = '';
       const postsRef = ref(db, 'posts');
-      const q = query(postsRef, orderByChild('timestamp'));
-      try {
-        if (searchQuery) {
-          logEvent(analytics, 'search', { search_term: searchQuery });
-          const snapshot = await get(q);
-          if (snapshot.exists()) {
-            let postArray = [];
-            snapshot.forEach((childSnap) => {
-              const post = { postId: childSnap.key, ...childSnap.val() };
-              const caption = (post.caption || post.originalCaption || '').toLowerCase();
-              if (caption.includes(searchQuery.toLowerCase())) {
-                postArray.push(post);
-              }
-            });
-            postArray = postArray.reverse(); // desc
-            let index = 0;
-            for (const post of postArray) {
-              const userRef = ref(db, `users/${post.userId}`);
-              const userSnap = await get(userRef);
-              const userData = userSnap.val();
-              const card = createPostCard(post, userData);
-              feed.appendChild(card);
-              postElements.set(post.postId, card);
-              if (++index % 4 === 0) {
-                feed.appendChild(createAdCard());
-              }
-            }
-          }
-          hideSpinner();
-          return;
-        }
-        const snapshot = await get(q);
-        if (!snapshot.exists()) {
-          hideSpinner();
-          return;
-        }
-        let postArray = [];
-        snapshot.forEach((childSnap) => {
-          postArray.push({ postId: childSnap.key, ...childSnap.val() });
-        });
-        postArray = postArray.reverse(); // desc
-        let index = 0;
-        for (const post of postArray) {
-          const userRef = ref(db, `users/${post.userId}`);
-          const userSnap = await get(userRef);
-          const userData = userSnap.val();
-          const card = createPostCard(post, userData);
-          feed.appendChild(card);
-          postElements.set(post.postId, card);
-          if (++index % 4 === 0) {
-            feed.appendChild(createAdCard());
-          }
-        }
-        setupChildListeners(postsRef);
+      const feed = document.getElementById('feed');
+      if (!feed) {
+        console.error('Feed element not found');
         hideSpinner();
+        return;
+      }
+      try {
+        onValue(postsRef, async (snapshot) => {
+          if (!snapshot.exists()) {
+            feed.innerHTML = '<p class="text-center text-gray-600">No posts available.</p>';
+            hideSpinner();
+            return;
+          }
+          let postArray = Object.entries(snapshot.val())
+            .map(([postId, postData]) => ({ postId, ...postData }))
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+          if (searchQuery) {
+            logEvent(analytics, 'search', { search_term: searchQuery });
+            postArray = postArray.filter(post => {
+              const captionMatch = (post.caption || post.originalCaption || '').toLowerCase().includes(searchQuery.toLowerCase());
+              return captionMatch;
+            });
+          }
+
+          if (postArray.length > 1) {
+            postArray = postArray.slice(0, 5).concat(postArray.slice(5).sort(() => Math.random() - 0.5));
+          }
+
+          feed.innerHTML = ''; // Clear skeletons
+          let postCount = 0;
+          for (const post of postArray) {
+            const userRef = ref(db, `users/${post.userId}`);
+            await new Promise((resolve) => {
+              onValue(userRef, (userSnapshot) => {
+                const userData = userSnapshot.val();
+                const isOwner = currentUser && currentUser.uid === post.userId;
+                const likes = post.likes || {};
+                const likeCount = Object.keys(likes).length;
+                const isLiked = likes[currentUser?.uid];
+                const commentCount = Object.keys(post.comments || {}).length;
+                const repostCount = Object.keys(post.reposts || {}).length;
+                const card = document.createElement('div');
+                card.className = 'post-card cursor-pointer';
+                let avatarHtml = '';
+                let headerHtml = '';
+                let caption = post.caption || '';
+                let mediaHtml = '';
+                let repostAttribution = '';
+                if (post.type === 'repost') {
+                  const originalUser = post.originalUser || {};
+                  avatarHtml = originalUser.photoURL ? `<img src="${originalUser.photoURL}" alt="${originalUser.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${originalUser.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
+                  headerHtml = `
+                    <div class="flex-1">
+                      <h3 class="text-sm font-medium">${userData?.displayName || 'User'} reposted</h3>
+                      <p class="text-xs text-gray-500"><strong>${originalUser.displayName || 'User'}</strong> • ${formatTimestamp(post.originalTimestamp)}</p>
+                    </div>
+                  `;
+                  caption = post.originalCaption || '';
+                  if (post.originalType === 'video') {
+                    mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${post.originalMediaURL}?q=auto,f=auto,fl=progressive"></video>`;
+                  } else if (post.originalType === 'image') {
+                    mediaHtml = `<img src="${post.originalMediaURL}?q=auto,f=auto,w=400" alt="${caption}" class="post-media">`;
+                  }
+                } else {
+                  avatarHtml = userData?.photoURL ? `<img src="${userData.photoURL}" alt="${userData.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${userData?.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
+                  headerHtml = `
+                    <div class="flex-1">
+                      <h3 class="text-sm font-medium">${userData?.displayName || 'Anonymous'} ${Object.keys(userData?.subscribers || {}).length >= 500 ? '<span class="verified-badge material-icons">verified</span>' : ''}</h3>
+                      <p class="text-xs text-gray-500">${formatTimestamp(post.timestamp)}</p>
+                    </div>
+                  `;
+                  if (post.type === 'video') {
+                    mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${post.mediaURL}?q=auto,f=auto,fl=progressive"></video>`;
+                  } else if (post.type === 'image') {
+                    mediaHtml = `<img src="${post.mediaURL}?q=auto,f=auto,w=400" alt="${caption}" class="post-media">`;
+                  }
+                }
+                const menuHtml = isOwner ? `
+                  <div class="post-menu" data-post-id="${post.postId}">
+                    <button class="delete-btn" onclick="deletePost('${post.postId}')">Delete Post</button>
+                  </div>
+                ` : '';
+                card.innerHTML = `
+                  ${mediaHtml ? `<div>${mediaHtml}</div>` : ''}
+                  <div class="post-header">
+                    ${avatarHtml}
+                    ${headerHtml}
+                    <button class="more-menu-btn" data-post-id="${post.postId}">
+                      <span class="material-icons">more_vert</span>
+                    </button>
+                    ${menuHtml}
+                  </div>
+                  <div class="post-content">
+                    <p class="text-sm">${caption}</p>
+                  </div>
+                  <div class="post-actions">
+                    <button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike('${post.postId}')" data-post-id="${post.postId}">
+                      <span class="material-icons">favorite</span>
+                      <span class="action-count">${formatNumber(likeCount)}</span>
+                    </button>
+                    <button class="action-btn" onclick="openComments('${post.postId}')" data-post-id="${post.postId}">
+                      <span class="material-icons">chat_bubble_outline</span>
+                      <span class="action-count">${formatNumber(commentCount)}</span>
+                    </button>
+                    <button class="action-btn" onclick="repost('${post.postId}')">
+                      <span class="material-icons">repeat</span>
+                      <span class="action-count">${formatNumber(repostCount)}</span>
+                    </button>
+                  </div>
+                `;
+                card.addEventListener('click', (e) => {
+                  if (!e.target.closest('.action-btn') && !e.target.closest('.more-menu-btn') && !e.target.closest('.post-menu') && !e.target.closest('.post-menu button')) {
+                    logEvent(analytics, 'post_click', { post_id: post.postId });
+                    window.location.href = `post.html?postId=${post.postId}`;
+                  }
+                });
+                feed.appendChild(card);
+                postCount++;
+                if (postCount % 4 === 0) {
+                  feed.appendChild(createAdCard());
+                }
+                resolve();
+              }, { onlyOnce: true });
+            });
+          }
+          setupIntersectionObserver();
+          hideSpinner();
+        }, (error) => {
+          console.error('Error loading posts:', error.message, error.stack);
+          showAlert('Failed to load feed. Please try again.');
+          hideSpinner();
+        });
       } catch (error) {
-        console.error('Error loading posts:', error);
-        showAlert('Failed to load feed. Please try again.');
+        console.error('Error fetching posts:', error.message, error.stack);
+        showAlert('Failed to load feed. Please check your connection.');
         hideSpinner();
       }
-    }
-
-    function setupChildListeners(postsRef) {
-      childListeners = onChildAdded(postsRef.orderByChild('timestamp'), (snap) => {
-        const newPost = { postId: snap.key, ...snap.val() };
-        const userRef = ref(db, `users/${newPost.userId}`);
-        get(userRef).then((userSnap) => {
-          const userData = userSnap.val();
-          const card = createPostCard(newPost, userData);
-          const feed = document.getElementById('feed');
-          feed.insertBefore(card, feed.firstChild);
-          postElements.set(newPost.postId, card);
-        });
-      });
-
-      onChildChanged(postsRef, (snap) => {
-        const changedPost = { postId: snap.key, ...snap.val() };
-        const card = postElements.get(changedPost.postId);
-        if (card) {
-          updatePostCard(card, changedPost);
-        }
-      });
-
-      onChildRemoved(postsRef, (snap) => {
-        const postId = snap.key;
-        const card = postElements.get(postId);
-        if (card && card.parentNode) {
-          card.parentNode.removeChild(card);
-        }
-        postElements.delete(postId);
-      });
     }
 
     function setupIntersectionObserver() {
@@ -1468,13 +1400,9 @@
       document.addEventListener('contextmenu', (e) => e.preventDefault());
 
       if (searchInput) {
-        let searchTimeout;
         searchInput.addEventListener('input', (e) => {
-          clearTimeout(searchTimeout);
-          searchTimeout = setTimeout(() => {
-            const searchQuery = e.target.value.trim();
-            loadPosts(searchQuery);
-          }, 500);
+          const searchQuery = e.target.value.trim();
+          loadPosts(searchQuery);
         });
       }
 
@@ -1610,7 +1538,6 @@
       try {
         initializeFirebase();
         setupEventListeners();
-        setupIntersectionObserver();
         logEvent(analytics, 'screen_view', { screen_name: 'home' });
       } catch (error) {
         console.error('DOMContentLoaded error:', error.message, error.stack);
