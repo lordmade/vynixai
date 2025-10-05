@@ -861,6 +861,9 @@
     let isGridView = true;
     let currentCommentVideoId = null;
     let unsubscribes = [];
+    let videoUnsub = null;
+    let videoDataMap = {}; // Map to store video data by id
+    let cardMap = {}; // Map to store DOM cards by videoId
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -898,6 +901,42 @@
       if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
       if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
       return count.toString();
+    }
+
+    function updateCardCounts(videoId) {
+      const card = cardMap[videoId];
+      if (!card) return;
+
+      const videoData = videoDataMap[videoId];
+      if (!videoData) return;
+
+      const likeCountEl = card.querySelector(`.like-count[data-video-id="${videoId}"]`);
+      const commentCountEl = card.querySelector(`.comment-count[data-video-id="${videoId}"]`);
+      const shareCountEl = card.querySelector(`.share-count[data-video-id="${videoId}"]`);
+
+      if (likeCountEl) {
+        const likeCount = formatNumber(Object.keys(videoData.likes || {}).length);
+        likeCountEl.textContent = likeCount;
+      }
+      if (commentCountEl) {
+        const commentCount = formatNumber(Object.keys(videoData.comments || {}).length);
+        commentCountEl.textContent = commentCount;
+      }
+      if (shareCountEl) {
+        const shareCount = formatNumber(Object.keys(videoData.shares || {}).length || 0);
+        shareCountEl.textContent = shareCount;
+      }
+
+      // Update like button state
+      const likeBtn = card.querySelector(`.like-btn[data-video-id="${videoId}"]`);
+      if (likeBtn && currentUser) {
+        const isLiked = videoData.likes && videoData.likes[currentUser.uid];
+        likeBtn.classList.toggle('liked', isLiked);
+        const icon = likeBtn.querySelector('.material-icons');
+        if (icon) {
+          icon.textContent = isLiked ? 'favorite' : 'favorite_border';
+        }
+      }
     }
 
     function initializeFirebase() {
@@ -1170,147 +1209,201 @@
       }
     }
 
-    async function loadVideos(searchQuery = '') {
+    function createVideoCard(video) {
+      const userRef = ref(db, `users/${video.userId}`);
+      return new Promise((resolve) => {
+        onValue(userRef, (userSnapshot) => {
+          const userData = userSnapshot.val();
+          const subscriberCount = Object.keys(userData?.subscribers || {}).length;
+          const isVerified = subscriberCount >= 500;
+          const isLive = userData?.isLive || false;
+          const isOwner = currentUser && currentUser.uid === video.userId;
+          const card = document.createElement('div');
+          card.className = 'video-card cursor-pointer';
+          card.style.position = 'relative';
+          card.dataset.videoId = video.videoId;
+          card.addEventListener('click', (e) => {
+            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn')) {
+              logEvent(analytics, 'video_click', { video_id: video.videoId });
+              window.location.href = `videoplay.html?videoId=${video.videoId}`;
+            }
+          });
+          let avatarHtml = '';
+          if (userData?.photoURL) {
+            avatarHtml = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3 relative">`;
+            if (isLive) {
+              avatarHtml += '<div class="live-indicator"></div>';
+            }
+          } else {
+            avatarHtml = `<div class="h-9 w-9 rounded-full mr-3 avatar relative">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`;
+            if (isLive) {
+              avatarHtml += '<div class="live-indicator"></div>';
+            }
+          }
+          const likeIcon = currentUser && video.likes && video.likes[currentUser.uid] ? 'favorite' : 'favorite_border';
+          card.innerHTML = `
+            <video class="thumbnail" muted loop playsinline title="${video.caption || 'Untitled Video'}" data-video-id="${video.videoId}" src="${video.mediaURL}?w=320&h=180"></video>
+            <div class="flex mt-2 p-4">
+              ${avatarHtml}
+              <div class="flex-1">
+                <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
+                <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified account">verified</span>' : ''}</p>
+                <p class="text-gray-600 text-xs">${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
+              </div>
+              <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library" aria-label="Save to library" style="min-height:44px; min-width:44px;">bookmark_add</button>
+            </div>
+            <div class="video-actions p-4">
+              <button class="action-btn like-btn ${currentUser && video.likes && video.likes[currentUser.uid] ? 'liked' : ''}" data-video-id="${video.videoId}" title="Like">
+                <span class="material-icons">${likeIcon}</span>
+                <span class="action-count like-count" data-video-id="${video.videoId}">${formatNumber(Object.keys(video.likes || {}).length)}</span>
+              </button>
+              <button class="action-btn comment-btn" data-video-id="${video.videoId}" title="Comments">
+                <span class="material-icons">chat_bubble_outline</span>
+                <span class="action-count comment-count" data-video-id="${video.videoId}">${formatNumber(Object.keys(video.comments || {}).length)}</span>
+              </button>
+              <button class="action-btn share-btn" data-video-id="${video.videoId}" title="Share">
+                <span class="material-icons">send</span>
+                <span class="action-count share-count" data-video-id="${video.videoId}">${formatNumber(Object.keys(video.shares || {}).length || 0)}</span>
+              </button>
+            </div>
+          `;
+          if (isOwner) {
+            const videoEl = card.querySelector('.thumbnail');
+            let pressStartTime;
+            videoEl.addEventListener('touchstart', (e) => {
+              pressStartTime = Date.now();
+            }, { passive: true });
+            videoEl.addEventListener('touchend', (e) => {
+              const pressDuration = Date.now() - pressStartTime;
+              if (pressDuration >= 500) {
+                e.preventDefault();
+                showDeleteOverlay(card, video.videoId);
+              }
+            }, { passive: false });
+          }
+          resolve({ card, userData });
+        }, { onlyOnce: true });
+      });
+    }
+
+    async function loadVideosInitial(searchQuery = '') {
       showSpinner();
-      const videosRef = ref(db, 'shorts');
       const videoGrid = document.getElementById('video-grid');
       if (!videoGrid) {
-        console.error('Video grid element not found');
         hideSpinner();
         return;
       }
       try {
-        onValue(videosRef, async (snapshot) => {
-          if (!snapshot.exists()) {
-            videoGrid.innerHTML = '<p class="text-center text-gray-600 col-span-full">No videos available.</p>';
-            hideSpinner();
-            return;
-          }
-          let videoArray = Object.entries(snapshot.val())
-            .map(([videoId, videoData]) => ({ videoId, ...videoData }))
-            .filter(video => video.mediaType === 'video')
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        const snapshot = await get(ref(db, 'shorts'));
+        if (!snapshot.exists()) {
+          videoGrid.innerHTML = '<p class="text-center text-gray-600 col-span-full">No videos available.</p>';
+          hideSpinner();
+          return;
+        }
+        let videoArray = Object.entries(snapshot.val())
+          .map(([videoId, videoData]) => ({ videoId, ...videoData }))
+          .filter(video => video.mediaType === 'video')
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-          if (searchQuery) {
-            logEvent(analytics, 'search', { search_term: searchQuery });
-            const filteredVideos = [];
-            for (const video of videoArray) {
-              const userRef = ref(db, `users/${video.userId}`);
-              const userSnapshot = await new Promise((resolve) => {
-                onValue(userRef, resolve, { onlyOnce: true });
-              });
-              const userData = userSnapshot.val();
-              const captionMatch = video.caption?.toLowerCase().includes(searchQuery.toLowerCase());
-              const usernameMatch = userData?.displayName?.toLowerCase().includes(searchQuery.toLowerCase());
-              if (captionMatch || usernameMatch) {
-                filteredVideos.push(video);
-              }
-            }
-            videoArray = filteredVideos;
-          }
-
-          if (videoArray.length > 1) {
-            videoArray = shuffleArray(videoArray);
-          }
-
-          videoGrid.innerHTML = ''; // Clear skeletons
-          let videoCount = 0;
+        if (searchQuery) {
+          logEvent(analytics, 'search', { search_term: searchQuery });
+          const filteredVideos = [];
           for (const video of videoArray) {
             const userRef = ref(db, `users/${video.userId}`);
-            await new Promise((resolve) => {
-              onValue(userRef, (userSnapshot) => {
-                const userData = userSnapshot.val();
-                const subscriberCount = Object.keys(userData?.subscribers || {}).length;
-                const isVerified = subscriberCount >= 500;
-                const isLive = userData?.isLive || false;
-                const isOwner = currentUser && currentUser.uid === video.userId;
-                const card = document.createElement('div');
-                card.className = 'video-card cursor-pointer';
-                card.style.position = 'relative';
-                card.addEventListener('click', (e) => {
-                  if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn')) {
-                    logEvent(analytics, 'video_click', { video_id: video.videoId });
-                    window.location.href = `videoplay.html?videoId=${video.videoId}`;
-                  }
-                });
-                let avatarHtml = '';
-                if (userData?.photoURL) {
-                  avatarHtml = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-9 w-9 rounded-full mr-3 relative">`;
-                  if (isLive) {
-                    avatarHtml += '<div class="live-indicator"></div>';
-                  }
-                } else {
-                  avatarHtml = `<div class="h-9 w-9 rounded-full mr-3 avatar relative">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`;
-                  if (isLive) {
-                    avatarHtml += '<div class="live-indicator"></div>';
-                  }
-                }
-                const likeCount = formatNumber(Object.keys(video.likes || {}).length);
-                const commentCount = formatNumber(Object.keys(video.comments || {}).length);
-                const shareCount = formatNumber(Object.keys(video.shares || {}).length || 0);
-                const isLiked = currentUser && video.likes && video.likes[currentUser.uid];
-                const likeIcon = isLiked ? 'favorite' : 'favorite_border';
-                card.innerHTML = `
-                  <video class="thumbnail" muted loop playsinline title="${video.caption || 'Untitled Video'}" data-video-id="${video.videoId}" src="${video.mediaURL}?w=320&h=180"></video>
-                  <div class="flex mt-2 p-4">
-                    ${avatarHtml}
-                    <div class="flex-1">
-                      <h3 class="text-black text-sm font-medium line-clamp-2">${video.caption || 'Untitled Video'}</h3>
-                      <p class="text-gray-600 text-xs mt-1">${userData?.displayName || 'Unknown Channel'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified account">verified</span>' : ''}</p>
-                      <p class="text-gray-600 text-xs">${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
-                    </div>
-                    <button class="save-btn text-gray-600 hover:text-[var(--accent)] material-icons text-sm" data-video-id="${video.videoId}" title="Save to Library" aria-label="Save to library" style="min-height:44px; min-width:44px;">bookmark_add</button>
-                  </div>
-                  <div class="video-actions p-4">
-                    <button class="action-btn like-btn ${isLiked ? 'liked' : ''}" data-video-id="${video.videoId}" title="Like">
-                      <span class="material-icons">${likeIcon}</span>
-                      <span class="action-count like-count">${likeCount}</span>
-                    </button>
-                    <button class="action-btn comment-btn" data-video-id="${video.videoId}" title="Comments">
-                      <span class="material-icons">chat_bubble_outline</span>
-                      <span class="action-count comment-count">${commentCount}</span>
-                    </button>
-                    <button class="action-btn share-btn" data-video-id="${video.videoId}" title="Share">
-                      <span class="material-icons">send</span>
-                      <span class="action-count share-count">${shareCount}</span>
-                    </button>
-                  </div>
-                `;
-                if (isOwner) {
-                  const videoEl = card.querySelector('.thumbnail');
-                  let pressStartTime;
-                  videoEl.addEventListener('touchstart', (e) => {
-                    pressStartTime = Date.now();
-                  }, { passive: true });
-                  videoEl.addEventListener('touchend', (e) => {
-                    const pressDuration = Date.now() - pressStartTime;
-                    if (pressDuration >= 500) {
-                      e.preventDefault();
-                      showDeleteOverlay(card, video.videoId);
-                    }
-                  }, { passive: false });
-                }
-                videoGrid.appendChild(card);
-                videoCount++;
-                if (videoCount % 3 === 0) {
-                  videoGrid.appendChild(createAdCard());
-                }
-                resolve();
-              }, { onlyOnce: true });
-            });
+            const userSnapshot = await get(userRef);
+            const userData = userSnapshot.val();
+            const captionMatch = video.caption?.toLowerCase().includes(searchQuery.toLowerCase());
+            const usernameMatch = userData?.displayName?.toLowerCase().includes(searchQuery.toLowerCase());
+            if (captionMatch || usernameMatch) {
+              filteredVideos.push(video);
+            }
           }
-          setupIntersectionObserver();
-          hideSpinner();
-        }, (error) => {
-          console.error('Error loading videos:', error.message, error.stack);
-          showAlert('Failed to load videos. Please try again.');
-          hideSpinner();
-        });
+          videoArray = filteredVideos;
+        }
+
+        if (videoArray.length > 1) {
+          videoArray = shuffleArray(videoArray);
+        }
+
+        videoGrid.innerHTML = ''; // Clear skeletons
+        let videoCount = 0;
+        for (const video of videoArray) {
+          const { card, userData } = await createVideoCard(video);
+          videoDataMap[video.videoId] = video;
+          cardMap[video.videoId] = card;
+          videoGrid.appendChild(card);
+          videoCount++;
+          if (videoCount % 3 === 0) {
+            videoGrid.appendChild(createAdCard());
+          }
+        }
+        setupIntersectionObserver();
+        hideSpinner();
       } catch (error) {
         console.error('Error fetching videos:', error.message, error.stack);
         showAlert('Failed to load videos. Please check your connection.');
         hideSpinner();
       }
+    }
+
+    function setupVideoListener() {
+      if (videoUnsub) videoUnsub();
+      const videosRef = ref(db, 'shorts');
+      videoUnsub = onValue(videosRef, async (snapshot) => {
+        if (!snapshot.exists()) return;
+        const newData = snapshot.val();
+        const newVideoArray = Object.entries(newData)
+          .map(([videoId, videoData]) => ({ videoId, ...videoData }))
+          .filter(video => video.mediaType === 'video');
+
+        // Update or add new videos
+        for (const video of newVideoArray) {
+          videoDataMap[video.videoId] = video;
+          if (cardMap[video.videoId]) {
+            // Update existing card
+            updateCardCounts(video.videoId);
+          } else {
+            // Add new card
+            const { card } = await createVideoCard(video);
+            cardMap[video.videoId] = card;
+            const videoGrid = document.getElementById('video-grid');
+            if (videoGrid) {
+              videoGrid.appendChild(card);
+              setupIntersectionObserver(); // Re-setup for new video
+            }
+          }
+        }
+
+        // Remove deleted videos
+        for (const videoId in cardMap) {
+          if (!newData[videoId]) {
+            const card = cardMap[videoId];
+            if (card && card.parentNode) {
+              card.parentNode.removeChild(card);
+            }
+            delete cardMap[videoId];
+            delete videoDataMap[videoId];
+          }
+        }
+
+        // Insert ads periodically
+        const videoGrid = document.getElementById('video-grid');
+        if (videoGrid) {
+          let adCount = 0;
+          Array.from(videoGrid.children).forEach((child, index) => {
+            if (child.classList.contains('video-card') && (index + 1) % 3 === 0 && adCount < 5) { // Limit ads
+              if (!child.nextSibling || !child.nextSibling.classList.contains('ad-card')) {
+                const adCard = createAdCard();
+                videoGrid.insertBefore(adCard, child.nextSibling);
+                adCount++;
+              }
+            }
+          });
+        }
+      }, (error) => {
+        console.error('Error loading videos:', error.message, error.stack);
+        showAlert('Failed to load videos. Please try again.');
+      });
     }
 
     function setupIntersectionObserver() {
@@ -1447,10 +1540,11 @@
 
     function loadCommentsSheet() {
       if (!currentCommentVideoId) return;
-      const commentsRef = ref(db, `shorts/${currentCommentVideoId}/comments`);
       const commentsList = document.getElementById('comments-list-sheet');
+      commentsList.innerHTML = ''; // Clear to prevent duplicates
+      const commentsRef = ref(db, `shorts/${currentCommentVideoId}/comments`);
       const commentsUnsub = onValue(commentsRef, async (snapshot) => {
-        commentsList.innerHTML = '';
+        commentsList.innerHTML = ''; // Clear again to prevent duplicates on update
         if (!snapshot.exists()) {
           commentsList.innerHTML = '<p class="text-[var(--text-secondary)] text-sm">No comments yet.</p>';
           return;
@@ -1607,13 +1701,12 @@
       document.addEventListener('contextmenu', (e) => e.preventDefault());
 
       if (searchInput) {
-        searchInput.addEventListener('input', (e) => {
+        searchInput.addEventListener('input', async (e) => {
           const searchQuery = e.target.value.trim();
-          if (searchQuery) {
-            loadVideos(searchQuery);
-          } else {
-            loadVideos();
-          }
+          // For search, reload initial with filter
+          await loadVideosInitial(searchQuery);
+          // Re-setup listener after search
+          setupVideoListener();
         });
       }
 
@@ -1756,10 +1849,12 @@
       });
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
       try {
         initializeFirebase();
         setupEventListeners();
+        await loadVideosInitial();
+        setupVideoListener();
         logEvent(analytics, 'screen_view', { screen_name: 'home' });
       } catch (error) {
         console.error('DOMContentLoaded error:', error.message, error.stack);
