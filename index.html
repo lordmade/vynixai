@@ -225,8 +225,11 @@
       justify-content: center;
       background: var(--gradient);
       color: white;
-      font-size: 48px;
-      font-weight: 300;
+      padding: 20px;
+      font-size: 16px;
+      text-align: center;
+      line-height: 1.4;
+      overflow: hidden;
     }
     .ad-card {
       background-color: var(--card-bg);
@@ -781,6 +784,43 @@
       text-transform: uppercase;
       border-radius: 50%;
     }
+    .confirm-dialog {
+      padding: 24px;
+      text-align: center;
+    }
+    .confirm-body {
+      margin-bottom: 24px;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+    .confirm-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+    .confirm-actions button {
+      flex: 1;
+      padding: 12px;
+      border-radius: 12px;
+      font-weight: 600;
+      min-height: 48px;
+      transition: transform 0.2s ease;
+    }
+    .confirm-actions button:first-child {
+      background: var(--border);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+    .confirm-actions button:first-child:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+    .confirm-actions button:last-child {
+      background: #ef4444;
+      color: white;
+    }
+    .confirm-actions button:last-child:hover {
+      transform: scale(1.02);
+    }
     @media (min-width: 768px) {
       .sidebar {
         display: block;
@@ -992,6 +1032,20 @@
     </div>
   </div>
 
+  <div class="bottom-sheet" id="confirm-dialog">
+    <div class="bottom-sheet-header">
+      <h2 id="confirm-title">Confirm</h2>
+      <button id="close-confirm" class="text-[var(--text-secondary)] material-icons" style="font-size: 24px;" aria-label="Close">close</button>
+    </div>
+    <div class="confirm-dialog">
+      <div class="confirm-body" id="confirm-body"></div>
+      <div class="confirm-actions">
+        <button id="cancel-confirm">Cancel</button>
+        <button id="delete-confirm">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <div id="spinner-overlay" class="spinner-overlay">
     <div class="spinner"></div>
   </div>
@@ -1022,6 +1076,7 @@
     let app, auth, db, analytics, currentUser, ads = [];
     let isGridView = true;
     let currentCommentPostId = null;
+    let currentConfirmAction = null;
     let unsubscribes = [];
     let postUnsub = null;
     let postDataMap = {}; // Map to store post data by id
@@ -1045,6 +1100,18 @@
         setTimeout(() => alert.classList.remove('active'), 3000);
       }
     };
+
+    function showConfirm(title, message, onConfirm) {
+      document.getElementById('confirm-title').textContent = title;
+      document.getElementById('confirm-body').textContent = message;
+      document.getElementById('confirm-dialog').classList.add('active');
+      currentConfirmAction = onConfirm;
+    }
+
+    function closeConfirm() {
+      document.getElementById('confirm-dialog').classList.remove('active');
+      currentConfirmAction = null;
+    }
 
     function toggleView() {
       const postGridContainer = document.getElementById('post-grid-container');
@@ -1236,9 +1303,11 @@
         await set(postRef, null);
         logEvent(analytics, 'delete_post', { post_id: postId });
         showAlert('Post deleted!');
+        closeConfirm();
       } catch (error) {
         console.error('Error deleting post:', error.message, error.stack);
         showAlert('Failed to delete post. Please try again.');
+        closeConfirm();
       }
     }
 
@@ -1420,10 +1489,13 @@
           card.style.cursor = 'pointer';
           card.style.position = 'relative';
           card.dataset.postId = post.postId;
+          card.dataset.mediaType = post.mediaType;
           card.addEventListener('click', (e) => {
             if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn')) {
-              logEvent(analytics, 'post_click', { post_id: post.postId });
-              window.location.href = `postview.html?postId=${post.postId}`;
+              if (card.dataset.mediaType === 'video') {
+                logEvent(analytics, 'post_click', { post_id: post.postId });
+                window.location.href = `videoplay.html?videoId=${post.postId}`;
+              }
             }
           });
 
@@ -1432,7 +1504,8 @@
           const mediaType = post.mediaType;
 
           if (mediaType === 'text') {
-            thumbnailHtml = `<div class="text-thumbnail material-icons">chat</div>`;
+            const textPreview = post.caption.substring(0, 100) + (post.caption.length > 100 ? '...' : '');
+            thumbnailHtml = `<div class="text-thumbnail">${textPreview}</div>`;
           } else if (mediaType === 'video') {
             thumbnailHtml = `<video class="thumbnail" muted loop playsinline title="${post.caption || 'Video'}" data-post-id="${post.postId}" src="${mediaURLs[0]}?w=320&h=180"></video>`;
           } else if (mediaType === 'image' || mediaType === 'carousel') {
@@ -1860,7 +1933,7 @@
 
     async function deleteComment(commentId) {
       if (!currentUser || !currentCommentPostId) return;
-      if (confirm('Delete this comment?')) {
+      showConfirm('Delete Comment', 'Are you sure you want to delete this comment?', async () => {
         try {
           const commentRef = ref(db, `posts/${currentCommentPostId}/comments/${commentId}`);
           await remove(commentRef);
@@ -1881,7 +1954,7 @@
           console.error('Error deleting comment:', error);
           showAlert('Failed to delete comment.');
         }
-      }
+      });
     }
 
     async function handleCommentSubmitSheet(e) {
@@ -1952,6 +2025,9 @@
       const gridToggle = document.getElementById('grid-toggle');
       const commentFormSheet = document.getElementById('comment-form-sheet');
       const closeCommentsSheet = document.getElementById('close-comments-sheet');
+      const closeConfirm = document.getElementById('close-confirm');
+      const cancelConfirm = document.getElementById('cancel-confirm');
+      const deleteConfirm = document.getElementById('delete-confirm');
 
       document.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -2049,6 +2125,22 @@
         closeCommentsSheet.addEventListener('click', closeComments);
       }
 
+      if (closeConfirm) {
+        closeConfirm.addEventListener('click', closeConfirm);
+      }
+
+      if (cancelConfirm) {
+        cancelConfirm.addEventListener('click', closeConfirm);
+      }
+
+      if (deleteConfirm) {
+        deleteConfirm.addEventListener('click', () => {
+          if (currentConfirmAction) {
+            currentConfirmAction();
+          }
+        });
+      }
+
       document.addEventListener('click', (e) => {
         const uploadSheet = document.getElementById('upload-sheet');
         const uploadBtn = document.getElementById('upload-btn');
@@ -2074,8 +2166,8 @@
         if (e.target.closest('.delete-btn')) {
           e.stopPropagation();
           const postId = e.target.closest('.delete-btn').getAttribute('data-post-id');
-          if (postId && confirm('Delete this post?')) {
-            deletePost(postId);
+          if (postId) {
+            showConfirm('Delete Post', 'Are you sure you want to delete this post?', () => deletePost(postId));
           }
         }
         if (e.target.closest('.like-btn')) {
