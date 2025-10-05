@@ -920,6 +920,9 @@
     .reels-card:hover {
       transform: scale(1.05);
     }
+    .reels-card.playing .play-overlay {
+      display: none;
+    }
     .reels-thumbnail {
       width: 72px;
       height: 96px;
@@ -940,6 +943,7 @@
       align-items: center;
       justify-content: center;
       color: white;
+      z-index: 1;
     }
     .reels-user-avatar {
       position: absolute;
@@ -950,6 +954,7 @@
       border-radius: 50%;
       border: 2px solid var(--card-bg);
       overflow: hidden;
+      z-index: 2;
     }
     .reels-user-avatar img {
       width: 100%;
@@ -1247,6 +1252,7 @@
     let viewObserver = null;
     let videoObserver = null;
     let reelsUnsub = null;
+    let reelsVideoObserver = null;
     let currentValidReels = [];
     let reelsInitialized = false;
 
@@ -2078,6 +2084,41 @@
       window.location.href = `reels.html?reelId=${reelId}`;
     }
 
+    function setupReelsVideoObserver() {
+      if (reelsVideoObserver) {
+        return; // Already set up, will observe new ones below
+      }
+      reelsVideoObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            const video = entry.target;
+            const card = video.closest('.reels-card');
+            if (entry.isIntersecting) {
+              // Pause all other reels videos
+              document.querySelectorAll('video.reels-thumbnail').forEach(v => {
+                if (v !== video && !v.paused) {
+                  v.pause();
+                  v.closest('.reels-card').classList.remove('playing');
+                }
+              });
+              video.currentTime = 0;
+              video.play().catch((error) => {
+                console.error('Error playing reel preview:', error);
+              });
+              card.classList.add('playing');
+            } else {
+              video.pause();
+              card.classList.remove('playing');
+            }
+          });
+        },
+        { threshold: 0.5 }
+      );
+      // Observe existing videos
+      const videos = document.querySelectorAll('video.reels-thumbnail');
+      videos.forEach(video => reelsVideoObserver.observe(video));
+    }
+
     async function loadReels() {
       const container = document.getElementById('reels-container');
       if (!container) return;
@@ -2100,6 +2141,8 @@
 
         container.innerHTML = '';
 
+        const newVideos = []; // To observe new ones
+
         for (const reel of validReels) {
           const userRef = ref(db, `users/${reel.userId}`);
           const userSnapshot = await get(userRef);
@@ -2109,7 +2152,11 @@
           const reelCard = document.createElement('div');
           reelCard.className = 'reels-card';
           reelCard.dataset.reelId = reel.reelId;
-          reelCard.addEventListener('click', () => openReel(reel.reelId));
+          reelCard.addEventListener('click', (e) => {
+            if (!e.target.closest('video')) { // Prevent click if clicking on video
+              openReel(reel.reelId);
+            }
+          });
 
           let avatarHtml = '';
           if (userData.photoURL) {
@@ -2122,18 +2169,40 @@
           let thumbnailUrl = '';
           if (reel.thumbnailURL) {
             thumbnailUrl = `${reel.thumbnailURL}?w=72&h=96`;
-          } else if (reel.videoURL) {
-            thumbnailUrl = `${reel.videoURL}?w=72&h=96&so=0`; // Cloudinary poster frame
+          }
+
+          let videoUrl = '';
+          if (reel.videoURL) {
+            videoUrl = reel.videoURL;
           }
 
           reelCard.innerHTML = `
-            <img src="${thumbnailUrl}" alt="${reel.caption || 'Reel'}" class="reels-thumbnail" loading="lazy">
+            <video class="reels-thumbnail" poster="${thumbnailUrl}" src="${videoUrl}" muted preload="metadata"></video>
             <div class="play-overlay">
               <span class="material-icons" style="font-size: 16px;">play_arrow</span>
             </div>
             ${avatarHtml}
           `;
+
+          const video = reelCard.querySelector('video.reels-thumbnail');
+          if (video) {
+            // Add timeupdate for 2-second loop
+            video.addEventListener('timeupdate', () => {
+              if (video.currentTime >= 2) {
+                video.currentTime = 0;
+              }
+            });
+            newVideos.push(video);
+          }
+
           container.appendChild(reelCard);
+        }
+
+        // Observe new videos
+        if (reelsVideoObserver) {
+          newVideos.forEach(video => reelsVideoObserver.observe(video));
+        } else {
+          setupReelsVideoObserver();
         }
 
         if (validReels.length === 0) {
