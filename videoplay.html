@@ -365,6 +365,14 @@
       line-height: 1.25;
     }
 
+    .suggested-video-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-right: 0.5rem;
+    }
+
     .bottom-sheet {
       position: fixed;
       bottom: 0;
@@ -424,6 +432,38 @@
 
     .comment-card:hover {
       background-color: var(--card-bg);
+    }
+
+    .comment-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .comment-text {
+      margin-bottom: 0.5rem;
+    }
+
+    .comment-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+    }
+
+    .delete-comment-btn {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 0.75rem;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+
+    .delete-comment-btn:hover {
+      background-color: var(--border);
     }
 
     .comment-form {
@@ -850,7 +890,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -863,7 +903,7 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    let app, auth, db, currentUser, videoId, videoDataGlobal;
+    let app, auth, db, currentUser, videoId, videoDataGlobal, unsubscribes = [];
 
     const PREVIEW_DURATION = 5; // seconds
 
@@ -1038,6 +1078,14 @@
             card.onclick = (e) => {
               window.location.href = `videoplay.html?videoId=${video.videoId}`;
             };
+            const avatarEl = document.createElement('div');
+            if (uData?.photoURL) {
+              avatarEl.innerHTML = `<img src="${uData.photoURL}" alt="${uData.displayName || 'User'} avatar" class="suggested-video-avatar rounded-full">`;
+            } else {
+              const initial = uData?.displayName ? uData.displayName[0].toUpperCase() : 'U';
+              avatarEl.className = 'avatar suggested-video-avatar';
+              avatarEl.textContent = initial;
+            }
             const previewVideoEl = document.createElement('div');
             previewVideoEl.className = 'suggested-video-preview';
             const previewVideo = document.createElement('video');
@@ -1050,8 +1098,12 @@
               <h3 class="suggested-video-title">${video.caption || 'Untitled Video'}</h3>
               <p class="suggested-video-meta">${uData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(video.views || {}).length)} views • ${formatTimestamp(video.timestamp)}</p>
             `;
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'flex items-center';
+            headerDiv.appendChild(avatarEl);
+            headerDiv.appendChild(infoDiv);
+            card.appendChild(headerDiv);
             card.appendChild(previewVideoEl);
-            card.appendChild(infoDiv);
             suggContainer.appendChild(card);
           }
         } else {
@@ -1136,11 +1188,6 @@
           likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
           showAlert('Video liked!');
         }
-        // Update like count
-        const likesRef = ref(db, `shorts/${videoId}/likes`);
-        const likesSnapshot = await get(likesRef);
-        const likes = likesSnapshot.val() || {};
-        likeCountEl.textContent = formatNumber(Object.keys(likes).length);
       } catch (error) {
         console.error('Error liking/unliking video:', error);
         showAlert('Failed to update like status. Please try again.');
@@ -1180,11 +1227,6 @@
           subscribeBtn.textContent = 'Subscribed';
           showAlert('Subscribed successfully!');
         }
-        // Update subscriber count
-        const subscribersRef = ref(db, `users/${channelId}/subscribers`);
-        const subscribersSnapshot = await get(subscribersRef);
-        const subscribers = subscribersSnapshot.val() || {};
-        document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
       } catch (error) {
         console.error('Error subscribing/unsubscribing:', error);
         showAlert('Failed to update subscription. Please try again.');
@@ -1236,39 +1278,45 @@
         document.getElementById('save-btn').setAttribute('data-video-id', videoId);
         subscribeBtn.setAttribute('data-channel-id', videoDataGlobal.userId);
         likeBtn.setAttribute('data-video-id', videoId);
-        // Update subscriber count
+        // Dynamic subscriber count
         const subscribersRef = ref(db, `users/${videoDataGlobal.userId}/subscribers`);
-        const subscribersSnapshot = await get(subscribersRef);
-        const subscribers = subscribersSnapshot.val() || {};
-        document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
-        // Check subscription status
+        const subscribersUnsub = onValue(subscribersRef, (snapshot) => {
+          const subscribers = snapshot.val() || {};
+          document.getElementById('channel-name').textContent = `${channelData?.displayName || 'Unknown Channel'} • ${formatNumber(Object.keys(subscribers).length)} subscribers`;
+        });
+        unsubscribes.push(subscribersUnsub);
+        // Check subscription status dynamically
         if (currentUser) {
           const subscriptionRef = ref(db, `users/${currentUser.uid}/subscriptions/${videoDataGlobal.userId}`);
-          const subscriptionSnapshot = await get(subscriptionRef);
-          if (subscriptionSnapshot.exists()) {
-            subscribeBtn.classList.add('subscribed');
-            subscribeBtn.textContent = 'Subscribed';
-          } else {
-            subscribeBtn.classList.remove('subscribed');
-            subscribeBtn.textContent = 'Subscribe';
-          }
+          const subscriptionUnsub = onValue(subscriptionRef, (snapshot) => {
+            if (snapshot.exists()) {
+              subscribeBtn.classList.add('subscribed');
+              subscribeBtn.textContent = 'Subscribed';
+            } else {
+              subscribeBtn.classList.remove('subscribed');
+              subscribeBtn.textContent = 'Subscribe';
+            }
+          });
+          unsubscribes.push(subscriptionUnsub);
         }
-        // Update like count and status
+        // Dynamic like count and status
         const likesRef = ref(db, `shorts/${videoId}/likes`);
-        const likesSnapshot = await get(likesRef);
-        const likes = likesSnapshot.val() || {};
-        likeCountEl.textContent = formatNumber(Object.keys(likes).length);
-        if (currentUser) {
-          const userLikeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
-          const userLikeSnapshot = await get(userLikeRef);
-          if (userLikeSnapshot.exists()) {
-            likeBtn.classList.add('liked');
-            likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
-          } else {
-            likeBtn.classList.remove('liked');
-            likeBtn.querySelector('.material-icons').textContent = 'thumb_up';
+        const likesUnsub = onValue(likesRef, (snapshot) => {
+          const likes = snapshot.val() || {};
+          likeCountEl.textContent = formatNumber(Object.keys(likes).length);
+          if (currentUser) {
+            const userLikeRef = ref(db, `shorts/${videoId}/likes/${currentUser.uid}`);
+            const userLikeUnsub = onValue(userLikeRef, (userSnapshot) => {
+              if (userSnapshot.exists()) {
+                likeBtn.classList.add('liked');
+              } else {
+                likeBtn.classList.remove('liked');
+              }
+            });
+            unsubscribes.push(userLikeUnsub);
           }
-        }
+        });
+        unsubscribes.push(likesUnsub);
         // Update view count
         const viewsRef = ref(db, `shorts/${videoId}/views/${currentUser.uid}`);
         await set(viewsRef, true);
@@ -1280,11 +1328,10 @@
       }
     }
 
-    async function loadComments() {
+    function loadComments() {
       const commentsRef = ref(db, `shorts/${videoId}/comments`);
       const commentsList = document.getElementById('comments-list');
-      try {
-        const snapshot = await get(commentsRef);
+      const commentsUnsub = onValue(commentsRef, async (snapshot) => {
         commentsList.innerHTML = '';
         if (!snapshot.exists()) {
           commentsList.innerHTML = '<p class="text-[var(--text-secondary)] text-sm">No comments yet.</p>';
@@ -1300,22 +1347,56 @@
           const userData = userSnapshot.val();
           const commentCard = document.createElement('div');
           commentCard.className = 'comment-card';
-          commentCard.innerHTML = `
-            <div class="flex">
-              ${userData?.photoURL
-                ? `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-6 w-6 rounded-full mr-2">`
-                : `<div class="h-6 w-6 rounded-full mr-2 avatar">${userData?.displayName ? userData.displayName[0].toUpperCase() : 'U'}</div>`}
-              <div class="flex-1">
-                <p class="text-sm font-semibold">${userData?.displayName || 'Unknown User'} • <span class="text-xs text-[var(--text-secondary)]">${formatTimestamp(comment.timestamp)}</span></p>
-                <p class="text-sm mt-1">${comment.text}</p>
-              </div>
-            </div>
-          `;
+          const headerDiv = document.createElement('div');
+          headerDiv.className = 'comment-header flex items-center';
+          const avatarEl = document.createElement('div');
+          if (userData?.photoURL) {
+            avatarEl.innerHTML = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-6 w-6 rounded-full">`;
+          } else {
+            const initial = userData?.displayName ? userData.displayName[0].toUpperCase() : 'U';
+            avatarEl.className = 'avatar h-6 w-6';
+            avatarEl.textContent = initial;
+          }
+          headerDiv.appendChild(avatarEl);
+          const userInfo = document.createElement('p');
+          userInfo.className = 'text-sm font-semibold';
+          userInfo.innerHTML = `${userData?.displayName || 'Unknown User'} <span class="text-xs text-[var(--text-secondary)]">${formatTimestamp(comment.timestamp)}</span>`;
+          headerDiv.appendChild(userInfo);
+          const textDiv = document.createElement('div');
+          textDiv.className = 'comment-text';
+          textDiv.innerHTML = `<p class="text-sm">${comment.text}</p>`;
+          const actionsDiv = document.createElement('div');
+          actionsDiv.className = 'comment-actions';
+          if (currentUser && comment.userId === currentUser.uid) {
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-comment-btn';
+            deleteBtn.innerHTML = '<span class="material-icons text-xs">delete</span> Delete';
+            deleteBtn.onclick = () => deleteComment(comment.commentId);
+            actionsDiv.appendChild(deleteBtn);
+          }
+          commentCard.appendChild(headerDiv);
+          commentCard.appendChild(textDiv);
+          commentCard.appendChild(actionsDiv);
           commentsList.appendChild(commentCard);
         }
-      } catch (error) {
+      }, (error) => {
         console.error('Error loading comments:', error);
         showAlert('Failed to load comments. Please try again.');
+      });
+      unsubscribes.push(commentsUnsub);
+    }
+
+    async function deleteComment(commentId) {
+      if (!currentUser) return;
+      if (confirm('Are you sure you want to delete this comment?')) {
+        try {
+          const commentRef = ref(db, `shorts/${videoId}/comments/${commentId}`);
+          await remove(commentRef);
+          showAlert('Comment deleted successfully!');
+        } catch (error) {
+          console.error('Error deleting comment:', error);
+          showAlert('Failed to delete comment. Please try again.');
+        }
       }
     }
 
@@ -1341,7 +1422,6 @@
         });
         document.getElementById('comment-input').value = '';
         showAlert('Comment posted successfully!');
-        await loadComments(); // Reload comments after posting
       } catch (error) {
         console.error('Error posting comment:', error);
         showAlert('Failed to post comment. Please try again.');
@@ -1350,7 +1430,7 @@
       }
     }
 
-    // Enhanced swipe gesture for bottom sheet (bidirectional)
+    // Swipe gesture for bottom sheet (bidirectional)
     let touchStartY = 0;
     let touchStartX = 0;
     let touchCurrentY = 0;
@@ -1795,6 +1875,8 @@
 
       // Cleanup on unload
       window.addEventListener('beforeunload', () => {
+        unsubscribes.forEach(unsub => unsub());
+        unsubscribes = [];
         if (rafId) cancelAnimationFrame(rafId);
       });
     });
