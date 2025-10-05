@@ -184,6 +184,54 @@
       width: 100%;
       height: 100%;
     }
+    .video-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    .video-player {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .play-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.3);
+      opacity: 1;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
+    .play-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .play-again-btn {
+      background: rgba(255, 255, 255, 0.9);
+      color: #333;
+      border: none;
+      border-radius: 25px;
+      padding: 12px 24px;
+      font-weight: 600;
+      font-size: 16px;
+      cursor: pointer;
+      transition: transform 0.2s ease, background 0.2s ease;
+      pointer-events: all;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      backdrop-filter: blur(10px);
+    }
+    .play-again-btn:hover {
+      background: white;
+      transform: scale(1.05);
+    }
+    .play-again-btn:active {
+      transform: scale(0.98);
+    }
     .carousel-container {
       position: relative;
       flex: 1;
@@ -1578,6 +1626,33 @@
       updateCarousel();
     }
 
+    function setupVideoPlayer(card) {
+      const wrapper = card.querySelector('.video-wrapper');
+      if (!wrapper) return;
+      const video = wrapper.querySelector('.video-player');
+      const overlay = wrapper.querySelector('.play-overlay');
+      const playBtn = wrapper.querySelector('.play-again-btn');
+      if (!video || !overlay) return;
+
+      video.removeAttribute('loop');
+      video.addEventListener('play', () => overlay.classList.add('hidden'));
+      video.addEventListener('pause', () => overlay.classList.remove('hidden'));
+      video.addEventListener('ended', () => {
+        video.pause();
+        video.currentTime = 0;
+        overlay.classList.remove('hidden');
+      });
+
+      if (playBtn) {
+        playBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          video.play().catch((error) => {
+            console.error('Error replaying video:', error);
+          });
+        });
+      }
+    }
+
     function createPostCard(post) {
       const userRef = ref(db, `users/${post.userId}`);
       return new Promise((resolve) => {
@@ -1595,7 +1670,7 @@
           card.dataset.postId = post.postId;
           card.dataset.mediaType = post.mediaType;
           card.addEventListener('click', (e) => {
-            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn') && !e.target.closest('.subscribe-btn')) {
+            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn') && !e.target.closest('.subscribe-btn') && !e.target.closest('.play-again-btn')) {
               if (card.dataset.mediaType === 'video') {
                 logEvent(analytics, 'post_click', { post_id: post.postId });
                 window.location.href = `videoplay.html?videoId=${post.postId}`;
@@ -1616,7 +1691,20 @@
             const textPreview = post.caption.substring(0, 100) + (post.caption.length > 100 ? '...' : '');
             thumbnailHtml = `<div class="text-thumbnail">${textPreview}</div>`;
           } else if (mediaType === 'video') {
-            thumbnailHtml = `<video class="thumbnail" muted loop playsinline title="${post.caption || 'Video'}" data-post-id="${post.postId}" src="${mediaURLs[0]}?w=320&h=180"></video>`;
+            const videoUrl = mediaURLs[0];
+            const uploadParts = videoUrl.split('/upload/');
+            const thumbUrl = `${uploadParts[0]}/upload/so_1,fl_snoop,w_320,h_180,c_fill/${uploadParts[1]}`;
+            thumbnailHtml = `
+              <div class="thumbnail video-wrapper" data-post-id="${post.postId}">
+                <video class="video-player" muted playsinline poster="${thumbUrl}" src="${videoUrl}" title="${post.caption || 'Video'}"></video>
+                <div class="play-overlay">
+                  <button class="play-again-btn">
+                    <span class="material-icons" style="font-size: 20px;">play_arrow</span>
+                    Play Again
+                  </button>
+                </div>
+              </div>
+            `;
           } else if (mediaType === 'image' || mediaType === 'carousel') {
             if (mediaType === 'carousel' && mediaURLs.length > 1) {
               const carouselDiv = document.createElement('div');
@@ -1734,6 +1822,7 @@
           postDataMap[post.postId] = post;
           cardMap[post.postId] = card;
           postGrid.appendChild(card);
+          setupVideoPlayer(card);
           postCount++;
           if (postCount % 3 === 0) {
             postGrid.appendChild(createAdCard());
@@ -1772,6 +1861,7 @@
             const postGrid = document.getElementById('post-grid');
             if (postGrid) {
               postGrid.appendChild(card);
+              setupVideoPlayer(card);
               if (viewObserver) {
                 viewObserver.observe(card);
               }
@@ -1813,12 +1903,12 @@
     }
 
     function setupIntersectionObserver() {
-      const videos = document.querySelectorAll('.post-card video');
+      const videos = document.querySelectorAll('video.video-player');
       const observer = new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
             const video = entry.target;
-            const postId = video.dataset.postId;
+            const postId = video.closest('.video-wrapper').dataset.postId;
             if (entry.isIntersecting) {
               video.play().catch((error) => {
                 console.error('Error playing video:', error.message, error.stack);
