@@ -1361,6 +1361,8 @@
     let videoObserver = null;
     let statusUnsub = null;
     let currentValidStatuses = [];
+    let postsInitialized = false; // Flag to prevent listener processing before initial load
+    let statusesInitialized = false;
 
     const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
@@ -1524,8 +1526,8 @@
           }
         }
         // Reload statuses and posts after subscription change
-        loadStatuses();
-        loadPostsInitial(subscribedUserIds);
+        await loadStatuses();
+        await loadPostsInitial(subscribedUserIds);
       } catch (error) {
         console.error('Error toggling subscribe:', error);
         showAlert('Failed to update subscription. Please try again.');
@@ -1562,12 +1564,12 @@
             setUserProperties(analytics, { user_type: 'authenticated' });
             logEvent(analytics, 'login');
             subscribedUserIds = await loadSubscribedUsers();
-            loadStatuses();
-            loadPostsInitial(subscribedUserIds);
+            await loadPostsInitial(subscribedUserIds); // Await initial load
+            await loadStatuses(); // Await statuses load
             loadAds();
             setupNotifications();
-            setupPostListener();
-            setupStatusListener();
+            setupPostListener(); // Setup listener AFTER initial loads
+            setupStatusListener(); // Setup status listener AFTER
           } else {
             setUserProperties(analytics, { user_type: 'anonymous' });
             showAlert('Please log in to view content.');
@@ -2150,6 +2152,7 @@
         }
         setupIntersectionObserver(); // Setup once after all initial cards.
         setupViewObserver();
+        postsInitialized = true; // Mark as initialized
         hideSpinner();
       } catch (error) {
         console.error('Error fetching posts:', error.message, error.stack);
@@ -2162,7 +2165,7 @@
       if (postUnsub) postUnsub();
       const postsRef = ref(db, 'posts');
       postUnsub = onValue(postsRef, async (snapshot) => {
-        if (!snapshot.exists()) return;
+        if (!snapshot.exists() || !postsInitialized) return; // Skip if not initialized
         const newData = snapshot.val();
         const newPostArray = Object.entries(newData)
           .map(([postId, postData]) => ({ postId, ...postData }))
@@ -2376,7 +2379,7 @@
           selectedStatusFile.textContent = '';
         }
         showAlert('Status shared! It will disappear in 24 hours.');
-        loadStatuses(); // Refresh statuses
+        await loadStatuses(); // Refresh statuses
       } catch (error) {
         console.error('Error uploading status:', error);
         showAlert('Failed to upload status. Try again.');
@@ -2683,6 +2686,7 @@
           statusDiv.addEventListener('click', () => openStatusModal(uid));
           container.appendChild(statusDiv);
         });
+        statusesInitialized = true; // Mark as initialized
         hideSpinner();
       } catch (error) {
         console.error('Error loading statuses:', error);
@@ -2696,7 +2700,10 @@
       // Listen for changes in subscribed users' statuses
       subscribedUserIds.forEach(uid => {
         const statusesRef = ref(db, `users/${uid}/statuses`);
-        const unsub = onValue(statusesRef, () => loadStatuses());
+        const unsub = onValue(statusesRef, () => {
+          if (!statusesInitialized) return; // Skip if not initialized
+          loadStatuses();
+        });
         unsubscribes.push(unsub);
       });
     }
