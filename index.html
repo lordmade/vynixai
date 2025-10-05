@@ -1107,6 +1107,7 @@
     let postUnsub = null;
     let postDataMap = {}; // Map to store post data by id
     let cardMap = {}; // Map to store DOM cards by postId
+    let viewObserver = null;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1168,6 +1169,7 @@
       const likeCountEl = card.querySelector(`.like-count[data-post-id="${postId}"]`);
       const commentCountEl = card.querySelector(`.comment-count[data-post-id="${postId}"]`);
       const shareCountEl = card.querySelector(`.share-count[data-post-id="${postId}"]`);
+      const viewsCountEl = card.querySelector(`.views-count[data-post-id="${postId}"]`);
 
       if (likeCountEl) {
         const likeCount = formatNumber(Object.keys(postData.likes || {}).length);
@@ -1181,6 +1183,10 @@
         const shareCount = formatNumber(Object.keys(postData.shares || {}).length || 0);
         shareCountEl.textContent = shareCount;
       }
+      if (viewsCountEl) {
+        const viewsCount = formatNumber(Object.keys(postData.views || {}).length);
+        viewsCountEl.textContent = viewsCount;
+      }
 
       // Update like button state
       const likeBtn = card.querySelector(`.like-btn[data-post-id="${postId}"]`);
@@ -1192,6 +1198,33 @@
           icon.textContent = isLiked ? 'favorite' : 'favorite_border';
         }
       }
+    }
+
+    function setupViewObserver() {
+      if (viewObserver) return;
+      viewObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting && currentUser) {
+              const postId = entry.target.dataset.postId;
+              const postData = postDataMap[postId];
+              if (postData && (!postData.views || !postData.views[currentUser.uid])) {
+                const viewsRef = ref(db, `posts/${postId}/views/${currentUser.uid}`);
+                set(viewsRef, true)
+                  .then(() => {
+                    logEvent(analytics, 'view_post', { post_id: postId });
+                  })
+                  .catch((err) => {
+                    console.error('Error adding view:', err);
+                  });
+              }
+            }
+          });
+        },
+        { threshold: 0.5 }
+      );
+      const postCards = document.querySelectorAll('.post-card');
+      postCards.forEach((card) => viewObserver.observe(card));
     }
 
     async function toggleSubscribe(userId, btn) {
@@ -1631,7 +1664,7 @@
               <div class="flex-1 min-w-0">
                 <h3 class="text-[var(--text-primary)] text-sm font-semibold line-clamp-2">${post.caption || (mediaType === 'text' ? 'Just sharing thoughts...' : 'Untitled')}</h3>
                 <p class="text-[var(--text-secondary)] text-xs mt-1">${userData?.displayName || 'User'} ${isVerified ? '<span class="verified-badge material-icons" aria-label="Verified">verified</span>' : ''}</p>
-                <p class="text-[var(--text-secondary)] text-xs">${formatNumber(Object.keys(post.views || {}).length)} views • ${formatTimestamp(post.timestamp)}</p>
+                <p class="text-[var(--text-secondary)] text-xs"><span class="views-count" data-post-id="${post.postId}">${formatNumber(Object.keys(post.views || {}).length)}</span> views • ${formatTimestamp(post.timestamp)}</p>
               </div>
               ${rightButtons}
             </div>
@@ -1707,6 +1740,7 @@
           }
         }
         setupIntersectionObserver();
+        setupViewObserver();
         hideSpinner();
       } catch (error) {
         console.error('Error fetching posts:', error.message, error.stack);
@@ -1738,6 +1772,9 @@
             const postGrid = document.getElementById('post-grid');
             if (postGrid) {
               postGrid.appendChild(card);
+              if (viewObserver) {
+                viewObserver.observe(card);
+              }
               setupIntersectionObserver(); // Re-setup for new post
             }
           }
