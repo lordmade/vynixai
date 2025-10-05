@@ -166,6 +166,7 @@
       overflow: hidden;
       border: 1px solid var(--border);
       margin-bottom: 8px;
+      position: relative;
     }
     .post-card:hover, .ad-card:hover {
       transform: translateY(-2px);
@@ -249,6 +250,31 @@
       font-size: 11px;
       font-weight: 600;
       backdrop-filter: blur(10px);
+    }
+    .subscribe-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: var(--gradient);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .subscribe-btn.subscribed {
+      background: white;
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+    .subscribe-btn:hover {
+      transform: scale(1.05);
+    }
+    .subscribe-btn.subscribed:hover {
+      background: rgba(0, 0, 0, 0.05);
     }
     .ad-card .ad-thumbnail ins {
       display: block;
@@ -1168,6 +1194,50 @@
       }
     }
 
+    async function toggleSubscribe(userId, btn) {
+      if (!currentUser) {
+        showAlert('Please log in to subscribe.');
+        return;
+      }
+      try {
+        const subRef = ref(db, `users/${userId}/subscribers/${currentUser.uid}`);
+        const snapshot = await get(subRef);
+        const isSubscribed = snapshot.exists();
+        if (isSubscribed) {
+          await set(subRef, null);
+          document.querySelectorAll(`.subscribe-btn[data-user-id="${userId}"]`).forEach(b => {
+            b.textContent = 'Subscribe';
+            b.classList.remove('subscribed');
+          });
+          showAlert('Unsubscribed.');
+        } else {
+          await set(subRef, true);
+          document.querySelectorAll(`.subscribe-btn[data-user-id="${userId}"]`).forEach(b => {
+            b.textContent = 'Subscribed';
+            b.classList.add('subscribed');
+          });
+          showAlert('Subscribed!');
+          const userRef = ref(db, `users/${userId}`);
+          const userSnap = await get(userRef);
+          const userData = userSnap.val();
+          if (userData) {
+            const notifKey = `subscribe_${userId}_${Date.now()}`;
+            const notifRef = ref(db, `users/${userId}/notifications/${notifKey}`);
+            await set(notifRef, {
+              type: 'subscribe',
+              subscriberId: currentUser.uid,
+              message: `${currentUser.displayName || 'Someone'} subscribed to you.`,
+              timestamp: new Date().toISOString(),
+              read: false
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error toggling subscribe:', error);
+        showAlert('Failed to update subscription. Please try again.');
+      }
+    }
+
     function initializeFirebase() {
       try {
         app = initializeApp(firebaseConfig);
@@ -1484,6 +1554,7 @@
           const isVerified = subscriberCount >= 500;
           const isLive = userData?.isLive || false;
           const isOwner = currentUser && currentUser.uid === post.userId;
+          const isSubscribed = currentUser && post.userId !== currentUser.uid && userData?.subscribers && userData.subscribers[currentUser.uid];
           const card = document.createElement('div');
           card.className = 'post-card';
           card.style.cursor = 'pointer';
@@ -1491,13 +1562,18 @@
           card.dataset.postId = post.postId;
           card.dataset.mediaType = post.mediaType;
           card.addEventListener('click', (e) => {
-            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn')) {
+            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn') && !e.target.closest('.subscribe-btn')) {
               if (card.dataset.mediaType === 'video') {
                 logEvent(analytics, 'post_click', { post_id: post.postId });
                 window.location.href = `videoplay.html?videoId=${post.postId}`;
               }
             }
           });
+
+          let subscribeHtml = '';
+          if (currentUser && post.userId !== currentUser.uid) {
+            subscribeHtml = `<button class="subscribe-btn ${isSubscribed ? 'subscribed' : ''}" data-user-id="${post.userId}">${isSubscribed ? 'Subscribed' : 'Subscribe'}</button>`;
+          }
 
           let thumbnailHtml = '';
           const mediaURLs = post.mediaURLs || [];
@@ -1548,6 +1624,7 @@
             rightButtons = `<button class="delete-btn material-icons text-base" data-post-id="${post.postId}" title="Delete" aria-label="Delete" style="min-height:44px; min-width:44px; margin-left: auto; font-size: 24px;">delete</button>${rightButtons}`;
           }
           card.innerHTML = `
+            ${subscribeHtml}
             ${thumbnailHtml}
             <div class="flex mt-3 p-4">
               ${avatarHtml}
@@ -2168,6 +2245,14 @@
           const postId = e.target.closest('.delete-btn').getAttribute('data-post-id');
           if (postId) {
             showConfirm('Delete Post', 'Are you sure you want to delete this post?', () => deletePost(postId));
+          }
+        }
+        if (e.target.closest('.subscribe-btn')) {
+          e.stopPropagation();
+          const btn = e.target.closest('.subscribe-btn');
+          const userId = btn.getAttribute('data-user-id');
+          if (userId) {
+            toggleSubscribe(userId, btn);
           }
         }
         if (e.target.closest('.like-btn')) {
