@@ -1745,7 +1745,7 @@
         adCard.innerHTML = `
           <div class="ad-badge">Sponsored</div>
           <div class="ad-thumbnail">
-            <img src="${randomAd.mediaURL}?w=320&h=180" alt="${randomAd.title || 'Ad'}" class="thumbnail">
+            <img src="${randomAd.mediaURL}?w=320&h=180" alt="${randomAd.title || 'Ad'}" class="thumbnail" loading="lazy">
           </div>
           <div class="flex mt-3">
             <div class="h-10 w-10 rounded-full mr-3 avatar" style="font-size: 14px;">${randomAd.displayName ? randomAd.displayName[0].toUpperCase() : 'A'}</div>
@@ -1978,7 +1978,7 @@
           } else if (mediaType === 'video') {
             const videoUrl = mediaURLs[0];
             thumbnailHtml = `
-              <video class="video-player" muted playsinline loop src="${videoUrl}" title="${post.caption || 'Video'}"></video>
+              <video class="video-player" muted playsinline loop src="${videoUrl}" title="${post.caption || 'Video'}" loading="lazy" preload="none"></video>
             `;
           } else if (mediaType === 'image' || mediaType === 'carousel') {
             if (mediaType === 'carousel' && mediaURLs.length > 1) {
@@ -1991,19 +1991,20 @@
                 img.className = 'carousel-image';
                 img.src = `${url}?w=320&h=180`;
                 img.alt = 'Post image';
+                img.loading = 'lazy'; // Lazy load for carousel images
                 imagesDiv.appendChild(img);
               });
               carouselDiv.appendChild(imagesDiv);
               initCarousel(carouselDiv, mediaURLs);
               thumbnailHtml = carouselDiv.outerHTML;
             } else {
-              thumbnailHtml = `<img class="thumbnail" src="${mediaURLs[0]}?w=320&h=180" alt="${post.caption || 'Image'}" />`;
+              thumbnailHtml = `<img class="thumbnail" src="${mediaURLs[0]}?w=320&h=180" alt="${post.caption || 'Image'}" loading="lazy" />`;
             }
           }
 
           let avatarHtml = '';
           if (userData?.photoURL) {
-            avatarHtml = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-10 w-10 rounded-full mr-3 relative">`;
+            avatarHtml = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'}" class="h-10 w-10 rounded-full mr-3 relative" loading="lazy">`;
             if (isLive) {
               avatarHtml = `<div class="relative">${avatarHtml}<div class="live-indicator"></div></div>`;
             }
@@ -2399,7 +2400,7 @@
 
         const avatarEl = document.getElementById('status-header-avatar');
         if (userData.photoURL) {
-          avatarEl.innerHTML = `<img src="${userData.photoURL}" alt="${userData.displayName}">`;
+          avatarEl.innerHTML = `<img src="${userData.photoURL}" alt="${userData.displayName}" loading="lazy">`;
         } else {
           const initial = userData.displayName ? userData.displayName[0].toUpperCase() : 'U';
           avatarEl.textContent = initial;
@@ -2440,6 +2441,7 @@
           img.className = 'carousel-image';
           img.src = status.url;
           img.alt = 'Status';
+          img.loading = 'lazy'; // Lazy load for status images
           imagesDiv.appendChild(img);
         });
 
@@ -2518,7 +2520,7 @@
           headerDiv.className = 'comment-header';
           const avatarEl = document.createElement('div');
           if (userData?.photoURL) {
-            avatarEl.innerHTML = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-8 w-8 rounded-full">`;
+            avatarEl.innerHTML = `<img src="${userData.photoURL}" alt="${userData.displayName || 'User'} avatar" class="h-8 w-8 rounded-full" loading="lazy">`;
           } else {
             const initial = userData?.displayName ? userData.displayName[0].toUpperCase() : 'U';
             avatarEl.className = 'avatar h-8 w-8';
@@ -2669,7 +2671,7 @@
           statusDiv.dataset.uid = uid;
           let avatarImg = '';
           if (userData.photoURL) {
-            avatarImg = `<img src="${userData.photoURL}" alt="${userData.displayName}" class="status-avatar">`;
+            avatarImg = `<img src="${userData.photoURL}" alt="${userData.displayName}" class="status-avatar" loading="lazy">`;
           } else {
             const initial = userData.displayName ? userData.displayName[0].toUpperCase() : 'U';
             avatarImg = `<div class="status-avatar">${initial}</div>`;
@@ -2697,6 +2699,58 @@
         const unsub = onValue(statusesRef, () => loadStatuses());
         unsubscribes.push(unsub);
       });
+    }
+
+    // Service Worker Registration
+    async function registerServiceWorker() {
+      if ('serviceWorker' in navigator) {
+        try {
+          const swCode = `
+            const CACHE_NAME = 'banterbox-v1';
+            const urlsToCache = [
+              './',
+              'https://cdn.tailwindcss.com',
+              'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js',
+              'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js',
+              'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js',
+              'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js',
+              'https://fonts.googleapis.com/icon?family=Material+Icons',
+              'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=pub-1322747625222761'
+            ];
+
+            self.addEventListener('install', (event) => {
+              event.waitUntil(
+                caches.open(CACHE_NAME)
+                  .then((cache) => cache.addAll(urlsToCache))
+              );
+            });
+
+            self.addEventListener('fetch', (event) => {
+              event.respondWith(
+                caches.match(event.request)
+                  .then((response) => {
+                    // Cache posts dynamically if it's a Firebase API call
+                    if (event.request.url.includes('firebaseio.com') && event.request.method === 'GET') {
+                      return fetch(event.request).then((networkResponse) => {
+                        if (networkResponse.ok) {
+                          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse.clone()));
+                        }
+                        return networkResponse;
+                      });
+                    }
+                    return response || fetch(event.request);
+                  })
+              );
+            });
+          `;
+          const swBlob = new Blob([swCode], { type: 'application/javascript' });
+          const swUrl = URL.createObjectURL(swBlob);
+          const registration = await navigator.serviceWorker.register(swUrl);
+          console.log('SW registered:', registration);
+        } catch (error) {
+          console.error('SW registration failed:', error);
+        }
+      }
     }
 
     function setupEventListeners() {
@@ -2972,6 +3026,7 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
       try {
+        registerServiceWorker(); // Register SW for caching/offline
         initializeFirebase();
         setupEventListeners();
         logEvent(analytics, 'screen_view', { screen_name: 'subscriptions' });
