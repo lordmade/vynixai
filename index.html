@@ -1627,14 +1627,17 @@
       updateCarousel();
     }
 
-    function setupVideoPlayer(card) {
+    // Tweaked: Simplified video setup—observe immediately after creation, no redundant checks.
+    function setupVideoPlayer(card, postId) {
       const wrapper = card.querySelector('.video-wrapper');
       if (!wrapper) return;
+      wrapper.dataset.postId = postId; // Ensure postId is set for logging.
       const video = wrapper.querySelector('.video-player');
       const overlay = wrapper.querySelector('.play-overlay');
       const playBtn = wrapper.querySelector('.play-again-btn');
       if (!video || !overlay) return;
 
+      video.preload = 'metadata'; // Lighter preload for better perf.
       video.removeAttribute('loop');
       video.addEventListener('play', () => overlay.classList.add('hidden'));
       video.addEventListener('pause', () => overlay.classList.remove('hidden'));
@@ -1647,12 +1650,17 @@
       if (playBtn) {
         playBtn.addEventListener('click', (e) => {
           e.stopPropagation();
+          // Pause others when replaying this one.
+          document.querySelectorAll('video.video-player').forEach(v => {
+            if (v !== video) v.pause();
+          });
           video.play().catch((error) => {
             console.error('Error replaying video:', error);
           });
         });
       }
 
+      // Observe immediately if observer exists, or queue for later.
       if (videoObserver) {
         videoObserver.observe(video);
       }
@@ -1700,8 +1708,8 @@
             const uploadParts = videoUrl.split('/upload/');
             const thumbUrl = `${uploadParts[0]}/upload/so_1,fl_snoop,w_320,h_180,c_fill/${uploadParts[1]}`;
             thumbnailHtml = `
-              <div class="video-wrapper" data-post-id="${post.postId}">
-                <video class="video-player" muted playsinline poster="${thumbUrl}" preload="auto" src="${videoUrl}" title="${post.caption || 'Video'}"></video>
+              <div class="video-wrapper">
+                <video class="video-player" muted playsinline poster="${thumbUrl}" preload="metadata" src="${videoUrl}" title="${post.caption || 'Video'}"></video>
                 <div class="play-overlay">
                   <button class="play-again-btn">
                     <span class="material-icons" style="font-size: 20px;">play_arrow</span>
@@ -1776,9 +1784,47 @@
               </button>
             </div>
           `;
+          // Setup video observer right after HTML insertion.
+          if (mediaType === 'video') {
+            setupVideoPlayer(card, post.postId);
+          }
           resolve({ card, userData });
         }, { onlyOnce: true });
       });
+    }
+
+    // Tweaked: Higher threshold (0.6) for better "focus" detection. Pause others when one plays.
+    function setupIntersectionObserver() {
+      if (videoObserver) {
+        videoObserver.disconnect();
+      }
+      videoObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            const video = entry.target;
+            const wrapper = video.closest('.video-wrapper');
+            const postId = wrapper ? wrapper.dataset.postId : null;
+            if (entry.isIntersecting) {
+              // Pause all other videos before playing this one.
+              document.querySelectorAll('video.video-player').forEach(v => {
+                if (v !== video && !v.paused) v.pause();
+              });
+              video.play().catch((error) => {
+                console.error('Error playing video:', error.message, error.stack);
+              });
+              if (postId) {
+                logEvent(analytics, 'video_start', { post_id: postId });
+              }
+            } else {
+              video.pause();
+            }
+          });
+        },
+        { threshold: 0.6 } // Tweaked: Higher for center-focus autoplay.
+      );
+      // Observe all existing videos once.
+      const videos = document.querySelectorAll('video.video-player');
+      videos.forEach((video) => videoObserver.observe(video));
     }
 
     async function loadPostsInitial(searchQuery = '') {
@@ -1827,15 +1873,12 @@
           postDataMap[post.postId] = post;
           cardMap[post.postId] = card;
           postGrid.appendChild(card);
-          if (post.mediaType === 'video') {
-            setupVideoPlayer(card);
-          }
           postCount++;
           if (postCount % 3 === 0) {
             postGrid.appendChild(createAdCard());
           }
         }
-        setupIntersectionObserver();
+        setupIntersectionObserver(); // Setup once after all initial cards.
         setupViewObserver();
         hideSpinner();
       } catch (error) {
@@ -1863,18 +1906,19 @@
             updateCardCounts(post.postId);
           } else {
             // Add new card
-            const { card } = await createPostCard(post);
+            const { card } = await createPostCard(post); // setupVideoPlayer called inside.
             cardMap[post.postId] = card;
             const postGrid = document.getElementById('post-grid');
             if (postGrid) {
               postGrid.appendChild(card);
-              if (post.mediaType === 'video') {
-                setupVideoPlayer(card);
-              }
               if (viewObserver) {
                 viewObserver.observe(card);
               }
-              setupIntersectionObserver(); // Re-setup for new post
+              // Tweaked: No full re-setup; just observe new video if any.
+              const newVideo = card.querySelector('video.video-player');
+              if (newVideo && videoObserver) {
+                videoObserver.observe(newVideo);
+              }
             }
           }
         }
@@ -1909,34 +1953,6 @@
         console.error('Error loading posts:', error.message, error.stack);
         showAlert('Failed to load posts. Try again.');
       });
-    }
-
-    function setupIntersectionObserver() {
-      if (videoObserver) {
-        videoObserver.disconnect();
-      }
-      const videos = document.querySelectorAll('video.video-player');
-      videoObserver = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            const video = entry.target;
-            const wrapper = video.closest('.video-wrapper');
-            const postId = wrapper ? wrapper.dataset.postId : null;
-            if (entry.isIntersecting) {
-              video.play().catch((error) => {
-                console.error('Error playing video:', error.message, error.stack);
-              });
-              if (postId) {
-                logEvent(analytics, 'video_start', { post_id: postId });
-              }
-            } else {
-              video.pause();
-            }
-          });
-        },
-        { threshold: 0.3 }
-      );
-      videos.forEach((video) => videoObserver.observe(video));
     }
 
     async function uploadMedia(file) {
