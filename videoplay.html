@@ -791,7 +791,7 @@
   <main class="video-player">
     <div class="main-content">
       <div class="video-container">
-        <video id="video-player" autoplay playsinline aria-label="Video player" loop>
+        <video id="video-player" autoplay muted playsinline aria-label="Video player" loop>
           <track id="subtitle-track" kind="subtitles" srclang="en" label="English" default>
         </video>
         <div id="video-spinner-overlay" class="video-spinner-overlay">
@@ -867,7 +867,7 @@
     <div id="comments-list" class="flex flex-col gap-2"></div>
     <div class="sheet-footer">
       <form id="comment-form" class="comment-form">
-        <textarea id="comment-input" class="comment-input" placeholder="Add a comment..." aria-label="Comment input"></textarea>
+        <textarea id="comment-input" class="comment-input" placeholder="Add a comment..." aria-label="Comment input" maxlength="500"></textarea>
         <button type="submit" class="comment-submit" title="Post comment">
           <span class="material-icons text-sm">send</span>
         </button>
@@ -906,6 +906,8 @@
     let app, auth, db, currentUser, videoId, videoDataGlobal, unsubscribes = [];
 
     const PREVIEW_DURATION = 5; // seconds
+    const SWIPE_THRESHOLD = 50; // pixels
+    const BOTTOM_SWIPE_ZONE = 100; // pixels from bottom
 
     const showSpinner = () => {
       document.getElementById('spinner-overlay').classList.add('active');
@@ -1430,12 +1432,42 @@
       }
     }
 
+    // Orientation change handler
+    function handleOrientation() {
+      setTimeout(() => {
+        updateLayoutPadding();
+      }, 150); // Delay to allow iOS to settle
+    }
+
+    function updateLayoutPadding() {
+      const videoPlayer = document.querySelector('.video-player');
+      const bottomSheet = document.querySelector('.bottom-sheet');
+      const suggestedVideos = document.querySelector('.suggested-videos');
+      const isDesktop = window.innerWidth >= 1024;
+      const isLandscape = window.orientation === 90 || window.orientation === -90 || window.innerHeight < window.innerWidth;
+      const isCollapsed = bottomSheet.classList.contains('collapsed');
+
+      if (isDesktop) {
+        videoPlayer.style.paddingBottom = isCollapsed ? '30vh' : '30vh';
+      } else {
+        // Mobile: Adjust based on orientation and sheet state
+        if (isCollapsed) {
+          videoPlayer.style.paddingBottom = isLandscape ? '20vh' : '0'; // Less padding in landscape when collapsed
+        } else {
+          videoPlayer.style.paddingBottom = isLandscape ? '20vh' : '40vh';
+        }
+        if (!isCollapsed) {
+          suggestedVideos.classList.remove('active');
+        } else {
+          suggestedVideos.classList.add('active');
+        }
+      }
+    }
+
     // Swipe gesture for bottom sheet (bidirectional)
     let touchStartY = 0;
     let touchStartX = 0;
     let touchCurrentY = 0;
-    const SWIPE_THRESHOLD = 50; // pixels
-    const BOTTOM_SWIPE_ZONE = 100; // pixels from bottom
 
     function handleTouchStart(e) {
       touchStartY = e.touches[0].clientY;
@@ -1457,15 +1489,13 @@
           // Upward swipe to open
           bottomSheet.classList.remove('collapsed');
           document.getElementById('toggle-comments').textContent = 'keyboard_arrow_up';
-          document.querySelector('.video-player').style.paddingBottom = window.innerWidth >= 1024 ? '30vh' : '40vh';
-          document.querySelector('.suggested-videos').classList.remove('active');
+          updateLayoutPadding();
           document.querySelectorAll('.suggested-video-preview video').forEach(v => v.pause());
         } else if (deltaY < 0 && !bottomSheet.classList.contains('collapsed')) {
           // Downward swipe to close
           bottomSheet.classList.add('collapsed');
           document.getElementById('toggle-comments').textContent = 'keyboard_arrow_down';
-          document.querySelector('.video-player').style.paddingBottom = '0';
-          document.querySelector('.suggested-videos').classList.add('active');
+          updateLayoutPadding();
           document.querySelectorAll('.suggested-video-preview video').forEach(v => {
             if (v.paused) {
               v.currentTime = 0;
@@ -1490,6 +1520,9 @@
       document.getElementById('subtitle-btn').addEventListener('click', toggleSubtitles);
       document.getElementById('loop-btn').addEventListener('click', toggleLoop);
 
+      // Initial layout update
+      updateLayoutPadding();
+
       // Bottom sheet elements
       const bottomSheet = document.querySelector('.bottom-sheet');
       const toggleBtn = document.getElementById('toggle-comments');
@@ -1502,8 +1535,7 @@
         if (bottomSheet.classList.contains('collapsed')) {
           bottomSheet.classList.remove('collapsed');
           toggleBtn.textContent = 'keyboard_arrow_up';
-          videoPlayer.style.paddingBottom = window.innerWidth >= 1024 ? '30vh' : '40vh';
-          suggestedVideos.classList.remove('active');
+          updateLayoutPadding();
           // Pause previews
           document.querySelectorAll('.suggested-video-preview video').forEach(v => v.pause());
         }
@@ -1514,15 +1546,13 @@
         if (isExpanded) {
           bottomSheet.classList.remove('collapsed');
           toggleBtn.textContent = 'keyboard_arrow_up';
-          videoPlayer.style.paddingBottom = window.innerWidth >= 1024 ? '30vh' : '40vh';
-          suggestedVideos.classList.remove('active');
+          updateLayoutPadding();
           // Pause previews
           document.querySelectorAll('.suggested-video-preview video').forEach(v => v.pause());
         } else {
           bottomSheet.classList.add('collapsed');
           toggleBtn.textContent = 'keyboard_arrow_down';
-          videoPlayer.style.paddingBottom = '0';
-          suggestedVideos.classList.add('active');
+          updateLayoutPadding();
           if (videoPlayer.classList.contains('collapsed')) {
             videoPlayer.classList.remove('collapsed');
           }
@@ -1540,6 +1570,10 @@
       document.addEventListener('touchstart', handleTouchStart, { passive: true });
       document.addEventListener('touchmove', handleTouchMove, { passive: false });
       document.addEventListener('touchend', handleTouchEnd, { passive: true });
+
+      // Orientation and resize listeners for iOS
+      window.addEventListener('orientationchange', handleOrientation);
+      window.addEventListener('resize', handleOrientation);
 
       // Load suggested videos
       loadSuggestedVideos();
@@ -1614,30 +1648,48 @@
       video.addEventListener('playing', hideVideoSpinner);
       video.addEventListener('canplay', hideVideoSpinner);
 
-      // Fullscreen functionality
+      // Fullscreen functionality with iOS support
       const fullscreenBtn = document.getElementById('fullscreen-btn');
 
       function toggleFullscreen() {
-        if (!document.fullscreenElement) {
-          videoContainer.requestFullscreen().catch(err => {
-            console.error('Error entering fullscreen:', err);
-          });
+        if (video.webkitSupportsFullscreen) {
+          // iOS Safari
+          if (video.webkitDisplayingFullscreen) {
+            video.webkitExitFullscreen();
+            fullscreenBtn.textContent = 'fullscreen';
+            fullscreenBtn.title = 'Fullscreen';
+          } else {
+            video.webkitEnterFullscreen();
+            fullscreenBtn.textContent = 'fullscreen_exit';
+            fullscreenBtn.title = 'Exit Fullscreen';
+          }
         } else {
-          document.exitFullscreen();
+          // Standard fullscreen
+          if (!document.fullscreenElement) {
+            videoContainer.requestFullscreen().catch(err => {
+              console.error('Error entering fullscreen:', err);
+            });
+          } else {
+            document.exitFullscreen();
+          }
         }
       }
 
       fullscreenBtn.addEventListener('click', toggleFullscreen);
 
-      document.addEventListener('fullscreenchange', () => {
-        if (document.fullscreenElement) {
+      // Handle fullscreen change events (including webkit)
+      document.addEventListener('fullscreenchange', updateFullscreenButton);
+      document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+
+      function updateFullscreenButton() {
+        if (document.fullscreenElement || video.webkitDisplayingFullscreen) {
           fullscreenBtn.textContent = 'fullscreen_exit';
           fullscreenBtn.title = 'Exit Fullscreen';
         } else {
           fullscreenBtn.textContent = 'fullscreen';
           fullscreenBtn.title = 'Fullscreen';
         }
-      });
+      }
 
       // Custom seek bar functionality with improved touch handling
       const progressContainer = document.getElementById('progress-container');
