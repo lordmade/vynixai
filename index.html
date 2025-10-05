@@ -106,6 +106,7 @@
       background-color: var(--card-bg);
       border: 1px solid var(--border);
       overflow: hidden;
+      position: relative;
     }
     .post-card:hover, .ad-card:hover {
       transform: translateY(-2px);
@@ -182,10 +183,10 @@
     }
     .repost-attribution {
       background-color: rgba(0, 0, 0, 0.02);
-      border-bottom: 1px solid var(--border);
       padding: 8px 12px;
       font-size: 14px;
       color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
     }
     .repost-attribution strong {
       color: var(--accent);
@@ -196,6 +197,62 @@
       align-items: center;
       padding: 12px;
       gap: 12px;
+      position: relative;
+    }
+    .more-menu-btn {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      transition: background 0.2s, color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .more-menu-btn:hover {
+      background: rgba(0,0,0,0.05);
+      color: var(--text-primary);
+    }
+    .post-menu {
+      position: absolute;
+      top: 100%;
+      right: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 100;
+      min-width: 120px;
+      display: none;
+      flex-direction: column;
+    }
+    .post-menu.active {
+      display: flex;
+    }
+    .post-menu button {
+      padding: 12px 16px;
+      border: none;
+      background: none;
+      text-align: left;
+      cursor: pointer;
+      color: var(--text-primary);
+      transition: background 0.2s;
+      width: 100%;
+    }
+    .post-menu button:hover {
+      background: rgba(0,0,0,0.05);
+    }
+    .post-menu .delete-btn {
+      color: #ef4444;
+    }
+    .post-menu .delete-btn:hover {
+      background: rgba(239,68,68,0.1);
     }
     .post-content {
       padding: 0 12px 12px;
@@ -757,7 +814,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, query, orderByChild, get, onChildAdded, onChildChanged, onChildRemoved, push, set, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId, setUserProperties } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -773,10 +830,13 @@
 
     const CLOUDINARY_UPLOAD_PRESET = 'banter_box';
     const CLOUDINARY_CLOUD_NAME = 'dqkujefxj';
-    const CLOUDINARY_API_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/upload`;
+    const CLOUDINARY_IMAGE_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/upload`;
+    const CLOUDINARY_VIDEO_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
 
     let app, auth, db, analytics, currentUser, ads = [];
     let currentPostId = null;
+    let postElements = new Map();
+    let childListeners = null;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -805,6 +865,113 @@
       if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
       if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
       return count.toString();
+    }
+
+    function createPostCard(post, userData) {
+      const card = document.createElement('div');
+      card.className = 'post-card cursor-pointer';
+      card.dataset.postId = post.postId;
+      const isOwner = currentUser && currentUser.uid === post.userId;
+      const likes = post.likes || {};
+      const likeCount = Object.keys(likes).length;
+      const isLiked = likes[currentUser?.uid];
+      const commentCount = Object.keys(post.comments || {}).length;
+      const repostCount = Object.keys(post.reposts || {}).length;
+      let avatarHtml = '';
+      let headerHtml = '';
+      let caption = post.caption || '';
+      let mediaHtml = '';
+      let repostAttribution = '';
+      if (post.type === 'repost') {
+        const originalUser = post.originalUser || {};
+        avatarHtml = originalUser.photoURL ? `<img src="${originalUser.photoURL}" alt="${originalUser.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${originalUser.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
+        headerHtml = `
+          <div class="flex-1">
+            <h3 class="text-sm font-medium">${userData?.displayName || 'User'} reposted</h3>
+            <p class="text-xs text-gray-500"><strong>${originalUser.displayName || 'User'}</strong> • ${formatTimestamp(post.originalTimestamp)}</p>
+          </div>
+        `;
+        caption = post.originalCaption || '';
+        if (post.originalType === 'video') {
+          mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${post.originalMediaURL}?q=auto,f=auto,fl=progressive"></video>`;
+        } else if (post.originalType === 'image') {
+          mediaHtml = `<img src="${post.originalMediaURL}?q=auto,f=auto,w=400" alt="${caption}" class="post-media">`;
+        }
+      } else {
+        avatarHtml = userData?.photoURL ? `<img src="${userData.photoURL}" alt="${userData.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${userData?.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
+        headerHtml = `
+          <div class="flex-1">
+            <h3 class="text-sm font-medium">${userData?.displayName || 'Anonymous'} ${Object.keys(userData?.subscribers || {}).length >= 500 ? '<span class="verified-badge material-icons">verified</span>' : ''}</h3>
+            <p class="text-xs text-gray-500">${formatTimestamp(post.timestamp)}</p>
+          </div>
+        `;
+        if (post.type === 'video') {
+          mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${post.mediaURL}?q=auto,f=auto,fl=progressive"></video>`;
+        } else if (post.type === 'image') {
+          mediaHtml = `<img src="${post.mediaURL}?q=auto,f=auto,w=400" alt="${caption}" class="post-media">`;
+        }
+      }
+      const menuHtml = isOwner ? `
+        <div class="post-menu" data-post-id="${post.postId}">
+          <button class="delete-btn" onclick="deletePost('${post.postId}')">Delete Post</button>
+        </div>
+      ` : '';
+      card.innerHTML = `
+        ${mediaHtml ? `<div>${mediaHtml}</div>` : ''}
+        <div class="post-header">
+          ${avatarHtml}
+          ${headerHtml}
+          <button class="more-menu-btn" data-post-id="${post.postId}">
+            <span class="material-icons">more_vert</span>
+          </button>
+          ${menuHtml}
+        </div>
+        <div class="post-content">
+          <p class="text-sm">${caption}</p>
+        </div>
+        <div class="post-actions">
+          <button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike('${post.postId}')" data-post-id="${post.postId}">
+            <span class="material-icons">favorite</span>
+            <span class="action-count">${formatNumber(likeCount)}</span>
+          </button>
+          <button class="action-btn" onclick="openComments('${post.postId}')" data-post-id="${post.postId}">
+            <span class="material-icons">chat_bubble_outline</span>
+            <span class="action-count">${formatNumber(commentCount)}</span>
+          </button>
+          <button class="action-btn" onclick="repost('${post.postId}')">
+            <span class="material-icons">repeat</span>
+            <span class="action-count">${formatNumber(repostCount)}</span>
+          </button>
+        </div>
+      `;
+      card.addEventListener('click', (e) => {
+        if (!e.target.closest('.action-btn') && !e.target.closest('.more-menu-btn') && !e.target.closest('.post-menu') && !e.target.closest('.post-menu button')) {
+          logEvent(analytics, 'post_click', { post_id: post.postId });
+          window.location.href = `post.html?postId=${post.postId}`;
+        }
+      });
+      return card;
+    }
+
+    function updatePostCard(card, post) {
+      const likes = post.likes || {};
+      const likeCount = Object.keys(likes).length;
+      const isLiked = likes[currentUser?.uid];
+      const commentCount = Object.keys(post.comments || {}).length;
+      const repostCount = Object.keys(post.reposts || {}).length;
+      const likeBtn = card.querySelector('.action-btn[onclick*="toggleLike"]');
+      const commentBtn = card.querySelector('.action-btn[onclick*="openComments"]');
+      const repostBtn = card.querySelector('.action-btn[onclick*="repost"]');
+      if (likeBtn) {
+        likeBtn.classList.toggle('liked', isLiked);
+        likeBtn.querySelector('.action-count').textContent = formatNumber(likeCount);
+      }
+      if (commentBtn) {
+        commentBtn.querySelector('.action-count').textContent = formatNumber(commentCount);
+      }
+      if (repostBtn) {
+        repostBtn.querySelector('.action-count').textContent = formatNumber(repostCount);
+      }
     }
 
     function initializeFirebase() {
@@ -871,9 +1038,8 @@
         return;
       }
       try {
-        const likesRef = ref(db, `posts/${postId}/likes/${currentUser.uid}`);
         const postRef = ref(db, `posts/${postId}`);
-        const snapshot = await new Promise((resolve) => onValue(postRef, resolve, { onlyOnce: true }));
+        const snapshot = await get(postRef);
         const post = snapshot.val();
         const likes = post.likes || {};
         if (likes[currentUser.uid]) {
@@ -952,14 +1118,25 @@
       }
       try {
         const postRef = ref(db, `posts/${postId}`);
-        const snapshot = await new Promise((resolve) => onValue(postRef, resolve, { onlyOnce: true }));
-        const originalPost = snapshot.val();
+        const originalSnapshot = await get(postRef);
+        const originalPost = originalSnapshot.val();
+        const originalUserRef = ref(db, `users/${originalPost.userId}`);
+        const originalUserSnapshot = await get(originalUserRef);
+        const originalUser = originalUserSnapshot.val();
         const postsRef = ref(db, 'posts');
         const newPostRef = push(postsRef);
         await set(newPostRef, {
-          ...originalPost,
           type: 'repost',
           originalPostId: postId,
+          originalUserId: originalPost.userId,
+          originalUser: {
+            displayName: originalUser.displayName || 'Unknown',
+            photoURL: originalUser.photoURL || null
+          },
+          originalCaption: originalPost.caption || '',
+          originalMediaURL: originalPost.mediaURL,
+          originalType: originalPost.type,
+          originalTimestamp: originalPost.timestamp,
           userId: currentUser.uid,
           timestamp: new Date().toISOString(),
           likes: {},
@@ -971,6 +1148,25 @@
       } catch (error) {
         console.error('Error reposting:', error);
         showAlert('Failed to repost. Please try again.');
+      }
+    }
+
+    async function deletePost(postId) {
+      if (!currentUser) {
+        showAlert('Please log in to delete posts.');
+        return;
+      }
+      if (!confirm('Are you sure you want to delete this post?')) return;
+      try {
+        const postRef = ref(db, `posts/${postId}`);
+        await set(postRef, null);
+        logEvent(analytics, 'delete_post', { post_id: postId });
+        showAlert('Post deleted successfully!');
+        const menu = document.querySelector(`.post-menu[data-post-id="${postId}"]`);
+        if (menu) menu.classList.remove('active');
+      } catch (error) {
+        console.error('Error deleting post:', error.message, error.stack);
+        showAlert('Failed to delete post. Please try again.');
       }
     }
 
@@ -1027,131 +1223,126 @@
       }
     }
 
+    function openComments(postId) {
+      currentPostId = postId;
+      const sheet = document.getElementById('comments-sheet');
+      const input = document.getElementById('comment-input');
+      const submitBtn = document.getElementById('submit-comment');
+      if (sheet && input && submitBtn) {
+        sheet.classList.add('active');
+        lockScroll(true);
+        loadComments(postId);
+        submitBtn.onclick = () => {
+          const commentText = input.value;
+          if (commentText.trim()) addComment(postId, commentText);
+        };
+        input.onkeypress = (e) => {
+          if (e.key === 'Enter') submitBtn.click();
+        };
+      }
+    }
+
     async function loadPosts(searchQuery = '') {
       showSpinner();
-      const postsRef = ref(db, 'posts');
       const feed = document.getElementById('feed');
-      if (!feed) {
-        console.error('Feed element not found');
-        hideSpinner();
-        return;
+      postElements.clear();
+      if (childListeners) {
+        childListeners();
+        childListeners = null;
       }
+      feed.innerHTML = '';
+      const postsRef = ref(db, 'posts');
+      const q = query(postsRef, orderByChild('timestamp'));
       try {
-        onValue(postsRef, async (snapshot) => {
-          if (!snapshot.exists()) {
-            feed.innerHTML = '<p class="text-center text-gray-600">No posts available.</p>';
-            hideSpinner();
-            return;
-          }
-          let postArray = Object.entries(snapshot.val())
-            .map(([postId, postData]) => ({ postId, ...postData }))
-            .filter(post => post.type !== 'repost' || true) // Include reposts
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-          if (searchQuery) {
-            logEvent(analytics, 'search', { search_term: searchQuery });
-            postArray = postArray.filter(post => {
-              const captionMatch = post.caption?.toLowerCase().includes(searchQuery.toLowerCase());
-              // Simplified search, assume user data loaded later
-              return captionMatch;
+        if (searchQuery) {
+          logEvent(analytics, 'search', { search_term: searchQuery });
+          const snapshot = await get(q);
+          if (snapshot.exists()) {
+            let postArray = [];
+            snapshot.forEach((childSnap) => {
+              const post = { postId: childSnap.key, ...childSnap.val() };
+              const caption = (post.caption || post.originalCaption || '').toLowerCase();
+              if (caption.includes(searchQuery.toLowerCase())) {
+                postArray.push(post);
+              }
             });
+            postArray = postArray.reverse(); // desc
+            let index = 0;
+            for (const post of postArray) {
+              const userRef = ref(db, `users/${post.userId}`);
+              const userSnap = await get(userRef);
+              const userData = userSnap.val();
+              const card = createPostCard(post, userData);
+              feed.appendChild(card);
+              postElements.set(post.postId, card);
+              if (++index % 4 === 0) {
+                feed.appendChild(createAdCard());
+              }
+            }
           }
-
-          if (postArray.length > 1) {
-            // Shuffle for variety but keep recent first
-            postArray = postArray.slice(0, 5).concat(postArray.slice(5).sort(() => Math.random() - 0.5));
-          }
-
-          feed.innerHTML = ''; // Clear skeletons
-          let postCount = 0;
-          for (const post of postArray) {
-            const userRef = ref(db, `users/${post.userId}`);
-            await new Promise((resolve) => {
-              onValue(userRef, (userSnapshot) => {
-                const userData = userSnapshot.val();
-                const subscriberCount = Object.keys(userData?.subscribers || {}).length;
-                const isVerified = subscriberCount >= 500;
-                const isOwner = currentUser && currentUser.uid === post.userId;
-                const likes = post.likes || {};
-                const likeCount = Object.keys(likes).length;
-                const reposts = post.reposts || {};
-                const repostCount = Object.keys(reposts).length;
-                const isLiked = likes[currentUser?.uid];
-                const card = document.createElement('div');
-                card.className = 'post-card cursor-pointer';
-                let avatarHtml = userData?.photoURL ? `<img src="${userData.photoURL}" alt="${userData.displayName}" class="avatar rounded-full relative">` : `<div class="avatar relative">${userData?.displayName?.[0]?.toUpperCase() || 'U'}</div>`;
-                let mediaHtml = '';
-                if (post.type === 'video' || (post.type === 'repost' && post.originalPost?.type === 'video')) {
-                  const videoUrl = post.mediaURL || (post.originalPost?.mediaURL + '?q=auto,f=auto,fl=progressive');
-                  mediaHtml = `<video class="video-thumbnail post-media" muted loop playsinline data-post-id="${post.postId}" src="${videoUrl}"></video>`;
-                } else if (post.type === 'image' || (post.type === 'repost' && post.originalPost?.type === 'image')) {
-                  const imageUrl = post.mediaURL || (post.originalPost?.mediaURL + '?q=auto,f=auto,w=400');
-                  mediaHtml = `<img src="${imageUrl}" alt="${post.caption}" class="post-media">`;
-                } // Text only: no media
-                let repostAttribution = '';
-                if (post.type === 'repost') {
-                  repostAttribution = `
-                    <div class="repost-attribution">
-                      <strong onclick="window.location.href='profile.html?user=${post.originalUserId}'">${post.originalUser?.displayName || 'User'}</strong> posted
-                    </div>
-                  `;
-                }
-                const caption = post.type === 'repost' ? (post.originalPost?.caption || post.caption) : post.caption;
-                card.innerHTML = `
-                  ${repostAttribution}
-                  ${mediaHtml ? `<div>${mediaHtml}</div>` : ''}
-                  <div class="post-header">
-                    ${avatarHtml}
-                    <div class="flex-1">
-                      <h3 class="text-sm font-medium">${userData?.displayName || 'Anonymous'} ${isVerified ? '<span class="verified-badge material-icons">verified</span>' : ''}</h3>
-                      <p class="text-xs text-gray-500">${formatTimestamp(post.timestamp)}</p>
-                    </div>
-                  </div>
-                  <div class="post-content">
-                    <p class="text-sm">${caption || ''}</p>
-                  </div>
-                  <div class="post-actions">
-                    <button class="action-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike('${post.postId}')" data-post-id="${post.postId}">
-                      <span class="material-icons">favorite</span>
-                      <span class="action-count">${formatNumber(likeCount)}</span>
-                    </button>
-                    <button class="action-btn" onclick="openComments('${post.postId}')" data-post-id="${post.postId}">
-                      <span class="material-icons">chat_bubble_outline</span>
-                      <span class="action-count">${formatNumber(Object.keys(post.comments || {}).length)}</span>
-                    </button>
-                    <button class="action-btn" onclick="repost('${post.postId}')">
-                      <span class="material-icons">repeat</span>
-                      <span class="action-count">${formatNumber(repostCount)}</span>
-                    </button>
-                  </div>
-                `;
-                card.addEventListener('click', (e) => {
-                  if (!e.target.closest('.action-btn') && !e.target.closest('.repost-attribution strong')) {
-                    logEvent(analytics, 'post_click', { post_id: post.postId });
-                    window.location.href = `post.html?postId=${post.postId}`;
-                  }
-                });
-                feed.appendChild(card);
-                postCount++;
-                if (postCount % 4 === 0) {
-                  feed.appendChild(createAdCard());
-                }
-                resolve();
-              }, { onlyOnce: true });
-            });
-          }
-          setupIntersectionObserver();
           hideSpinner();
-        }, (error) => {
-          console.error('Error loading posts:', error.message, error.stack);
-          showAlert('Failed to load feed. Please try again.');
+          return;
+        }
+        const snapshot = await get(q);
+        if (!snapshot.exists()) {
           hideSpinner();
+          return;
+        }
+        let postArray = [];
+        snapshot.forEach((childSnap) => {
+          postArray.push({ postId: childSnap.key, ...childSnap.val() });
         });
+        postArray = postArray.reverse(); // desc
+        let index = 0;
+        for (const post of postArray) {
+          const userRef = ref(db, `users/${post.userId}`);
+          const userSnap = await get(userRef);
+          const userData = userSnap.val();
+          const card = createPostCard(post, userData);
+          feed.appendChild(card);
+          postElements.set(post.postId, card);
+          if (++index % 4 === 0) {
+            feed.appendChild(createAdCard());
+          }
+        }
+        setupChildListeners(postsRef);
+        hideSpinner();
       } catch (error) {
-        console.error('Error fetching posts:', error.message, error.stack);
-        showAlert('Failed to load feed. Please check your connection.');
+        console.error('Error loading posts:', error);
+        showAlert('Failed to load feed. Please try again.');
         hideSpinner();
       }
+    }
+
+    function setupChildListeners(postsRef) {
+      childListeners = onChildAdded(postsRef.orderByChild('timestamp'), (snap) => {
+        const newPost = { postId: snap.key, ...snap.val() };
+        const userRef = ref(db, `users/${newPost.userId}`);
+        get(userRef).then((userSnap) => {
+          const userData = userSnap.val();
+          const card = createPostCard(newPost, userData);
+          const feed = document.getElementById('feed');
+          feed.insertBefore(card, feed.firstChild);
+          postElements.set(newPost.postId, card);
+        });
+      });
+
+      onChildChanged(postsRef, (snap) => {
+        const changedPost = { postId: snap.key, ...snap.val() };
+        const card = postElements.get(changedPost.postId);
+        if (card) {
+          updatePostCard(card, changedPost);
+        }
+      });
+
+      onChildRemoved(postsRef, (snap) => {
+        const postId = snap.key;
+        const card = postElements.get(postId);
+        if (card && card.parentNode) {
+          card.parentNode.removeChild(card);
+        }
+        postElements.delete(postId);
+      });
     }
 
     function setupIntersectionObserver() {
@@ -1174,25 +1365,6 @@
       videos.forEach((video) => observer.observe(video));
     }
 
-    function openComments(postId) {
-      currentPostId = postId;
-      const sheet = document.getElementById('comments-sheet');
-      const input = document.getElementById('comment-input');
-      const submitBtn = document.getElementById('submit-comment');
-      if (sheet && input && submitBtn) {
-        sheet.classList.add('active');
-        lockScroll(true);
-        loadComments(postId);
-        submitBtn.onclick = () => {
-          const commentText = input.value;
-          if (commentText.trim()) addComment(postId, commentText);
-        };
-        input.onkeypress = (e) => {
-          if (e.key === 'Enter') submitBtn.click();
-        };
-      }
-    }
-
     async function handlePostCreation(e) {
       e.preventDefault();
       if (!currentUser) {
@@ -1213,14 +1385,14 @@
           formData.append('file', mediaFile);
           formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
           formData.append('folder', `posts/${currentUser.uid}`);
-          if (mediaFile.type.startsWith('video/')) {
-            formData.append('resource_type', 'video');
-            mediaType = 'video';
-          } else {
-            mediaType = 'image';
+          mediaType = mediaFile.type.startsWith('video/') ? 'video' : 'image';
+          const uploadUrl = mediaType === 'video' ? CLOUDINARY_VIDEO_URL : CLOUDINARY_IMAGE_URL;
+          formData.append('resource_type', mediaType);
+          formData.append('transformation', 'q_auto,f_auto,fl_progressive');
+          if (mediaType === 'video') {
+            formData.append('transformation', 'q_auto,f_auto,fl_progressive,vf_auto');
           }
-          formData.append('transformation', 'q_auto,f_auto,fl_progressive'); // Compress
-          const response = await fetch(CLOUDINARY_API_URL, { method: 'POST', body: formData });
+          const response = await fetch(uploadUrl, { method: 'POST', body: formData });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error?.message || 'Upload failed');
           mediaURL = data.secure_url;
@@ -1296,9 +1468,13 @@
       document.addEventListener('contextmenu', (e) => e.preventDefault());
 
       if (searchInput) {
+        let searchTimeout;
         searchInput.addEventListener('input', (e) => {
-          const searchQuery = e.target.value.trim();
-          loadPosts(searchQuery);
+          clearTimeout(searchTimeout);
+          searchTimeout = setTimeout(() => {
+            const searchQuery = e.target.value.trim();
+            loadPosts(searchQuery);
+          }, 500);
         });
       }
 
@@ -1387,8 +1563,24 @@
         });
       }
 
-      // Close sheets on outside click
+      // Kebab menu handling
       document.addEventListener('click', (e) => {
+        if (e.target.closest('.more-menu-btn')) {
+          e.stopPropagation();
+          const btn = e.target.closest('.more-menu-btn');
+          const postId = btn.dataset.postId;
+          const menu = document.querySelector(`.post-menu[data-post-id="${postId}"]`);
+          if (menu) {
+            menu.classList.toggle('active');
+          }
+          // Close other menus
+          document.querySelectorAll('.post-menu.active').forEach(m => {
+            if (m.dataset.postId !== postId) m.classList.remove('active');
+          });
+        } else if (!e.target.closest('.post-menu')) {
+          document.querySelectorAll('.post-menu.active').forEach(m => m.classList.remove('active'));
+        }
+
         const postSheet = document.getElementById('post-sheet');
         const commentsSheet = document.getElementById('comments-sheet');
         const postBtn = document.getElementById('post-btn');
@@ -1418,6 +1610,7 @@
       try {
         initializeFirebase();
         setupEventListeners();
+        setupIntersectionObserver();
         logEvent(analytics, 'screen_view', { screen_name: 'home' });
       } catch (error) {
         console.error('DOMContentLoaded error:', error.message, error.stack);
