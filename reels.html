@@ -252,6 +252,29 @@
       backdrop-filter: blur(10px);
       transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
+    #header-user-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: white;
+      margin-left: auto;
+      margin-right: 8px;
+    }
+    .header-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      overflow: hidden;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .header-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
     .sidebar:hover ~ .header-reels {
       left: 220px;
     }
@@ -392,6 +415,19 @@
       backdrop-filter: blur(4px);
     }
     .spinner-overlay.active {
+      display: flex;
+    }
+    .buffering-spinner {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 4;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.5);
+    }
+    .buffering-spinner.active {
       display: flex;
     }
     .spinner {
@@ -601,6 +637,7 @@
     <button id="back-btn" title="Back to Home">
       <span class="material-icons">arrow_back</span>
     </button>
+    <div id="header-user-info"></div>
     <button id="add-reel-header" title="Add Reel">
       <span class="material-icons">add_circle</span>
     </button>
@@ -633,6 +670,9 @@
 
   <div class="reels-player-container" id="reels-player-container">
     <video id="reels-player" class="reels-player" muted playsinline loop></video>
+    <div id="buffering-spinner" class="buffering-spinner">
+      <div class="spinner"></div>
+    </div>
     <div class="reels-overlay"></div>
     <div class="reels-actions" id="reels-actions"></div>
     <div class="navigation-arrows">
@@ -743,6 +783,7 @@
     let reelUnsub = null;
     let currentCommentReelId = null;
     let unsubscribes = [];
+    let audioContext = null;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -783,6 +824,21 @@
       return `${diffDay}d ago`;
     }
 
+    function playBufferSound() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.5);
+    }
+
     async function getVideoDuration(file) {
       return new Promise((resolve, reject) => {
         const video = document.createElement('video');
@@ -799,22 +855,52 @@
       });
     }
 
-    function updateReelUI(reel) {
-      if (!reel) return;
+    function updatePlayer(reel) {
       const player = document.getElementById('reels-player');
-      const userInfo = document.getElementById('reels-user-info');
-      const actions = document.getElementById('reels-actions');
-      if (player) {
+      if (player && player.src !== reel.videoURL) {
         player.src = reel.videoURL;
         player.load();
         player.play().catch(e => console.error('Play error:', e));
       }
+    }
+
+    function updateUserInfo(reel) {
+      if (!reel) return;
+      const userInfo = document.getElementById('reels-user-info');
       if (userInfo) {
         userInfo.innerHTML = `
           <span class="reels-username">${reel.username || 'User'}</span>
           <span class="reels-description">${reel.caption || ''}</span>
         `;
       }
+      const headerUser = document.getElementById('header-user-info');
+      if (headerUser && reel.username) {
+        headerUser.innerHTML = '';
+        const avatarEl = document.createElement('div');
+        avatarEl.className = 'header-avatar';
+        if (reel.photoURL) {
+          const img = document.createElement('img');
+          img.src = reel.photoURL;
+          img.alt = `${reel.username} avatar`;
+          img.classList.add('w-full', 'h-full', 'object-cover');
+          avatarEl.appendChild(img);
+        } else {
+          const initial = reel.username[0].toUpperCase();
+          avatarEl.classList.add('avatar');
+          avatarEl.style.fontSize = '14px';
+          avatarEl.textContent = initial;
+        }
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'text-sm font-semibold whitespace-nowrap';
+        nameSpan.textContent = reel.username;
+        headerUser.appendChild(avatarEl);
+        headerUser.appendChild(nameSpan);
+      }
+    }
+
+    function updateActions(reel) {
+      if (!reel) return;
+      const actions = document.getElementById('reels-actions');
       if (actions) {
         const likeCount = formatNumber(Object.keys(reel.likes || {}).length);
         const isLiked = currentUser && reel.likes && reel.likes[currentUser.uid];
@@ -841,7 +927,9 @@
       if (index < 0 || index >= allReels.length) return;
       currentReelIndex = index;
       currentReelId = allReels[index].reelId;
-      updateReelUI(allReels[index]);
+      updatePlayer(allReels[index]);
+      updateUserInfo(allReels[index]);
+      updateActions(allReels[index]);
       logEvent(analytics, 'view_reel', { reel_id: currentReelId });
     }
 
@@ -911,7 +999,7 @@
             const userRef = ref(db, `users/${data.userId}`);
             return get(userRef).then(userSnap => {
               const userData = userSnap.val();
-              return { reelId: key, ...data, username: userData?.displayName || 'User' };
+              return { reelId: key, ...data, username: userData?.displayName || 'User', photoURL: userData?.photoURL || null };
             });
           });
         allReels = await Promise.all(reelPromises);
@@ -1025,22 +1113,35 @@
     function setupReelsListener() {
       if (reelUnsub) reelUnsub();
       const reelsRef = ref(db, 'reels');
-      reelUnsub = onValue(reelsRef, async (snapshot) => {
+      reelUnsub = onValue(reelsRef, (snapshot) => {
         if (snapshot.exists()) {
-          const reelsData = snapshot.val();
-          const reelPromises = Object.entries(reelsData)
-            .map(([key, data]) => {
+          const newReelsData = snapshot.val();
+          // Update existing reels
+          allReels = allReels.map(reel => {
+            const newData = newReelsData[reel.reelId];
+            if (newData) {
+              return { ...reel, ...newData };
+            }
+            return reel;
+          });
+          // Add new reels
+          Object.entries(newReelsData).forEach(([key, data]) => {
+            if (!allReels.find(r => r.reelId === key)) {
               const userRef = ref(db, `users/${data.userId}`);
-              return get(userRef).then(userSnap => {
-                const userData = userSnap.val();
-                return { reelId: key, ...data, username: userData?.displayName || 'User' };
-              });
-            });
-          const updatedReels = await Promise.all(reelPromises);
-          updatedReels.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-          allReels = updatedReels;
-          if (currentReelIndex >= 0 && currentReelIndex < allReels.length) {
-            updateReelUI(allReels[currentReelIndex]);
+              get(userRef).then(userSnap => {
+                if (userSnap.exists()) {
+                  const userData = userSnap.val();
+                  const newReel = { reelId: key, ...data, username: userData?.displayName || 'User', photoURL: userData?.photoURL || null };
+                  allReels.push(newReel);
+                  allReels.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                }
+              }).catch(err => console.error('Error fetching user for new reel:', err));
+            }
+          });
+          // Update current reel UI without reloading player
+          if (currentReelIndex >= 0 && currentReelIndex < allReels.length && allReels[currentReelIndex].reelId === currentReelId) {
+            updateUserInfo(allReels[currentReelIndex]);
+            updateActions(allReels[currentReelIndex]);
           }
         }
       });
@@ -1244,6 +1345,8 @@
       const commentForm = document.getElementById('comment-form');
       const commentInput = document.getElementById('comment-input');
       const commentSubmit = document.querySelector('.comment-submit');
+      const player = document.getElementById('reels-player');
+      const bufferingSpinner = document.getElementById('buffering-spinner');
 
       if (backBtn) backBtn.addEventListener('click', () => window.location.href = 'play.html');
       if (addReelHeader) addReelHeader.addEventListener('click', () => uploadSheet.classList.add('active'));
@@ -1274,6 +1377,15 @@
       }
       if (commentForm) {
         commentForm.addEventListener('submit', handleQuickComment);
+      }
+      if (player && bufferingSpinner) {
+        player.addEventListener('waiting', () => {
+          bufferingSpinner.classList.add('active');
+          playBufferSound();
+        });
+        player.addEventListener('playing', () => {
+          bufferingSpinner.classList.remove('active');
+        });
       }
 
       // Global click for actions
