@@ -725,6 +725,24 @@
       text-align: center;
       z-index: 2;
     }
+    #upload-progress {
+      position: fixed;
+      top: 72px;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: var(--border);
+      z-index: 15;
+    }
+    #upload-progress.hidden {
+      display: none;
+    }
+    #progress-fill {
+      height: 100%;
+      background: var(--gradient);
+      width: 0%;
+      transition: width 0.1s ease;
+    }
   </style>
 </head>
 <body>
@@ -741,6 +759,10 @@
       <span class="material-icons">add_circle</span>
     </button>
   </header>
+
+  <div id="upload-progress" class="hidden">
+    <div id="progress-fill"></div>
+  </div>
 
   <nav class="sidebar" id="sidebar">
     <div style="display: flex; flex-direction: column; gap: 8px; padding: 8px;">
@@ -891,6 +913,16 @@
     let currentCommentReelId = null;
     let unsubscribes = [];
     let audioContext = null;
+
+    function shuffleArray(array) {
+      let currentIndex = array.length;
+      while (currentIndex > 0) {
+        const randomIndex = Math.floor(Math.random() * currentIndex);
+        currentIndex--;
+        [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+      }
+      return array;
+    }
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1127,6 +1159,7 @@
           });
         allReels = await Promise.all(reelPromises);
         allReels.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        shuffleArray(allReels);
         if (noReelsMsg) noReelsMsg.classList.add('hidden');
         if (allReels.length > 0) {
           const urlParams = new URLSearchParams(window.location.search);
@@ -1157,7 +1190,10 @@
         return;
       }
       const file = mediaFileInput.files[0];
-      showSpinner();
+      const progressBar = document.getElementById('upload-progress');
+      const fill = document.getElementById('progress-fill');
+      progressBar.classList.remove('hidden');
+      fill.style.width = '0%';
       try {
         const duration = await getVideoDuration(file);
         if (duration > 120) {
@@ -1180,6 +1216,7 @@
           shares: {},
           views: {}
         });
+        currentReelId = newReelRef.key;
 
         // Notify subscribers
         const subscribersRef = ref(db, `users/${currentUser.uid}/subscribers`);
@@ -1208,31 +1245,42 @@
         document.getElementById('upload-form').reset();
         document.getElementById('selected-files').textContent = '';
         document.getElementById('upload-sheet').classList.remove('active');
-        // Reload reels
-        await loadAllReels();
       } catch (error) {
         console.error('Error uploading reel:', error);
         showAlert('Failed to upload reel.');
       } finally {
-        hideSpinner();
+        progressBar.classList.add('hidden');
+        fill.style.width = '0%';
       }
     }
 
-    async function uploadMedia(file, folder = 'reels') {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-      formData.append('folder', `${folder}/${currentUser.uid}`);
-      formData.append('resource_type', 'video');
-      const response = await fetch(CLOUDINARY_VIDEO_URL, {
-        method: 'POST',
-        body: formData
+    function uploadMedia(file, folder = 'reels') {
+      return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+        formData.append('folder', `${folder}/${currentUser.uid}`);
+        formData.append('resource_type', 'video');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', CLOUDINARY_VIDEO_URL);
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percent = (e.loaded / e.total) * 100;
+            const fill = document.getElementById('progress-fill');
+            if (fill) fill.style.width = `${percent}%`;
+          }
+        });
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            resolve(data.secure_url);
+          } else {
+            reject(new Error('Upload failed'));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Upload error'));
+        xhr.send(formData);
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error?.message || 'Upload failed');
-      }
-      return data.secure_url;
     }
 
     function setupReelsListener() {
@@ -1257,8 +1305,12 @@
                 if (userSnap.exists()) {
                   const userData = userSnap.val();
                   const newReel = { reelId: key, ...data, username: userData?.displayName || 'User', photoURL: userData?.photoURL || null };
-                  allReels.push(newReel);
-                  allReels.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                  const randomIndex = Math.floor(Math.random() * (allReels.length + 1));
+                  allReels.splice(randomIndex, 0, newReel);
+                  if (currentReelId === key) {
+                    currentReelIndex = randomIndex;
+                    goToReel(currentReelIndex);
+                  }
                 }
               }).catch(err => console.error('Error fetching user for new reel:', err));
             }
