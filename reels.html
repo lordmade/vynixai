@@ -510,6 +510,7 @@
       z-index: 3;
       display: flex;
       align-items: center;
+      gap: 16px;
       backdrop-filter: blur(10px);
     }
     .comment-form {
@@ -520,7 +521,7 @@
       border: 1px solid rgba(255, 255, 255, 0.2);
       border-radius: 24px;
       padding: 8px 16px;
-      width: 100%;
+      flex: 1;
     }
     .comment-input {
       flex: 1;
@@ -643,6 +644,10 @@
   </div>
 
   <div id="comment-input-bar">
+    <button id="quick-like" class="action-btn-reel like-btn-reel" data-reel-id="">
+      <span class="material-icons">favorite_border</span>
+      <span class="action-count-reel like-count"></span>
+    </button>
     <form id="comment-form" class="comment-form">
       <textarea id="comment-input" class="comment-input" placeholder="Add comment to this reel..." aria-label="Add comment" maxlength="500"></textarea>
       <button type="submit" class="comment-submit" disabled title="Post">
@@ -681,7 +686,7 @@
     </div>
     <form id="upload-form" style="display: flex; flex-direction: column; gap: 16px; padding: 0 24px 24px;">
       <div>
-        <label for="media-files" style="display: block; font-size: 14px; font-weight: 500; margin-bottom: 8px;">Video (Max 15s)</label>
+        <label for="media-files" style="display: block; font-size: 14px; font-weight: 500; margin-bottom: 8px;">Video (Max 2min)</label>
         <button type="button" id="select-media">Choose Video</button>
         <input type="file" id="media-files" accept="video/*" capture="environment">
         <p id="selected-files" style="font-size: 14px; color: var(--text-secondary); margin-top: 8px;"></p>
@@ -777,6 +782,22 @@
       return `${diffDay}d ago`;
     }
 
+    async function getVideoDuration(file) {
+      return new Promise((resolve, reject) => {
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+        video.onloadedmetadata = () => {
+          window.URL.revokeObjectURL(video.src);
+          resolve(video.duration);
+        };
+        video.onerror = () => {
+          window.URL.revokeObjectURL(video.src);
+          reject(new Error('Error loading video metadata'));
+        };
+        video.src = URL.createObjectURL(file);
+      });
+    }
+
     function updateReelUI(reel) {
       if (!reel) return;
       const player = document.getElementById('reels-player');
@@ -812,6 +833,16 @@
             <span class="action-count-reel">${shareCount}</span>
           </button>
         `;
+      }
+      // Update quick like button
+      const quickLike = document.getElementById('quick-like');
+      if (quickLike) {
+        quickLike.dataset.reelId = reel.reelId;
+        quickLike.classList.toggle('liked', isLiked);
+        const icon = quickLike.querySelector('.material-icons');
+        if (icon) icon.textContent = isLiked ? 'favorite' : 'favorite_border';
+        const countSpan = quickLike.querySelector('.action-count-reel');
+        if (countSpan) countSpan.textContent = likeCount;
       }
     }
 
@@ -870,6 +901,17 @@
           }
           countEl.textContent = formatNumber(isLiked ? current - 1 : current + 1);
         }
+        // Update quick like if exists and matches
+        if (btn.id === 'quick-like' || document.getElementById('quick-like').dataset.reelId === reelId) {
+          const quickLike = document.getElementById('quick-like');
+          if (quickLike) {
+            quickLike.classList.toggle('liked', !isLiked);
+            const quickIcon = quickLike.querySelector('.material-icons');
+            if (quickIcon) quickIcon.textContent = isLiked ? 'favorite_border' : 'favorite';
+            const quickCount = quickLike.querySelector('.action-count-reel');
+            if (quickCount) quickCount.textContent = countEl.textContent;
+          }
+        }
       } catch (error) {
         console.error('Error liking reel:', error);
         showAlert('Failed to update like.');
@@ -924,12 +966,19 @@
       const file = mediaFileInput.files[0];
       showSpinner();
       try {
+        const duration = await getVideoDuration(file);
+        if (duration > 120) {
+          showAlert('Video must be under 2 minutes.');
+          return;
+        }
         const videoURL = await uploadMedia(file, 'reels');
+        const thumbnailURL = `${videoURL}/#${Math.floor(duration / 2 * 1000)}`;
         const caption = captionInput.value.trim();
         const reelsRef = ref(db, 'reels');
         const newReelRef = push(reelsRef);
         await set(newReelRef, {
           videoURL,
+          thumbnailURL,
           caption,
           userId: currentUser.uid,
           timestamp: new Date().toISOString(),
@@ -990,8 +1039,6 @@
       if (!response.ok) {
         throw new Error(data.error?.message || 'Upload failed');
       }
-      // Generate thumbnail (simplified: use Cloudinary's snapshot)
-      const thumbnailURL = `${data.secure_url}/#${Math.floor(file.duration * 1000 / 2)}`; // Midpoint snapshot
       return data.secure_url;
     }
 
