@@ -262,7 +262,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, push, set, get, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -299,10 +299,26 @@
       onValue(reelsRef, async (snapshot) => {
         if (!snapshot.exists()) return;
         const data = snapshot.val();
-        reels = Object.entries(data)
+        let reelList = Object.entries(data)
           .filter(([_, v]) => v.mediaType === 'reel')
-          .map(([id, v]) => ({ id, ...v }))
-          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+          .map(([id, v]) => ({ id, ...v }));
+        reelList.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        const reelsWithCounts = await Promise.all(reelList.map(async (reel) => {
+          const likesRef = ref(db, `reels/${reel.id}/likes`);
+          const likesSnap = await get(likesRef);
+          const likesCount = likesSnap.size;
+          const commentsRef = ref(db, `reels/${reel.id}/comments`);
+          const commentsSnap = await get(commentsRef);
+          const commentsCount = commentsSnap.size;
+          const sharesRef = ref(db, `reels/${reel.id}/shares`);
+          const sharesSnap = await get(sharesRef);
+          const sharesCount = sharesSnap.size;
+          const userLikeRef = ref(db, `reels/${reel.id}/likes/${currentUser.uid}`);
+          const userLikeSnap = await get(userLikeRef);
+          const isLiked = userLikeSnap.exists();
+          return { ...reel, likesCount, commentsCount, sharesCount, isLiked };
+        }));
+        reels = reelsWithCounts;
         renderReels();
         if (reels.length > 0) {
           currentIndex = 0;
@@ -312,10 +328,28 @@
       });
     }
 
+    function getNum(text) {
+      text = text.trim();
+      if (text.endsWith('K')) {
+        return parseFloat(text.slice(0, -1)) * 1000;
+      } else {
+        return parseInt(text) || 0;
+      }
+    }
+
+    function updateCountEl(el, num) {
+      let display = num >= 1000 ? (num / 1000).toFixed(1) + 'K' : num;
+      el.textContent = display;
+    }
+
     function renderReels() {
       const container = document.getElementById('reels-container');
       container.innerHTML = '<div class="loading" id="loading">Loading Reels...</div>';
       reels.forEach((reel, index) => {
+        const likesDisplay = reel.likesCount >= 1000 ? (reel.likesCount / 1000).toFixed(1) + 'K' : reel.likesCount;
+        const sharesDisplay = reel.sharesCount >= 1000 ? (reel.sharesCount / 1000).toFixed(1) + 'K' : reel.sharesCount;
+        const likeClass = reel.isLiked ? 'liked' : '';
+        const likeIcon = reel.isLiked ? 'favorite' : 'favorite_border';
         const reelEl = document.createElement('div');
         reelEl.className = 'reel';
         reelEl.dataset.index = index;
@@ -326,31 +360,31 @@
               <span class="material-icons">arrow_back</span>
             </button>
             <div class="reel-user">
-              <img src="${reel.userPhoto || ''}" alt="User" onerror="this.src='https://via.placeholder.com/32?text=U'">
+              <img src="${reel.userPhoto}" alt="${reel.username}" onerror="this.style.display='none'">
               <div class="reel-user-info">
-                <h3>${reel.username || 'User'}</h3>
-                <p>${reel.caption ? reel.caption.substring(0, 50) + '...' : 'Original audio'}</p>
+                <h3>${reel.username}</h3>
+                <p>Original audio</p>
               </div>
             </div>
           </div>
           <div class="reel-actions">
-            <button class="action-btn like-btn" data-id="${reel.id}">
-              <span class="material-icons">favorite_border</span>
-              <span class="action-count">${Math.floor(Math.random() * 1000)}K</span>
+            <button class="action-btn like-btn ${likeClass}" data-id="${reel.id}">
+              <span class="material-icons">${likeIcon}</span>
+              <span class="action-count">${likesDisplay}</span>
             </button>
             <button class="action-btn comment-btn" data-id="${reel.id}">
               <span class="material-icons">chat_bubble_outline</span>
-              <span class="action-count">${Math.floor(Math.random() * 100)} </span>
+              <span class="action-count">${reel.commentsCount}</span>
             </button>
             <button class="action-btn share-btn" data-id="${reel.id}">
               <span class="material-icons">ios_share</span>
-              <span class="action-count">${Math.floor(Math.random() * 100)}</span>
+              <span class="action-count">${sharesDisplay}</span>
             </button>
           </div>
           <div class="reel-bottom">
             <div class="reel-description">
-              <h4>${reel.username || 'User'}</h4>
-              <p>${reel.caption || 'No caption'}</p>
+              <h4>${reel.username}</h4>
+              <p>${reel.caption}</p>
             </div>
             <div class="reel-music">Original audio</div>
           </div>
@@ -426,14 +460,16 @@
       });
       // Tap to toggle thumbnails
       let tapCount = 0;
+      let tapTimer;
       container.addEventListener('click', () => {
         tapCount++;
         if (tapCount === 1) {
-          setTimeout(() => {
+          tapTimer = setTimeout(() => {
             if (tapCount === 1) toggleThumbnails();
             tapCount = 0;
           }, 300);
         } else {
+          clearTimeout(tapTimer);
           // Double-tap like
           const currentReel = document.querySelector('.reel.active');
           const likeBtn = currentReel.querySelector('.like-btn');
@@ -450,26 +486,50 @@
 
     function setupActions() {
       document.addEventListener('click', (e) => {
-        if (e.target.closest('.like-btn')) {
-          const btn = e.target.closest('.like-btn');
+        let btn;
+        if (btn = e.target.closest('.like-btn')) {
+          const id = btn.dataset.id;
           const icon = btn.querySelector('.material-icons');
-          btn.classList.toggle('liked');
-          icon.textContent = btn.classList.contains('liked') ? 'favorite' : 'favorite_border';
-          // Update count (simulate)
-          const count = btn.querySelector('.action-count');
-          let num = parseInt(count.textContent);
-          count.textContent = (num + (btn.classList.contains('liked') ? 1 : -1)) + (num >= 1000 ? 'K' : '');
-        }
-        if (e.target.closest('.comment-btn')) {
+          const countEl = btn.querySelector('.action-count');
+          const likeRef = ref(db, `reels/${id}/likes/${currentUser.uid}`);
+          if (btn.classList.contains('liked')) {
+            remove(likeRef);
+            btn.classList.remove('liked');
+            icon.textContent = 'favorite_border';
+            let num = getNum(countEl.textContent);
+            num--;
+            updateCountEl(countEl, num);
+          } else {
+            set(likeRef, true);
+            btn.classList.add('liked');
+            icon.textContent = 'favorite';
+            let num = getNum(countEl.textContent);
+            num++;
+            updateCountEl(countEl, num);
+          }
+        } else if (btn = e.target.closest('.comment-btn')) {
           // Open comments modal (placeholder)
           alert('Comments coming soon!');
-        }
-        if (e.target.closest('.share-btn')) {
-          // Share
+        } else if (btn = e.target.closest('.share-btn')) {
+          const id = btn.dataset.id;
+          const sharesRef = ref(db, `reels/${id}/shares`);
+          push(sharesRef, {
+            userId: currentUser.uid,
+            timestamp: Date.now()
+          });
           if (navigator.share) {
-            navigator.share({ title: 'Check this reel!' });
+            navigator.share({
+              title: 'Check this reel!',
+              url: window.location.href
+            }).catch(() => {
+              alert('Share failed!');
+            });
           } else {
-            alert('Share link copied!');
+            navigator.clipboard.writeText(window.location.href).then(() => {
+              alert('Link copied to clipboard!');
+            }).catch(() => {
+              alert('Share link copied!');
+            });
           }
         }
       });
