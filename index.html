@@ -266,6 +266,7 @@
     .text-thumbnail {
       flex: 1;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
       background: var(--gradient);
@@ -275,6 +276,48 @@
       text-align: center;
       line-height: 1.4;
       overflow: hidden;
+      position: relative;
+    }
+    .text-preview {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-height: 4.2em;
+    }
+    .text-full {
+      display: block;
+      max-height: none;
+      -webkit-line-clamp: unset;
+    }
+    .show-more-btn {
+      background: rgba(255, 255, 255, 0.2);
+      color: white;
+      border: none;
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.2s ease;
+      backdrop-filter: blur(10px);
+    }
+    .show-more-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    .repost-indicator {
+      background: rgba(0, 0, 0, 0.05);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px;
+      margin: 8px 0;
+    }
+    .repost-indicator p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin: 0;
     }
     .ad-card {
       background-color: var(--card-bg);
@@ -1541,21 +1584,71 @@
       }
     }
 
-    async function shareItem(itemId, e, isReel = false) {
+    async function repostItem(itemId, e, isReel = false) {
       e.stopPropagation();
-      const path = isReel ? 'reels' : 'posts';
-      const url = `${window.location.origin}/${path === 'reels' ? 'reels.html' : 'postview.html'}?${path === 'reels' ? 'reelId' : 'postId'}=${itemId}`;
+      if (!currentUser) {
+        showAlert('Please log in to repost items.');
+        return;
+      }
       try {
-        if (navigator.share) {
-          await navigator.share({ title: `Check out this BanterBox ${isReel ? 'reel' : 'post'}`, url });
-        } else {
-          await navigator.clipboard.writeText(url);
-          showAlert('Link copied!');
+        const path = isReel ? 'reels' : 'posts';
+        const itemRef = ref(db, `${path}/${itemId}`);
+        const itemSnap = await get(itemRef);
+        const itemData = itemSnap.val();
+        if (!itemData) {
+          showAlert('Original post not found.');
+          return;
         }
-        logEvent(analytics, 'share_item', { item_id: itemId, type: path });
+
+        // Check if already reposted
+        const repostRef = ref(db, `${path}/${itemId}/shares/${currentUser.uid}`);
+        const repostSnap = await get(repostRef);
+        if (repostSnap.exists()) {
+          showAlert('You have already reposted this.');
+          return;
+        }
+
+        // Create repost as new post
+        const postsRef = ref(db, 'posts');
+        const newRepostRef = push(postsRef);
+        await set(newRepostRef, {
+          mediaType: 'repost',
+          originalPostId: itemId,
+          originalPath: path,
+          caption: '', // Empty caption for repost, or could prompt for one
+          userId: currentUser.uid,
+          timestamp: new Date().toISOString(),
+          views: {},
+          shares: {},
+          likes: {},
+          comments: {}
+        });
+
+        // Mark as shared in original
+        await set(repostRef, {
+          repostId: newRepostRef.key,
+          timestamp: new Date().toISOString()
+        });
+
+        logEvent(analytics, 'repost_item', { item_id: itemId, type: path });
+        showAlert('Reposted!');
+
+        // Notify original poster
+        if (itemData.userId !== currentUser.uid) {
+          const notifKey = `repost_${itemId}_${Date.now()}`;
+          const notifRef = ref(db, `users/${itemData.userId}/notifications/${notifKey}`);
+          await set(notifRef, {
+            type: 'repost',
+            itemId,
+            repostId: newRepostRef.key,
+            message: `${currentUser.displayName || 'Someone'} reposted your ${isReel ? 'reel' : 'post'}.`,
+            timestamp: new Date().toISOString(),
+            read: false
+          });
+        }
       } catch (error) {
-        console.error('Share failed:', error);
-        showAlert('Share failed. Please try again.');
+        console.error('Repost failed:', error);
+        showAlert('Failed to repost. Please try again.');
       }
     }
 
@@ -1640,7 +1733,7 @@
     function createPostCard(post) {
       const userRef = ref(db, `users/${post.userId}`);
       return new Promise((resolve) => {
-        onValue(userRef, (userSnapshot) => {
+        onValue(userRef, async (userSnapshot) => {
           const userData = userSnapshot.val();
           const subscriberCount = Object.keys(userData?.subscribers || {}).length;
           const isVerified = subscriberCount >= 500;
@@ -1654,7 +1747,7 @@
           card.dataset.itemId = post.postId;
           card.dataset.mediaType = post.mediaType;
           card.addEventListener('click', (e) => {
-            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn') && !e.target.closest('.subscribe-btn') && !e.target.closest('.speaker-btn')) {
+            if (!e.target.closest('.action-btn') && !e.target.closest('.save-btn') && !e.target.closest('.delete-btn') && !e.target.closest('.subscribe-btn') && !e.target.closest('.speaker-btn') && !e.target.closest('.show-more-btn')) {
               if (card.dataset.mediaType === 'video') {
                 logEvent(analytics, 'post_click', { post_id: post.postId });
                 window.location.href = `videoplay.html?videoId=${post.postId}`;
@@ -1663,17 +1756,91 @@
           });
 
           let subscribeHtml = '';
-          if (currentUser && post.userId !== currentUser.uid && (post.mediaType === 'text' || post.mediaType === 'image' || post.mediaType === 'carousel')) {
+          if (currentUser && post.userId !== currentUser.uid && (post.mediaType === 'text' || post.mediaType === 'image' || post.mediaType === 'carousel' || post.mediaType === 'repost')) {
             subscribeHtml = `<button class="subscribe-btn ${isSubscribed ? 'subscribed' : ''}" data-user-id="${post.userId}">${isSubscribed ? 'Subscribed' : 'Subscribe'}</button>`;
           }
 
           let thumbnailHtml = '';
+          let repostIndicatorHtml = '';
           const mediaURLs = post.mediaURLs || [];
           const mediaType = post.mediaType;
 
-          if (mediaType === 'text') {
-            const textPreview = post.caption.substring(0, 100) + (post.caption.length > 100 ? '...' : '');
-            thumbnailHtml = `<div class="thumbnail text-thumbnail">${textPreview}</div>`;
+          if (mediaType === 'repost') {
+            // Fetch original post for repost
+            const originalPath = post.originalPath || 'posts';
+            const originalRef = ref(db, `${originalPath}/${post.originalPostId}`);
+            const originalSnap = await get(originalRef);
+            const originalData = originalSnap.val();
+            if (originalData) {
+              const originalUserRef = ref(db, `users/${originalData.userId}`);
+              const originalUserSnap = await get(originalUserRef);
+              const originalUserData = originalUserSnap.val();
+              repostIndicatorHtml = `
+                <div class="repost-indicator">
+                  <p>🔄 Reposted <strong>${originalUserData?.displayName || 'Someone'}</strong>'s post</p>
+                </div>
+              `;
+              // For thumbnail, use original media
+              const originalMediaURLs = originalData.mediaURLs || [];
+              const originalMediaType = originalData.mediaType;
+              if (originalMediaType === 'text') {
+                const fullText = originalData.caption || '';
+                if (fullText.length > 100) {
+                  thumbnailHtml = `
+                    <div class="text-thumbnail">
+                      <div class="text-preview">${fullText.substring(0, 100)}...</div>
+                      <button class="show-more-btn" data-full-text="${fullText}">Show more</button>
+                    </div>
+                  `;
+                } else {
+                  thumbnailHtml = `<div class="text-thumbnail">${fullText}</div>`;
+                }
+              } else if (originalMediaType === 'video') {
+                const videoUrl = originalMediaURLs[0];
+                thumbnailHtml = `
+                  <div class="thumbnail video-wrapper">
+                    <video class="video-player" muted playsinline loop src="${videoUrl}" title="${originalData.caption || 'Video'}" loading="lazy" preload="none"></video>
+                    <button class="speaker-btn">
+                      <span class="material-icons">volume_off</span>
+                    </button>
+                  </div>
+                `;
+              } else if (originalMediaType === 'image' || originalMediaType === 'carousel') {
+                if (originalMediaType === 'carousel' && originalMediaURLs.length > 1) {
+                  const carouselDiv = document.createElement('div');
+                  carouselDiv.className = 'carousel-container thumbnail';
+                  const imagesDiv = document.createElement('div');
+                  imagesDiv.className = 'carousel-images';
+                  originalMediaURLs.forEach(url => {
+                    const img = document.createElement('img');
+                    img.className = 'carousel-image';
+                    img.src = `${url}?w=320&h=180`;
+                    img.alt = 'Post image';
+                    img.loading = 'lazy';
+                    imagesDiv.appendChild(img);
+                  });
+                  carouselDiv.appendChild(imagesDiv);
+                  initCarousel(carouselDiv, originalMediaURLs);
+                  thumbnailHtml = carouselDiv.outerHTML;
+                } else {
+                  thumbnailHtml = `<img class="thumbnail" src="${originalMediaURLs[0]}?w=320&h=180" alt="${originalData.caption || 'Image'}" loading="lazy" />`;
+                }
+              }
+            } else {
+              thumbnailHtml = `<div class="text-thumbnail">Original post not found</div>`;
+            }
+          } else if (mediaType === 'text') {
+            const fullText = post.caption || '';
+            if (fullText.length > 100) {
+              thumbnailHtml = `
+                <div class="text-thumbnail">
+                  <div class="text-preview">${fullText.substring(0, 100)}...</div>
+                  <button class="show-more-btn" data-full-text="${fullText}">Show more</button>
+                </div>
+              `;
+            } else {
+              thumbnailHtml = `<div class="text-thumbnail">${fullText}</div>`;
+            }
           } else if (mediaType === 'video') {
             const videoUrl = mediaURLs[0];
             thumbnailHtml = `
@@ -1726,6 +1893,7 @@
           }
           card.innerHTML = `
             ${subscribeHtml}
+            ${repostIndicatorHtml}
             ${thumbnailHtml}
             <div class="flex mt-3 p-4">
               ${avatarHtml}
@@ -1745,12 +1913,30 @@
                 <span class="material-icons">chat_bubble_outline</span>
                 <span class="action-count comment-count" data-item-id="${post.postId}">${formatNumber(Object.keys(post.comments || {}).length)}</span>
               </button>
-              <button class="action-btn share-btn" data-item-id="${post.postId}" title="Share">
-                <span class="material-icons">ios_share</span>
+              <button class="action-btn share-btn" data-item-id="${post.postId}" title="Repost">
+                <span class="material-icons">repeat</span>
                 <span class="action-count share-count" data-item-id="${post.postId}">${formatNumber(Object.keys(post.shares || {}).length || 0)}</span>
               </button>
             </div>
           `;
+          // Add show more listener if present
+          const showMoreBtn = card.querySelector('.show-more-btn');
+          if (showMoreBtn) {
+            showMoreBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const textPreview = showMoreBtn.parentElement.querySelector('.text-preview');
+              const fullText = showMoreBtn.dataset.fullText;
+              textPreview.classList.add('text-full');
+              textPreview.textContent = fullText;
+              showMoreBtn.textContent = 'Show less';
+              showMoreBtn.onclick = () => {
+                textPreview.classList.remove('text-full');
+                textPreview.textContent = fullText.substring(0, 100) + '...';
+                showMoreBtn.textContent = 'Show more';
+                showMoreBtn.onclick = null; // Reset
+              };
+            });
+          }
           resolve({ card, userData });
         }, { onlyOnce: true });
       });
@@ -1829,8 +2015,8 @@
                 <span class="material-icons">chat_bubble_outline</span>
                 <span class="action-count comment-count" data-item-id="${reel.reelId}">${formatNumber(Object.keys(reel.comments || {}).length)}</span>
               </button>
-              <button class="action-btn share-btn" data-item-id="${reel.reelId}" data-is-reel="true" title="Share">
-                <span class="material-icons">ios_share</span>
+              <button class="action-btn share-btn" data-item-id="${reel.reelId}" data-is-reel="true" title="Repost">
+                <span class="material-icons">repeat</span>
                 <span class="action-count share-count" data-item-id="${reel.reelId}">${formatNumber(Object.keys(reel.shares || {}).length || 0)}</span>
               </button>
             </div>
@@ -2540,7 +2726,7 @@
           const itemId = e.target.closest('.share-btn').getAttribute('data-item-id');
           const isReel = e.target.closest('.share-btn').getAttribute('data-is-reel') === 'true';
           if (itemId) {
-            shareItem(itemId, e, isReel);
+            repostItem(itemId, e, isReel);
           }
         }
       });
