@@ -78,8 +78,9 @@
       min-width: 40px;
       box-shadow: var(--shadow-sm);
       cursor: pointer;
+      touch-action: manipulation;
     }
-    .back-btn:hover {
+    .back-btn:hover, .back-btn:active {
       background: var(--accent);
       color: white;
     }
@@ -115,8 +116,9 @@
       min-width: 40px;
       box-shadow: var(--shadow-sm);
       cursor: pointer;
+      touch-action: manipulation;
     }
-    .header-actions button:hover {
+    .header-actions button:hover, .header-actions button:active {
       background: var(--gradient);
       color: white;
     }
@@ -135,12 +137,13 @@
       z-index: 99;
     }
     .messages-container {
-      padding: 90px 16px 20px;
+      padding: 90px 16px 120px;
       overflow-y: auto;
-      height: calc(100vh - 110px);
+      height: calc(100vh - 190px);
       display: flex;
       flex-direction: column;
       gap: 12px;
+      -webkit-overflow-scrolling: touch;
     }
     .message {
       display: flex;
@@ -149,6 +152,7 @@
       max-width: 70%;
       margin-bottom: 8px;
       animation: fadeIn 0.3s ease-out;
+      touch-action: manipulation;
     }
     .message.sent {
       align-items: flex-end;
@@ -162,6 +166,9 @@
       background: var(--glass);
       border: 1px solid rgba(255, 255, 255, 0.2);
       backdrop-filter: blur(10px);
+      touch-action: manipulation;
+      -webkit-user-select: text;
+      user-select: text;
     }
     .message.sent .message-bubble {
       background: var(--gradient);
@@ -188,7 +195,60 @@
     }
     .message.sent .message-time {
       text-align: right;
-      color: rgba(255, 255, 255, 0.8);
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .input-container {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: transparent;
+      backdrop-filter: blur(20px);
+      padding: 12px 16px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      z-index: 50;
+    }
+    .message-input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--glass);
+      color: var(--text-primary);
+      font-size: 16px;
+      outline: none;
+      resize: none;
+      max-height: 100px;
+      min-height: 44px;
+      backdrop-filter: blur(10px);
+      -webkit-appearance: none;
+    }
+    .message-input:focus {
+      border-color: var(--accent);
+    }
+    .send-btn {
+      background: var(--gradient);
+      border: none;
+      color: white;
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.3s ease;
+      touch-action: manipulation;
+    }
+    .send-btn:hover, .send-btn:active {
+      transform: scale(1.05);
+    }
+    .send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     .reaction-popup {
       position: absolute;
@@ -200,6 +260,7 @@
       gap: 4px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.15);
       border: 1px solid var(--border);
+      touch-action: manipulation;
     }
     .reaction-popup button {
       border: none;
@@ -209,8 +270,9 @@
       padding: 4px;
       border-radius: 4px;
       transition: background 0.2s;
+      touch-action: manipulation;
     }
-    .reaction-popup button:hover {
+    .reaction-popup button:hover, .reaction-popup button:active {
       background: var(--glass);
     }
     .edit-input {
@@ -224,6 +286,7 @@
       resize: none;
       font-family: inherit;
       font-size: inherit;
+      -webkit-appearance: none;
     }
     .edit-buttons {
       display: flex;
@@ -236,6 +299,7 @@
       border-radius: 4px;
       cursor: pointer;
       font-size: 12px;
+      touch-action: manipulation;
     }
     .edit-buttons .save {
       background: var(--accent);
@@ -282,6 +346,9 @@
       .reaction-popup {
         background: var(--card-bg);
         border-color: var(--border);
+      }
+      .message.sent .message-time {
+        color: rgba(0, 0, 0, 0.8);
       }
     }
     .spinner-overlay {
@@ -348,6 +415,13 @@
     <!-- Messages will be loaded here -->
   </div>
 
+  <div class="input-container">
+    <textarea class="message-input" id="message-input" placeholder="Type a message..." rows="1"></textarea>
+    <button class="send-btn" id="send-btn" title="Send">
+      <span class="material-icons">send</span>
+    </button>
+  </div>
+
   <div id="spinner-overlay" class="spinner-overlay">
     <div class="spinner">
       <div class="dot"></div>
@@ -376,7 +450,7 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
     let currentUser, chatId, otherUserId, messagesRef, selectedMessages = new Set(), messagesCache = new Map();
-    let originalActionsHTML, lastSeenStatus;
+    let originalActionsHTML, lastSeenStatus, typingTimeout;
     let pressTimers = new Map();
     let pendingLongPress = new Set();
 
@@ -513,7 +587,7 @@
             const y = e.clientY || (e.touches && e.touches[0].clientY) || rect.top;
             showReactionPopup(x, y, key, isSent);
           }
-        }, 500);
+        }, 600); // Slightly longer for mobile
         pressTimers.set(key, timer);
       };
 
@@ -779,6 +853,50 @@
       alert('Video call logged!');
     }
 
+    async function sendMessage() {
+      const input = document.getElementById('message-input');
+      const message = input.value.trim();
+      if (!message) return;
+      const sendBtn = document.getElementById('send-btn');
+      sendBtn.disabled = true;
+      try {
+        if (typingTimeout) {
+          clearTimeout(typingTimeout);
+          set(ref(db, `chats/${chatId}/typing/${currentUser.uid}`), false);
+          typingTimeout = null;
+        }
+        const encrypted = await encryptMessage(message, chatId);
+        const newMessageRef = push(messagesRef);
+        const timestamp = Date.now();
+        await set(newMessageRef, {
+          senderId: currentUser.uid,
+          message: encrypted,
+          timestamp: timestamp,
+          reactions: {}
+        });
+        const userChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+        const otherChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+        const currentUserChat = await get(userChatsRef);
+        const otherUserChat = await get(otherChatsRef);
+        await set(userChatsRef, {
+          ...(currentUserChat.val() || {}),
+          lastMessage: encrypted,
+          lastMessageTime: timestamp,
+          unreadCount: 0
+        });
+        await set(otherChatsRef, {
+          ...(otherUserChat.val() || {}),
+          lastMessage: encrypted,
+          lastMessageTime: timestamp
+        });
+        input.value = '';
+      } catch (error) {
+        console.error('Send failed:', error);
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
     function goBack() {
       window.history.back();
     }
@@ -801,6 +919,26 @@
         window.location.href = 'login.html';
       }
     });
+
+    const messageInput = document.getElementById('message-input');
+    messageInput.addEventListener('input', () => {
+      set(ref(db, `chats/${chatId}/typing/${currentUser.uid}`), true);
+      if (typingTimeout) clearTimeout(typingTimeout);
+      typingTimeout = setTimeout(() => {
+        set(ref(db, `chats/${chatId}/typing/${currentUser.uid}`), false);
+        typingTimeout = null;
+      }, 3000);
+      messageInput.style.height = 'auto';
+      messageInput.style.height = Math.min(messageInput.scrollHeight, 100) + 'px';
+    });
+
+    messageInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    document.getElementById('send-btn').addEventListener('click', sendMessage);
 
     showSpinner();
   </script>
