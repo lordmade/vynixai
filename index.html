@@ -413,6 +413,29 @@
     .start-chat-btn:hover {
       transform: scale(1.05);
     }
+    .profile-pic {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      overflow: hidden;
+      cursor: pointer;
+      background: var(--gradient);
+      color: white;
+      font-size: 20px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.3s ease;
+    }
+    .profile-pic:hover {
+      transform: scale(1.05);
+    }
+    .profile-pic img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
     @media (min-width: 768px) {
       .main-content {
         padding: 70px 40px 120px;
@@ -508,20 +531,6 @@
       from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
       to { opacity: 1; transform: translateX(-50%) translateY(0); }
     }
-    .notification-count {
-      position: absolute;
-      top: -4px;
-      right: -4px;
-      background: #ef4444;
-      color: white;
-      border-radius: 50%;
-      width: 20px;
-      height: 20px;
-      font-size: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
     .hidden {
       display: none;
     }
@@ -534,13 +543,10 @@
       <input type="text" id="search-input" class="search-input" placeholder="Search chats..." aria-label="Search">
     </div>
     <div class="header-actions">
-      <button id="new-chat-btn" title="New chat" aria-label="Start new chat">
-        <span class="material-icons">chat</span>
+      <button id="settings-btn" title="Settings" aria-label="Settings">
+        <span class="material-icons">settings</span>
       </button>
-      <button class="notification-btn" id="notification-btn" title="Notifications" aria-label="Notifications">
-        <span class="material-icons">notifications</span>
-        <span id="notification-count" class="notification-count hidden">3</span>
-      </button>
+      <div class="profile-pic" id="profile-pic" onclick="openProfile()" title="Profile" aria-label="Profile"></div>
     </div>
   </header>
 
@@ -644,6 +650,44 @@
       if (diffMin < 60) return `${diffMin}m`;
       if (diffHr < 24) return `${diffHr}h`;
       return `${diffDay}d`;
+    }
+
+    async function decryptMessage(encryptedStr, chatId) {
+      try {
+        const { iv, ciphertext } = JSON.parse(encryptedStr);
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw",
+          encoder.encode("vinchat-secret-key-2025"),
+          { name: "PBKDF2" },
+          false,
+          ["deriveBits", "deriveKey"]
+        );
+        const salt = encoder.encode(chatId);
+        const key = await crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: 100000,
+            hash: "SHA-256"
+          },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          true,
+          ["decrypt"]
+        );
+        const ivData = Uint8Array.from(atob(iv), c => c.charCodeAt(0));
+        const data = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: ivData },
+          key,
+          data
+        );
+        return new TextDecoder().decode(decrypted);
+      } catch (error) {
+        console.error('Decryption failed:', error);
+        return encryptedStr; // Fallback to plain text if decryption fails
+      }
     }
 
     function updateFab() {
@@ -762,8 +806,7 @@
           .map(([id, status]) => ({ statusId: id, ...status }))
           .filter(s => s.userId !== currentUser.uid)
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-          .slice(0, 10); // Limit to recent 10
-        // Add own status placeholder if none
+          .slice(0, 10);
         const ownStatus = { userId: currentUser.uid, imageUrl: '', timestamp: Date.now(), displayName: currentUser.displayName };
         const allStatuses = [ownStatus, ...statuses];
         for (let i = 0; i < allStatuses.length; i++) {
@@ -807,6 +850,7 @@
         if (chats.length > 0) {
           for (let i = 0; i < chats.length; i++) {
             const chat = chats[i];
+            const preview = chat.lastMessage ? await decryptMessage(chat.lastMessage, chat.chatId) : 'No messages yet';
             const otherUserId = chat.otherUserId;
             const userRef = ref(db, `users/${otherUserId}`);
             const userSnapshot = await get(userRef);
@@ -822,7 +866,7 @@
               ${avatarHtml}
               <div class="chat-info">
                 <div class="chat-name">${user.displayName}</div>
-                <div class="chat-preview">${chat.lastMessage || 'No messages yet'}</div>
+                <div class="chat-preview">${preview}</div>
               </div>
               <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
             `;
@@ -924,6 +968,10 @@
       showAlert(`Calling from history: ${callId}`);
     }
 
+    window.openProfile = () => {
+      window.location.href = 'profile.html';
+    };
+
     window.updateProfile = () => {
       window.location.href = 'profile.html';
     };
@@ -936,15 +984,16 @@
     };
 
     function switchTab(tab, event) {
-      if (event) {
-        document.querySelectorAll('.nav-item').forEach(item => {
-          item.classList.remove('active');
-          item.setAttribute('aria-selected', 'false');
-        });
-        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-        event.currentTarget.classList.add('active');
-        event.currentTarget.setAttribute('aria-selected', 'true');
-      }
+      document.querySelectorAll('.nav-item').forEach(i => {
+        if (i.dataset.tab !== tab) {
+          i.classList.remove('active');
+          i.setAttribute('aria-selected', 'false');
+        } else {
+          i.classList.add('active');
+          i.setAttribute('aria-selected', 'true');
+        }
+      });
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       document.getElementById(`${tab}-tab`).classList.add('active');
       if (tab === 'chats') loadChats();
       else if (tab === 'calls') loadCalls();
@@ -960,6 +1009,15 @@
         currentUser = user;
         if (user) {
           setUserId(analytics, user.uid);
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          const profilePic = document.getElementById('profile-pic');
+          if (profilePic) {
+            if (user.photoURL) {
+              profilePic.innerHTML = `<img src="${user.photoURL}" alt="Profile" loading="lazy">`;
+            } else {
+              profilePic.innerHTML = initial;
+            }
+          }
           loadStatuses();
           loadChats();
           setupNotifications();
@@ -975,25 +1033,15 @@
       onValue(notificationsRef, (snapshot) => {
         const notifications = snapshot.val() || {};
         const unreadCount = Object.values(notifications).filter(n => !n.read).length;
-        const countEl = document.getElementById('notification-count');
-        if (countEl) {
-          countEl.textContent = unreadCount > 99 ? '99+' : unreadCount;
-          countEl.classList.toggle('hidden', unreadCount === 0);
-        }
       });
     }
 
     function setupEventListeners() {
-      document.getElementById('new-chat-btn').addEventListener('click', () => {
-        // Open new chat selector
-        showAlert('Select contact for new chat');
-      });
-      document.getElementById('notification-btn').addEventListener('click', () => window.location.href = 'notifications.html');
+      document.getElementById('settings-btn').addEventListener('click', () => switchTab('settings', null));
       document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab, e));
       });
       document.getElementById('search-input').addEventListener('input', (e) => {
-        // Implement search filtering
         console.log(`Searching for: ${e.target.value}`);
       });
     }
