@@ -1271,7 +1271,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, push, set, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, push, set, remove, query, orderByChild, limitToLast, endAt, startAfter } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId, setUserProperties } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -1303,6 +1303,13 @@
     let availableReels = []; // List of available reels for embedding
     let reelsInitialized = false;
     let isUploading = false; // Flag to prevent duplicate uploads
+    let lastTimestamp = null;
+    let currentNewestTimestamp = 0;
+    let isLoadingMore = false;
+    let allLoaded = false;
+    let isSearching = false;
+    const BATCH_SIZE = 10;
+    const INITIAL_SIZE = 10;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1654,7 +1661,7 @@
           originalPath: path,
           caption: '', // Empty caption for repost, or could prompt for one
           userId: currentUser.uid,
-          timestamp: new Date().toISOString(),
+          timestamp: Date.now(),
           views: {},
           shares: {},
           likes: {},
@@ -1664,7 +1671,7 @@
         // Mark as shared in original
         await set(repostRef, {
           repostId: newRepostRef.key,
-          timestamp: new Date().toISOString()
+          timestamp: Date.now()
         });
 
         logEvent(analytics, 'repost_item', { item_id: itemId, type: path });
@@ -1974,6 +1981,14 @@
               };
             });
           }
+          // Observe video if present
+          const video = card.querySelector('video.video-player');
+          if (video && videoObserver) {
+            videoObserver.observe(video);
+          }
+          if (viewObserver) {
+            viewObserver.observe(card);
+          }
           resolve({ card, userData });
         }, { onlyOnce: true });
       });
@@ -2058,6 +2073,14 @@
               </button>
             </div>
           `;
+          // Observe video if present
+          const video = card.querySelector('video.video-player');
+          if (video && videoObserver) {
+            videoObserver.observe(video);
+          }
+          if (viewObserver) {
+            viewObserver.observe(card);
+          }
           resolve({ card, userData });
         }, { onlyOnce: true });
       });
@@ -2098,6 +2121,7 @@
     }
 
     async function loadPostsInitial(searchQuery = '') {
+      isSearching = !!searchQuery;
       showSpinner();
       const postGrid = document.getElementById('post-grid');
       if (!postGrid) {
@@ -2105,18 +2129,16 @@
         return;
       }
       try {
-        // Load posts
-        const postSnapshot = await get(ref(db, 'posts'));
         let postArray = [];
-        if (postSnapshot.exists()) {
-          postArray = Object.entries(postSnapshot.val())
-            .map(([postId, postData]) => ({ postId, ...postData }))
-            .filter(post => post.mediaType)
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        }
-
         if (searchQuery) {
           logEvent(analytics, 'search', { search_term: searchQuery });
+          const postSnapshot = await get(ref(db, 'posts'));
+          if (postSnapshot.exists()) {
+            postArray = Object.entries(postSnapshot.val())
+              .map(([postId, postData]) => ({ postId, ...postData }))
+              .filter(post => post.mediaType)
+              .sort((a, b) => b.timestamp - a.timestamp);
+          }
           const filteredPosts = [];
           for (const post of postArray) {
             const userRef = ref(db, `users/${post.userId}`);
@@ -2129,6 +2151,22 @@
             }
           }
           postArray = filteredPosts;
+          allLoaded = true;
+          lastTimestamp = null;
+        } else {
+          const q = query(ref(db, 'posts'), orderByChild('timestamp'), limitToLast(INITIAL_SIZE));
+          const postSnapshot = await get(q);
+          if (postSnapshot.exists()) {
+            postArray = Object.entries(postSnapshot.val())
+              .map(([postId, postData]) => ({ postId, ...postData }))
+              .filter(post => post.mediaType)
+              .sort((a, b) => b.timestamp - a.timestamp);
+          }
+          if (postArray.length > 0) {
+            lastTimestamp = postArray[postArray.length - 1].timestamp;
+            currentNewestTimestamp = postArray[0].timestamp;
+          }
+          if (postArray.length < INITIAL_SIZE) allLoaded = true;
         }
 
         if (postArray.length > 1) {
@@ -2141,7 +2179,7 @@
         if (reelsSnapshot.exists()) {
           reelsArray = Object.entries(reelsSnapshot.val())
             .map(([reelId, reelData]) => ({ reelId, ...reelData }))
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+            .sort((a, b) => b.timestamp - a.timestamp)
             .slice(0, Math.floor(postArray.length / 4)); // Limit reels to approx 1 per 4 posts
         }
         if (reelsArray.length > 1) {
@@ -2190,70 +2228,88 @@
       }
     }
 
+    async function loadMore() {
+      if (isLoadingMore || allLoaded || lastTimestamp === null || isSearching) return;
+      isLoadingMore = true;
+      const postGrid = document.getElementById('post-grid');
+      const loadingCard = document.createElement('div');
+      loadingCard.innerHTML = '<div class="text-center py-4"><div class="spinner"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>';
+      postGrid.appendChild(loadingCard);
+      try {
+        const q = query(ref(db, 'posts'), orderByChild('timestamp'), endAt(lastTimestamp), limitToLast(BATCH_SIZE + 1));
+        const snapshot = await get(q);
+        if (!snapshot.exists()) {
+          allLoaded = true;
+          loadingCard.remove();
+          return;
+        }
+        let newPostArray = Object.entries(snapshot.val()).map(([k, v]) => ({ postId: k, ...v }))
+          .filter(p => p.mediaType)
+          .sort((a, b) => b.timestamp - a.timestamp);
+        newPostArray = newPostArray.slice(1); // Skip duplicate
+        if (newPostArray.length === 0) {
+          allLoaded = true;
+          loadingCard.remove();
+          return;
+        }
+        let insertedReelCount = 0;
+        for (let i = 0; i < newPostArray.length; i++) {
+          const post = newPostArray[i];
+          const { card } = await createPostCard(post);
+          const itemId = post.postId;
+          postDataMap[itemId] = post;
+          cardMap[itemId] = card;
+          card.dataset.itemId = itemId;
+          postGrid.appendChild(card);
+          // Insert reel occasionally
+          if (availableReels.length > 0 && Math.random() < 0.25) {
+            const reel = availableReels.shift();
+            const { card: reelCard } = await createReelCard(reel);
+            const reelId = reel.reelId;
+            postDataMap[reelId] = reel;
+            cardMap[reelId] = reelCard;
+            reelCard.dataset.itemId = reelId;
+            reelCard.dataset.isReel = 'true';
+            postGrid.appendChild(reelCard);
+            insertedReelCount++;
+          }
+          // Insert ad every 3 items
+          if ((i + 1) % 3 === 0) {
+            postGrid.appendChild(createAdCard());
+          }
+        }
+        lastTimestamp = newPostArray[newPostArray.length - 1].timestamp;
+        if (newPostArray.length < BATCH_SIZE) allLoaded = true;
+      } catch (error) {
+        console.error('Load more error:', error);
+        showAlert('Failed to load more.');
+      } finally {
+        loadingCard.remove();
+        isLoadingMore = false;
+      }
+    }
+
     function setupPostListener() {
       if (postUnsub) postUnsub();
-      const postsRef = ref(db, 'posts');
-      postUnsub = onValue(postsRef, async (snapshot) => {
+      const q = query(ref(db, 'posts'), orderByChild('timestamp'), startAfter(currentNewestTimestamp), limitToLast(10));
+      postUnsub = onValue(q, async (snapshot) => {
         if (!snapshot.exists()) return;
         const newData = snapshot.val();
         const newPostArray = Object.entries(newData)
           .map(([postId, postData]) => ({ postId, ...postData }))
-          .filter(post => post.mediaType);
-
-        // Update or add new posts
-        for (const post of newPostArray) {
-          postDataMap[post.postId] = post;
-          if (cardMap[post.postId]) {
-            // Update existing card
-            updateCardCounts(post.postId);
-          } else {
-            // Add new card
-            const { card } = await createPostCard(post);
-            cardMap[post.postId] = card;
-            const postGrid = document.getElementById('post-grid');
-            if (postGrid) {
-              postGrid.appendChild(card);
-              if (viewObserver) {
-                viewObserver.observe(card);
-              }
-              // Tweaked: No full re-setup; just observe new video if any.
-              const newVideo = card.querySelector('video.video-player');
-              if (newVideo && videoObserver) {
-                videoObserver.observe(newVideo);
-              }
-            }
-          }
-        }
-
-        // Remove deleted posts
-        for (const itemId in cardMap) {
-          const card = cardMap[itemId];
-          if (card && card.dataset.isReel !== 'true' && !newData[itemId]) {
-            if (card && card.parentNode) {
-              card.parentNode.removeChild(card);
-            }
-            delete cardMap[itemId];
-            delete postDataMap[itemId];
-          }
-        }
-
-        // Insert ads periodically
+          .filter(post => post.mediaType)
+          .sort((a, b) => b.timestamp - a.timestamp);
         const postGrid = document.getElementById('post-grid');
-        if (postGrid) {
-          let adCount = 0;
-          Array.from(postGrid.children).forEach((child, index) => {
-            if ((child.classList.contains('post-card') || child.classList.contains('reel-card')) && (index + 1) % 3 === 0 && adCount < 5) {
-              if (!child.nextSibling || !child.nextSibling.classList.contains('ad-card')) {
-                const adCard = createAdCard();
-                postGrid.insertBefore(adCard, child.nextSibling);
-                adCount++;
-              }
-            }
-          });
+        for (const post of newPostArray) {
+          const { card } = await createPostCard(post);
+          cardMap[post.postId] = card;
+          postDataMap[post.postId] = post;
+          postGrid.insertBefore(card, postGrid.firstChild);
+          if (post.timestamp > currentNewestTimestamp) currentNewestTimestamp = post.timestamp;
         }
       }, (error) => {
-        console.error('Error loading posts:', error.message, error.stack);
-        showAlert('Failed to load creations. Try again.');
+        console.error('Error loading new posts:', error.message, error.stack);
+        showAlert('Failed to load new creations. Try again.');
       });
     }
 
@@ -2272,6 +2328,7 @@
       });
       const data = await response.json();
       if (!response.ok) {
+        console.error('Cloudinary error:', data.error);
         throw new Error(data.error?.message || 'Upload failed');
       }
       return data.secure_url;
@@ -2318,7 +2375,7 @@
           }
         } catch (error) {
           console.error('Error uploading media:', error);
-          showAlert('Failed to upload media. Try again.');
+          showAlert(`Media upload failed: ${error.message}. Try again.`);
           hideSpinner();
           return;
         }
@@ -2340,7 +2397,7 @@
           mediaType,
           caption: caption || '',
           userId: currentUser.uid,
-          timestamp: new Date().toISOString(),
+          timestamp: Date.now(),
           views: {},
           shares: {},
           likes: {},
@@ -2380,7 +2437,7 @@
         showAlert('Creation shared!');
       } catch (error) {
         console.error('Error creating post:', error.message, error.stack);
-        showAlert('Failed to create. Try again.');
+        showAlert(`Failed to create: ${error.message}. Try again.`);
       } finally {
         hideSpinner();
         isUploading = false; // Reset flag
@@ -2573,6 +2630,7 @@
       const closeConfirm = document.getElementById('close-confirm');
       const cancelConfirm = document.getElementById('cancel-confirm');
       const deleteConfirm = document.getElementById('delete-confirm');
+      const postGridContainer = document.getElementById('post-grid-container');
 
       document.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -2684,6 +2742,14 @@
         deleteConfirm.addEventListener('click', () => {
           if (currentConfirmAction) {
             currentConfirmAction();
+          }
+        });
+      }
+
+      if (postGridContainer) {
+        postGridContainer.addEventListener('scroll', () => {
+          if (postGridContainer.scrollTop + postGridContainer.clientHeight >= postGridContainer.scrollHeight - 200) {
+            loadMore();
           }
         });
       }
