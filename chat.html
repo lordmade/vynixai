@@ -92,11 +92,22 @@
       border-radius: 50%;
       object-fit: cover;
       flex-shrink: 0;
+      background: var(--gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 20px;
+      font-weight: bold;
     }
     .chat-name {
       font-weight: 700;
       font-size: 16px;
       color: var(--text-primary);
+    }
+    .chat-last-seen {
+      font-size: 12px;
+      color: var(--text-secondary);
     }
     .main-content {
       padding: 70px 16px 100px;
@@ -126,6 +137,13 @@
       border-radius: 50%;
       object-fit: cover;
       flex-shrink: 0;
+      background: var(--gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
     }
     .message-bubble {
       padding: 10px 14px;
@@ -135,6 +153,7 @@
       border: 1px solid rgba(255, 255, 255, 0.2);
       max-width: calc(100% - 40px);
       word-wrap: break-word;
+      position: relative;
     }
     .message.sent .message-bubble {
       background: var(--gradient);
@@ -144,6 +163,36 @@
       font-size: 11px;
       color: var(--text-secondary);
       margin-top: 4px;
+      text-align: right;
+    }
+    .typing-indicator {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      max-width: 80%;
+      margin-bottom: 12px;
+      align-self: flex-start;
+    }
+    .typing-dots {
+      display: flex;
+      gap: 4px;
+      padding: 10px 14px;
+      background: var(--glass);
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .typing-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-secondary);
+      animation: typing 1.4s infinite ease-in-out;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typing {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-10px); }
     }
     .input-container {
       position: fixed;
@@ -184,6 +233,10 @@
     }
     .send-btn:hover {
       transform: scale(1.05);
+    }
+    .send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     .spinner-overlay {
       position: fixed;
@@ -274,6 +327,7 @@
       <div id="chat-avatar" class="chat-avatar"></div>
       <div>
         <div id="chat-name" class="chat-name">Loading...</div>
+        <div id="chat-last-seen" class="chat-last-seen"></div>
       </div>
     </div>
   </header>
@@ -281,6 +335,14 @@
   <main class="main-content">
     <div class="messages-container" id="messages-container">
       <!-- Messages loaded here -->
+    </div>
+    <div id="typing-indicator" class="typing-indicator hidden">
+      <div class="typing-dots">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+      <span style="color: var(--text-secondary); font-size: 14px;">${otherUser.displayName || 'User'} is typing...</span>
     </div>
   </main>
 
@@ -303,7 +365,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -318,6 +380,7 @@
 
     let app, auth, db, currentUser;
     let chatId, otherUserId, otherUser;
+    let typingTimeout;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -350,6 +413,18 @@
       if (diffMin < 60) return `${diffMin}m`;
       if (diffHr < 24) return `${diffHr}h`;
       return `${diffDay}d`;
+    }
+
+    function formatLastSeen(timestamp) {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMin = Math.floor(diffMs / 1000 / 60);
+      if (diffMin < 1) return 'online';
+      if (diffMin < 60) return `last seen ${diffMin}m ago`;
+      const diffHr = Math.floor(diffMin / 60);
+      if (diffHr < 24) return `last seen ${diffHr}h ago`;
+      return `last seen ${formatTimestamp(timestamp)}`;
     }
 
     async function encryptMessage(message, chatId) {
@@ -438,6 +513,18 @@
       container.scrollTop = container.scrollHeight;
     }
 
+    function showTypingIndicator(show) {
+      const indicator = document.getElementById('typing-indicator');
+      if (indicator) {
+        indicator.classList.toggle('hidden', !show);
+      }
+    }
+
+    function updateTypingStatus(isTyping) {
+      const typingRef = ref(db, `chats/${chatId}/typing/${currentUser.uid}`);
+      set(typingRef, isTyping);
+    }
+
     async function loadMessages() {
       const messagesContainer = document.getElementById('messages-container');
       messagesContainer.innerHTML = '';
@@ -452,10 +539,10 @@
             const message = messages[i];
             const decryptedText = await decryptMessage(message.message, chatId);
             const isSent = message.senderId === currentUser.uid;
-            const initial = otherUser.displayName ? otherUser.displayName[0].toUpperCase() : 'U';
+            const senderInitial = isSent ? (currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U') : (otherUser.displayName ? otherUser.displayName[0].toUpperCase() : 'U');
             const avatarHtml = isSent ? 
-              `<div class="message-avatar" style="background: var(--gradient); color: white; font-size: 16px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U'}</div>` :
-              (otherUser.photoURL ? `<img src="${otherUser.photoURL}" alt="${otherUser.displayName} avatar" class="message-avatar" loading="lazy">` : `<div class="message-avatar" style="background: var(--gradient); color: white; font-size: 16px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`);
+              `<div class="message-avatar" style="background: var(--gradient); color: white; font-size: 16px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${senderInitial}</div>` :
+              (otherUser.photoURL ? `<img src="${otherUser.photoURL}" alt="${otherUser.displayName} avatar" class="message-avatar" loading="lazy">` : `<div class="message-avatar" style="background: var(--gradient); color: white; font-size: 16px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${senderInitial}</div>`);
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isSent ? 'sent' : ''} fade-in`;
             messageDiv.style.animationDelay = `${i * 0.1}s`;
@@ -478,8 +565,9 @@
       const input = document.getElementById('message-input');
       const text = input.value.trim();
       if (!text) return;
+      const sendBtn = document.getElementById('send-btn');
+      sendBtn.disabled = true;
       try {
-        showSpinner();
         const encrypted = await encryptMessage(text, chatId);
         const messagesRef = ref(db, `chats/${chatId}/messages`);
         const newMessageRef = push(messagesRef);
@@ -504,12 +592,35 @@
           unreadCount: currentUnread + 1
         });
         input.value = '';
-        hideSpinner();
       } catch (error) {
         console.error('Error sending message:', error);
         showAlert('Failed to send message.');
-        hideSpinner();
+      } finally {
+        sendBtn.disabled = false;
       }
+    }
+
+    function setupTyping() {
+      const input = document.getElementById('message-input');
+      input.addEventListener('input', () => {
+        updateTypingStatus(true);
+        if (typingTimeout) clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => updateTypingStatus(false), 1000);
+      });
+      input.addEventListener('blur', () => {
+        if (typingTimeout) clearTimeout(typingTimeout);
+        updateTypingStatus(false);
+      });
+
+      const typingRef = ref(db, `chats/${chatId}/typing/${otherUserId}`);
+      onValue(typingRef, (snapshot) => {
+        showTypingIndicator(snapshot.val() === true);
+      });
+    }
+
+    function updateLastSeen() {
+      const userRef = ref(db, `users/${currentUser.uid}`);
+      update(userRef, { lastSeen: Date.now() });
     }
 
     function initializeFirebase() {
@@ -536,30 +647,32 @@
             setTimeout(() => goBack(), 2000);
             return;
           }
+          // Update last seen for current user
+          updateLastSeen();
           // Set header
           const initial = otherUser.displayName ? otherUser.displayName[0].toUpperCase() : 'U';
           const avatar = document.getElementById('chat-avatar');
-          avatar.innerHTML = otherUser.photoURL ? `<img src="${otherUser.photoURL}" alt="${otherUser.displayName}" loading="lazy">` : initial;
-          if (!otherUser.photoURL) {
-            avatar.style.background = 'var(--gradient)';
-            avatar.style.color = 'white';
-            avatar.style.fontSize = '20px';
-            avatar.style.display = 'flex';
-            avatar.style.alignItems = 'center';
-            avatar.style.justifyContent = 'center';
-            avatar.style.fontWeight = 'bold';
+          if (otherUser.photoURL) {
+            avatar.innerHTML = `<img src="${otherUser.photoURL}" alt="${otherUser.displayName}" loading="lazy">`;
+          } else {
+            avatar.innerHTML = initial;
           }
           document.getElementById('chat-name').textContent = otherUser.displayName || 'User';
+          const lastSeen = otherUser.lastSeen ? formatLastSeen(otherUser.lastSeen) : 'last seen recently';
+          document.getElementById('chat-last-seen').textContent = lastSeen;
           // Reset unread count for current user
           const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
           await update(currentChatsRef, { unreadCount: 0 });
           loadMessages();
+          setupTyping();
           // Enter to send
           document.getElementById('message-input').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
           });
+          // Periodic last seen update
+          setInterval(updateLastSeen, 30000);
         } else {
-          window.location.href = 'signup.html';
+          window.location.href = 'login.html';
         }
       });
     }
