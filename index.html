@@ -818,6 +818,40 @@
     .logout-btn:hover {
       background: #cc0066;
     }
+    .profile-pic-preview {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 3px solid var(--border);
+      margin: 0 auto 12px;
+      display: block;
+    }
+    .file-input-wrapper {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+    }
+    .file-input-wrapper input[type=file] {
+      position: absolute;
+      left: -9999px;
+    }
+    .file-input-label {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      text-align: center;
+      cursor: pointer;
+      color: var(--text-primary);
+      transition: all 0.3s ease;
+    }
+    .file-input-label:hover {
+      background: rgba(0, 255, 136, 0.1);
+      border-color: var(--accent);
+    }
     @media (min-width: 768px) {
       .main-content {
         padding: 75px 50px 0;
@@ -1785,9 +1819,31 @@
       }
     }
 
+    async function uploadProfilePicture(file) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            resolve(data.secure_url);
+          } else {
+            reject(new Error(`Upload failed: ${xhr.statusText}`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Upload error'));
+        xhr.send(formData);
+      });
+    }
+
     async function saveProfileChanges() {
       const displayName = document.getElementById('display-name-input').value.trim();
       const bio = document.getElementById('bio-input').value.trim();
+      const profilePicInput = document.getElementById('profile-pic-input');
+      const file = profilePicInput.files[0];
       if (!displayName || displayName.length < 2) {
         showAlert('Display name must be at least 2 characters.');
         return;
@@ -1797,11 +1853,18 @@
       saveBtn.disabled = true;
       try {
         showSpinner();
+        const updates = { ...currentUserData, displayName, bio };
+        if (file) {
+          const photoURL = await uploadProfilePicture(file);
+          updates.photoURL = photoURL;
+          // Update header profile pic
+          const profilePic = document.getElementById('profile-pic');
+          profilePic.innerHTML = `<img src="${photoURL}" alt="Profile" loading="lazy">`;
+          currentUser.photoURL = photoURL;
+        }
         const userRef = ref(db, `users/${currentUser.uid}`);
-        await set(userRef, { ...currentUserData, displayName, bio });
-        currentUser.displayName = displayName;
-        currentUserData.displayName = displayName;
-        currentUserData.bio = bio;
+        await set(userRef, updates);
+        currentUserData = updates;
         showAlert('Profile updated!');
         loadChats(); // Refresh to update avatars/names
       } catch (error) {
@@ -1811,8 +1874,22 @@
         hideSpinner();
         saveBtn.textContent = 'Save Changes';
         saveBtn.disabled = false;
+        profilePicInput.value = ''; // Reset file input
       }
     }
+
+    window.handleProfilePicChange = (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const preview = document.getElementById('profile-pic-preview');
+          preview.src = e.target.result;
+          preview.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    };
 
     async function loadSettings() {
       showSpinner();
@@ -1822,6 +1899,7 @@
         const snapshot = await get(userRef);
         currentUserData = snapshot.val();
         const initial = currentUserData.displayName ? currentUserData.displayName[0].toUpperCase() : 'U';
+        const currentPhoto = currentUserData.photoURL || '';
         const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
         const swipeStatusEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
         const settingsHtml = `
@@ -1837,6 +1915,14 @@
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">edit</span> Edit Profile</summary>
               <div class="settings-content" role="region" aria-label="Edit Profile">
+                <div class="setting-item">
+                  <label class="setting-label">Profile Picture</label>
+                  <img id="profile-pic-preview" src="${currentPhoto}" alt="Current profile picture" class="profile-pic-preview" style="display: ${currentPhoto ? 'block' : 'none'};">
+                  <div class="file-input-wrapper">
+                    <input type="file" id="profile-pic-input" accept="image/*" onchange="handleProfilePicChange(event)">
+                    <label for="profile-pic-input" class="file-input-label">Change Profile Picture</label>
+                  </div>
+                </div>
                 <div class="setting-item">
                   <label class="setting-label">Display Name</label>
                   <input type="text" id="display-name-input" class="input-field" value="${currentUserData.displayName || ''}">
