@@ -168,6 +168,17 @@
       color: white;
       border-color: transparent;
     }
+    .message.selected .message-bubble {
+      border: 2px solid var(--accent);
+    }
+    .reactions {
+      display: flex;
+      gap: 2px;
+      margin-top: 2px;
+    }
+    .reactions span {
+      font-size: 12px;
+    }
     .message-time {
       font-size: 10px;
       color: var(--text-secondary);
@@ -230,6 +241,29 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+    .reaction-popup {
+      position: absolute;
+      z-index: 1000;
+      background: white;
+      border-radius: 10px;
+      padding: 8px;
+      display: flex;
+      gap: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      border: 1px solid var(--border);
+    }
+    .reaction-popup button {
+      border: none;
+      background: none;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+    .reaction-popup button:hover {
+      background: var(--glass);
+    }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
@@ -249,6 +283,10 @@
       .e2e-info {
         background: rgba(15, 23, 42, 0.95);
         border-bottom-color: var(--border);
+      }
+      .reaction-popup {
+        background: var(--card-bg);
+        border-color: var(--border);
       }
     }
     .spinner-overlay {
@@ -296,7 +334,7 @@
         <div class="chat-status" id="chat-status"></div>
       </div>
     </div>
-    <div class="header-actions">
+    <div class="header-actions" id="header-actions">
       <button id="call-btn" title="Voice Call">
         <span class="material-icons">call</span>
       </button>
@@ -333,7 +371,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, push, set, get, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -349,7 +387,10 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
-    let currentUser, chatId, otherUserId, messagesRef;
+    let currentUser, chatId, otherUserId, messagesRef, selectedMessages = new Set();
+    let originalActionsHTML;
+    let pressTimers = new Map();
+    let pendingLongPress = new Set();
 
     const showSpinner = () => document.getElementById('spinner-overlay').classList.add('active');
     const hideSpinner = () => document.getElementById('spinner-overlay').classList.remove('active');
@@ -440,14 +481,156 @@
       const messagesContainer = document.getElementById('messages-container');
       const messageDiv = document.createElement('div');
       messageDiv.className = `message ${isSent ? 'sent' : ''}`;
+      messageDiv.dataset.key = message.id;
+      if (selectedMessages.has(message.id)) {
+        messageDiv.classList.add('selected');
+      }
       const decryptedMessage = await decryptMessage(message.message, chatId);
+      let reactionsHtml = '';
+      const reactions = message.reactions || {};
+      if (Object.keys(reactions).length > 0) {
+        reactionsHtml = `<div class="reactions">${Object.entries(reactions).map(([emoji, users]) => {
+          const count = Object.keys(users || {}).length;
+          return `<span>${emoji}${count > 1 ? count : ''}</span>`;
+        }).join('')}</div>`;
+      }
       messageDiv.innerHTML = `
         <div class="message-bubble">${decryptedMessage}</div>
+        ${reactionsHtml}
         <div class="message-time">${formatTime(message.timestamp)}</div>
       `;
       messagesContainer.appendChild(messageDiv);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+      const bubble = messageDiv.querySelector('.message-bubble');
+      const key = message.id;
+
+      const handleStartPress = (e) => {
+        e.preventDefault();
+        pendingLongPress.add(key);
+        const timer = setTimeout(() => {
+          if (pendingLongPress.has(key)) {
+            pendingLongPress.delete(key);
+            if (selectedMessages.has(key)) {
+              selectedMessages.delete(key);
+              messageDiv.classList.remove('selected');
+            } else {
+              selectedMessages.add(key);
+              messageDiv.classList.add('selected');
+            }
+            updateHeader();
+            const rect = bubble.getBoundingClientRect();
+            const x = e.clientX || (e.touches && e.touches[0].clientX) || rect.left + rect.width / 2;
+            const y = e.clientY || (e.touches && e.touches[0].clientY) || rect.top;
+            showReactionPopup(x, y, key);
+          }
+        }, 500);
+        pressTimers.set(key, timer);
+      };
+
+      const handleEndPress = (e) => {
+        const timer = pressTimers.get(key);
+        if (timer) clearTimeout(timer);
+        pressTimers.delete(key);
+        if (pendingLongPress.has(key)) {
+          pendingLongPress.delete(key);
+          if (selectedMessages.size > 0) {
+            if (selectedMessages.has(key)) {
+              selectedMessages.delete(key);
+              messageDiv.classList.remove('selected');
+            } else {
+              selectedMessages.add(key);
+              messageDiv.classList.add('selected');
+            }
+            updateHeader();
+          }
+        }
+      };
+
+      const handleMove = (e) => {
+        const timer = pressTimers.get(key);
+        if (timer) clearTimeout(timer);
+        pressTimers.delete(key);
+        pendingLongPress.delete(key);
+      };
+
+      bubble.addEventListener('mousedown', handleStartPress);
+      bubble.addEventListener('mouseup', handleEndPress);
+      bubble.addEventListener('mouseleave', handleMove);
+      bubble.addEventListener('touchstart', handleStartPress, { passive: false });
+      bubble.addEventListener('touchend', handleEndPress, { passive: false });
+      bubble.addEventListener('touchmove', handleMove, { passive: false });
+      bubble.addEventListener('touchcancel', handleEndPress);
     }
+
+    function deselectAll() {
+      selectedMessages.clear();
+      document.querySelectorAll('.message.selected').forEach(d => d.classList.remove('selected'));
+      updateHeader();
+      hideReactionPopup();
+    }
+
+    function updateHeader() {
+      const actions = document.getElementById('header-actions');
+      if (selectedMessages.size > 0) {
+        actions.innerHTML = `<button id="delete-btn" title="Delete (${selectedMessages.size})" onclick="deleteSelected()"><span class="material-icons" style="color: #ef4444;">delete</span></button>`;
+      } else {
+        actions.innerHTML = originalActionsHTML;
+        setupActionListeners();
+      }
+    }
+
+    function showReactionPopup(x, y, key) {
+      let popup = document.querySelector('.reaction-popup');
+      if (popup) popup.remove();
+      popup = document.createElement('div');
+      popup.className = 'reaction-popup';
+      popup.style.left = (x - 80) + 'px';
+      popup.style.top = (y - 40) + 'px';
+      const emojis = ['👍', '❤️', '😂', '😮', '😢', '😡'];
+      emojis.forEach(emoji => {
+        const btn = document.createElement('button');
+        btn.textContent = emoji;
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          toggleReaction(key, emoji);
+          // Keep selected
+        };
+        popup.appendChild(btn);
+      });
+      document.body.appendChild(popup);
+    }
+
+    function hideReactionPopup() {
+      document.querySelector('.reaction-popup')?.remove();
+    }
+
+    function toggleReaction(key, emoji) {
+      const reactionRef = ref(db, `chats/${chatId}/messages/${key}/reactions/${emoji}`);
+      get(reactionRef).then((snap) => {
+        const users = snap.val() || {};
+        if (users[currentUser.uid]) {
+          delete users[currentUser.uid];
+          if (Object.keys(users).length === 0) {
+            remove(reactionRef);
+          } else {
+            set(reactionRef, users);
+          }
+        } else {
+          users[currentUser.uid] = true;
+          set(reactionRef, users);
+        }
+      });
+    }
+
+    window.deleteSelected = async () => {
+      const toDelete = Array.from(selectedMessages);
+      for (const key of toDelete) {
+        const messageRef = ref(db, `chats/${chatId}/messages/${key}`);
+        await remove(messageRef);
+      }
+      deselectAll();
+    };
 
     async function loadMessages() {
       const messagesContainer = document.getElementById('messages-container');
@@ -459,7 +642,6 @@
           Object.entries(snapshot.val()).forEach(([id, msg]) => {
             messages.push({ id, ...msg });
           });
-          // Sort messages by timestamp to ensure order
           messages.sort((a, b) => a.timestamp - b.timestamp);
           for (const message of messages) {
             const isSent = message.senderId === currentUser.uid;
@@ -485,6 +667,55 @@
           document.getElementById('chat-status').textContent = 'Online';
         }
       }
+      originalActionsHTML = document.getElementById('header-actions').innerHTML;
+      setupActionListeners();
+    }
+
+    function setupActionListeners() {
+      const callBtn = document.getElementById('call-btn');
+      const videoBtn = document.getElementById('video-btn');
+      const menuBtn = document.getElementById('menu-btn');
+      if (callBtn) callBtn.onclick = handleCall;
+      if (videoBtn) videoBtn.onclick = handleVideo;
+      if (menuBtn) menuBtn.onclick = () => alert('More options...');
+    }
+
+    function handleCall() {
+      const callsRef = ref(db, `users/${currentUser.uid}/calls`);
+      const newCallRef = push(callsRef);
+      set(newCallRef, {
+        otherUserId: otherUserId,
+        type: 'outgoing',
+        timestamp: Date.now()
+      });
+      const otherCallsRef = ref(db, `users/${otherUserId}/calls`);
+      const otherNewCallRef = push(otherCallsRef);
+      set(otherNewCallRef, {
+        otherUserId: currentUser.uid,
+        type: 'incoming',
+        timestamp: Date.now()
+      });
+      alert('Voice call logged!');
+    }
+
+    function handleVideo() {
+      const callsRef = ref(db, `users/${currentUser.uid}/calls`);
+      const newCallRef = push(callsRef);
+      set(newCallRef, {
+        otherUserId: otherUserId,
+        type: 'outgoing',
+        timestamp: Date.now(),
+        video: true
+      });
+      const otherCallsRef = ref(db, `users/${otherUserId}/calls`);
+      const otherNewCallRef = push(otherCallsRef);
+      set(otherNewCallRef, {
+        otherUserId: currentUser.uid,
+        type: 'incoming',
+        timestamp: Date.now(),
+        video: true
+      });
+      alert('Video call logged!');
     }
 
     async function sendMessage() {
@@ -500,9 +731,9 @@
         await set(newMessageRef, {
           senderId: currentUser.uid,
           message: encrypted,
-          timestamp: timestamp
+          timestamp: timestamp,
+          reactions: {}
         });
-        // Update last message in user chats
         const userChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
         const otherChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
         const currentUserChat = await get(userChatsRef);
@@ -530,67 +761,18 @@
       window.history.back();
     }
 
-    function setupEventListeners() {
-      document.getElementById('message-input').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          sendMessage();
-        }
-      });
-      document.getElementById('send-btn').addEventListener('click', sendMessage);
-
-      // Placeholder for calls - log to Firebase calls
-      document.getElementById('call-btn').addEventListener('click', async () => {
-        const callsRef = ref(db, `users/${currentUser.uid}/calls`);
-        const newCallRef = push(callsRef);
-        await set(newCallRef, {
-          otherUserId: otherUserId,
-          type: 'outgoing',
-          timestamp: Date.now()
-        });
-        // Also log for the other user
-        const otherCallsRef = ref(db, `users/${otherUserId}/calls`);
-        const otherNewCallRef = push(otherCallsRef);
-        await set(otherNewCallRef, {
-          otherUserId: currentUser.uid,
-          type: 'incoming',
-          timestamp: Date.now()
-        });
-        alert('Voice call logged!');
-      });
-
-      document.getElementById('video-btn').addEventListener('click', async () => {
-        const callsRef = ref(db, `users/${currentUser.uid}/calls`);
-        const newCallRef = push(callsRef);
-        await set(newCallRef, {
-          otherUserId: otherUserId,
-          type: 'outgoing',
-          timestamp: Date.now(),
-          video: true
-        });
-        // Also log for the other user
-        const otherCallsRef = ref(db, `users/${otherUserId}/calls`);
-        const otherNewCallRef = push(otherCallsRef);
-        await set(otherNewCallRef, {
-          otherUserId: currentUser.uid,
-          type: 'incoming',
-          timestamp: Date.now(),
-          video: true
-        });
-        alert('Video call logged!');
-      });
-
-      document.getElementById('menu-btn').addEventListener('click', () => alert('More options...'));
-    }
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.message') && !e.target.closest('.reaction-popup')) {
+        deselectAll();
+      }
+    });
 
     onAuthStateChanged(auth, (user) => {
       currentUser = user;
       if (user) {
-        // Update current user's lastSeen
         set(ref(db, `users/${user.uid}/lastSeen`), Date.now());
         loadChatInfo().then(() => {
           loadMessages();
-          setupEventListeners();
           hideSpinner();
         });
       } else {
@@ -598,11 +780,18 @@
       }
     });
 
-    // Auto-resize textarea
     document.getElementById('message-input').addEventListener('input', function() {
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 100) + 'px';
     });
+
+    document.getElementById('message-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    document.getElementById('send-btn').addEventListener('click', sendMessage);
 
     showSpinner();
   </script>
