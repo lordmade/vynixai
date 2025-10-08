@@ -1016,32 +1016,65 @@
       const usersRef = ref(db, 'users');
       const snapshot = await get(usersRef);
       if (snapshot.exists()) {
-        const users = Object.entries(snapshot.val())
+        const allUsersObj = snapshot.val();
+        const users = Object.entries(allUsersObj)
           .map(([uid, user]) => ({ uid, ...user }))
           .filter(user => user.uid !== currentUser.uid && (user.displayName?.toLowerCase().includes(query) || user.bio?.toLowerCase().includes(query)))
           .sort((a, b) => a.displayName?.localeCompare(b.displayName));
         if (users.length === 0) {
           chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No users found.</p>';
         } else {
-          for (let i = 0; i < users.length; i++) {
-            const user = users[i];
+          const chatPromises = users.map(async (user) => {
+            const otherUid = user.uid;
+            const chatId = [currentUser.uid, otherUid].sort().join('_');
+            const chatRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
+            const chatSnap = await get(chatRef);
+            let chat = {chatId, otherUserId: otherUid, lastMessageTime: 0, unreadCount: 0};
+            if (chatSnap.exists()) {
+              chat = {...chatSnap.val(), chatId, otherUserId: otherUid};
+            }
+            let preview = 'Start a chat';
+            if (chat.lastMessage) {
+              preview = await decryptMessage(chat.lastMessage, chatId);
+            }
+            const unread = chat.unreadCount || 0;
+            totalUnread += unread;
+            return {chat, user, preview, unread};
+          });
+          const chatResults = await Promise.all(chatPromises);
+          chatResults.sort((a, b) => (b.chat.lastMessageTime || 0) - (a.chat.lastMessageTime || 0));
+          for (let i = 0; i < chatResults.length; i++) {
+            const {chat, user, preview, unread} = chatResults[i];
             const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
             const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+            const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
             const chatItem = document.createElement('div');
             chatItem.className = 'chat-item fade-in';
             chatItem.style.animationDelay = `${i * 0.1}s`;
+            chatItem.dataset.chatid = chat.chatId;
+            chatItem.dataset.otherid = user.uid;
             chatItem.onclick = () => startChat(user.uid);
+            chatItem.addEventListener('mousedown', (e) => startLongPress(e, chatItem));
+            chatItem.addEventListener('mouseup', cancelLongPress);
+            chatItem.addEventListener('mouseleave', cancelLongPress);
+            chatItem.addEventListener('touchstart', (e) => { e.preventDefault(); startLongPress(e, chatItem); });
+            chatItem.addEventListener('touchend', cancelLongPress);
+            chatItem.addEventListener('touchmove', cancelLongPress);
+            const timeHtml = chat.lastMessageTime ? `<div class="chat-time">${formatTimestamp(chat.lastMessageTime)}</div>` : '';
             chatItem.innerHTML = `
               ${avatarHtml}
+              ${unreadBadge}
               <div class="chat-info">
                 <div class="chat-name">${user.displayName || 'User'}</div>
-                <div class="chat-preview">${user.bio || 'Start a chat'}</div>
+                <div class="chat-preview">${preview}</div>
               </div>
+              ${timeHtml}
             `;
             chatList.appendChild(chatItem);
           }
         }
       }
+      updateNavUnread(totalUnread);
       hideSpinner();
     }
 
@@ -1369,54 +1402,69 @@
       chatList.innerHTML = '';
       totalUnread = 0;
       if (currentUser) {
-        const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
-        const snapshot = await get(userChatsRef);
-        let chats = [];
-        if (snapshot.exists()) {
-          chats = Object.entries(snapshot.val())
-            .map(([chatId, chat]) => ({ chatId, ...chat }))
-            .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
-        }
-        hasChats = chats.length > 0;
-        if (chats.length > 0) {
-          for (let i = 0; i < chats.length; i++) {
-            const chat = chats[i];
-            const preview = chat.lastMessage ? await decryptMessage(chat.lastMessage, chat.chatId) : 'No messages yet';
-            const unread = chat.unreadCount || 0;
-            totalUnread += unread;
-            const otherUserId = chat.otherUserId;
-            const userRef = ref(db, `users/${otherUserId}`);
-            const userSnapshot = await get(userRef);
-            const user = userSnapshot.val();
-            if (!user) continue;
-            const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-            const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
-            const chatItem = document.createElement('div');
-            chatItem.className = 'chat-item fade-in';
-            chatItem.style.animationDelay = `${i * 0.1}s`;
-            chatItem.dataset.chatid = chat.chatId;
-            chatItem.dataset.otherid = otherUserId;
-            chatItem.onclick = () => openChat(chat.chatId, otherUserId);
-            chatItem.addEventListener('mousedown', (e) => startLongPress(e, chatItem));
-            chatItem.addEventListener('mouseup', cancelLongPress);
-            chatItem.addEventListener('mouseleave', cancelLongPress);
-            chatItem.addEventListener('touchstart', (e) => { e.preventDefault(); startLongPress(e, chatItem); });
-            chatItem.addEventListener('touchend', cancelLongPress);
-            chatItem.addEventListener('touchmove', cancelLongPress);
-            chatItem.innerHTML = `
-              ${avatarHtml}
-              ${unreadBadge}
-              <div class="chat-info">
-                <div class="chat-name">${user.displayName}</div>
-                <div class="chat-preview">${preview}</div>
-              </div>
-              <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
-            `;
-            chatList.appendChild(chatItem);
+        const usersRef = ref(db, 'users');
+        const usersSnapshot = await get(usersRef);
+        if (usersSnapshot.exists()) {
+          const allUsersObj = usersSnapshot.val();
+          const userChats = Object.entries(allUsersObj)
+            .map(([uid, user]) => ({ uid, ...user }))
+            .filter(user => user.uid !== currentUser.uid);
+          if (userChats.length === 0) {
+            chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No other users yet.</p>';
+          } else {
+            const chatPromises = userChats.map(async (user) => {
+              const otherUid = user.uid;
+              const chatId = [currentUser.uid, otherUid].sort().join('_');
+              const chatRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
+              const chatSnap = await get(chatRef);
+              let chat = {chatId, otherUserId: otherUid, lastMessage: null, lastMessageTime: 0, unreadCount: 0};
+              if (chatSnap.exists()) {
+                chat = {...chatSnap.val(), chatId, otherUserId: otherUid};
+              }
+              let preview = 'Start a chat';
+              if (chat.lastMessage) {
+                preview = await decryptMessage(chat.lastMessage, chatId);
+              }
+              const unread = chat.unreadCount || 0;
+              totalUnread += unread;
+              return {chat, user, preview, unread};
+            });
+            const chatResults = await Promise.all(chatPromises);
+            chatResults.sort((a, b) => (b.chat.lastMessageTime || 0) - (a.chat.lastMessageTime || 0));
+            for (let i = 0; i < chatResults.length; i++) {
+              const {chat, user, preview, unread} = chatResults[i];
+              const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+              const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+              const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
+              const chatItem = document.createElement('div');
+              chatItem.className = 'chat-item fade-in';
+              chatItem.style.animationDelay = `${i * 0.1}s`;
+              chatItem.dataset.chatid = chat.chatId;
+              chatItem.dataset.otherid = user.uid;
+              chatItem.onclick = () => startChat(user.uid);
+              if (chatSnap.exists()) {
+                chatItem.addEventListener('mousedown', (e) => startLongPress(e, chatItem));
+                chatItem.addEventListener('mouseup', cancelLongPress);
+                chatItem.addEventListener('mouseleave', cancelLongPress);
+                chatItem.addEventListener('touchstart', (e) => { e.preventDefault(); startLongPress(e, chatItem); });
+                chatItem.addEventListener('touchend', cancelLongPress);
+                chatItem.addEventListener('touchmove', cancelLongPress);
+              }
+              const timeHtml = chat.lastMessageTime ? `<div class="chat-time">${formatTimestamp(chat.lastMessageTime)}</div>` : '';
+              chatItem.innerHTML = `
+                ${avatarHtml}
+                ${unreadBadge}
+                <div class="chat-info">
+                  <div class="chat-name">${user.displayName || 'User'}</div>
+                  <div class="chat-preview">${preview}</div>
+                </div>
+                ${timeHtml}
+              `;
+              chatList.appendChild(chatItem);
+            }
           }
         } else {
-          chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No chats yet. Add friends to start!</p>';
+          chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No users yet.</p>';
         }
       }
       updateNavUnread(totalUnread);
@@ -1602,6 +1650,7 @@
       document.getElementById('search-input').addEventListener('input', async (e) => {
         searchQuery = e.target.value.toLowerCase();
         if (searchQuery.length > 0) {
+          totalUnread = 0;
           await loadSearchUsers(searchQuery);
         } else {
           loadChats();
