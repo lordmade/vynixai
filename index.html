@@ -12,7 +12,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <!-- Add AdSense JavaScript Library -->
@@ -333,28 +332,6 @@
     }
     .fab:hover {
       transform: scale(1.05);
-    }
-    .upload-fab {
-      position: fixed;
-      bottom: 90px;
-      right: 16px;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: var(--gradient);
-      border: none;
-      color: white;
-      font-size: 24px;
-      box-shadow: var(--shadow-md);
-      cursor: pointer;
-      z-index: 200;
-      transition: transform 0.3s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .upload-fab:hover {
-      transform: scale(1.1);
     }
     .bottom-sheet {
       position: fixed;
@@ -703,10 +680,6 @@
     <span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends
   </button>
 
-  <button class="upload-fab hidden" id="upload-fab" onclick="openUploadSheet()" title="Upload Status" aria-label="Upload Status">
-    <span class="material-icons">add</span>
-  </button>
-
   <div id="status-modal" class="modal">
     <div class="modal-content">
       <button class="modal-close" onclick="closeStatusModal()">&times;</button>
@@ -734,6 +707,9 @@
       </div>
       <input type="file" id="media-input" accept="image/*,video/*" style="display: none;" onchange="handleMediaUpload(event)">
       <textarea id="text-input" placeholder="Enter your status text..." style="display: none;"></textarea>
+      <div id="upload-progress" class="hidden" style="width: 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin: 10px 0;">
+        <div id="progress-bar" style="height: 100%; background: var(--accent); width: 0%; transition: width 0.1s ease;"></div>
+      </div>
       <button id="upload-btn" style="display: none; width: 100%; background: var(--gradient); color: white; border: none; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer;" onclick="uploadStatus()">Upload</button>
     </div>
   </div>
@@ -751,7 +727,6 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, onValue, get, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
-    import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -765,7 +740,12 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    let app, auth, db, storage, analytics, currentUser;
+    const cloudinaryConfig = {
+      cloudName: 'your_cloud_name', // Replace with your Cloudinary cloud name
+      uploadPreset: 'your_upload_preset' // Replace with your unsigned upload preset
+    };
+
+    let app, auth, db, analytics, currentUser;
     let hasChats = false;
     let totalUnread = 0;
     let currentUploadType = '';
@@ -953,32 +933,66 @@
       const statusGrid = document.getElementById('status-grid');
       const statusesRef = ref(db, 'statuses');
       const snapshot = await get(statusesRef);
+      let allGrouped = [];
+      const ownUser = {
+        displayName: currentUser.displayName,
+        photoURL: currentUser.photoURL
+      };
+      const ownStatus = {
+        userId: currentUser.uid,
+        mediaUrl: null,
+        timestamp: Date.now(),
+        type: null,
+        content: null,
+        userName: currentUser.displayName
+      };
       if (snapshot.exists()) {
-        const statuses = Object.entries(snapshot.val())
-          .map(([id, status]) => ({ statusId: id, ...status }))
-          .filter(s => s.userId !== currentUser.uid)
-          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-          .slice(0, 10);
-        const ownStatus = { userId: currentUser.uid, imageUrl: '', timestamp: Date.now(), displayName: currentUser.displayName };
-        const allStatuses = [ownStatus, ...statuses];
-        for (let i = 0; i < allStatuses.length; i++) {
-          const status = allStatuses[i];
-          const userRef = ref(db, `users/${status.userId}`);
-          const userSnapshot = await get(userRef);
-          const user = userSnapshot.val();
-          const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-          const statusItem = document.createElement('div');
-          statusItem.className = 'status-item fade-in';
-          statusItem.style.animationDelay = `${i * 0.1}s`;
-          statusItem.onclick = () => openStatus(status.statusId || 'own');
-          const avatarHtml = status.imageUrl ? `<img src="${status.imageUrl}" alt="${user?.displayName} status" class="status-avatar" loading="lazy">` : `<div class="status-avatar" style="background: var(--gradient); color: white; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-          statusItem.innerHTML = `
-            ${avatarHtml}
-            <div class="status-name">${user?.displayName || 'You'}</div>
-          `;
-          statusGrid.appendChild(statusItem);
+        let userLatest = {};
+        Object.entries(snapshot.val()).forEach(([id, s]) => {
+          const status = { statusId: id, ...s };
+          if (status.userId !== currentUser.uid) {
+            const uid = status.userId;
+            if (!userLatest[uid] || new Date(status.timestamp) > new Date(userLatest[uid].timestamp)) {
+              userLatest[uid] = status;
+            }
+          }
+        });
+        const otherUserIds = Object.keys(userLatest);
+        if (otherUserIds.length > 0) {
+          const userPromises = otherUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+          const userResults = await Promise.all(userPromises);
+          const otherGrouped = userResults.map(ur => ({
+            user: ur.user,
+            status: userLatest[ur.uid]
+          })).sort((a, b) => new Date(b.status.timestamp) - new Date(a.status.timestamp)).slice(0, 10);
+          allGrouped = [{ user: ownUser, status: ownStatus }, ...otherGrouped];
+        } else {
+          allGrouped = [{ user: ownUser, status: ownStatus }];
         }
       } else {
+        allGrouped = [{ user: ownUser, status: ownStatus }];
+      }
+      for (let i = 0; i < allGrouped.length; i++) {
+        const { user, status } = allGrouped[i];
+        const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+        const statusItem = document.createElement('div');
+        statusItem.className = 'status-item fade-in';
+        statusItem.style.animationDelay = `${i * 0.1}s`;
+        statusItem.onclick = () => {
+          if (status.userId === currentUser.uid) {
+            openUploadSheet();
+          } else {
+            openStatusModal(status);
+          }
+        };
+        const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} status" class="status-avatar" loading="lazy">` : `<div class="status-avatar" style="background: var(--gradient); color: white; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+        statusItem.innerHTML = `
+          ${avatarHtml}
+          <div class="status-name">${user.displayName || 'You'}</div>
+        `;
+        statusGrid.appendChild(statusItem);
+      }
+      if (allGrouped.length === 1 && allGrouped[0].status.userId === currentUser.uid) {
         statusGrid.innerHTML = '<p style="text-align: center; color: var(--text-secondary); grid-column: 1/-1; padding: 20px;">No recent activities yet.</p>';
       }
       hideSpinner();
@@ -997,44 +1011,63 @@
         }
         const statusesRef = ref(db, 'statuses');
         const snapshot = await get(statusesRef);
+        let userLatest = {};
         if (snapshot.exists()) {
-          const statuses = Object.entries(snapshot.val())
-            .map(([id, status]) => ({ statusId: id, ...status }))
-            .filter(s => friendIds.includes(s.userId))
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-          for (let i = 0; i < statuses.length; i++) {
-            const status = statuses[i];
-            const userRef = ref(db, `users/${status.userId}`);
-            const userSnapshot = await get(userRef);
-            const user = userSnapshot.val();
-            const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const statusItem = document.createElement('div');
-            statusItem.className = 'status-item fade-in';
-            statusItem.style.animationDelay = `${i * 0.1}s`;
-            statusItem.onclick = () => openStatusModal(status);
-            const avatarHtml = status.mediaUrl ? `<img src="${status.mediaUrl}" alt="${user?.displayName} status" class="status-avatar" loading="lazy">` : `<div class="status-avatar" style="background: var(--gradient); color: white; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-            statusItem.innerHTML = `
-              ${avatarHtml}
-              <div class="status-name">${user?.displayName || 'Friend'}</div>
-            `;
-            statusesGrid.appendChild(statusItem);
-          }
+          Object.entries(snapshot.val()).forEach(([id, s]) => {
+            const status = { statusId: id, ...s };
+            if (friendIds.includes(status.userId)) {
+              const uid = status.userId;
+              if (!userLatest[uid] || new Date(status.timestamp) > new Date(userLatest[uid].timestamp)) {
+                userLatest[uid] = status;
+              }
+            }
+          });
+        }
+        const otherUserIds = Object.keys(userLatest);
+        if (otherUserIds.length === 0) {
+          statusesGrid.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No statuses from friends yet.</p>';
+          hideSpinner();
+          return;
+        }
+        const userPromises = otherUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+        const userResults = await Promise.all(userPromises);
+        const grouped = userResults.map(ur => ({
+          user: ur.user,
+          status: userLatest[ur.uid]
+        })).sort((a, b) => new Date(b.status.timestamp) - new Date(a.status.timestamp));
+        for (let i = 0; i < grouped.length; i++) {
+          const { user, status } = grouped[i];
+          const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
+          const statusItem = document.createElement('div');
+          statusItem.className = 'status-item fade-in';
+          statusItem.style.animationDelay = `${i * 0.1}s`;
+          statusItem.onclick = () => openStatusModal(status);
+          const avatarHtml = user?.photoURL ? `<img src="${user.photoURL}" alt="${user?.displayName} status" class="status-avatar" loading="lazy">` : `<div class="status-avatar" style="background: var(--gradient); color: white; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          statusItem.innerHTML = `
+            ${avatarHtml}
+            <div class="status-name">${user?.displayName || 'Friend'}</div>
+          `;
+          statusesGrid.appendChild(statusItem);
         }
       }
       hideSpinner();
     }
 
-    function openStatus(statusId) {
-      showAlert(`Viewing status: ${statusId}`);
-    }
-
     function openStatusModal(status) {
       const modal = document.getElementById('status-modal');
       const body = document.getElementById('status-modal-body');
+      let mediaHtml = '';
+      if (status.mediaUrl) {
+        if (status.type === 'video') {
+          mediaHtml = `<video src="${status.mediaUrl}" controls class="status-media" loading="lazy"></video>`;
+        } else {
+          mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-media" loading="lazy">`;
+        }
+      }
       body.innerHTML = `
         <h3 style="margin: 0 0 10px 0; color: var(--text-primary);">${status.userName || 'User'}</h3>
         ${status.type === 'text' ? `<p class="status-text">${status.content}</p>` : ''}
-        ${status.mediaUrl ? `<img src="${status.mediaUrl}" alt="Status media" class="status-media" loading="lazy">` : ''}
+        ${mediaHtml}
         <p style="color: var(--text-secondary); font-size: 12px; text-align: right;">${formatTimestamp(status.timestamp)}</p>
       `;
       modal.classList.add('active');
@@ -1050,6 +1083,7 @@
       document.getElementById('text-input').style.display = 'none';
       document.getElementById('media-input').style.display = 'none';
       document.getElementById('upload-btn').style.display = 'none';
+      document.getElementById('upload-progress').classList.add('hidden');
     }
 
     window.closeUploadSheet = () => {
@@ -1064,10 +1098,12 @@
       if (type === 'text') {
         textInput.style.display = 'block';
         mediaInput.style.display = 'none';
+        mediaInput.value = '';
         textInput.value = '';
       } else {
         textInput.style.display = 'none';
         mediaInput.style.display = 'block';
+        mediaInput.accept = type === 'image' ? 'image/*' : 'video/*';
         mediaInput.click();
       }
       uploadBtn.style.display = 'block';
@@ -1077,33 +1113,62 @@
     window.handleMediaUpload = (event) => {
       const file = event.target.files[0];
       if (file) {
-        // Preview or handle file
         showAlert(`Selected ${file.name}`);
       }
     };
 
     window.uploadStatus = async () => {
       showSpinner();
+      const progressDiv = document.getElementById('upload-progress');
+      const progressBar = document.getElementById('progress-bar');
+      let mediaUrl = null;
+      let content = null;
+      let type = currentUploadType;
       try {
         const statusRef = ref(db, 'statuses');
         const newStatusRef = push(statusRef);
-        let mediaUrl = null;
-        let content = null;
-        let type = currentUploadType;
         if (type === 'text') {
           content = document.getElementById('text-input').value.trim();
+          if (!content) {
+            showAlert('Please provide content.');
+            return;
+          }
         } else {
           const file = document.getElementById('media-input').files[0];
-          if (file) {
-            const storagePath = `statuses/${currentUser.uid}/${Date.now()}_${file.name}`;
-            const fileRef = storageRef(storage, storagePath);
-            const snapshot = await uploadBytes(fileRef, file);
-            mediaUrl = await getDownloadURL(snapshot.ref);
+          if (!file) {
+            showAlert('Please select a file.');
+            return;
           }
-        }
-        if ((type === 'text' && !content) || (type !== 'text' && !mediaUrl)) {
-          showAlert('Please provide content.');
-          return;
+          progressDiv.classList.remove('hidden');
+          progressBar.style.width = '0%';
+          await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+            xhr.upload.addEventListener('progress', (e) => {
+              if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percent + '%';
+              }
+            });
+            xhr.onload = () => {
+              if (xhr.status === 200) {
+                const data = JSON.parse(xhr.responseText);
+                mediaUrl = data.secure_url;
+                type = file.type.startsWith('image') ? 'image' : 'video';
+                resolve();
+              } else {
+                reject(new Error(`Upload failed: ${xhr.statusText}`));
+              }
+            };
+            xhr.onerror = () => reject(new Error('Upload error'));
+            xhr.send(formData);
+          });
+          if (!mediaUrl) {
+            throw new Error('Failed to get media URL.');
+          }
         }
         await set(newStatusRef, {
           userId: currentUser.uid,
@@ -1118,9 +1183,11 @@
         showAlert('Status uploaded!');
       } catch (error) {
         console.error('Upload failed:', error);
-        showAlert('Failed to upload status.');
+        showAlert(error.message || 'Failed to upload status.');
       } finally {
         hideSpinner();
+        progressDiv.classList.add('hidden');
+        progressBar.style.width = '0%';
       }
     };
 
@@ -1288,12 +1355,14 @@
       });
       document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       document.getElementById(`${tab}-tab`).classList.add('active');
-      const uploadFab = document.getElementById('upload-fab');
+      const fab = document.getElementById('fab-btn');
       if (tab === 'status') {
-        uploadFab.classList.remove('hidden');
+        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">add</span>Add Status`;
+        fab.onclick = openUploadSheet;
         loadFriendStatuses();
       } else {
-        uploadFab.classList.add('hidden');
+        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends`;
+        fab.onclick = openAddFriendsSheet;
       }
       if (tab === 'chats') loadChats();
       else if (tab === 'calls') loadCalls();
@@ -1304,7 +1373,6 @@
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
       db = getDatabase(app);
-      storage = getStorage(app);
       analytics = getAnalytics(app);
       onAuthStateChanged(auth, (user) => {
         currentUser = user;
