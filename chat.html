@@ -243,7 +243,7 @@
     }
     .message-time {
       font-size: 11px;
-      color: var(--text-secondary);
+      color: #000000;
       margin-top: 2px;
       opacity: 0.8;
       width: 100%;
@@ -330,33 +330,6 @@
       cursor: not-allowed;
       transform: none;
     }
-    .reaction-popup {
-      position: fixed;
-      z-index: 1000;
-      background: var(--card-bg);
-      border-radius: 16px;
-      padding: 12px;
-      display: flex;
-      gap: 8px;
-      box-shadow: var(--shadow-md);
-      border: 1px solid var(--border);
-      backdrop-filter: blur(20px);
-      touch-action: manipulation;
-    }
-    .reaction-popup button {
-      border: none;
-      background: none;
-      font-size: 24px;
-      cursor: pointer;
-      padding: 8px;
-      border-radius: 12px;
-      transition: all 0.2s ease;
-      touch-action: manipulation;
-    }
-    .reaction-popup button:hover, .reaction-popup button:active {
-      background: var(--glass);
-      transform: scale(1.1);
-    }
     .edit-input {
       width: 100%;
       min-height: 40px;
@@ -440,23 +413,55 @@
     .menu-option.danger:hover {
       background: rgba(239, 68, 68, 0.1);
     }
+    .bottom-sheet {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      border-top-left-radius: 25px;
+      border-top-right-radius: 25px;
+      border: 1px solid var(--border);
+      max-height: 50vh;
+      transform: translateY(100%);
+      transition: transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      z-index: 1000;
+      overflow-y: auto;
+    }
+    .bottom-sheet.active {
+      transform: translateY(0);
+    }
+    .bottom-sheet-header {
+      padding: 16px 20px 12px;
+      background: var(--glass);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .reactions-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      padding: 20px;
+    }
+    .reactions-grid button {
+      font-size: 24px;
+      padding: 12px;
+      border-radius: 50%;
+      background: none;
+      border: none;
+      cursor: pointer;
+      transition: background 0.2s ease;
+      touch-action: manipulation;
+    }
+    .reactions-grid button:hover {
+      background: var(--glass);
+    }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes slideFromLeft {
-      from { transform: translateX(-100%); opacity: 0; }
-      to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes slideFromRight {
-      from { transform: translateX(100%); opacity: 0; }
-      to { transform: translateX(0); opacity: 1; }
-    }
-    .reaction-popup.slide-from-left {
-      animation: slideFromLeft 0.2s ease-out;
-    }
-    .reaction-popup.slide-from-right {
-      animation: slideFromRight 0.2s ease-out;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -479,6 +484,9 @@
         border-bottom-color: var(--border);
         color: var(--text-secondary);
       }
+      .message-time {
+        color: #000000;
+      }
       .reaction-popup {
         background: var(--card-bg);
         border-color: var(--border);
@@ -489,6 +497,13 @@
       .menu-popup {
         background: var(--card-bg);
         border-color: var(--border);
+      }
+      .bottom-sheet {
+        background: var(--card-bg);
+        border-color: var(--border);
+      }
+      .reactions-grid button:hover {
+        background: var(--glass);
       }
     }
     .spinner-overlay {
@@ -600,6 +615,16 @@
     </button>
   </div>
 
+  <div id="reaction-sheet" class="bottom-sheet">
+    <div class="bottom-sheet-header">
+      <h2 style="margin: 0; font-size: 20px; font-weight: 700; color: var(--text-primary);">React</h2>
+      <button onclick="closeReactionSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px;"><span class="material-icons">close</span></button>
+    </div>
+    <div class="reactions-grid" id="reactions-grid">
+      <!-- Emojis loaded here -->
+    </div>
+  </div>
+
   <div id="spinner-overlay" class="spinner-overlay" role="status" aria-label="Loading">
     <div class="spinner">
       <div class="dot"></div>
@@ -631,6 +656,7 @@
     let originalActionsHTML, lastSeenStatus, typingTimeout;
     let pressTimers = new Map();
     let pendingLongPress = new Set();
+    let currentReactionKey = null;
 
     const showSpinner = () => document.getElementById('spinner-overlay').classList.add('active');
     const hideSpinner = () => document.getElementById('spinner-overlay').classList.remove('active');
@@ -781,10 +807,7 @@
               messageDiv.classList.add('selected');
             }
             updateHeader();
-            const rect = bubble.getBoundingClientRect();
-            const x = e.clientX || (e.touches?.[0]?.clientX) || rect.left + rect.width / 2;
-            const y = e.clientY || (e.touches?.[0]?.clientY) || rect.top;
-            showReactionPopup(x, y, key, isSent);
+            showReactionSheet(key);
           }
         }, 500);
         pressTimers.set(key, timer);
@@ -815,7 +838,7 @@
       selectedMessages.clear();
       document.querySelectorAll('.message.selected').forEach(d => d.classList.remove('selected'));
       updateHeader();
-      hideReactionPopup();
+      closeReactionSheet();
     }
 
     function updateHeader() {
@@ -837,33 +860,27 @@
       }
     }
 
-    function showReactionPopup(x, y, key, isSent) {
-      hideReactionPopup();
-      const popup = document.createElement('div');
-      popup.className = `reaction-popup ${isSent ? 'slide-from-right' : 'slide-from-left'}`;
-      popup.style.left = `${Math.max(16, Math.min(x - 100, window.innerWidth - 200))}px`;
-      popup.style.top = `${y - 60}px`;
+    function showReactionSheet(key) {
+      currentReactionKey = key;
+      const grid = document.getElementById('reactions-grid');
+      grid.innerHTML = '';
       const emojis = ['👍', '❤️', '😂', '😮', '😢', '😡', '🙌', '🔥'];
       emojis.forEach(emoji => {
         const btn = document.createElement('button');
         btn.textContent = emoji;
         btn.title = emoji;
-        btn.ariaLabel = `React with ${emoji}`;
-        btn.onclick = (e) => {
-          e.stopPropagation();
+        btn.onclick = () => {
           toggleReaction(key, emoji);
-          hideReactionPopup();
+          closeReactionSheet();
         };
-        popup.appendChild(btn);
+        grid.appendChild(btn);
       });
-      popup.onclick = (e) => e.stopPropagation();
-      document.body.appendChild(popup);
-      // Auto-hide after 3s
-      setTimeout(hideReactionPopup, 3000);
+      document.getElementById('reaction-sheet').classList.add('active');
     }
 
-    function hideReactionPopup() {
-      document.querySelector('.reaction-popup')?.remove();
+    function closeReactionSheet() {
+      document.getElementById('reaction-sheet').classList.remove('active');
+      currentReactionKey = null;
     }
 
     function toggleReaction(key, emoji) {
@@ -1138,7 +1155,7 @@
 
     // Global click to deselect
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('.message') && !e.target.closest('.reaction-popup')) {
+      if (!e.target.closest('.message') && !e.target.closest('.reaction-sheet')) {
         deselectAll();
       }
     });
