@@ -514,29 +514,119 @@
       display: flex;
     }
     .modal-content {
-      background: var(--card-bg);
-      border-radius: 25px;
-      padding: 24px;
-      max-width: 90%;
-      max-height: 90%;
-      overflow: auto;
+      background: #000;
+      border-radius: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      max-height: none;
+      overflow: hidden;
       position: relative;
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow-md);
+      border: none;
+      box-shadow: none;
+      display: flex;
+      flex-direction: column;
     }
     .modal-close {
       position: absolute;
-      top: 12px;
-      right: 12px;
+      top: 10px;
+      right: 10px;
       background: none;
       border: none;
-      color: var(--text-secondary);
+      color: white;
       font-size: 28px;
       cursor: pointer;
       transition: color 0.3s ease;
+      z-index: 20;
     }
     .modal-close:hover {
       color: var(--accent);
+    }
+    #progress-bar-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.2);
+      display: flex;
+      z-index: 10;
+    }
+    .progress-item {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.3);
+      transition: background 0.3s ease;
+    }
+    .progress-item.active {
+      background: var(--accent);
+    }
+    .status-header {
+      position: fixed;
+      top: 60px;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 20px;
+      color: white;
+      z-index: 5;
+      background: rgba(0, 0, 0, 0.3);
+      backdrop-filter: blur(10px);
+    }
+    .user-name, .status-time {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    #status-modal-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+    }
+    .modal-content .status-text {
+      color: white;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 20px;
+      border-radius: 10px;
+      max-width: 80%;
+      text-align: center;
+      margin: 0 auto;
+      white-space: pre-wrap;
+      line-height: 1.5;
+      font-size: 18px;
+    }
+    .status-media {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      max-height: none;
+    }
+    .status-nav-btn {
+      position: fixed;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      font-size: 30px;
+      cursor: pointer;
+      z-index: 10;
+      display: none;
+    }
+    #prev-status-btn {
+      left: 20px;
+    }
+    #next-status-btn {
+      right: 20px;
     }
     .status-text {
       font-size: 18px;
@@ -758,7 +848,10 @@
   <div id="status-modal" class="modal">
     <div class="modal-content">
       <button class="modal-close" onclick="closeStatusModal()">&times;</button>
+      <div id="progress-bar-container" class="progress-container"></div>
       <div id="status-modal-body"></div>
+      <button id="prev-status-btn" class="status-nav-btn">&lsaquo;</button>
+      <button id="next-status-btn" class="status-nav-btn">&rsaquo;</button>
     </div>
   </div>
 
@@ -835,6 +928,9 @@
     let hasChats = false;
     let totalUnread = 0;
     let currentUploadType = '';
+    let currentStatusesByUser = {};
+    let currentUserData = null;
+    let currentIndex = 0;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1112,36 +1208,60 @@
         }
         const statusesRef = ref(db, 'statuses');
         const snapshot = await get(statusesRef);
-        let userLatest = {};
+        const oldPromises = [];
         if (snapshot.exists()) {
           Object.entries(snapshot.val()).forEach(([id, s]) => {
-            const status = { statusId: id, ...s };
-            if (friendIds.includes(status.userId) || status.userId === currentUser.uid) {
-              const uid = status.userId;
-              if (!userLatest[uid] || new Date(status.timestamp) > new Date(userLatest[uid].timestamp)) {
-                userLatest[uid] = status;
-              }
+            if (s.timestamp < Date.now() - 24 * 60 * 60 * 1000) {
+              oldPromises.push(set(ref(db, `statuses/${id}`), null));
             }
           });
         }
-        const otherUserIds = Object.keys(userLatest);
-        if (otherUserIds.length === 0) {
+        await Promise.all(oldPromises);
+        const newSnapshot = await get(statusesRef);
+        let recentStatusesByUser = {};
+        if (newSnapshot.exists()) {
+          Object.entries(newSnapshot.val()).forEach(([id, s]) => {
+            const status = { statusId: id, ...s };
+            if (friendIds.includes(status.userId) || status.userId === currentUser.uid) {
+              const uid = status.userId;
+              if (!recentStatusesByUser[uid]) {
+                recentStatusesByUser[uid] = { user: null, statuses: [] };
+              }
+              recentStatusesByUser[uid].statuses.push(status);
+            }
+          });
+          Object.keys(recentStatusesByUser).forEach(uid => {
+            recentStatusesByUser[uid].statuses.sort((a, b) => b.timestamp - a.timestamp);
+          });
+          const userIdsWithStatuses = Object.keys(recentStatusesByUser);
+          if (userIdsWithStatuses.length > 0) {
+            const userPromises = userIdsWithStatuses.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+            const userResults = await Promise.all(userPromises);
+            userResults.forEach(ur => {
+              if (recentStatusesByUser[ur.uid]) {
+                recentStatusesByUser[ur.uid].user = ur.user;
+              }
+            });
+          }
+        }
+        window.currentStatusesByUser = recentStatusesByUser;
+        const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
+          .sort((a, b) => recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp);
+        if (uids.length === 0) {
           statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
         } else {
-          const userPromises = otherUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-          const userResults = await Promise.all(userPromises);
-          const grouped = userResults.map(ur => ({
-            user: ur.user,
-            status: userLatest[ur.uid]
-          })).sort((a, b) => new Date(b.status.timestamp) - new Date(a.status.timestamp));
-          for (let i = 0; i < grouped.length; i++) {
-            const { user, status } = grouped[i];
-            const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const preview = status.type === 'text' ? (status.content || 'No content') : (status.type === 'image' ? 'Photo' : status.type === 'video' ? 'Video' : 'Status');
+          for (let i = 0; i < uids.length; i++) {
+            const uid = uids[i];
+            const { user, statuses } = recentStatusesByUser[uid];
+            const latestStatus = statuses[0];
+            const preview = latestStatus.type === 'text' 
+              ? (latestStatus.content.length > 30 ? latestStatus.content.substring(0, 30) + '...' : latestStatus.content) 
+              : (latestStatus.type === 'image' ? 'Photo' : latestStatus.type === 'video' ? 'Video' : 'Status');
             const statusItem = document.createElement('div');
             statusItem.className = 'chat-item fade-in';
             statusItem.style.animationDelay = `${i * 0.1}s`;
-            statusItem.onclick = () => openStatusModal(status);
+            statusItem.onclick = () => openUserStatuses(uid);
+            const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
             const avatarHtml = user?.photoURL ? `<img src="${user.photoURL}" alt="${user?.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
             statusItem.innerHTML = `
               ${avatarHtml}
@@ -1149,7 +1269,7 @@
                 <div class="chat-name">${user?.displayName || 'User'}</div>
                 <div class="chat-preview">${preview}</div>
               </div>
-              <div class="chat-time">${formatTimestamp(status.timestamp || 0)}</div>
+              <div class="chat-time">${formatTimestamp(latestStatus.timestamp || 0)}</div>
             `;
             statusesList.appendChild(statusItem);
           }
@@ -1158,28 +1278,81 @@
       hideSpinner();
     }
 
-    function openStatusModal(status) {
+    function openUserStatuses(uid) {
+      const data = window.currentStatusesByUser[uid];
+      if (!data || data.statuses.length === 0) return;
+      showUserStatuses(data);
+    }
+
+    function showUserStatuses(data) {
+      currentUserData = data;
+      currentIndex = 0;
       const modal = document.getElementById('status-modal');
-      const body = document.getElementById('status-modal-body');
+      const prevBtn = document.getElementById('prev-status-btn');
+      const nextBtn = document.getElementById('next-status-btn');
+      const hasMultiple = data.statuses.length > 1;
+      prevBtn.style.display = hasMultiple ? 'block' : 'none';
+      nextBtn.style.display = hasMultiple ? 'block' : 'none';
+      prevBtn.onclick = () => goPrev();
+      nextBtn.onclick = () => goNext();
+      showStatus(currentIndex);
+      modal.classList.add('active');
+    }
+
+    function goPrev() {
+      showStatus(currentIndex - 1);
+    }
+
+    function goNext() {
+      showStatus(currentIndex + 1);
+    }
+
+    function showStatus(index) {
+      if (index < 0 || index >= currentUserData.statuses.length) {
+        closeStatusModal();
+        return;
+      }
+      currentIndex = index;
+      const status = currentUserData.statuses[index];
+      const user = currentUserData.user;
       let mediaHtml = '';
       if (status.mediaUrl) {
         if (status.type === 'video') {
-          mediaHtml = `<video src="${status.mediaUrl}" controls class="status-media" loading="lazy"></video>`;
-        } else {
+          mediaHtml = `<video src="${status.mediaUrl}" controls autoplay class="status-media" style="width:100%; height:100%; object-fit:contain;"></video>`;
+        } else if (status.type === 'image') {
           mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-media" loading="lazy">`;
         }
       }
+      let textHtml = '';
+      if (status.type === 'text') {
+        textHtml = `<div class="status-text">${status.content}</div>`;
+      }
+      const body = document.getElementById('status-modal-body');
       body.innerHTML = `
-        <h3 style="margin: 0 0 12px 0; color: var(--text-primary); font-size: 24px; font-weight: 700;">${status.userName || 'User'}</h3>
-        ${status.type === 'text' ? `<p class="status-text">${status.content}</p>` : ''}
+        <div class="status-header">
+          <span class="user-name">${user?.displayName || 'User'}</span>
+          <span class="status-time">${formatTimestamp(status.timestamp)}</span>
+        </div>
+        ${textHtml}
         ${mediaHtml}
-        <p style="color: var(--text-secondary); font-size: 14px; text-align: right; margin-top: 12px;">${formatTimestamp(status.timestamp)}</p>
       `;
-      modal.classList.add('active');
+      updateProgress();
+    }
+
+    function updateProgress() {
+      const num = currentUserData.statuses.length;
+      let progressHtml = '';
+      for (let i = 0; i < num; i++) {
+        const active = i === currentIndex ? 'active' : '';
+        progressHtml += `<div class="progress-item ${active}"></div>`;
+      }
+      document.getElementById('progress-bar-container').innerHTML = progressHtml;
     }
 
     window.closeStatusModal = () => {
       document.getElementById('status-modal').classList.remove('active');
+      currentUserData = null;
+      currentIndex = 0;
     };
 
     function openUploadSheet() {
