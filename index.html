@@ -764,12 +764,16 @@
       background: white;
       border-radius: 50%;
       transition: transform 0.3s ease;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     .toggle-switch input:checked + .slider {
-      transform: translateX(22px);
+      transform: translateX(22px) scale(1.05);
     }
     .toggle-switch input:checked {
       background: var(--accent);
+    }
+    .toggle-switch:hover .slider {
+      box-shadow: 0 0 5px var(--accent);
     }
     .input-field {
       width: 100%;
@@ -794,6 +798,10 @@
     }
     .save-btn:hover {
       transform: scale(1.02);
+    }
+    .save-btn:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
     }
     .logout-btn {
       background: #ff0080;
@@ -1431,30 +1439,32 @@
       showStatus(currentIndex);
       modal.classList.add('active');
 
-      // Swipe gesture support
-      let startX = 0;
-      let currentX = 0;
-      body.addEventListener('touchstart', (e) => {
-        startX = e.touches[0].clientX;
-        currentX = startX;
-      });
-      body.addEventListener('touchmove', (e) => {
-        if (!hasMultiple) return;
-        currentX = e.touches[0].clientX;
-        const delta = startX - currentX;
-        body.style.transform = `translateX(${-delta}px)`;
-      });
-      body.addEventListener('touchend', (e) => {
-        body.style.transform = '';
-        const deltaX = startX - currentX;
-        if (Math.abs(deltaX) > 50) {
-          if (deltaX > 0) {
-            goNext();
-          } else {
-            goPrev();
+      // Swipe gesture support if enabled
+      const swipeEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
+      if (swipeEnabled && hasMultiple) {
+        let startX = 0;
+        let currentX = 0;
+        body.addEventListener('touchstart', (e) => {
+          startX = e.touches[0].clientX;
+          currentX = startX;
+        });
+        body.addEventListener('touchmove', (e) => {
+          currentX = e.touches[0].clientX;
+          const delta = startX - currentX;
+          body.style.transform = `translateX(${-delta}px)`;
+        });
+        body.addEventListener('touchend', (e) => {
+          body.style.transform = '';
+          const deltaX = startX - currentX;
+          if (Math.abs(deltaX) > 50) {
+            if (deltaX > 0) {
+              goNext();
+            } else {
+              goPrev();
+            }
           }
-        }
-      });
+        });
+      }
     }
 
     function goPrev() {
@@ -1671,7 +1681,9 @@
               </div>
               <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
             `;
-            (function(chatItem, chatId, otherUid) {
+            // Swipe to delete if enabled
+            const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
+            if (swipeDeleteEnabled) {
               let startX = 0;
               let currentX = 0;
               chatItem.addEventListener('touchstart', (e) => {
@@ -1691,12 +1703,12 @@
                 if (deltaX > 50) {
                   showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
                     if (confirmed) {
-                      removeChat(chatId, otherUid);
+                      removeChat(chat.chatId, otherUserId);
                     }
                   });
                 }
               });
-            })(chatItem, chat.chatId, otherUserId);
+            }
             chatList.appendChild(chatItem);
           }
         } else {
@@ -1756,6 +1768,16 @@
       showAlert(isDark ? 'Dark mode enabled' : 'Light mode enabled');
     }
 
+    function toggleSwipeDelete(enabled) {
+      localStorage.setItem('swipeDeleteEnabled', enabled);
+      showAlert(enabled ? 'Swipe to delete enabled' : 'Swipe to delete disabled');
+    }
+
+    function toggleSwipeStatus(enabled) {
+      localStorage.setItem('swipeStatusEnabled', enabled);
+      showAlert(enabled ? 'Swipe navigation on statuses enabled' : 'Swipe navigation on statuses disabled');
+    }
+
     function loadTheme() {
       const isDark = localStorage.getItem('darkMode') === 'true';
       if (isDark) {
@@ -1766,10 +1788,13 @@
     async function saveProfileChanges() {
       const displayName = document.getElementById('display-name-input').value.trim();
       const bio = document.getElementById('bio-input').value.trim();
-      if (!displayName) {
-        showAlert('Display name is required.');
+      if (!displayName || displayName.length < 2) {
+        showAlert('Display name must be at least 2 characters.');
         return;
       }
+      const saveBtn = document.querySelector('#settings-content .save-btn');
+      saveBtn.textContent = 'Saving...';
+      saveBtn.disabled = true;
       try {
         showSpinner();
         const userRef = ref(db, `users/${currentUser.uid}`);
@@ -1784,6 +1809,8 @@
         showAlert('Failed to update profile.');
       } finally {
         hideSpinner();
+        saveBtn.textContent = 'Save Changes';
+        saveBtn.disabled = false;
       }
     }
 
@@ -1795,6 +1822,8 @@
         const snapshot = await get(userRef);
         currentUserData = snapshot.val();
         const initial = currentUserData.displayName ? currentUserData.displayName[0].toUpperCase() : 'U';
+        const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
+        const swipeStatusEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
         const settingsHtml = `
           <div class="settings-section">
             <div class="chat-item" style="margin-bottom: 20px; cursor: default;">
@@ -1807,7 +1836,7 @@
 
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">edit</span> Edit Profile</summary>
-              <div class="settings-content">
+              <div class="settings-content" role="region" aria-label="Edit Profile">
                 <div class="setting-item">
                   <label class="setting-label">Display Name</label>
                   <input type="text" id="display-name-input" class="input-field" value="${currentUserData.displayName || ''}">
@@ -1822,10 +1851,10 @@
 
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">palette</span> Appearance</summary>
-              <div class="settings-content">
+              <div class="settings-content" role="region" aria-label="Appearance">
                 <div class="setting-item">
                   <label class="setting-label">Dark Mode</label>
-                  <label class="toggle-switch">
+                  <label class="toggle-switch" aria-label="Toggle dark mode">
                     <input type="checkbox" id="dark-mode-toggle" ${document.body.classList.contains('dark') ? 'checked' : ''} onchange="toggleDarkMode()">
                     <span class="slider"></span>
                   </label>
@@ -1835,10 +1864,10 @@
 
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">notifications</span> Notifications</summary>
-              <div class="settings-content">
+              <div class="settings-content" role="region" aria-label="Notifications">
                 <div class="setting-item">
                   <label class="setting-label">Enable Notifications</label>
-                  <label class="toggle-switch">
+                  <label class="toggle-switch" aria-label="Toggle notifications">
                     <input type="checkbox" id="notifications-toggle" ${currentUserData.notificationsEnabled !== false ? 'checked' : ''}>
                     <span class="slider"></span>
                   </label>
@@ -1849,7 +1878,7 @@
 
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">privacy_tip</span> Privacy</summary>
-              <div class="settings-content">
+              <div class="settings-content" role="region" aria-label="Privacy">
                 <div class="setting-item">
                   <label class="setting-label">Status Visibility</label>
                   <select class="input-field">
@@ -1859,6 +1888,27 @@
                   </select>
                 </div>
                 <button class="save-btn" onclick="showAlert('Privacy settings updated!')">Save</button>
+              </div>
+            </details>
+
+            <details>
+              <summary><span class="material-icons" style="font-size: 20px;">swipe</span> Gestures & Navigation</summary>
+              <div class="settings-content" role="region" aria-label="Gestures and Navigation">
+                <div class="setting-item">
+                  <label class="setting-label">Enable Swipe to Delete Chats</label>
+                  <label class="toggle-switch" aria-label="Toggle swipe to delete">
+                    <input type="checkbox" id="swipe-delete-toggle" ${swipeDeleteEnabled ? 'checked' : ''} onchange="toggleSwipeDelete(this.checked)">
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                <div class="setting-item">
+                  <label class="setting-label">Swipe Navigation on Statuses</label>
+                  <label class="toggle-switch" aria-label="Toggle swipe navigation on statuses">
+                    <input type="checkbox" id="swipe-status-toggle" ${swipeStatusEnabled ? 'checked' : ''} onchange="toggleSwipeStatus(this.checked)">
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                <p style="color: var(--text-secondary); font-size: 14px; margin-top: 8px;">Customize how you interact—swipe left to delete chats, or swipe on statuses for quick navigation.</p>
               </div>
             </details>
 
