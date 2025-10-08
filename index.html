@@ -784,6 +784,45 @@
       return `${diffDay}d`;
     }
 
+    async function encryptMessage(message, chatId) {
+      try {
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw",
+          encoder.encode("vinchat-secret-key-2025"),
+          { name: "PBKDF2" },
+          false,
+          ["deriveBits", "deriveKey"]
+        );
+        const salt = encoder.encode(chatId);
+        const key = await crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: 100000,
+            hash: "SHA-256"
+          },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          true,
+          ["encrypt"]
+        );
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const data = encoder.encode(message);
+        const encrypted = await crypto.subtle.encrypt(
+          { name: "AES-GCM", iv: iv },
+          key,
+          data
+        );
+        const ivB64 = btoa(String.fromCharCode(...iv));
+        const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+        return JSON.stringify({ iv: ivB64, ciphertext: ciphertextB64 });
+      } catch (error) {
+        console.error('Encryption failed:', error);
+        throw error;
+      }
+    }
+
     async function decryptMessage(encryptedStr, chatId) {
       try {
         const { iv, ciphertext } = JSON.parse(encryptedStr);
@@ -878,14 +917,14 @@
             const userCard = document.createElement('div');
             userCard.className = 'user-card fade-in';
             userCard.style.animationDelay = `${i * 0.1}s`;
-            userCard.onclick = () => startChat(user.uid, user);
+            userCard.onclick = () => startChat(user.uid);
             userCard.innerHTML = `
               ${avatarHtml}
               <div class="user-info">
                 <div class="user-name">${user.displayName || 'User'}</div>
                 <div class="user-bio">${user.bio || 'No bio yet'}</div>
               </div>
-              <button class="start-chat-btn" onclick="event.stopPropagation(); startChat('${user.uid}', ${JSON.stringify(user).replace(/'/g, '&apos;')})">Start Chat</button>
+              <button class="start-chat-btn" onclick="event.stopPropagation(); startChat('${user.uid}')">Start Chat</button>
             `;
             usersList.appendChild(userCard);
           }
@@ -894,32 +933,41 @@
       hideSpinner();
     }
 
-    window.startChat = async (targetUid, targetUser) => {
+    window.startChat = async (targetUid) => {
       try {
         const chatId = [currentUser.uid, targetUid].sort().join('_');
         const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${targetUid}`);
         const targetChatsRef = ref(db, `users/${targetUid}/chats/${currentUser.uid}`);
         const currentSnapshot = await get(currentChatsRef);
         if (!currentSnapshot.exists()) {
+          const initialMessage = 'Say hi to start chatting!';
+          const encrypted = await encryptMessage(initialMessage, chatId);
           await set(currentChatsRef, {
             chatId,
             otherUserId: targetUid,
-            lastMessage: 'Say hi to start chatting!',
+            lastMessage: encrypted,
             lastMessageTime: Date.now(),
             unreadCount: 0
           });
           await set(targetChatsRef, {
             chatId,
             otherUserId: currentUser.uid,
-            lastMessage: 'Say hi to start chatting!',
+            lastMessage: encrypted,
             lastMessageTime: Date.now(),
             unreadCount: 0
+          });
+          const messagesRef = ref(db, `chats/${chatId}/messages`);
+          const newMessageRef = push(messagesRef);
+          await set(newMessageRef, {
+            senderId: currentUser.uid,
+            message: encrypted,
+            timestamp: Date.now()
           });
           hasChats = true;
           loadChats();
         }
         closeAddFriendsSheet();
-        openChat(chatId, targetUser);
+        openChat(chatId, targetUid);
         showAlert('Chat started!');
       } catch (error) {
         console.error('Error starting chat:', error);
@@ -1249,7 +1297,7 @@
             const chatItem = document.createElement('div');
             chatItem.className = 'chat-item fade-in';
             chatItem.style.animationDelay = `${i * 0.1}s`;
-            chatItem.onclick = () => openChat(chat.chatId, user);
+            chatItem.onclick = () => openChat(chat.chatId, otherUserId);
             chatItem.innerHTML = `
               ${avatarHtml}
               ${unreadBadge}
@@ -1346,8 +1394,8 @@
       hideSpinner();
     }
 
-    function openChat(chatId, user) {
-      window.location.href = `chat.html?chatId=${chatId}&userId=${user.uid}`;
+    function openChat(chatId, otherUserId) {
+      window.location.href = `chat.html?chatId=${chatId}&userId=${otherUserId}`;
     }
 
     function openCall(callId) {
