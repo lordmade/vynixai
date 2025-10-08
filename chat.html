@@ -264,9 +264,55 @@
     .reaction-popup button:hover {
       background: var(--glass);
     }
+    .edit-input {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      background: var(--glass);
+      color: var(--text-primary);
+      resize: none;
+      font-family: inherit;
+      font-size: inherit;
+    }
+    .edit-buttons {
+      display: flex;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .edit-buttons button {
+      padding: 4px 8px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .edit-buttons .save {
+      background: var(--accent);
+      color: white;
+    }
+    .edit-buttons .cancel {
+      background: var(--glass);
+      color: var(--text-primary);
+    }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes slideFromLeft {
+      from { transform: translateX(-100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideFromRight {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    .reaction-popup.slide-from-left {
+      animation: slideFromLeft 0.2s ease-out;
+    }
+    .reaction-popup.slide-from-right {
+      animation: slideFromRight 0.2s ease-out;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -387,8 +433,8 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
-    let currentUser, chatId, otherUserId, messagesRef, selectedMessages = new Set();
-    let originalActionsHTML;
+    let currentUser, chatId, otherUserId, messagesRef, selectedMessages = new Set(), messagesCache = new Map();
+    let originalActionsHTML, lastSeenStatus, typingTimeout;
     let pressTimers = new Map();
     let pendingLongPress = new Set();
 
@@ -486,11 +532,12 @@
         messageDiv.classList.add('selected');
       }
       const decryptedMessage = await decryptMessage(message.message, chatId);
+      messagesCache.set(message.id, { text: decryptedMessage, senderId: message.senderId });
       let reactionsHtml = '';
       const reactions = message.reactions || {};
       if (Object.keys(reactions).length > 0) {
-        reactionsHtml = `<div class="reactions">${Object.entries(reactions).map(([emoji, users]) => {
-          const count = Object.keys(users || {}).length;
+        reactionsHtml = `<div class="reactions">${Object.entries(reactions).map(([emoji, usersObj]) => {
+          const count = Object.keys(usersObj || {}).length;
           return `<span>${emoji}${count > 1 ? count : ''}</span>`;
         }).join('')}</div>`;
       }
@@ -522,7 +569,7 @@
             const rect = bubble.getBoundingClientRect();
             const x = e.clientX || (e.touches && e.touches[0].clientX) || rect.left + rect.width / 2;
             const y = e.clientY || (e.touches && e.touches[0].clientY) || rect.top;
-            showReactionPopup(x, y, key);
+            showReactionPopup(x, y, key, isSent);
           }
         }, 500);
         pressTimers.set(key, timer);
@@ -543,6 +590,10 @@
               messageDiv.classList.add('selected');
             }
             updateHeader();
+            const rect = bubble.getBoundingClientRect();
+            const x = e.clientX || (e.touches && e.touches[0].clientX) || rect.left + rect.width / 2;
+            const y = e.clientY || (e.touches && e.touches[0].clientY) || rect.top;
+            showReactionPopup(x, y, key, isSent);
           }
         }
       };
@@ -573,18 +624,27 @@
     function updateHeader() {
       const actions = document.getElementById('header-actions');
       if (selectedMessages.size > 0) {
-        actions.innerHTML = `<button id="delete-btn" title="Delete (${selectedMessages.size})" onclick="deleteSelected()"><span class="material-icons" style="color: #ef4444;">delete</span></button>`;
+        let html = '<button id="copy-btn" title="Copy" onclick="copySelected()"><span class="material-icons">content_copy</span></button>';
+        if (selectedMessages.size === 1) {
+          const key = [...selectedMessages][0];
+          const msg = messagesCache.get(key);
+          if (msg && msg.senderId === currentUser.uid) {
+            html += '<button id="edit-btn" title="Edit" onclick="editSelected(\'' + key + '\')"><span class="material-icons">edit</span></button>';
+          }
+        }
+        html += '<button id="delete-btn" title="Delete (' + selectedMessages.size + ')" onclick="deleteSelected()"><span class="material-icons" style="color: #ef4444;">delete</span></button>';
+        actions.innerHTML = html;
       } else {
         actions.innerHTML = originalActionsHTML;
         setupActionListeners();
       }
     }
 
-    function showReactionPopup(x, y, key) {
+    function showReactionPopup(x, y, key, isSent) {
       let popup = document.querySelector('.reaction-popup');
       if (popup) popup.remove();
       popup = document.createElement('div');
-      popup.className = 'reaction-popup';
+      popup.className = `reaction-popup ${isSent ? 'slide-from-right' : 'slide-from-left'}`;
       popup.style.left = (x - 80) + 'px';
       popup.style.top = (y - 40) + 'px';
       const emojis = ['👍', '❤️', '😂', '😮', '😢', '😡'];
@@ -594,7 +654,6 @@
         btn.onclick = (e) => {
           e.stopPropagation();
           toggleReaction(key, emoji);
-          // Keep selected
         };
         popup.appendChild(btn);
       });
@@ -622,6 +681,54 @@
         }
       });
     }
+
+    window.copySelected = () => {
+      const texts = [...selectedMessages].map(k => messagesCache.get(k).text).join('\n');
+      navigator.clipboard.writeText(texts).then(() => {
+        alert('Copied!');
+      }).catch(() => {
+        alert('Copy failed!');
+      });
+      deselectAll();
+    };
+
+    window.editSelected = (key) => {
+      const div = document.querySelector(`[data-key="${key}"]`);
+      const bubble = div.querySelector('.message-bubble');
+      const oldText = messagesCache.get(key).text;
+      bubble.innerHTML = `
+        <textarea class="edit-input">${oldText}</textarea>
+        <div class="edit-buttons">
+          <button class="save" onclick="saveEdit('${key}')">Save</button>
+          <button class="cancel" onclick="cancelEdit('${key}')">Cancel</button>
+        </div>
+      `;
+      const textarea = bubble.querySelector('.edit-input');
+      textarea.focus();
+      textarea.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          saveEdit(key);
+        }
+      });
+    };
+
+    window.saveEdit = async (key) => {
+      const div = document.querySelector(`[data-key="${key}"]`);
+      const bubble = div.querySelector('.message-bubble');
+      const newText = bubble.querySelector('.edit-input').value.trim();
+      if (!newText) return;
+      const encrypted = await encryptMessage(newText, chatId);
+      await set(ref(db, `chats/${chatId}/messages/${key}/message`), encrypted);
+      messagesCache.set(key, { ...messagesCache.get(key), text: newText });
+      loadMessages();
+      deselectAll();
+    };
+
+    window.cancelEdit = (key) => {
+      loadMessages();
+      deselectAll();
+    };
 
     window.deleteSelected = async () => {
       const toDelete = Array.from(selectedMessages);
@@ -662,13 +769,25 @@
       if (user) {
         document.getElementById('chat-name').textContent = user.displayName || 'User';
         if (user.lastSeen) {
-          document.getElementById('chat-status').textContent = `Last seen at ${formatTime(user.lastSeen)}`;
+          lastSeenStatus = `Last seen at ${formatTime(user.lastSeen)}`;
         } else {
-          document.getElementById('chat-status').textContent = 'Online';
+          lastSeenStatus = 'Online';
         }
+        document.getElementById('chat-status').textContent = lastSeenStatus;
       }
       originalActionsHTML = document.getElementById('header-actions').innerHTML;
       setupActionListeners();
+
+      // Typing listener
+      const typingRef = ref(db, `chats/${chatId}/typing/${otherUserId}`);
+      onValue(typingRef, (snap) => {
+        const statusEl = document.getElementById('chat-status');
+        if (snap.val()) {
+          statusEl.textContent = 'typing...';
+        } else {
+          statusEl.textContent = lastSeenStatus;
+        }
+      });
     }
 
     function setupActionListeners() {
@@ -725,6 +844,11 @@
       const sendBtn = document.getElementById('send-btn');
       sendBtn.disabled = true;
       try {
+        if (typingTimeout) {
+          clearTimeout(typingTimeout);
+          set(ref(db, `chats/${chatId}/typing/${currentUser.uid}`), false);
+          typingTimeout = null;
+        }
         const encrypted = await encryptMessage(message, chatId);
         const newMessageRef = push(messagesRef);
         const timestamp = Date.now();
@@ -780,12 +904,19 @@
       }
     });
 
-    document.getElementById('message-input').addEventListener('input', function() {
-      this.style.height = 'auto';
-      this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+    const messageInput = document.getElementById('message-input');
+    messageInput.addEventListener('input', () => {
+      set(ref(db, `chats/${chatId}/typing/${currentUser.uid}`), true);
+      if (typingTimeout) clearTimeout(typingTimeout);
+      typingTimeout = setTimeout(() => {
+        set(ref(db, `chats/${chatId}/typing/${currentUser.uid}`), false);
+        typingTimeout = null;
+      }, 3000);
+      messageInput.style.height = 'auto';
+      messageInput.style.height = Math.min(messageInput.scrollHeight, 100) + 'px';
     });
 
-    document.getElementById('message-input').addEventListener('keypress', (e) => {
+    messageInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
