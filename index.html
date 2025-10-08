@@ -946,8 +946,8 @@
         content: null,
         userName: currentUser.displayName
       };
+      let userLatest = {};
       if (snapshot.exists()) {
-        let userLatest = {};
         Object.entries(snapshot.val()).forEach(([id, s]) => {
           const status = { statusId: id, ...s };
           if (status.userId !== currentUser.uid) {
@@ -1003,6 +1003,18 @@
       const statusesGrid = document.getElementById('statuses-grid');
       statusesGrid.innerHTML = '';
       if (currentUser) {
+        const ownUser = {
+          displayName: currentUser.displayName,
+          photoURL: currentUser.photoURL
+        };
+        const ownStatus = {
+          userId: currentUser.uid,
+          mediaUrl: null,
+          timestamp: Date.now(),
+          type: null,
+          content: null,
+          userName: currentUser.displayName
+        };
         const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
         const chatsSnapshot = await get(userChatsRef);
         let friendIds = [];
@@ -1024,30 +1036,38 @@
           });
         }
         const otherUserIds = Object.keys(userLatest);
-        if (otherUserIds.length === 0) {
-          statusesGrid.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No statuses from friends yet.</p>';
-          hideSpinner();
-          return;
+        let grouped = [{ user: ownUser, status: ownStatus }];
+        if (otherUserIds.length > 0) {
+          const userPromises = otherUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+          const userResults = await Promise.all(userPromises);
+          const otherGrouped = userResults.map(ur => ({
+            user: ur.user,
+            status: userLatest[ur.uid]
+          })).sort((a, b) => new Date(b.status.timestamp) - new Date(a.status.timestamp));
+          grouped = [grouped[0], ...otherGrouped];
         }
-        const userPromises = otherUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-        const userResults = await Promise.all(userPromises);
-        const grouped = userResults.map(ur => ({
-          user: ur.user,
-          status: userLatest[ur.uid]
-        })).sort((a, b) => new Date(b.status.timestamp) - new Date(a.status.timestamp));
         for (let i = 0; i < grouped.length; i++) {
           const { user, status } = grouped[i];
           const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
           const statusItem = document.createElement('div');
           statusItem.className = 'status-item fade-in';
           statusItem.style.animationDelay = `${i * 0.1}s`;
-          statusItem.onclick = () => openStatusModal(status);
+          statusItem.onclick = () => {
+            if (status.userId === currentUser.uid) {
+              openUploadSheet();
+            } else {
+              openStatusModal(status);
+            }
+          };
           const avatarHtml = user?.photoURL ? `<img src="${user.photoURL}" alt="${user?.displayName} status" class="status-avatar" loading="lazy">` : `<div class="status-avatar" style="background: var(--gradient); color: white; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
           statusItem.innerHTML = `
             ${avatarHtml}
-            <div class="status-name">${user?.displayName || 'Friend'}</div>
+            <div class="status-name">${user?.displayName || 'You'}</div>
           `;
           statusesGrid.appendChild(statusItem);
+        }
+        if (grouped.length === 1) {
+          statusesGrid.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No statuses from friends yet.</p>';
         }
       }
       hideSpinner();
@@ -1356,17 +1376,22 @@
       document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       document.getElementById(`${tab}-tab`).classList.add('active');
       const fab = document.getElementById('fab-btn');
-      if (tab === 'status') {
+      if (tab === 'chats') {
+        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends`;
+        fab.onclick = openAddFriendsSheet;
+        loadChats();
+      } else if (tab === 'status') {
         fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">add</span>Add Status`;
         fab.onclick = openUploadSheet;
         loadFriendStatuses();
-      } else {
-        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends`;
-        fab.onclick = openAddFriendsSheet;
+      } else if (tab === 'calls') {
+        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">call</span>New Call`;
+        fab.onclick = () => showAlert('New call functionality coming soon!');
+        loadCalls();
+      } else if (tab === 'settings') {
+        fab.style.display = 'none';
+        loadSettings();
       }
-      if (tab === 'chats') loadChats();
-      else if (tab === 'calls') loadCalls();
-      else if (tab === 'settings') loadSettings();
     }
 
     function initializeFirebase() {
@@ -1406,7 +1431,6 @@
     }
 
     function setupEventListeners() {
-      document.getElementById('fab-btn').addEventListener('click', openAddFriendsSheet);
       document.getElementById('settings-btn').addEventListener('click', () => switchTab('settings', null));
       document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab, e));
@@ -1414,11 +1438,14 @@
       document.getElementById('search-input').addEventListener('input', (e) => {
         console.log(`Searching for: ${e.target.value}`);
       });
+      const fab = document.getElementById('fab-btn');
+      fab.onclick = openAddFriendsSheet;
     }
 
     document.addEventListener('DOMContentLoaded', () => {
       initializeFirebase();
       setupEventListeners();
+      switchTab('chats', null);
     });
   </script>
 </body>
