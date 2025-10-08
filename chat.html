@@ -528,22 +528,6 @@
       padding-right: 20px;
       z-index: 1;
     }
-    .delete-btn {
-      background: none;
-      border: none;
-      color: white;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 8px;
-      border-radius: 50%;
-      transition: background 0.15s;
-      font-size: 24px;
-    }
-    .delete-btn:hover {
-      background: rgba(255,255,255,0.2);
-    }
     .alert-dialog {
       position: fixed;
       top: 0;
@@ -574,19 +558,34 @@
       color: var(--text-primary);
       font-size: 16px;
     }
+    .alert-content .buttons {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
     .alert-content button {
-      background: var(--accent-primary);
-      color: white;
+      flex: 1;
+      padding: 8px 16px;
       border: none;
       border-radius: 8px;
-      padding: 8px 16px;
       cursor: pointer;
       font-weight: 500;
       transition: background 0.15s ease;
-      width: 100%;
     }
-    .alert-content button:hover {
+    .alert-content .ok {
+      background: var(--accent-primary);
+      color: white;
+    }
+    .alert-content .ok:hover {
       background: var(--accent-secondary);
+    }
+    .alert-content .cancel {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+    }
+    .alert-content .cancel:hover {
+      background: rgba(0, 0, 0, 0.04);
     }
     .spinner-overlay {
       position: fixed;
@@ -702,7 +701,7 @@
       <div class="typing-dot"></div>
       <div class="typing-dot"></div>
     </div>
-    <span>Natalie is typing...</span>
+    <span id="typing-text">Someone is typing...</span>
   </div>
 
   <div id="spinner-overlay" class="spinner-overlay">
@@ -716,14 +715,17 @@
   <div id="alert-dialog" class="alert-dialog">
     <div class="alert-content">
       <p id="alert-message"></p>
-      <button onclick="closeAlert()">OK</button>
+      <div class="buttons">
+        <button class="cancel" onclick="closeAlert()">Cancel</button>
+        <button class="ok" id="confirm-ok" onclick="handleConfirm()">OK</button>
+      </div>
     </div>
   </div>
 
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, push, set, get, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onChildAdded, onChildChanged, onChildRemoved, push, set, get, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -739,11 +741,9 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
-    let currentUser, chatId, otherUserId, messagesRef, selectedMessages = new Set(), messagesCache = new Map();
-    let originalActionsHTML, lastSeenStatus, typingTimeout;
-    let pressTimers = new Map();
-    let pendingLongPress = new Set();
-    let currentReactionKey = null;
+    let currentUser, chatId, otherUserId, messagesRef, selectedMessages = new Set(), messagesCache = new Map(), messageElements = new Map();
+    let originalActionsHTML, lastSeenStatus, typingTimeout, confirmCallback = null;
+    let otherUserName = '';
 
     const showSpinner = () => document.getElementById('spinner-overlay').classList.add('active');
     const hideSpinner = () => document.getElementById('spinner-overlay').classList.remove('active');
@@ -751,10 +751,27 @@
     function showAlert(message) {
       document.getElementById('alert-message').textContent = message;
       document.getElementById('alert-dialog').classList.add('active');
+      document.querySelector('.buttons').style.display = 'none';
+      document.getElementById('confirm-ok').style.display = 'none';
     }
+
+    function showConfirm(message, callback) {
+      document.getElementById('alert-message').textContent = message;
+      document.getElementById('alert-dialog').classList.add('active');
+      document.querySelector('.buttons').style.display = 'flex';
+      document.getElementById('confirm-ok').style.display = 'block';
+      confirmCallback = callback;
+    }
+
+    window.handleConfirm = function() {
+      if (confirmCallback) confirmCallback();
+      closeAlert();
+      confirmCallback = null;
+    };
 
     window.closeAlert = function() {
       document.getElementById('alert-dialog').classList.remove('active');
+      confirmCallback = null;
     };
 
     function formatTime(timestamp) {
@@ -833,14 +850,54 @@
       return avatar;
     }
 
-    async function addMessage(message, isSent, container, otherAvatar) {
+    function updateMessageElement(key, message) {
+      const el = messageElements.get(key);
+      if (!el) return;
+
+      const isSent = message.senderId === currentUser.uid;
+      const decrypted = messagesCache.get(key).text; // Use cached decrypted text, or re-decrypt if needed
+      const bubble = el.querySelector('.message-bubble');
+      if (bubble) bubble.textContent = decrypted;
+
+      // Update reactions
+      let reactionsHtml = '';
+      if (message.reactions && Object.keys(message.reactions).length > 0) {
+        reactionsHtml = `<div class="reactions">${Object.entries(message.reactions).map(([emoji, users]) => `<span>${emoji} ${Object.keys(users).length > 1 ? Object.keys(users).length : ''}</span>`).join('')}</div>`;
+      }
+      const reactionsEl = el.querySelector('.reactions');
+      if (reactionsHtml) {
+        if (reactionsEl) {
+          reactionsEl.innerHTML = reactionsHtml;
+        } else {
+          const newReactions = document.createElement('div');
+          newReactions.className = 'reactions';
+          newReactions.innerHTML = reactionsHtml;
+          el.insertBefore(newReactions, el.querySelector('.message-time'));
+        }
+      } else if (reactionsEl) {
+        reactionsEl.remove();
+      }
+
+      // Update status
+      const timeEl = el.querySelector('.message-time');
+      if (timeEl && isSent) {
+        const statusIcon = `<span class="status-icon material-icons ${message.status === 'read' ? 'status-read' : ''}">${message.status === 'read' ? 'done_all' : 'done'}</span>`;
+        timeEl.innerHTML = `${formatTime(message.timestamp)}${statusIcon}`;
+      }
+
+      messagesCache.set(key, { text: decrypted, senderId: message.senderId, status: message.status || 'sent' });
+    }
+
+    async function addMessage(key, message) {
+      const container = document.getElementById('messages-container');
+      const isSent = message.senderId === currentUser.uid;
+      const decrypted = await decryptMessage(message.message, chatId);
+      messagesCache.set(key, { text: decrypted, senderId: message.senderId, status: message.status || 'sent' });
+
       const messageDiv = document.createElement('div');
       messageDiv.className = `message ${isSent ? 'sent' : 'received'}`;
-      messageDiv.dataset.key = message.id;
-      if (selectedMessages.has(message.id)) messageDiv.classList.add('selected');
-
-      const decrypted = await decryptMessage(message.message, chatId);
-      messagesCache.set(message.id, { text: decrypted, senderId: message.senderId, status: message.status || 'sent' });
+      messageDiv.dataset.key = key;
+      if (selectedMessages.has(key)) messageDiv.classList.add('selected');
 
       let reactionsHtml = '';
       let reactionsDiv = null;
@@ -886,20 +943,6 @@
 
         const deleteBg = document.createElement('div');
         deleteBg.className = 'delete-bg';
-
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'delete-btn';
-        deleteBtn.innerHTML = '<span class="material-icons">delete</span>';
-        deleteBtn.onclick = (e) => {
-          e.stopPropagation();
-          if (confirm('Delete this message?')) {
-            remove(ref(db, `chats/${chatId}/messages/${message.id}`));
-          }
-          // Reset swipe
-          swipeContent.style.transform = 'translateX(0px)';
-        };
-
-        deleteBg.appendChild(deleteBtn);
         messageDiv.appendChild(deleteBg);
 
         // Swipe functionality
@@ -909,11 +952,9 @@
         let isSwiping = false;
         let initialTranslateX = 0;
 
-        const threshold = 50;
-        const snapDistance = 80;
+        const threshold = 80;
 
         const handleTouchStart = (e) => {
-          if (!isSent) return;
           startX = e.touches[0].clientX;
           startY = e.touches[0].clientY;
           isSwiping = true;
@@ -943,15 +984,20 @@
         const handleTouchEnd = (e) => {
           if (!isSwiping) return;
           isSwiping = false;
-          swipeContent.style.transition = 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
-
           const deltaX = currentX - startX;
 
           if (Math.abs(deltaX) < threshold) {
+            swipeContent.style.transition = 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
             swipeContent.style.transform = 'translateX(0px)';
           } else if (deltaX < -threshold) {
-            swipeContent.style.transform = `translateX(-${snapDistance}px)`;
+            // Delete message
+            showConfirm('Delete this message?', () => {
+              remove(ref(db, `chats/${chatId}/messages/${key}`));
+            });
+            swipeContent.style.transition = 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+            swipeContent.style.transform = 'translateX(0px)';
           } else {
+            swipeContent.style.transition = 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
             swipeContent.style.transform = 'translateX(0px)';
           }
         };
@@ -961,36 +1007,72 @@
         messageDiv.addEventListener('touchend', handleTouchEnd, { passive: true });
       }
 
-      container.appendChild(messageDiv);
+      // Insert at correct position based on timestamp
+      let inserted = false;
+      const messages = Array.from(container.children);
+      for (let i = 0; i < messages.length; i++) {
+        const siblingMsg = messages[i];
+        const siblingKey = siblingMsg.dataset.key;
+        const siblingTimestamp = messagesCache.get(siblingKey).timestamp || 0;
+        if (message.timestamp < siblingTimestamp) {
+          container.insertBefore(messageDiv, siblingMsg);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) {
+        container.appendChild(messageDiv);
+      }
+
+      messageElements.set(key, messageDiv);
 
       // Long press handlers
-      const key = message.id;
+      const bubble = messageDiv.querySelector('.message-bubble');
+      const key2 = key; // For closure
       let longPressTimer;
       const startLongPress = (e) => {
         e.preventDefault();
         longPressTimer = setTimeout(() => {
           e.preventDefault();
-          if (selectedMessages.has(key)) {
-            selectedMessages.delete(key);
+          if (selectedMessages.has(key2)) {
+            selectedMessages.delete(key2);
             messageDiv.classList.remove('selected');
           } else {
-            selectedMessages.add(key);
+            selectedMessages.add(key2);
             messageDiv.classList.add('selected');
           }
           updateHeader();
           if (selectedMessages.size === 1) {
-            showReactionPopup(key, messageDiv, isSent);
+            showReactionPopup(key2, messageDiv, isSent);
           }
         }, 600);
       };
       const cancelLongPress = () => clearTimeout(longPressTimer);
 
-      bubble.addEventListener('touchstart', startLongPress, { passive: false });
-      bubble.addEventListener('mousedown', startLongPress);
-      bubble.addEventListener('touchend', cancelLongPress);
-      bubble.addEventListener('mouseup', cancelLongPress);
-      bubble.addEventListener('touchmove', cancelLongPress);
-      bubble.addEventListener('mouseleave', cancelLongPress);
+      if (bubble) {
+        bubble.addEventListener('touchstart', startLongPress, { passive: false });
+        bubble.addEventListener('mousedown', startLongPress);
+        bubble.addEventListener('touchend', cancelLongPress);
+        bubble.addEventListener('mouseup', cancelLongPress);
+        bubble.addEventListener('touchmove', cancelLongPress);
+        bubble.addEventListener('mouseleave', cancelLongPress);
+      }
+
+      // Scroll to bottom if new message and was at bottom
+      const wasAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 20;
+      if (wasAtBottom) {
+        messageDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }
+    }
+
+    function removeMessage(key) {
+      const el = messageElements.get(key);
+      if (el) {
+        el.remove();
+        messageElements.delete(key);
+        messagesCache.delete(key);
+        selectedMessages.delete(key);
+      }
     }
 
     function deselectAll() {
@@ -1009,7 +1091,7 @@
         if (count === 1) {
           const key = [...selectedMessages][0];
           const msg = messagesCache.get(key);
-          if (msg.senderId === currentUser.uid) {
+          if (msg && msg.senderId === currentUser.uid) {
             html += `<button onclick="editSelected('${key}')" aria-label="Edit"><span class="material-icons">edit</span></button>`;
           }
         }
@@ -1023,31 +1105,27 @@
 
     function showReactionPopup(key, messageEl, isSent) {
       const popup = document.getElementById('reaction-popup');
-      const grid = popup.querySelectorAll('.reaction-btn');
-      if (grid.length === 0) {
-        const emojis = ['👍', '❤️', '😂', '😮', '😢', '😡', '🙌', '🔥', '😍', '🤔'];
-        emojis.forEach(emoji => {
-          const btn = document.createElement('button');
-          btn.className = 'reaction-btn';
-          btn.textContent = emoji;
-          btn.onclick = (e) => {
-            e.stopPropagation();
-            toggleReaction(key, emoji);
-            closeReactionPopup();
-          };
-          popup.appendChild(btn);
-        });
-      }
+      popup.innerHTML = '';
+      const emojis = ['👍', '❤️', '😂', '😮', '😢', '😡', '🙌', '🔥', '😍', '🤔'];
+      emojis.forEach(emoji => {
+        const btn = document.createElement('button');
+        btn.className = 'reaction-btn';
+        btn.textContent = emoji;
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          toggleReaction(key, emoji);
+          closeReactionPopup();
+        };
+        popup.appendChild(btn);
+      });
 
       const rect = messageEl.getBoundingClientRect();
-      const popupRect = popup.getBoundingClientRect();
       let top = rect.bottom + 8;
-      let left = isSent ? rect.left - popupRect.width - 8 : rect.right + 8;
+      let left = isSent ? rect.left - 240 : rect.right + 8; // Approximate width 240
 
-      // Ensure within viewport
-      if (top + popupRect.height > window.innerHeight) top = rect.top - popupRect.height - 8;
+      if (top + 50 > window.innerHeight) top = rect.top - 60;
       if (left < 0) left = 8;
-      if (left + popupRect.width > window.innerWidth) left = window.innerWidth - popupRect.width - 8;
+      if (left + 240 > window.innerWidth) left = window.innerWidth - 248;
 
       popup.style.top = `${top}px`;
       popup.style.left = `${left}px`;
@@ -1056,7 +1134,6 @@
 
     function closeReactionPopup() {
       document.getElementById('reaction-popup').classList.remove('active');
-      document.getElementById('reaction-popup').innerHTML = '';
       currentReactionKey = null;
     }
 
@@ -1098,58 +1175,76 @@
       const encrypted = await encryptMessage(newText, chatId);
       set(ref(db, `chats/${chatId}/messages/${key}/message`), encrypted);
       messagesCache.get(key).text = newText;
-      loadMessages();
+      updateMessageElement(key, { message: encrypted });
       deselectAll();
     };
 
-    window.cancelEdit = (key) => loadMessages();
+    window.cancelEdit = (key) => {
+      const message = messagesRef.child(key).val();
+      updateMessageElement(key, message);
+      deselectAll();
+    };
 
     window.deleteSelected = async () => {
-      if (!confirm(`Delete ${selectedMessages.size} messages?`)) return;
-      for (const key of selectedMessages) {
-        remove(ref(db, `chats/${chatId}/messages/${key}`));
-      }
-      deselectAll();
+      showConfirm(`Delete ${selectedMessages.size} messages?`, async () => {
+        for (const key of selectedMessages) {
+          remove(ref(db, `chats/${chatId}/messages/${key}`));
+        }
+        deselectAll();
+      });
     };
 
     function showTypingIndicator(show) {
       const indicator = document.getElementById('typing-indicator');
-      indicator.style.display = show ? 'flex' : 'none';
+      const textEl = document.getElementById('typing-text');
       if (show) {
+        textEl.textContent = `${otherUserName || 'Someone'} is typing...`;
+        indicator.style.display = 'flex';
         indicator.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      } else {
+        indicator.style.display = 'none';
       }
     }
 
-    async function loadMessages() {
+    function initMessageListeners() {
       const container = document.getElementById('messages-container');
-      messagesRef = ref(db, `chats/${chatId}/messages`);
-      onValue(messagesRef, async (snapshot) => {
-        const wasAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 20;
-        container.innerHTML = '';
-        if (snapshot.exists()) {
-          const messages = Object.entries(snapshot.val()).map(([id, msg]) => ({ id, ...msg }));
-          messages.sort((a, b) => a.timestamp - b.timestamp);
-          for (const msg of messages) {
-            const isSent = msg.senderId === currentUser.uid;
-            await addMessage(msg, isSent, container, otherAvatar);
-            if (isSent && msg.status !== 'read') {
-              set(ref(db, `chats/${chatId}/messages/${msg.id}/status`), 'read');
-            }
-          }
-        }
-        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+
+      messagesRef.on('child_added', async (snap) => {
+        await addMessage(snap.key, snap.val());
       });
+
+      messagesRef.on('child_changed', (snap) => {
+        updateMessageElement(snap.key, snap.val());
+      });
+
+      messagesRef.on('child_removed', (snap) => {
+        removeMessage(snap.key);
+      });
+    }
+
+    async function loadInitialMessages() {
+      const snapshot = await get(messagesRef);
+      if (snapshot.exists()) {
+        const messages = Object.entries(snapshot.val()).map(([id, msg]) => ({ id, ...msg }));
+        messages.sort((a, b) => a.timestamp - b.timestamp);
+        const container = document.getElementById('messages-container');
+        for (const msg of messages) {
+          await addMessage(msg.id, msg);
+        }
+      }
     }
 
     async function loadChatInfo() {
       const params = new URLSearchParams(window.location.search);
       chatId = params.get('chatId');
       otherUserId = params.get('userId');
+      messagesRef = ref(db, `chats/${chatId}/messages`);
       const userRef = ref(db, `users/${otherUserId}`);
       const snap = await get(userRef);
       const user = snap.val();
       if (user) {
         document.getElementById('chat-name').textContent = user.displayName || 'User';
+        otherUserName = user.displayName || 'Someone';
         const initial = (user.displayName || 'U').charAt(0).toUpperCase();
         otherAvatar = createAvatar(initial);
         const avatarEl = document.getElementById('chat-avatar');
@@ -1166,12 +1261,13 @@
       originalActionsHTML = document.getElementById('header-actions').innerHTML;
       setupActionListeners();
 
+      await loadInitialMessages();
+      initMessageListeners();
+
       // Typing listener
       const typingRef = ref(db, `chats/${chatId}/typing/${otherUserId}`);
       onValue(typingRef, (snap) => showTypingIndicator(snap.val()));
     }
-
-    let otherAvatar;
 
     function setupActionListeners() {
       document.getElementById('call-btn').onclick = () => showAlert('Voice call...');
@@ -1189,15 +1285,15 @@
     };
 
     window.clearChat = async () => {
-      if (confirm('Clear chat?')) {
+      showConfirm('Clear chat?', async () => {
         remove(ref(db, `chats/${chatId}/messages`));
         showAlert('Chat cleared');
-      }
+      });
       toggleMenu();
     };
 
     window.blockUser = () => {
-      if (confirm('Block user?')) showAlert('Blocked');
+      showConfirm('Block user?', () => showAlert('Blocked'));
       toggleMenu();
     };
 
@@ -1257,7 +1353,7 @@
       currentUser = user;
       if (user) {
         set(ref(db, `users/${user.uid}/lastSeen`), Date.now());
-        loadChatInfo().then(loadMessages).then(hideSpinner);
+        loadChatInfo().then(hideSpinner);
       } else {
         window.location.href = 'login.html';
       }
