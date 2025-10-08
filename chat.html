@@ -187,7 +187,7 @@
       resize: none;
       max-height: 100px;
       min-height: 44px;
-      backdrop-filter: blur(10px;
+      backdrop-filter: blur(10px);
     }
     .message-input:focus {
       border-color: var(--accent);
@@ -412,17 +412,37 @@
       }
     }
 
-    function addMessage(message, isSent) {
+    async function addMessage(message, isSent) {
       const messagesContainer = document.getElementById('messages-container');
       const messageDiv = document.createElement('div');
       messageDiv.className = `message ${isSent ? 'sent' : ''}`;
-      const decryptedMessage = message.message ? decryptMessage(message.message, chatId) : '';
+      const decryptedMessage = await decryptMessage(message.message, chatId);
       messageDiv.innerHTML = `
         <div class="message-bubble">${decryptedMessage}</div>
         <div class="message-time">${formatTimestamp(message.timestamp)}</div>
       `;
       messagesContainer.appendChild(messageDiv);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    async function loadMessages() {
+      const messagesContainer = document.getElementById('messages-container');
+      messagesContainer.innerHTML = '';
+      onValue(messagesRef, async (snapshot) => {
+        messagesContainer.innerHTML = '';
+        if (snapshot.exists()) {
+          const messages = [];
+          Object.entries(snapshot.val()).forEach(([id, msg]) => {
+            messages.push({ id, ...msg });
+          });
+          // Sort messages by timestamp to ensure order
+          messages.sort((a, b) => a.timestamp - b.timestamp);
+          for (const message of messages) {
+            const isSent = message.senderId === currentUser.uid;
+            await addMessage(message, isSent);
+          }
+        }
+      }, { onlyOnce: false });
     }
 
     async function loadChatInfo() {
@@ -438,19 +458,6 @@
       }
     }
 
-    function loadMessages() {
-      onValue(messagesRef, (snapshot) => {
-        const messagesContainer = document.getElementById('messages-container');
-        messagesContainer.innerHTML = '';
-        if (snapshot.exists()) {
-          Object.entries(snapshot.val()).forEach(([id, msg]) => {
-            const message = { id, ...msg };
-            addMessage(message, message.senderId === currentUser.uid);
-          });
-        }
-      });
-    }
-
     async function sendMessage() {
       const input = document.getElementById('message-input');
       const message = input.value.trim();
@@ -460,24 +467,27 @@
       try {
         const encrypted = await encryptMessage(message, chatId);
         const newMessageRef = push(messagesRef);
+        const timestamp = Date.now();
         await set(newMessageRef, {
           senderId: currentUser.uid,
           message: encrypted,
-          timestamp: Date.now()
+          timestamp: timestamp
         });
         // Update last message in user chats
         const userChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
         const otherChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+        const currentUserChat = await get(userChatsRef);
+        const otherUserChat = await get(otherChatsRef);
         await set(userChatsRef, {
-          ... (await get(userChatsRef)).val(),
+          ...(currentUserChat.val() || {}),
           lastMessage: encrypted,
-          lastMessageTime: Date.now(),
+          lastMessageTime: timestamp,
           unreadCount: 0
         });
         await set(otherChatsRef, {
-          ... (await get(otherChatsRef)).val(),
+          ...(otherUserChat.val() || {}),
           lastMessage: encrypted,
-          lastMessageTime: Date.now()
+          lastMessageTime: timestamp
         });
         input.value = '';
       } catch (error) {
@@ -500,9 +510,47 @@
       });
       document.getElementById('send-btn').addEventListener('click', sendMessage);
 
-      // Call buttons (placeholder)
-      document.getElementById('call-btn').addEventListener('click', () => alert('Voice call starting...'));
-      document.getElementById('video-btn').addEventListener('click', () => alert('Video call starting...'));
+      // Placeholder for calls - log to Firebase calls
+      document.getElementById('call-btn').addEventListener('click', async () => {
+        const callsRef = ref(db, `users/${currentUser.uid}/calls`);
+        const newCallRef = push(callsRef);
+        await set(newCallRef, {
+          otherUserId: otherUserId,
+          type: 'outgoing',
+          timestamp: Date.now()
+        });
+        // Also log for the other user
+        const otherCallsRef = ref(db, `users/${otherUserId}/calls`);
+        const otherNewCallRef = push(otherCallsRef);
+        await set(otherNewCallRef, {
+          otherUserId: currentUser.uid,
+          type: 'incoming',
+          timestamp: Date.now()
+        });
+        alert('Voice call logged!');
+      });
+
+      document.getElementById('video-btn').addEventListener('click', async () => {
+        const callsRef = ref(db, `users/${currentUser.uid}/calls`);
+        const newCallRef = push(callsRef);
+        await set(newCallRef, {
+          otherUserId: otherUserId,
+          type: 'outgoing',
+          timestamp: Date.now(),
+          video: true
+        });
+        // Also log for the other user
+        const otherCallsRef = ref(db, `users/${otherUserId}/calls`);
+        const otherNewCallRef = push(otherCallsRef);
+        await set(otherNewCallRef, {
+          otherUserId: currentUser.uid,
+          type: 'incoming',
+          timestamp: Date.now(),
+          video: true
+        });
+        alert('Video call logged!');
+      });
+
       document.getElementById('menu-btn').addEventListener('click', () => alert('More options...'));
     }
 
