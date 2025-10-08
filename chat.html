@@ -509,6 +509,41 @@
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    .swipeable {
+      position: relative;
+      overflow: hidden;
+      touch-action: pan-y pinch-zoom;
+    }
+    .swipe-content {
+      z-index: 2;
+      transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    }
+    .delete-bg {
+      position: absolute;
+      inset: 0;
+      background: var(--danger);
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 20px;
+      z-index: 1;
+    }
+    .delete-btn {
+      background: none;
+      border: none;
+      color: white;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px;
+      border-radius: 50%;
+      transition: background 0.15s;
+      font-size: 24px;
+    }
+    .delete-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
     .alert-dialog {
       position: fixed;
       top: 0;
@@ -808,36 +843,123 @@
       messagesCache.set(message.id, { text: decrypted, senderId: message.senderId, status: message.status || 'sent' });
 
       let reactionsHtml = '';
+      let reactionsDiv = null;
       if (message.reactions && Object.keys(message.reactions).length > 0) {
         reactionsHtml = `<div class="reactions">${Object.entries(message.reactions).map(([emoji, users]) => `<span>${emoji} ${Object.keys(users).length > 1 ? Object.keys(users).length : ''}</span>`).join('')}</div>`;
+        reactionsDiv = document.createElement('div');
+        reactionsDiv.innerHTML = reactionsHtml;
       }
 
-      const content = document.createElement('div');
-      content.className = 'message-content';
+      const messageContent = document.createElement('div');
+      messageContent.className = 'message-content';
 
       if (!isSent) {
         const smallAvatar = otherAvatar.cloneNode(true);
         smallAvatar.style.width = '32px';
         smallAvatar.style.height = '32px';
-        content.appendChild(smallAvatar);
+        messageContent.appendChild(smallAvatar);
       }
 
       const bubble = document.createElement('div');
       bubble.className = 'message-bubble';
       bubble.textContent = decrypted;
-      content.appendChild(bubble);
+      messageContent.appendChild(bubble);
 
-      messageDiv.appendChild(content);
+      const swipeContent = document.createElement('div');
+      swipeContent.className = 'swipe-content';
+      swipeContent.appendChild(messageContent);
 
-      if (reactionsHtml) {
-        messageDiv.insertAdjacentHTML('beforeend', reactionsHtml);
+      if (reactionsDiv) {
+        swipeContent.appendChild(reactionsDiv);
       }
 
       const timeDiv = document.createElement('div');
       timeDiv.className = 'message-time';
       const statusIcon = isSent ? `<span class="status-icon material-icons ${message.status === 'read' ? 'status-read' : ''}">${message.status === 'read' ? 'done_all' : 'done'}</span>` : '';
       timeDiv.innerHTML = `${formatTime(message.timestamp)}${statusIcon}`;
-      messageDiv.appendChild(timeDiv);
+      swipeContent.appendChild(timeDiv);
+
+      messageDiv.appendChild(swipeContent);
+
+      if (isSent) {
+        messageDiv.classList.add('swipeable');
+
+        const deleteBg = document.createElement('div');
+        deleteBg.className = 'delete-bg';
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.innerHTML = '<span class="material-icons">delete</span>';
+        deleteBtn.onclick = (e) => {
+          e.stopPropagation();
+          if (confirm('Delete this message?')) {
+            remove(ref(db, `chats/${chatId}/messages/${message.id}`));
+          }
+          // Reset swipe
+          swipeContent.style.transform = 'translateX(0px)';
+        };
+
+        deleteBg.appendChild(deleteBtn);
+        messageDiv.appendChild(deleteBg);
+
+        // Swipe functionality
+        let startX = 0;
+        let startY = 0;
+        let currentX = 0;
+        let isSwiping = false;
+        let initialTranslateX = 0;
+
+        const threshold = 50;
+        const snapDistance = 80;
+
+        const handleTouchStart = (e) => {
+          if (!isSent) return;
+          startX = e.touches[0].clientX;
+          startY = e.touches[0].clientY;
+          isSwiping = true;
+          initialTranslateX = parseFloat(swipeContent.style.transform?.replace('translateX(', '').replace('px)', '') || 0);
+          swipeContent.style.transition = 'none';
+        };
+
+        const handleTouchMove = (e) => {
+          if (!isSwiping) return;
+          currentX = e.touches[0].clientX;
+          const currentY = e.touches[0].clientY;
+          const deltaX = currentX - startX;
+          const deltaY = currentY - startY;
+
+          if (Math.abs(deltaY) > Math.abs(deltaX)) {
+            return; // Allow vertical scroll
+          }
+
+          e.preventDefault();
+
+          if (deltaX < 0) { // Only left swipe
+            const translateX = initialTranslateX + deltaX;
+            swipeContent.style.transform = `translateX(${translateX}px)`;
+          }
+        };
+
+        const handleTouchEnd = (e) => {
+          if (!isSwiping) return;
+          isSwiping = false;
+          swipeContent.style.transition = 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+
+          const deltaX = currentX - startX;
+
+          if (Math.abs(deltaX) < threshold) {
+            swipeContent.style.transform = 'translateX(0px)';
+          } else if (deltaX < -threshold) {
+            swipeContent.style.transform = `translateX(-${snapDistance}px)`;
+          } else {
+            swipeContent.style.transform = 'translateX(0px)';
+          }
+        };
+
+        messageDiv.addEventListener('touchstart', handleTouchStart, { passive: true });
+        messageDiv.addEventListener('touchmove', handleTouchMove, { passive: false });
+        messageDiv.addEventListener('touchend', handleTouchEnd, { passive: true });
+      }
 
       container.appendChild(messageDiv);
 
