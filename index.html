@@ -762,6 +762,17 @@
     </div>
   </div>
 
+  <div id="confirm-modal" class="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeConfirm()">&times;</button>
+      <div id="confirm-message" class="status-text"></div>
+      <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px;">
+        <button id="confirm-yes" class="start-chat-btn" style="padding: 8px 16px; min-width: 60px; font-size: 14px;">Yes</button>
+        <button id="confirm-no" style="background: var(--border); color: var(--text-primary); border: 1px solid var(--border); padding: 8px 16px; min-width: 60px; border-radius: 15px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">No</button>
+      </div>
+    </div>
+  </div>
+
   <div id="upload-sheet" class="bottom-sheet">
     <div class="bottom-sheet-header">
       <h2 style="margin: 0; font-size: 22px; font-weight: 700; color: var(--text-primary);">Upload Status</h2>
@@ -947,6 +958,45 @@
         }
       }
     }
+
+    async function removeChat(chatId, otherUid) {
+      try {
+        showSpinner();
+        // Delete from current user
+        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
+        await set(currentChatsRef, null);
+        // Delete from other user
+        const targetChatsRef = ref(db, `users/${otherUid}/chats/${currentUser.uid}`);
+        await set(targetChatsRef, null);
+        // Delete messages
+        const messagesRef = ref(db, `chats/${chatId}`);
+        await set(messagesRef, null);
+        showAlert('Friend removed.');
+        loadChats();
+      } catch (error) {
+        console.error('Error removing chat:', error);
+        showAlert('Failed to remove friend.');
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    function showConfirm(message, callback) {
+      document.getElementById('confirm-message').textContent = message;
+      document.getElementById('confirm-modal').classList.add('active');
+      const yesBtn = document.getElementById('confirm-yes');
+      const noBtn = document.getElementById('confirm-no');
+      const yesHandler = () => { callback(true); closeConfirm(); };
+      const noHandler = () => { callback(false); closeConfirm(); };
+      yesBtn.onclick = yesHandler;
+      noBtn.onclick = noHandler;
+    }
+
+    function closeConfirm() {
+      document.getElementById('confirm-modal').classList.remove('active');
+    }
+
+    window.closeConfirm = closeConfirm;
 
     function openAddFriendsSheet() {
       const sheet = document.createElement('div');
@@ -1299,6 +1349,8 @@
             const chatItem = document.createElement('div');
             chatItem.className = 'chat-item fade-in';
             chatItem.style.animationDelay = `${i * 0.1}s`;
+            chatItem.setAttribute('data-chatid', chat.chatId);
+            chatItem.setAttribute('data-otheruid', otherUserId);
             chatItem.onclick = () => openChat(chat.chatId, otherUserId);
             chatItem.innerHTML = `
               ${avatarHtml}
@@ -1309,6 +1361,32 @@
               </div>
               <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
             `;
+            (function(chatItem, chatId, otherUid) {
+              let startX = 0;
+              let currentX = 0;
+              chatItem.addEventListener('touchstart', (e) => {
+                startX = e.touches[0].clientX;
+                currentX = startX;
+              });
+              chatItem.addEventListener('touchmove', (e) => {
+                currentX = e.touches[0].clientX;
+                const delta = startX - currentX;
+                if (delta > 0) {
+                  chatItem.style.transform = `translateX(${-delta}px)`;
+                }
+              });
+              chatItem.addEventListener('touchend', (e) => {
+                chatItem.style.transform = '';
+                const deltaX = startX - currentX;
+                if (deltaX > 50) {
+                  showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
+                    if (confirmed) {
+                      removeChat(chatId, otherUid);
+                    }
+                  });
+                }
+              });
+            })(chatItem, chat.chatId, otherUserId);
             chatList.appendChild(chatItem);
           }
         } else {
