@@ -252,7 +252,7 @@
     }
     .message.sent .message-time {
       text-align: right;
-      color: rgba(255, 255, 255, 0.8);
+      color: #000000;
     }
     .input-container {
       position: fixed;
@@ -285,6 +285,10 @@
     }
     .input-left button:hover {
       background: var(--glass);
+    }
+    .input-left button.recording {
+      background: #ef4444;
+      color: white;
     }
     .message-input {
       flex: 1;
@@ -459,6 +463,38 @@
     .reactions-grid button:hover {
       background: var(--glass);
     }
+    .voice-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .play-btn {
+      background: none;
+      border: none;
+      padding: 4px;
+      border-radius: 50%;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      color: inherit;
+      font-size: 20px;
+    }
+    .play-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .message.sent .play-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    .duration {
+      font-size: 12px;
+      font-weight: 500;
+      color: inherit;
+      white-space: nowrap;
+    }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
@@ -484,9 +520,6 @@
         border-bottom-color: var(--border);
         color: var(--text-secondary);
       }
-      .message-time {
-        color: #000000;
-      }
       .reaction-popup {
         background: var(--card-bg);
         border-color: var(--border);
@@ -504,6 +537,12 @@
       }
       .reactions-grid button:hover {
         background: var(--glass);
+      }
+      .message-time {
+        color: var(--text-primary);
+      }
+      .message.sent .message-time {
+        color: var(--text-primary);
       }
     }
     .spinner-overlay {
@@ -601,6 +640,9 @@
       <button id="attach-btn" title="Attach" aria-label="Attach">
         <span class="material-icons">attach_file</span>
       </button>
+      <button id="voice-btn" title="Voice note" aria-label="Voice note">
+        <span class="material-icons">mic</span>
+      </button>
     </div>
     <textarea 
       class="message-input" 
@@ -649,6 +691,10 @@
       measurementId: "G-V4W97VMSKL"
     };
 
+    // Cloudinary configuration - Replace with your actual values
+    const CLOUDINARY_CLOUD_NAME = 'your_cloud_name'; // Replace with your Cloudinary cloud name
+    const UPLOAD_PRESET = 'your_upload_preset'; // Replace with your upload preset
+
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
@@ -657,6 +703,8 @@
     let pressTimers = new Map();
     let pendingLongPress = new Set();
     let currentReactionKey = null;
+    // Voice recording variables
+    let mediaRecorder, audioChunks = [], recording = false, startTime, isCancelled = false;
 
     const showSpinner = () => document.getElementById('spinner-overlay').classList.add('active');
     const hideSpinner = () => document.getElementById('spinner-overlay').classList.remove('active');
@@ -664,6 +712,12 @@
     function formatTime(timestamp) {
       const date = new Date(timestamp);
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatDuration(seconds) {
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins}:${secs.toString().padStart(2, '0')}`;
     }
 
     async function encryptMessage(message, chatId) {
@@ -757,8 +811,8 @@
       if (selectedMessages.has(message.id)) {
         messageDiv.classList.add('selected');
       }
-      const decryptedMessage = await decryptMessage(message.message, chatId);
-      messagesCache.set(message.id, { text: decryptedMessage, senderId: message.senderId });
+      const decryptedMessage = message.type === 'voice' ? await decryptMessage(message.message || '', chatId) : await decryptMessage(message.message, chatId);
+      messagesCache.set(message.id, { text: decryptedMessage, type: message.type, url: message.url || null, duration: message.duration || 0, senderId: message.senderId });
       let reactionsHtml = '';
       const reactions = message.reactions || {};
       if (Object.keys(reactions).length > 0) {
@@ -776,7 +830,44 @@
       }
       const bubble = document.createElement('div');
       bubble.className = 'message-bubble';
-      bubble.textContent = decryptedMessage;
+      if (message.type === 'voice') {
+        const voiceContainer = document.createElement('div');
+        voiceContainer.className = 'voice-note';
+        const playBtn = document.createElement('button');
+        playBtn.className = 'play-btn';
+        playBtn.innerHTML = '<span class="material-icons">play_arrow</span>';
+        const durationEl = document.createElement('span');
+        durationEl.className = 'duration';
+        durationEl.textContent = formatDuration(message.duration);
+        voiceContainer.appendChild(playBtn);
+        voiceContainer.appendChild(durationEl);
+        bubble.appendChild(voiceContainer);
+
+        const audio = document.createElement('audio');
+        audio.src = message.url;
+        audio.preload = 'metadata';
+        playBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (audio.paused) {
+            audio.play().catch(console.error);
+            playBtn.innerHTML = '<span class="material-icons">pause</span>';
+          } else {
+            audio.pause();
+            playBtn.innerHTML = '<span class="material-icons">play_arrow</span>';
+          }
+        });
+        audio.addEventListener('pause', () => {
+          playBtn.innerHTML = '<span class="material-icons">play_arrow</span>';
+        });
+        audio.addEventListener('playing', () => {
+          playBtn.innerHTML = '<span class="material-icons">pause</span>';
+        });
+        audio.addEventListener('ended', () => {
+          playBtn.innerHTML = '<span class="material-icons">play_arrow</span>';
+        });
+      } else {
+        bubble.textContent = decryptedMessage;
+      }
       messageContent.appendChild(bubble);
       messageDiv.appendChild(messageContent);
       if (reactionsHtml) {
@@ -848,7 +939,7 @@
         if (selectedMessages.size === 1) {
           const key = [...selectedMessages][0];
           const msg = messagesCache.get(key);
-          if (msg && msg.senderId === currentUser.uid) {
+          if (msg && msg.senderId === currentUser.uid && msg.type !== 'voice') {
             html += `<button id="edit-btn" title="Edit message" aria-label="Edit" onclick="editSelected('${key}')"><span class="material-icons">edit</span></button>`;
           }
         }
@@ -902,7 +993,14 @@
     }
 
     window.copySelected = () => {
-      const texts = [...selectedMessages].map(k => messagesCache.get(k).text).join('\n');
+      const texts = [...selectedMessages].map(k => {
+        const msg = messagesCache.get(k);
+        if (msg.type === 'voice') {
+          return `Voice note ${formatDuration(msg.duration)}`;
+        } else {
+          return msg.text;
+        }
+      }).join('\n');
       navigator.clipboard.writeText(texts).then(() => {
         // Toast or alert
         console.log('Copied!');
@@ -1146,6 +1244,120 @@
       } finally {
         sendBtn.disabled = false;
         sendBtn.innerHTML = '<span class="material-icons">send</span>';
+      }
+    }
+
+    // Voice recording functions
+    const voiceBtn = document.getElementById('voice-btn');
+    voiceBtn.addEventListener('pointerdown', handleVoiceStart, { passive: false });
+    voiceBtn.addEventListener('pointerup', handleVoiceEnd, { passive: false });
+    voiceBtn.addEventListener('pointerleave', handleVoiceCancel, { passive: false });
+    voiceBtn.addEventListener('pointercancel', handleVoiceCancel, { passive: false });
+
+    async function handleVoiceStart(e) {
+      e.preventDefault();
+      startTime = Date.now();
+      isCancelled = false;
+      await startRecording();
+    }
+
+    function handleVoiceEnd(e) {
+      e.preventDefault();
+      if (recording && (Date.now() - startTime > 300)) {
+        stopRecording();
+      } else {
+        cancelRecording();
+      }
+    }
+
+    function handleVoiceCancel(e) {
+      e.preventDefault();
+      if (recording) {
+        cancelRecording();
+      }
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+        mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+        mediaRecorder.onstop = handleRecordingStop;
+        mediaRecorder.start();
+        recording = true;
+        voiceBtn.innerHTML = '<span class="material-icons" style="color: white;">stop</span>';
+        voiceBtn.classList.add('recording');
+      } catch (error) {
+        console.error('Failed to start recording:', error);
+        alert('Failed to access microphone');
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && recording) {
+        mediaRecorder.stop();
+        recording = false;
+        voiceBtn.innerHTML = '<span class="material-icons">mic</span>';
+        voiceBtn.classList.remove('recording');
+        const tracks = mediaRecorder.stream.getTracks();
+        tracks.forEach(track => track.stop());
+      }
+    }
+
+    function cancelRecording() {
+      isCancelled = true;
+      stopRecording();
+      audioChunks = [];
+    }
+
+    async function handleRecordingStop() {
+      if (isCancelled) return;
+      const duration = (Date.now() - startTime) / 1000;
+      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      try {
+        const formData = new FormData();
+        formData.append('file', audioBlob, `voice-${Date.now()}.webm`);
+        formData.append('upload_preset', UPLOAD_PRESET);
+        formData.append('resource_type', 'video');
+        formData.append('folder', 'voice_notes');
+        const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        if (data.secure_url) {
+          const encryptedText = await encryptMessage('Voice note', chatId);
+          const newMessageRef = push(messagesRef);
+          const timestamp = Date.now();
+          await set(newMessageRef, {
+            senderId: currentUser.uid,
+            type: 'voice',
+            url: data.secure_url,
+            duration: Math.round(duration),
+            message: encryptedText,
+            timestamp: timestamp,
+            reactions: {}
+          });
+          const userChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+          const otherChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+          const currentUserChat = await get(userChatsRef);
+          const otherUserChat = await get(otherChatsRef);
+          await set(userChatsRef, {
+            ...(currentUserChat.val() || {}),
+            lastMessage: encryptedText,
+            lastMessageTime: timestamp,
+            unreadCount: 0
+          });
+          await set(otherChatsRef, {
+            ...(otherUserChat.val() || {}),
+            lastMessage: encryptedText,
+            lastMessageTime: timestamp
+          });
+        }
+      } catch (error) {
+        console.error('Upload failed:', error);
+        alert('Failed to upload voice note');
       }
     }
 
