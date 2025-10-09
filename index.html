@@ -151,6 +151,10 @@
       transition: all 0.3s ease;
       border-radius: 20px;
       font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
     }
     .sub-tab-item.active {
       background: var(--gradient);
@@ -563,17 +567,16 @@
       display: flex;
     }
     .modal-content {
-      background: #000;
-      border-radius: 0;
+      background: var(--card-bg);
+      border-radius: 20px;
       padding: 0;
-      width: 100vw;
-      height: 100vh;
-      max-width: none;
-      max-height: none;
+      width: 90vw;
+      max-width: 500px;
+      max-height: 80vh;
       overflow: hidden;
       position: relative;
-      border: none;
-      box-shadow: none;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
       display: flex;
       flex-direction: column;
     }
@@ -583,7 +586,7 @@
       right: 10px;
       background: none;
       border: none;
-      color: white;
+      color: var(--text-primary);
       font-size: 28px;
       cursor: pointer;
       transition: color 0.3s ease;
@@ -1024,9 +1027,11 @@
     <div class="tab-content active" id="chats-tab" role="tabpanel">
       <div class="sub-tab-switcher">
         <button class="sub-tab-item active" data-subtab="chats" role="tab" aria-selected="true" aria-label="Chats">
+          <span class="material-icons" style="font-size: 16px;">chat</span>
           Chats
         </button>
         <button class="sub-tab-item" data-subtab="groups" role="tab" aria-selected="false" aria-label="Groups">
+          <span class="material-icons" style="font-size: 16px;">group</span>
           Groups
         </button>
       </div>
@@ -1100,6 +1105,22 @@
       <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px;">
         <button id="confirm-yes" class="start-chat-btn" style="padding: 8px 16px; min-width: 60px; font-size: 14px;">Yes</button>
         <button id="confirm-no" style="background: var(--border); color: var(--text-primary); border: 1px solid var(--border); padding: 8px 16px; min-width: 60px; border-radius: 15px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">No</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="create-group-modal" class="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeCreateGroupModal()">&times;</button>
+      <div class="bottom-sheet-header" style="position: relative; padding: 20px; border-bottom: 1px solid var(--border);">
+        <h2 style="margin: 0; font-size: 22px; font-weight: 700; color: var(--text-primary);">Create Group</h2>
+      </div>
+      <div style="padding: 20px; overflow-y: auto; flex: 1;">
+        <input type="text" id="group-name-input" placeholder="Group Name" class="input-field" style="margin-bottom: 16px;">
+        <div id="group-users-list" style="max-height: 300px; overflow-y: auto; margin-bottom: 16px;">
+          <!-- Users list with checkboxes -->
+        </div>
+        <button id="create-group-btn" class="start-chat-btn" style="width: 100%;">Create Group</button>
       </div>
     </div>
   </div>
@@ -1851,16 +1872,114 @@
       const groupsList = document.getElementById('groups-list');
       groupsList.innerHTML = '';
       if (currentUser) {
-        // Placeholder for groups - fetch from a future /users/{uid}/groups path
-        // For now, show a placeholder message
-        groupsList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No groups yet. Create or join a group to get started!</p>';
-        // Example future implementation:
-        // const userGroupsRef = ref(db, `users/${currentUser.uid}/groups`);
-        // const snapshot = await get(userGroupsRef);
-        // ... populate similar to chats
+        const userGroupsRef = ref(db, `users/${currentUser.uid}/groups`);
+        const snapshot = await get(userGroupsRef);
+        let groups = [];
+        if (snapshot.exists()) {
+          groups = Object.entries(snapshot.val())
+            .map(([gId, g]) => ({ groupId: gId, ...g }))
+            .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
+        }
+        if (groups.length === 0) {
+          groupsList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No groups yet. Create or join a group to get started!</p>';
+        } else {
+          for (let i = 0; i < groups.length; i++) {
+            const group = groups[i];
+            const item = document.createElement('div');
+            item.className = 'chat-item fade-in';
+            item.style.animationDelay = `${i * 0.1}s`;
+            item.onclick = () => openChat(group.groupId, null);
+            const initial = group.name ? group.name[0].toUpperCase() : 'G';
+            item.innerHTML = `
+              <div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center;">${initial}</div>
+              <div class="chat-info">
+                <div class="chat-name">${group.name}</div>
+                <div class="chat-preview">Group chat</div>
+              </div>
+              <div class="chat-time">${formatTimestamp(group.lastMessageTime || Date.now())}</div>
+            `;
+            groupsList.appendChild(item);
+          }
+        }
       }
       hideSpinner();
     }
+
+    async function loadUsersForGroup() {
+      showSpinner();
+      const usersList = document.getElementById('group-users-list');
+      usersList.innerHTML = '';
+      const usersRef = ref(db, 'users');
+      const snapshot = await get(usersRef);
+      if (snapshot.exists()) {
+        const users = Object.entries(snapshot.val())
+          .map(([uid, user]) => ({ uid, ...user }))
+          .filter(user => user.uid !== currentUser.uid);
+        users.forEach(user => {
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy" style="width: 40px; height: 40px;">` : `<div class="user-avatar" style="font-size: 18px; width: 40px; height: 40px;">${initial}</div>`;
+          const div = document.createElement('div');
+          div.style = 'display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; background: var(--glass);';
+          div.innerHTML = `
+            ${avatarHtml}
+            <span style="flex: 1; color: var(--text-primary);">${user.displayName || 'User'}</span>
+            <input type="checkbox" value="${user.uid}" style="margin-left: auto; width: 20px; height: 20px;">
+          `;
+          usersList.appendChild(div);
+        });
+      }
+      hideSpinner();
+    }
+
+    window.openCreateGroupModal = async () => {
+      document.getElementById('create-group-modal').classList.add('active');
+      document.getElementById('group-name-input').value = '';
+      await loadUsersForGroup();
+      document.getElementById('create-group-btn').onclick = createGroup;
+    };
+
+    window.closeCreateGroupModal = () => {
+      document.getElementById('create-group-modal').classList.remove('active');
+    };
+
+    window.createGroup = async () => {
+      const groupName = document.getElementById('group-name-input').value.trim();
+      if (!groupName) {
+        showAlert('Enter group name.');
+        return;
+      }
+      const selectedCheckboxes = document.querySelectorAll('#group-users-list input[type="checkbox"]:checked');
+      if (selectedCheckboxes.length === 0) {
+        showAlert('Select at least one member.');
+        return;
+      }
+      const memberIds = Array.from(selectedCheckboxes).map(cb => cb.value);
+      try {
+        showSpinner();
+        const groupsRef = ref(db, 'groups');
+        const newGroupRef = push(groupsRef);
+        const groupId = newGroupRef.key;
+        const adminRole = { role: 'admin', joinedAt: Date.now() };
+        const memberRole = { role: 'member', joinedAt: Date.now() };
+        await set(ref(db, `groups/${groupId}/name`), groupName);
+        await set(ref(db, `groups/${groupId}/members/${currentUser.uid}`), adminRole);
+        for (let uid of memberIds) {
+          await set(ref(db, `groups/${groupId}/members/${uid}`), memberRole);
+        }
+        await set(ref(db, `users/${currentUser.uid}/groups/${groupId}`), { groupId, name: groupName, role: 'admin', lastMessageTime: Date.now() });
+        for (let uid of memberIds) {
+          await set(ref(db, `users/${uid}/groups/${groupId}`), { groupId, name: groupName, role: 'member', lastMessageTime: Date.now() });
+        }
+        closeCreateGroupModal();
+        showAlert('Group created!');
+        loadGroups();
+      } catch (error) {
+        console.error('Error creating group:', error);
+        showAlert('Failed to create group.');
+      } finally {
+        hideSpinner();
+      }
+    };
 
     async function loadCalls() {
       showSpinner();
@@ -2085,8 +2204,14 @@
       // Load the appropriate content
       if (subTab === 'chats') {
         loadChats();
+        const fab = document.getElementById('fab-btn');
+        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends`;
+        fab.onclick = openAddFriendsSheet;
       } else if (subTab === 'groups') {
         loadGroups();
+        const fab = document.getElementById('fab-btn');
+        fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">group_add</span>Create Group`;
+        fab.onclick = openCreateGroupModal;
       }
     }
 
@@ -2109,8 +2234,6 @@
       } else {
         fab.style.display = '';
         if (tab === 'chats') {
-          fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends`;
-          fab.onclick = openAddFriendsSheet;
           // Default to chats sub-tab
           switchSubTab('chats', null);
         } else if (tab === 'status') {
