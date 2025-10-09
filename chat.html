@@ -328,6 +328,12 @@
       color: #000;
       font-weight: bold;
     }
+    .sender-name {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
     .reactions-container {
       display: flex;
       gap: 4px;
@@ -722,6 +728,100 @@
     #close-info:hover {
       background: var(--glass);
     }
+    .bottom-sheet {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--card-bg);
+      backdrop-filter: blur(30px);
+      border-top-left-radius: 30px;
+      border-top-right-radius: 30px;
+      border: 1px solid var(--border);
+      max-height: 85vh;
+      transform: translateY(100%);
+      transition: transform 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+      z-index: 1000;
+      overflow-y: auto;
+      padding-bottom: 100px;
+    }
+    .bottom-sheet.active {
+      transform: translateY(0);
+    }
+    .bottom-sheet-header {
+      padding: 20px 24px 16px;
+      background: var(--glass);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .user-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px;
+      background: var(--glass);
+      border-radius: 25px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.4s ease;
+      margin-bottom: 12px;
+    }
+    .user-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--accent);
+      box-shadow: 0 10px 30px rgba(0, 255, 136, 0.2);
+    }
+    .user-avatar {
+      width: 55px;
+      height: 55px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #000;
+      font-weight: bold;
+      flex-shrink: 0;
+      box-shadow: var(--shadow-sm);
+    }
+    .user-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .user-name {
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+    .user-bio {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    .start-chat-btn {
+      background: var(--gradient);
+      color: #000;
+      border: none;
+      border-radius: 25px;
+      padding: 10px 20px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
+    }
+    .start-chat-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 6px 20px rgba(0, 255, 136, 0.4);
+    }
+    .fade-in {
+      animation: fadeIn 0.6s ease-out forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     @media (min-width: 768px) {
       .main-content {
         padding: 70px 0 80px;
@@ -802,8 +902,8 @@
 
   <div id="delete-dialog" class="dialog">
     <div class="dialog-content">
-      <h3>Delete Chat</h3>
-      <p>Are you sure you want to delete this chat? This action cannot be undone.</p>
+      <h3 id="delete-title">Delete Chat</h3>
+      <p id="delete-message">Are you sure you want to delete this chat? This action cannot be undone.</p>
       <div class="dialog-buttons">
         <button id="cancel-delete">Cancel</button>
         <button id="confirm-delete">Delete</button>
@@ -817,6 +917,14 @@
       <p>Your messages are end-to-end encrypted using AES-GCM. Only you and your chat partner can read them. No one else, not even us, can access your conversations.</p>
       <button id="close-info">Got it</button>
     </div>
+  </div>
+
+  <div id="group-sheet" class="bottom-sheet">
+    <div class="bottom-sheet-header">
+      <h2 id="group-name-header" style="margin: 0; font-size: 22px; font-weight: 700; color: var(--text-primary);">Group Details</h2>
+      <button onclick="closeGroupSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px;"><span class="material-icons">close</span></button>
+    </div>
+    <div id="group-members-list" style="padding: 0 24px 20px;"></div>
   </div>
 
   <div id="reaction-picker" class="reaction-picker"></div>
@@ -852,7 +960,7 @@
     const CLOUDINARY_UPLOAD_PRESET = 'banter_box'; // Replace with your upload preset (create an unsigned preset in Cloudinary dashboard)
 
     let app, auth, db, analytics, currentUser;
-    let chatId, otherUserId, otherUserData;
+    let chatId, otherUserId, otherUserData, groupData, isGroup = false;
     let messagesRef, messagesListener;
     const ONLINE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
     const commonEmojis = ['😀', '😂', '❤️', '👍', '👎', '😢', '😡', '🔥', '⭐', '🙌'];
@@ -1021,6 +1129,21 @@
       }
     }
 
+    async function loadGroupData() {
+      const groupRef = ref(db, `groups/${chatId}`);
+      const snapshot = await get(groupRef);
+      if (snapshot.exists()) {
+        groupData = snapshot.val();
+        const avatarEl = document.getElementById('chat-avatar');
+        const nameEl = document.getElementById('chat-name');
+        const lastSeenEl = document.getElementById('chat-last-seen');
+        const initial = groupData.name ? groupData.name[0].toUpperCase() : 'G';
+        avatarEl.innerHTML = `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 18px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+        nameEl.textContent = groupData.name || 'Group';
+        lastSeenEl.style.display = 'none';
+      }
+    }
+
     function renderReactions(messageId, reactions) {
       const messageEl = document.querySelector(`[data-message-id="${messageId}"]`);
       if (!messageEl) return;
@@ -1045,13 +1168,21 @@
       }
     }
 
-    function addMessage(messageData, isSent) {
+    async function addMessage(messageData, isSent) {
       const messagesContainer = document.getElementById('messages-container');
       const messageEl = document.createElement('div');
       messageEl.className = `message ${isSent ? 'sent' : 'received'}`;
       messageEl.setAttribute('data-message-id', messageData.id);
-      const initial = isSent ? (currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U') : (otherUserData ? otherUserData.displayName[0].toUpperCase() : 'U');
-      const avatarSmallHtml = !isSent ? (otherUserData?.photoURL ? `<img src="${otherUserData.photoURL}" alt="Avatar" class="message-avatar-small" style="width: 24px; height: 24px;" loading="lazy">` : `<div class="message-avatar-small" style="background: var(--gradient); color: #000; font-size: 12px;">${initial}</div>`) : '';
+      let avatarSmallHtml = '';
+      let senderNameHtml = '';
+      if (isGroup && !isSent) {
+        const initial = messageData.senderName ? messageData.senderName[0].toUpperCase() : '?';
+        avatarSmallHtml = `<div class="message-avatar-small" style="background: var(--gradient); color: #000; font-size: 12px;">${initial}</div>`;
+        senderNameHtml = `<div class="sender-name">${messageData.senderName || 'Unknown'}</div>`;
+      } else if (!isGroup && !isSent) {
+        const initial = otherUserData?.displayName ? otherUserData.displayName[0].toUpperCase() : 'U';
+        avatarSmallHtml = otherUserData?.photoURL ? `<img src="${otherUserData.photoURL}" alt="Avatar" class="message-avatar-small" style="width: 24px; height: 24px;" loading="lazy">` : `<div class="message-avatar-small" style="background: var(--gradient); color: #000; font-size: 12px;">${initial}</div>`;
+      }
       const time = formatTimestamp(messageData.timestamp);
       const reactionsHtml = messageData.reactions ? '<div class="reactions-container"></div>' : '';
       let contentHtml = '';
@@ -1072,6 +1203,7 @@
         timeHtml = `<div class="message-time"><span class="time-text">${time}</span>${ticksHtml}</div>`;
       }
       messageEl.innerHTML = `
+        ${senderNameHtml}
         <div class="message-bubble" data-message-id="${messageData.id}" style="${bubblePadding}">
           <div class="message-content">${contentHtml}</div>
           ${timeHtml}
@@ -1173,8 +1305,18 @@
             .map(([id, msg]) => ({ id, ...msg }))
             .sort((a, b) => a.timestamp - b.timestamp);
           for (const msg of messages) {
-            let content = msg.type === 'image' ? msg.url : await decryptMessage(msg.message, chatId);
-            addMessage({ ...msg, content, type: msg.type || 'text' }, msg.senderId === currentUser.uid);
+            let senderName = msg.senderName;
+            if (isGroup && !senderName) {
+              const userSnap = await get(ref(db, `users/${msg.senderId}`));
+              senderName = userSnap.val()?.displayName || 'Unknown';
+            }
+            let content;
+            if (msg.type === 'image') {
+              content = msg.url;
+            } else {
+              content = await decryptMessage(msg.message, chatId);
+            }
+            addMessage({ ...msg, content, senderName }, msg.senderId === currentUser.uid);
           }
         }
         // Mark received messages as read
@@ -1200,6 +1342,7 @@
         const newMessageRef = push(messagesRef);
         await set(newMessageRef, {
           senderId: currentUser.uid,
+          senderName: currentUser.displayName,
           type: 'text',
           message: encrypted,
           timestamp: Date.now(),
@@ -1209,22 +1352,39 @@
           }
         });
         // Update last message in chats
-        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
-        await set(currentChatsRef, {
-          chatId,
-          otherUserId,
-          lastMessage: encrypted,
-          lastMessageTime: Date.now(),
-          unreadCount: 0
-        });
-        const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
-        await set(targetChatsRef, {
-          chatId,
-          otherUserId: currentUser.uid,
-          lastMessage: encrypted,
-          lastMessageTime: Date.now(),
-          unreadCount: (await get(targetChatsRef)).val()?.unreadCount + 1 || 1
-        });
+        if (!isGroup) {
+          const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+          await set(currentChatsRef, {
+            chatId,
+            otherUserId,
+            lastMessage: encrypted,
+            lastMessageTime: Date.now(),
+            unreadCount: 0
+          });
+          const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+          await set(targetChatsRef, {
+            chatId,
+            otherUserId: currentUser.uid,
+            lastMessage: encrypted,
+            lastMessageTime: Date.now(),
+            unreadCount: (await get(targetChatsRef)).val()?.unreadCount + 1 || 1
+          });
+        } else {
+          // For groups, update lastMessageTime for all members
+          if (groupData && groupData.members) {
+            const memberUpdates = {};
+            Object.keys(groupData.members).forEach(uid => {
+              const userGroupsRef = ref(db, `users/${uid}/groups/${chatId}`);
+              memberUpdates[userGroupsRef.path] = {
+                groupId: chatId,
+                name: groupData.name,
+                role: groupData.members[uid].role,
+                lastMessageTime: Date.now()
+              };
+            });
+            await update(ref(db), memberUpdates);
+          }
+        }
         input.value = '';
         input.style.height = 'auto';
         // Update lastSeen on send
@@ -1245,6 +1405,7 @@
         const newMessageRef = push(messagesRef);
         await set(newMessageRef, {
           senderId: currentUser.uid,
+          senderName: currentUser.displayName,
           type: 'image',
           url: url,
           timestamp: Date.now(),
@@ -1254,22 +1415,39 @@
           }
         });
         // Update last message in chats (store URL as lastMessage for images)
-        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
-        await set(currentChatsRef, {
-          chatId,
-          otherUserId,
-          lastMessage: url,
-          lastMessageTime: Date.now(),
-          unreadCount: 0
-        });
-        const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
-        await set(targetChatsRef, {
-          chatId,
-          otherUserId: currentUser.uid,
-          lastMessage: url,
-          lastMessageTime: Date.now(),
-          unreadCount: (await get(targetChatsRef)).val()?.unreadCount + 1 || 1
-        });
+        if (!isGroup) {
+          const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+          await set(currentChatsRef, {
+            chatId,
+            otherUserId,
+            lastMessage: url,
+            lastMessageTime: Date.now(),
+            unreadCount: 0
+          });
+          const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+          await set(targetChatsRef, {
+            chatId,
+            otherUserId: currentUser.uid,
+            lastMessage: url,
+            lastMessageTime: Date.now(),
+            unreadCount: (await get(targetChatsRef)).val()?.unreadCount + 1 || 1
+          });
+        } else {
+          // For groups, update lastMessageTime for all members
+          if (groupData && groupData.members) {
+            const memberUpdates = {};
+            Object.keys(groupData.members).forEach(uid => {
+              const userGroupsRef = ref(db, `users/${uid}/groups/${chatId}`);
+              memberUpdates[userGroupsRef.path] = {
+                groupId: chatId,
+                name: groupData.name,
+                role: groupData.members[uid].role,
+                lastMessageTime: Date.now()
+              };
+            });
+            await update(ref(db), memberUpdates);
+          }
+        }
         // Update lastSeen on send
         await updateUserLastSeen(currentUser.uid);
         showAlert('Image sent!', 'success');
@@ -1345,6 +1523,15 @@
     }
 
     function showDeleteDialog() {
+      const titleEl = document.getElementById('delete-title');
+      const msgEl = document.getElementById('delete-message');
+      if (isGroup) {
+        titleEl.textContent = 'Leave Group';
+        msgEl.textContent = 'Are you sure you want to leave this group? This action cannot be undone.';
+      } else {
+        titleEl.textContent = 'Delete Chat';
+        msgEl.textContent = 'Are you sure you want to delete this chat? This action cannot be undone.';
+      }
       document.getElementById('delete-dialog').classList.add('active');
     }
 
@@ -1360,27 +1547,108 @@
       document.getElementById('info-dialog').classList.remove('active');
     }
 
-    async function removeChat() {
+    async function removeChatOrLeaveGroup() {
       try {
         showSpinner();
-        // Delete from current user
-        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
-        await set(currentChatsRef, null);
-        // Delete from other user
-        const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
-        await set(targetChatsRef, null);
-        // Delete messages
-        const messagesRef = ref(db, `chats/${chatId}`);
-        await set(messagesRef, null);
-        showAlert('Chat deleted.', 'success');
+        if (!isGroup) {
+          // Delete 1:1 chat
+          const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+          await set(currentChatsRef, null);
+          const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+          await set(targetChatsRef, null);
+          const messagesRefPath = ref(db, `chats/${chatId}`);
+          await set(messagesRefPath, null);
+          showAlert('Chat deleted.', 'success');
+        } else {
+          // Leave group
+          await set(ref(db, `groups/${chatId}/members/${currentUser.uid}`), null);
+          await set(ref(db, `users/${currentUser.uid}/groups/${chatId}`), null);
+          showAlert('Left group.', 'success');
+        }
         history.back();
       } catch (error) {
-        console.error('Error deleting chat:', error);
-        showAlert('Failed to delete chat.');
+        console.error('Error:', error);
+        showAlert('Failed to ' + (isGroup ? 'leave group' : 'delete chat') + '.');
       } finally {
         hideSpinner();
       }
     }
+
+    function openGroupSheet() {
+      if (!groupData) return;
+      const sheet = document.getElementById('group-sheet');
+      document.getElementById('group-name-header').textContent = groupData.name || 'Group';
+      const membersList = document.getElementById('group-members-list');
+      membersList.innerHTML = '';
+      const members = groupData.members || {};
+      const memberUids = Object.keys(members);
+      const myRole = members[currentUser.uid]?.role;
+      const isAdmin = myRole === 'admin';
+      const userPromises = memberUids.map(uid => get(ref(db, `users/${uid}`)).then(s => ({uid, user: s.val()})));
+      Promise.all(userPromises).then(results => {
+        results.forEach(({uid, user}) => {
+          if (!user) return;
+          const role = members[uid].role;
+          const isSelf = uid === currentUser.uid;
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" style="width: 55px; height: 55px;" loading="lazy">` : `<div class="user-avatar" style="font-size: 22px; width: 55px; height: 55px;">${initial}</div>`;
+          const userCard = document.createElement('div');
+          userCard.className = 'user-card fade-in';
+          let buttons = '';
+          if (isSelf) {
+            buttons = `<button class="start-chat-btn" onclick="exitGroup('${chatId}'); return false;" style="width: auto; padding: 8px 16px;">Leave Group</button>`;
+          } else if (isAdmin) {
+            buttons = `<button class="start-chat-btn" onclick="removeMember('${chatId}', '${uid}'); return false;" style="background: #ff4444; color: white; width: auto; padding: 8px 16px;">Remove</button>`;
+          }
+          userCard.innerHTML = `
+            ${avatarHtml}
+            <div class="user-info">
+              <div class="user-name">${user.displayName || 'User'} ${role === 'admin' ? '<span style="color: gold; font-size: 16px;">👑</span>' : ''}</div>
+              <div class="user-bio">${role}</div>
+            </div>
+            ${buttons}
+          `;
+          membersList.appendChild(userCard);
+        });
+        sheet.classList.add('active');
+      });
+    }
+
+    window.closeGroupSheet = () => {
+      document.getElementById('group-sheet').classList.remove('active');
+    };
+
+    window.exitGroup = async (groupId) => {
+      try {
+        showSpinner();
+        await set(ref(db, `groups/${groupId}/members/${currentUser.uid}`), null);
+        await set(ref(db, `users/${currentUser.uid}/groups/${groupId}`), null);
+        showAlert('Left group.', 'success');
+        closeGroupSheet();
+        history.back();
+      } catch (error) {
+        console.error('Error leaving group:', error);
+        showAlert('Failed to leave group.');
+      } finally {
+        hideSpinner();
+      }
+    };
+
+    window.removeMember = async (groupId, uid) => {
+      if (!confirm(`Remove ${uid} from the group?`)) return;
+      try {
+        showSpinner();
+        await set(ref(db, `groups/${groupId}/members/${uid}`), null);
+        await set(ref(db, `users/${uid}/groups/${groupId}`), null);
+        showAlert('Member removed.', 'success');
+        openGroupSheet();
+      } catch (error) {
+        console.error('Error removing member:', error);
+        showAlert('Failed to remove member.');
+      } finally {
+        hideSpinner();
+      }
+    };
 
     function initializeFirebase() {
       app = initializeApp(firebaseConfig);
@@ -1394,12 +1662,26 @@
           const urlParams = new URLSearchParams(window.location.search);
           chatId = urlParams.get('chatId');
           otherUserId = urlParams.get('userId');
-          if (!chatId || !otherUserId) {
+          isGroup = !otherUserId;
+          if (!chatId) {
             showAlert('Invalid chat.');
             return;
           }
+          const infoBtn = document.getElementById('info-btn');
+          const deleteBtn = document.getElementById('delete-chat-btn');
+          if (isGroup) {
+            infoBtn.innerHTML = '<span class="material-icons">group</span>';
+            infoBtn.title = 'Group Info';
+            infoBtn.onclick = openGroupSheet;
+            await loadGroupData();
+          } else {
+            infoBtn.innerHTML = '<span class="material-icons">info</span>';
+            infoBtn.title = 'Chat Info';
+            infoBtn.onclick = showInfoDialog;
+            await loadOtherUser();
+          }
+          deleteBtn.onclick = showDeleteDialog;
           await updateUserLastSeen(user.uid); // Set initial lastSeen
-          await loadOtherUser();
           await loadMessages();
         } else {
           window.location.href = 'login.html';
@@ -1410,8 +1692,6 @@
     document.addEventListener('DOMContentLoaded', () => {
       const input = document.getElementById('message-input');
       const sendBtn = document.getElementById('send-btn');
-      const deleteBtn = document.getElementById('delete-chat-btn');
-      const infoBtn = document.getElementById('info-btn');
       const attachBtn = document.getElementById('attach-btn');
       const fileInput = document.getElementById('file-input');
       const cancelBtn = document.getElementById('cancel-delete');
@@ -1430,8 +1710,6 @@
         }
       });
       sendBtn.addEventListener('click', sendTextMessage);
-      deleteBtn.addEventListener('click', showDeleteDialog);
-      if (infoBtn) infoBtn.addEventListener('click', showInfoDialog);
       attachBtn.addEventListener('click', () => fileInput.click());
       fileInput.addEventListener('change', handleFileSelect);
       if (cancelBtn) {
@@ -1440,7 +1718,7 @@
       if (confirmBtn) {
         confirmBtn.addEventListener('click', async () => {
           hideDeleteDialog();
-          await removeChat();
+          await removeChatOrLeaveGroup();
         });
       }
       if (closeInfoBtn) {
