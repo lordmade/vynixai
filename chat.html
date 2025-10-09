@@ -31,7 +31,7 @@
       --gradient: linear-gradient(135deg, #00ff88 0%, #00b7ff 50%, #ff00ff 100%);
       --radial-gradient: radial-gradient(circle at 20% 20%, #00ff88 0%, transparent 50%), radial-gradient(circle at 80% 80%, #ff00ff 0%, transparent 50%);
       --received-bg: #ffffff;
-      --sent-bg: #dcf8c6;
+      --sent-bg: #e3f2fd;
       --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.1);
       --shadow-md: 0 20px 40px rgba(0, 0, 0, 0.1);
       --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
@@ -47,7 +47,7 @@
       --bubble-border: #404040;
       --gradient: linear-gradient(135deg, #00ff88 0%, #00b7ff 50%, #ff00ff 100%);
       --received-bg: #303030;
-      --sent-bg: #005c4b;
+      --sent-bg: #0d47a1;
       --glass: rgba(255, 255, 255, 0.05);
       --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
       --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -236,6 +236,7 @@
       max-width: 80%;
       animation: slideIn 0.3s ease-out;
       margin-bottom: 4px;
+      position: relative;
     }
     .message.sent {
       align-self: flex-end;
@@ -258,6 +259,7 @@
       transition: all 0.2s ease;
       min-width: 60px;
       max-width: 70vw;
+      cursor: pointer;
     }
     .message-bubble:hover {
       box-shadow: var(--shadow-md);
@@ -307,6 +309,32 @@
       font-size: 12px;
       color: #000;
       font-weight: bold;
+    }
+    .reactions-container {
+      display: flex;
+      gap: 4px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+    .reaction-emoji {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      background: rgba(0, 0, 0, 0.05);
+      border-radius: 12px;
+      padding: 2px 6px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      border: 1px solid transparent;
+    }
+    .reaction-emoji:hover {
+      background: rgba(0, 0, 0, 0.1);
+    }
+    .reaction-emoji.self-reacted {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
     }
     .input-container {
       position: fixed;
@@ -447,6 +475,36 @@
         transform: translateY(0);
       }
     }
+    .reaction-picker {
+      position: fixed;
+      background: var(--card-bg);
+      border-radius: 16px;
+      padding: 12px;
+      box-shadow: var(--shadow-lg);
+      z-index: 300;
+      display: none;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: 200px;
+      backdrop-filter: var(--blur);
+      border: 1px solid var(--border);
+    }
+    .reaction-picker.active {
+      display: flex;
+    }
+    .reaction-emoji-btn {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      border-radius: 8px;
+      padding: 4px;
+      transition: all 0.2s ease;
+    }
+    .reaction-emoji-btn:hover {
+      background: rgba(0, 0, 0, 0.1);
+      transform: scale(1.1);
+    }
     .spinner-overlay {
       position: fixed;
       top: 0;
@@ -527,7 +585,7 @@
         --border: rgba(255, 255, 255, 0.1);
         --bubble-border: #404040;
         --received-bg: #303030;
-        --sent-bg: #005c4b;
+        --sent-bg: #0d47a1;
         --glass: rgba(255, 255, 255, 0.05);
         --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
         --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
@@ -574,6 +632,8 @@
     </button>
   </div>
 
+  <div id="reaction-picker" class="reaction-picker"></div>
+
   <div id="spinner-overlay" class="spinner-overlay" aria-label="Loading spinner">
     <div class="spinner">
       <div class="dot"></div>
@@ -586,7 +646,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, push, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, push, set, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -604,6 +664,7 @@
     let chatId, otherUserId, otherUserData;
     let messagesRef, messagesListener;
     const ONLINE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+    const commonEmojis = ['😀', '😂', '❤️', '👍', '👎', '😢', '😡', '🔥', '⭐', '🙌'];
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -770,23 +831,125 @@
       }
     }
 
+    function renderReactions(messageId, reactions) {
+      const messageEl = document.querySelector(`[data-message-id="${messageId}"]`);
+      if (!messageEl) return;
+      let reactionsHtml = '';
+      if (reactions) {
+        Object.entries(reactions).forEach(([emoji, data]) => {
+          const count = data.users ? data.users.length : 0;
+          if (count > 0) {
+            const isSelfReacted = data.users && data.users.includes(currentUser.uid);
+            reactionsHtml += `<span class="reaction-emoji ${isSelfReacted ? 'self-reacted' : ''}" onclick="toggleReaction('${messageId}', '${emoji}')">${emoji} ${count > 1 ? count : ''}</span>`;
+          }
+        });
+      }
+      const reactionsContainer = messageEl.querySelector('.reactions-container');
+      if (reactionsContainer) {
+        reactionsContainer.innerHTML = reactionsHtml;
+      } else {
+        const newContainer = document.createElement('div');
+        newContainer.className = 'reactions-container';
+        newContainer.innerHTML = reactionsHtml;
+        messageEl.appendChild(newContainer);
+      }
+    }
+
     function addMessage(messageData, isSent) {
       const messagesContainer = document.getElementById('messages-container');
       const messageEl = document.createElement('div');
       messageEl.className = `message ${isSent ? 'sent' : 'received'}`;
+      messageEl.setAttribute('data-message-id', messageData.id);
       const initial = isSent ? (currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U') : (otherUserData ? otherUserData.displayName[0].toUpperCase() : 'U');
       const avatarSmallHtml = !isSent ? (otherUserData?.photoURL ? `<img src="${otherUserData.photoURL}" alt="Avatar" class="message-avatar-small" style="width: 24px; height: 24px;" loading="lazy">` : `<div class="message-avatar-small" style="background: var(--gradient); color: #000; font-size: 12px;">${initial}</div>`) : '';
       const time = formatTimestamp(messageData.timestamp);
+      const reactionsHtml = messageData.reactions ? '<div class="reactions-container"></div>' : '';
       messageEl.innerHTML = `
-        <div class="message-bubble">
+        <div class="message-bubble" data-message-id="${messageData.id}">
           <div class="message-content">${messageData.message}</div>
           <div class="message-time">${time}</div>
           ${avatarSmallHtml}
         </div>
+        ${reactionsHtml}
       `;
       messagesContainer.appendChild(messageEl);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      if (messageData.reactions) {
+        renderReactions(messageData.id, messageData.reactions);
+      }
+      setupMessageLongPress(messageEl);
     }
+
+    function setupMessageLongPress(messageEl) {
+      let pressTimer;
+      const bubble = messageEl.querySelector('.message-bubble');
+      const handlePressStart = (e) => {
+        pressTimer = setTimeout(() => {
+          showReactionPicker(bubble.dataset.messageId, e);
+        }, 500);
+      };
+      const handlePressEnd = () => {
+        clearTimeout(pressTimer);
+      };
+      bubble.addEventListener('pointerdown', handlePressStart);
+      bubble.addEventListener('pointerup', handlePressEnd);
+      bubble.addEventListener('pointerleave', handlePressEnd);
+      bubble.addEventListener('pointercancel', handlePressEnd);
+    }
+
+    function showReactionPicker(messageId, event) {
+      const picker = document.getElementById('reaction-picker');
+      picker.innerHTML = '';
+      commonEmojis.forEach(emoji => {
+        const btn = document.createElement('button');
+        btn.className = 'reaction-emoji-btn';
+        btn.textContent = emoji;
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          toggleReaction(messageId, emoji);
+          picker.classList.remove('active');
+        };
+        picker.appendChild(btn);
+      });
+      picker.style.left = `${event.clientX - 100}px`;
+      picker.style.top = `${event.clientY - 50}px`;
+      picker.classList.add('active');
+      // Hide on click outside
+      setTimeout(() => {
+        const hidePicker = (e) => {
+          if (!picker.contains(e.target)) {
+            picker.classList.remove('active');
+            document.removeEventListener('click', hidePicker);
+          }
+        };
+        document.addEventListener('click', hidePicker);
+      }, 0);
+    }
+
+    window.toggleReaction = async (messageId, emoji) => {
+      try {
+        const messageRef = ref(db, `chats/${chatId}/messages/${messageId}/reactions/${emoji}`);
+        const snapshot = await get(messageRef);
+        const currentUsers = snapshot.val()?.users || [];
+        const userIndex = currentUsers.indexOf(currentUser.uid);
+        if (userIndex > -1) {
+          // Remove reaction
+          currentUsers.splice(userIndex, 1);
+          if (currentUsers.length === 0) {
+            await set(ref(db, `chats/${chatId}/messages/${messageId}/reactions/${emoji}`), null);
+          } else {
+            await set(messageRef, { users: currentUsers });
+          }
+        } else {
+          // Add reaction
+          currentUsers.push(currentUser.uid);
+          await set(messageRef, { users: currentUsers });
+        }
+      } catch (error) {
+        console.error('Error toggling reaction:', error);
+        showAlert('Failed to toggle reaction.');
+      }
+    };
 
     async function loadMessages() {
       showSpinner();
@@ -825,7 +988,8 @@
         await set(newMessageRef, {
           senderId: currentUser.uid,
           message: encrypted,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          reactions: {}
         });
         // Update last message in chats
         const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
