@@ -165,6 +165,10 @@
       border-radius: 50%;
       background: var(--accent);
       animation: pulse 2s infinite;
+      display: none;
+    }
+    .chat-last-seen.online::before {
+      display: block;
     }
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -546,12 +550,12 @@
       <div class="chat-avatar" id="chat-avatar"></div>
       <div>
         <div class="chat-name" id="chat-name"></div>
-        <div class="chat-last-seen" id="chat-last-seen">Online</div>
+        <div class="chat-last-seen online" id="chat-last-seen">Online</div>
       </div>
     </div>
     <div class="header-actions">
-      <button title="More" aria-label="More">
-        <span class="material-icons">more_vert</span>
+      <button id="delete-chat-btn" title="Delete Chat" aria-label="Delete Chat">
+        <span class="material-icons">delete</span>
       </button>
     </div>
   </header>
@@ -599,6 +603,7 @@
     let app, auth, db, analytics, currentUser;
     let chatId, otherUserId, otherUserData;
     let messagesRef, messagesListener;
+    const ONLINE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -629,6 +634,36 @@
       if (diffSec < 60) return `${diffSec}s`;
       if (diffMin < 60) return `${diffMin}m`;
       return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+
+    function formatLastSeen(timestamp) {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMin = Math.floor(diffMs / 1000 / 60);
+      if (diffMin < 1) return 'just now';
+      if (diffMin < 60) return `last seen ${diffMin}m ago`;
+      const diffHr = Math.floor(diffMin / 60);
+      if (diffHr < 24) return `last seen ${diffHr}h ago`;
+      return `last seen ${date.toLocaleDateString()}`;
+    }
+
+    function updateLastSeenStatus() {
+      if (!otherUserData || !otherUserData.lastSeen) return;
+      const lastSeenEl = document.getElementById('chat-last-seen');
+      const now = Date.now();
+      if (now - otherUserData.lastSeen < ONLINE_THRESHOLD) {
+        lastSeenEl.textContent = 'Online';
+        lastSeenEl.classList.add('online');
+      } else {
+        lastSeenEl.textContent = formatLastSeen(otherUserData.lastSeen);
+        lastSeenEl.classList.remove('online');
+      }
+    }
+
+    async function updateUserLastSeen(userId) {
+      const userRef = ref(db, `users/${userId}/lastSeen`);
+      await set(userRef, Date.now());
     }
 
     async function encryptMessage(message, chatId) {
@@ -723,7 +758,15 @@
           avatarEl.innerHTML = `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 18px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
         }
         nameEl.textContent = otherUserData.displayName || 'User';
-        lastSeenEl.textContent = 'Online';
+        updateLastSeenStatus();
+        // Listen for real-time lastSeen updates
+        const otherLastSeenRef = ref(db, `users/${otherUserId}/lastSeen`);
+        onValue(otherLastSeenRef, (snap) => {
+          if (snap.exists()) {
+            otherUserData.lastSeen = snap.val();
+            updateLastSeenStatus();
+          }
+        });
       }
     }
 
@@ -764,6 +807,8 @@
             addMessage({ ...msg, message: decrypted }, msg.senderId === currentUser.uid);
           }
         }
+        // Update lastSeen when messages are loaded (user has read them)
+        await updateUserLastSeen(currentUser.uid);
         hideSpinner();
       });
     }
@@ -801,12 +846,37 @@
         });
         input.value = '';
         input.style.height = 'auto';
+        // Update lastSeen on send
+        await updateUserLastSeen(currentUser.uid);
         showAlert('Message sent!', 'success');
       } catch (error) {
         console.error('Error sending message:', error);
         showAlert('Failed to send message.');
       } finally {
         sendBtn.disabled = false;
+      }
+    }
+
+    async function removeChat() {
+      if (!confirm('Are you sure you want to delete this chat? This action cannot be undone.')) return;
+      try {
+        showSpinner();
+        // Delete from current user
+        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+        await set(currentChatsRef, null);
+        // Delete from other user
+        const targetChatsRef = ref(db, `users/${otherUserId}/chats/${currentUser.uid}`);
+        await set(targetChatsRef, null);
+        // Delete messages
+        const messagesRef = ref(db, `chats/${chatId}`);
+        await set(messagesRef, null);
+        showAlert('Chat deleted.', 'success');
+        history.back();
+      } catch (error) {
+        console.error('Error deleting chat:', error);
+        showAlert('Failed to delete chat.');
+      } finally {
+        hideSpinner();
       }
     }
 
@@ -826,6 +896,7 @@
             showAlert('Invalid chat.');
             return;
           }
+          await updateUserLastSeen(user.uid); // Set initial lastSeen
           await loadOtherUser();
           await loadMessages();
         } else {
@@ -837,6 +908,7 @@
     document.addEventListener('DOMContentLoaded', () => {
       const input = document.getElementById('message-input');
       const sendBtn = document.getElementById('send-btn');
+      const deleteBtn = document.getElementById('delete-chat-btn');
       input.addEventListener('input', () => {
         input.style.height = 'auto';
         input.style.height = Math.min(input.scrollHeight, 100) + 'px';
@@ -849,6 +921,7 @@
         }
       });
       sendBtn.addEventListener('click', sendMessage);
+      deleteBtn.addEventListener('click', removeChat);
       initializeFirebase();
     });
   </script>
