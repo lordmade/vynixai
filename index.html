@@ -597,7 +597,7 @@
     }
     #progress-bar-container {
       position: fixed;
-      top: 0;
+      top: 60px;
       left: 0;
       right: 0;
       height: 3px;
@@ -641,6 +641,9 @@
       position: relative;
       z-index: 1;
       touch-action: pan-y pan-x;
+      height: 100vh;
+      padding-top: 70px;
+      padding-bottom: 80px;
     }
     .modal-content .status-text {
       color: white;
@@ -656,9 +659,8 @@
     }
     .status-media {
       width: 100%;
-      height: 100%;
-      object-fit: contain;
-      max-height: none;
+      height: calc(100vh - 150px);
+      object-fit: cover;
     }
     .status-nav-btn {
       position: fixed;
@@ -1007,6 +1009,74 @@
     .hidden {
       display: none;
     }
+    .status-input-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--glass);
+      backdrop-filter: blur(20px);
+      border-top: 1px solid var(--border);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 10;
+    }
+    .like-btn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      color: var(--text-secondary);
+      font-size: 20px;
+      cursor: pointer;
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .like-btn.liked {
+      color: #ff0000;
+      background: rgba(255,0,0,0.1);
+    }
+    .input-pill {
+      flex: 1;
+      display: flex;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      border-radius: 25px;
+      overflow: hidden;
+    }
+    .input-pill input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      padding: 12px 16px;
+      color: var(--text-primary);
+    }
+    .send-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 12px 16px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.3s;
+    }
+    .send-btn:hover {
+      background: #00cc6a;
+    }
+    .modal-content.fullscreen {
+      width: 100vw;
+      height: 100vh;
+      max-width: none;
+      max-height: none;
+      border-radius: 0;
+      border: none;
+    }
   </style>
 </head>
 <body>
@@ -1089,12 +1159,19 @@
   </button>
 
   <div id="status-modal" class="modal">
-    <div class="modal-content">
+    <div class="modal-content fullscreen">
       <button class="modal-close" onclick="closeStatusModal()">&times;</button>
       <div id="progress-bar-container" class="progress-container"></div>
       <div id="status-modal-body"></div>
       <button id="prev-status-btn" class="status-nav-btn">&lsaquo;</button>
       <button id="next-status-btn" class="status-nav-btn">&rsaquo;</button>
+      <div id="status-input-bar" class="status-input-bar" style="display: none;">
+        <button class="like-btn" id="status-like-btn" onclick="likeStatus(window.currentStatusId)">♡</button>
+        <div class="input-pill">
+          <input type="text" id="status-comment-input" placeholder="Send a reply..." onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); sendComment(); }">
+          <button class="send-btn" onclick="sendComment()">Send</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1190,6 +1267,8 @@
     let currentStatusesByUser = {};
     let currentUserData = null;
     let currentIndex = 0;
+    let statusTimer = null;
+    let currentStatusId = null;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1547,12 +1626,15 @@
       currentUserData = data;
       currentIndex = 0;
       const modal = document.getElementById('status-modal');
+      const modalContent = modal.querySelector('.modal-content');
       const prevBtn = document.getElementById('prev-status-btn');
       const nextBtn = document.getElementById('next-status-btn');
+      const inputBar = document.getElementById('status-input-bar');
       const body = document.getElementById('status-modal-body');
       const hasMultiple = data.statuses.length > 1;
       prevBtn.style.display = hasMultiple ? 'block' : 'none';
       nextBtn.style.display = hasMultiple ? 'block' : 'none';
+      inputBar.style.display = 'flex';
       prevBtn.onclick = () => goPrev();
       nextBtn.onclick = () => goNext();
       showStatus(currentIndex);
@@ -1603,23 +1685,116 @@
       showStatus(currentIndex + 1);
     }
 
+    async function updateLikeButton(statusId) {
+      if (!currentUser) return;
+      const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
+      const snap = await get(likeRef);
+      const btn = document.getElementById('status-like-btn');
+      if (snap.exists()) {
+        btn.classList.add('liked');
+        btn.innerHTML = '♥';
+      } else {
+        btn.classList.remove('liked');
+        btn.innerHTML = '♡';
+      }
+    }
+
+    window.likeStatus = async (statusId) => {
+      if (!currentUser) return;
+      try {
+        const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
+        const snap = await get(likeRef);
+        const liked = snap.exists();
+        if (liked) {
+          await set(likeRef, null);
+        } else {
+          await set(likeRef, true);
+        }
+        await updateLikeButton(statusId);
+        showAlert(liked ? 'Like removed' : 'Status liked!');
+      } catch (error) {
+        console.error('Error toggling like:', error);
+        showAlert('Failed to update like.');
+      }
+    };
+
+    window.sendComment = async () => {
+      if (!currentUser || !currentStatusId) return;
+      const input = document.getElementById('status-comment-input');
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = '';
+      try {
+        const status = currentUserData.statuses[currentIndex];
+        const chatId = [currentUser.uid, status.userId].sort().join('_');
+        const encrypted = await encryptMessage(msg, chatId);
+        const messagesRef = ref(db, `chats/${chatId}/messages`);
+        const newMsgRef = push(messagesRef);
+        await set(newMsgRef, {
+          senderId: currentUser.uid,
+          message: encrypted,
+          timestamp: Date.now()
+        });
+        // Update last message for current user
+        const currentChatRef = ref(db, `users/${currentUser.uid}/chats/${status.userId}`);
+        const currentChatSnap = await get(currentChatRef);
+        if (currentChatSnap.exists()) {
+          await set(currentChatRef, {
+            ...currentChatSnap.val(),
+            lastMessage: encrypted,
+            lastMessageTime: Date.now()
+          });
+        }
+        // Update for recipient (increase unread if not open)
+        const recipientChatRef = ref(db, `users/${status.userId}/chats/${currentUser.uid}`);
+        const recipientChatSnap = await get(recipientChatRef);
+        let unread = 0;
+        if (recipientChatSnap.exists()) {
+          unread = (recipientChatSnap.val().unreadCount || 0) + 1;
+          await set(recipientChatRef, {
+            ...recipientChatSnap.val(),
+            lastMessage: encrypted,
+            lastMessageTime: Date.now(),
+            unreadCount: unread
+          });
+        }
+        showAlert('Reply sent to inbox!');
+      } catch (error) {
+        console.error('Error sending comment:', error);
+        showAlert('Failed to send reply.');
+      }
+    };
+
+    function setStatusTimer(duration) {
+      if (statusTimer) clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => {
+        if (currentIndex < currentUserData.statuses.length - 1) {
+          goNext();
+        } else {
+          closeStatusModal();
+        }
+      }, duration);
+    }
+
     function showStatus(index) {
       if (index < 0 || index >= currentUserData.statuses.length) {
         closeStatusModal();
         return;
       }
+      if (statusTimer) clearTimeout(statusTimer);
       currentIndex = index;
       const status = currentUserData.statuses[index];
+      window.currentStatusId = status.statusId;
       const user = currentUserData.user;
       let mediaHtml = '';
+      let textHtml = '';
       if (status.mediaUrl) {
         if (status.type === 'video') {
-          mediaHtml = `<video src="${status.mediaUrl}" controls autoplay class="status-media" style="width:100%; height:100%; object-fit:contain;"></video>`;
+          mediaHtml = `<video src="${status.mediaUrl}" autoplay muted playsinline class="status-media"></video>`;
         } else if (status.type === 'image') {
           mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-media" loading="lazy">`;
         }
       }
-      let textHtml = '';
       if (status.type === 'text') {
         textHtml = `<div class="status-text">${status.content}</div>`;
       }
@@ -1633,6 +1808,22 @@
         ${mediaHtml}
       `;
       updateProgress();
+      updateLikeButton(status.statusId);
+      let duration = 60000;
+      if (status.type === 'video') {
+        const video = body.querySelector('video');
+        if (video) {
+          video.addEventListener('loadedmetadata', (e) => {
+            const vidDur = Math.min(e.target.duration * 1000, 60000);
+            setStatusTimer(vidDur);
+          }, { once: true });
+          video.play().catch(console.error);
+          // Fallback to 60s if metadata fails
+          setStatusTimer(60000);
+        }
+      } else {
+        setStatusTimer(duration);
+      }
     }
 
     function updateProgress() {
@@ -1647,8 +1838,17 @@
 
     window.closeStatusModal = () => {
       document.getElementById('status-modal').classList.remove('active');
+      const input = document.getElementById('status-comment-input');
+      if (input) input.value = '';
+      const inputBar = document.getElementById('status-input-bar');
+      if (inputBar) inputBar.style.display = 'none';
+      if (statusTimer) {
+        clearTimeout(statusTimer);
+        statusTimer = null;
+      }
       currentUserData = null;
       currentIndex = 0;
+      currentStatusId = null;
     };
 
     function openUploadSheet() {
