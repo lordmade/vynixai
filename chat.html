@@ -290,14 +290,26 @@
       font-size: 12px;
       color: var(--text-secondary);
       font-weight: 400;
+      display: flex;
+      align-items: center;
+      gap: 2px;
     }
     .message.sent .message-time {
       right: auto;
       left: 12px;
       color: rgba(0, 0, 0, 0.4);
+      gap: 2px;
     }
     body.dark .message.sent .message-time {
       color: rgba(255, 255, 255, 0.6);
+    }
+    .tick {
+      font-size: 12px;
+      font-weight: bold;
+      color: inherit;
+    }
+    .tick.read {
+      color: var(--accent);
     }
     .message-avatar-small {
       position: absolute;
@@ -836,8 +848,8 @@
     };
 
     // Cloudinary configuration - Replace with your own cloud name and upload preset
-    const CLOUDINARY_CLOUD_NAME = 'demo'; // Replace with your Cloudinary cloud name
-    const CLOUDINARY_UPLOAD_PRESET = 'ml_default'; // Replace with your upload preset (create an unsigned preset in Cloudinary dashboard)
+    const CLOUDINARY_CLOUD_NAME = 'dqkujefxj'; // Replace with your Cloudinary cloud name
+    const CLOUDINARY_UPLOAD_PRESET = 'banter_box'; // Replace with your upload preset (create an unsigned preset in Cloudinary dashboard)
 
     let app, auth, db, analytics, currentUser;
     let chatId, otherUserId, otherUserData;
@@ -881,7 +893,7 @@
       const now = new Date();
       const diffMs = now - date;
       const diffMin = Math.floor(diffMs / 1000 / 60);
-      if (diffMin < 1) return 'just now';
+      if (diffMin < 1) return 'Online';
       if (diffMin < 60) return `last seen ${diffMin}m ago`;
       const diffHr = Math.floor(diffMin / 60);
       if (diffHr < 24) return `last seen ${diffHr}h ago`;
@@ -1051,11 +1063,18 @@
         contentHtml = messageData.content;
         bubblePadding = 'padding: 12px 16px;';
       }
+      let timeHtml = `<div class="message-time">${time}${avatarSmallHtml}</div>`;
+      if (isSent) {
+        let ticksHtml = '<span class="tick">✓</span>';
+        if (messageData.readBy && messageData.readBy[otherUserId]) {
+          ticksHtml = '<span class="tick read">✓</span><span class="tick read">✓</span>';
+        }
+        timeHtml = `<div class="message-time"><span class="time-text">${time}</span>${ticksHtml}</div>`;
+      }
       messageEl.innerHTML = `
         <div class="message-bubble" data-message-id="${messageData.id}" style="${bubblePadding}">
           <div class="message-content">${contentHtml}</div>
-          <div class="message-time">${time}</div>
-          ${avatarSmallHtml}
+          ${timeHtml}
         </div>
         ${reactionsHtml}
       `;
@@ -1148,14 +1167,21 @@
       messagesRef = ref(db, `chats/${chatId}/messages`);
       messagesListener = onValue(messagesRef, async (snapshot) => {
         messagesContainer.innerHTML = '';
+        let messages = [];
         if (snapshot.exists()) {
-          const messages = Object.entries(snapshot.val())
+          messages = Object.entries(snapshot.val())
             .map(([id, msg]) => ({ id, ...msg }))
             .sort((a, b) => a.timestamp - b.timestamp);
           for (const msg of messages) {
             let content = msg.type === 'image' ? msg.url : await decryptMessage(msg.message, chatId);
             addMessage({ ...msg, content, type: msg.type || 'text' }, msg.senderId === currentUser.uid);
           }
+        }
+        // Mark received messages as read
+        const receivedMessages = messages.filter(m => m.senderId !== currentUser.uid && !m.readBy?.[currentUser.uid]);
+        for (const msg of receivedMessages) {
+          const readRef = ref(db, `chats/${chatId}/messages/${msg.id}/readBy/${currentUser.uid}`);
+          await set(readRef, Date.now());
         }
         // Update lastSeen when messages are loaded (user has read them)
         await updateUserLastSeen(currentUser.uid);
@@ -1177,7 +1203,10 @@
           type: 'text',
           message: encrypted,
           timestamp: Date.now(),
-          reactions: {}
+          reactions: {},
+          readBy: {
+            [currentUser.uid]: Date.now()
+          }
         });
         // Update last message in chats
         const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
@@ -1219,7 +1248,10 @@
           type: 'image',
           url: url,
           timestamp: Date.now(),
-          reactions: {}
+          reactions: {},
+          readBy: {
+            [currentUser.uid]: Date.now()
+          }
         });
         // Update last message in chats (store URL as lastMessage for images)
         const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
