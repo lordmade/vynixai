@@ -1362,7 +1362,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -1390,6 +1390,8 @@
     let currentIndex = 0;
     let statusTimer = null;
     let currentStatusId = null;
+    let prevUnread = {};
+    let chatsListener = null;
 
     // WebRTC Globals
     const pcConfig = {
@@ -1526,6 +1528,117 @@
       }
     }
 
+    async function updateChatsUI(snapshot) {
+      const chatList = document.getElementById('chat-list');
+      chatList.innerHTML = '';
+      totalUnread = 0;
+      let chats = [];
+      if (snapshot.exists()) {
+        chats = Object.entries(snapshot.val())
+          .map(([chatId, chat]) => ({ chatId, ...chat }))
+          .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
+      }
+      hasChats = chats.length > 0;
+      if (chats.length > 0) {
+        for (let i = 0; i < chats.length; i++) {
+          const chat = chats[i];
+          const otherUserId = chat.otherUserId;
+          const userRef = ref(db, `users/${otherUserId}`);
+          const userSnapshot = await get(userRef);
+          const user = userSnapshot.val();
+          if (!user) continue;
+          const unread = chat.unreadCount || 0;
+          if (prevUnread[otherUserId] !== undefined && unread > prevUnread[otherUserId]) {
+            try {
+              const decrypted = await decryptMessage(chat.lastMessage, chat.chatId);
+              const messagePreview = decrypted.substring(0, 50) + (decrypted.length > 50 ? '...' : '');
+              if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification(user.displayName, {
+                  body: messagePreview,
+                  icon: user.photoURL || ''
+                });
+              } else {
+                showAlert(`New message from ${user.displayName}: ${messagePreview}`);
+              }
+            } catch (error) {
+              console.error('Failed to decrypt for notification:', error);
+              showAlert(`New message from ${user.displayName}`);
+            }
+          }
+          prevUnread[otherUserId] = unread;
+          totalUnread += unread;
+          const preview = chat.lastMessage ? await decryptMessage(chat.lastMessage, chat.chatId) : 'No messages yet';
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
+          const chatItem = document.createElement('div');
+          chatItem.className = 'chat-item fade-in';
+          chatItem.style.animationDelay = `${i * 0.1}s`;
+          chatItem.setAttribute('data-chatid', chat.chatId);
+          chatItem.setAttribute('data-otheruid', otherUserId);
+          chatItem.onclick = () => openChat(chat.chatId, otherUserId);
+          chatItem.innerHTML = `
+            ${avatarHtml}
+            ${unreadBadge}
+            <div class="chat-info">
+              <div class="chat-name">${user.displayName}</div>
+              <div class="chat-preview">${preview}</div>
+            </div>
+            <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
+          `;
+          // Swipe to delete if enabled
+          const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
+          if (swipeDeleteEnabled) {
+            let startX = 0;
+            let currentX = 0;
+            let startY = 0;
+            let currentY = 0;
+            chatItem.addEventListener('touchstart', (e) => {
+              startX = e.touches[0].clientX;
+              currentX = startX;
+              startY = e.touches[0].clientY;
+              currentY = startY;
+            });
+            chatItem.addEventListener('touchmove', (e) => {
+              currentX = e.touches[0].clientX;
+              currentY = e.touches[0].clientY;
+              const deltaX = startX - currentX;
+              const deltaY = Math.abs(startY - currentY);
+              if (Math.abs(deltaX) > deltaY && deltaX > 0) {
+                chatItem.style.transform = `translateX(${-deltaX}px)`;
+              }
+            });
+            chatItem.addEventListener('touchend', (e) => {
+              chatItem.style.transform = '';
+              const deltaX = startX - currentX;
+              const deltaY = Math.abs(startY - currentY);
+              if (deltaX > 50 && deltaX > deltaY) {
+                showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
+                  if (confirmed) {
+                    removeChat(chat.chatId, otherUserId);
+                  }
+                });
+              }
+            });
+          }
+          chatList.appendChild(chatItem);
+        }
+      } else {
+        chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No chats yet. Add friends to start!</p>';
+      }
+      updateNavUnread(totalUnread);
+    }
+
+    function setupChatsListener() {
+      prevUnread = {};
+      const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
+      chatsListener = onValue(userChatsRef, async (snapshot) => {
+        await updateChatsUI(snapshot);
+      }, (error) => {
+        console.error('Error listening to chats:', error);
+      });
+    }
+
     async function removeChat(chatId, otherUid) {
       try {
         showSpinner();
@@ -1539,7 +1652,6 @@
         const messagesRef = ref(db, `chats/${chatId}`);
         await set(messagesRef, null);
         showAlert('Friend removed.');
-        loadChats();
       } catch (error) {
         console.error('Error removing chat:', error);
         showAlert('Failed to remove friend.');
@@ -1655,7 +1767,6 @@
             timestamp: Date.now()
           });
           hasChats = true;
-          loadChats();
         }
         closeAddFriendsSheet();
         openChat(chatId, targetUid);
@@ -2385,95 +2496,6 @@
       });
     }
 
-    async function loadChats() {
-      showSpinner();
-      const chatList = document.getElementById('chat-list');
-      chatList.innerHTML = '';
-      totalUnread = 0;
-      if (currentUser) {
-        const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
-        const snapshot = await get(userChatsRef);
-        let chats = [];
-        if (snapshot.exists()) {
-          chats = Object.entries(snapshot.val())
-            .map(([chatId, chat]) => ({ chatId, ...chat }))
-            .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
-        }
-        hasChats = chats.length > 0;
-        if (chats.length > 0) {
-          for (let i = 0; i < chats.length; i++) {
-            const chat = chats[i];
-            const preview = chat.lastMessage ? await decryptMessage(chat.lastMessage, chat.chatId) : 'No messages yet';
-            const unread = chat.unreadCount || 0;
-            totalUnread += unread;
-            const otherUserId = chat.otherUserId;
-            const userRef = ref(db, `users/${otherUserId}`);
-            const userSnapshot = await get(userRef);
-            const user = userSnapshot.val();
-            if (!user) continue;
-            const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-            const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
-            const chatItem = document.createElement('div');
-            chatItem.className = 'chat-item fade-in';
-            chatItem.style.animationDelay = `${i * 0.1}s`;
-            chatItem.setAttribute('data-chatid', chat.chatId);
-            chatItem.setAttribute('data-otheruid', otherUserId);
-            chatItem.onclick = () => openChat(chat.chatId, otherUserId);
-            chatItem.innerHTML = `
-              ${avatarHtml}
-              ${unreadBadge}
-              <div class="chat-info">
-                <div class="chat-name">${user.displayName}</div>
-                <div class="chat-preview">${preview}</div>
-              </div>
-              <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
-            `;
-            // Swipe to delete if enabled
-            const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
-            if (swipeDeleteEnabled) {
-              let startX = 0;
-              let currentX = 0;
-              let startY = 0;
-              let currentY = 0;
-              chatItem.addEventListener('touchstart', (e) => {
-                startX = e.touches[0].clientX;
-                currentX = startX;
-                startY = e.touches[0].clientY;
-                currentY = startY;
-              });
-              chatItem.addEventListener('touchmove', (e) => {
-                currentX = e.touches[0].clientX;
-                currentY = e.touches[0].clientY;
-                const deltaX = startX - currentX;
-                const deltaY = Math.abs(startY - currentY);
-                if (Math.abs(deltaX) > deltaY && deltaX > 0) {
-                  chatItem.style.transform = `translateX(${-deltaX}px)`;
-                }
-              });
-              chatItem.addEventListener('touchend', (e) => {
-                chatItem.style.transform = '';
-                const deltaX = startX - currentX;
-                const deltaY = Math.abs(startY - currentY);
-                if (deltaX > 50 && deltaX > deltaY) {
-                  showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
-                    if (confirmed) {
-                      removeChat(chat.chatId, otherUserId);
-                    }
-                  });
-                }
-              });
-            }
-            chatList.appendChild(chatItem);
-          }
-        } else {
-          chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No chats yet. Add friends to start!</p>';
-        }
-      }
-      updateNavUnread(totalUnread);
-      hideSpinner();
-    }
-
     async function loadGroups() {
       showSpinner();
       const groupsList = document.getElementById('groups-list');
@@ -2833,10 +2855,14 @@
     };
 
     window.logout = async () => {
-      if (confirm('Log out?')) {
-        await auth.signOut();
-        window.location.href = 'login.html';
-      }
+      showConfirm('Are you sure you want to log out?', async (confirmed) => {
+        if (confirmed) {
+          if (chatsListener) off(chatsListener);
+          if (callsListener) off(callsListener);
+          await auth.signOut();
+          window.location.href = 'login.html';
+        }
+      });
     };
 
     function switchSubTab(subTab, event) {
@@ -2904,6 +2930,9 @@
       auth = getAuth(app);
       db = getDatabase(app);
       analytics = getAnalytics(app);
+      if ('Notification' in window) {
+        Notification.requestPermission();
+      }
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
         if (user) {
@@ -2918,7 +2947,7 @@
             }
           }
           await loadUserPreferences();
-          loadChats();
+          setupChatsListener();
           setupCallsListener();
           setupNotifications();
         } else {
