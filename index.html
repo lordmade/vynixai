@@ -1077,6 +1077,94 @@
       border-radius: 0;
       border: none;
     }
+    /* Call Modal Styles */
+    #call-modal .modal-content.fullscreen {
+      background: black;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    #remote-video, #local-video {
+      background: black;
+      border-radius: 10px;
+      margin: 10px;
+    }
+    #remote-video {
+      width: 80%;
+      height: 60%;
+    }
+    #local-video {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 150px;
+      height: 200px;
+    }
+    .call-controls {
+      position: absolute;
+      bottom: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 20px;
+    }
+    .call-btn {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #end-call-btn {
+      background: #ff4444;
+      color: white;
+    }
+    #mute-btn {
+      background: var(--accent);
+      color: white;
+    }
+    #incoming-call-modal .modal-content {
+      text-align: center;
+      padding: 40px 20px;
+    }
+    .call-user-name {
+      font-size: 24px;
+      font-weight: bold;
+      margin-bottom: 20px;
+    }
+    .incoming-btns {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+    }
+    .accept-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 25px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .reject-btn {
+      background: #ff4444;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 25px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .call-friends-list {
+      max-height: 400px;
+      overflow-y: auto;
+    }
   </style>
 </head>
 <body>
@@ -1158,6 +1246,28 @@
     <span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends
   </button>
 
+  <!-- Call Modals -->
+  <div id="call-modal" class="modal">
+    <div class="modal-content fullscreen">
+      <video id="local-video" autoplay muted playsinline></video>
+      <video id="remote-video" autoplay playsinline></video>
+      <div class="call-controls">
+        <button id="mute-btn" class="call-btn material-icons">mic</button>
+        <button id="end-call-btn" class="call-btn material-icons" onclick="endCall()">call_end</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="incoming-call-modal" class="modal">
+    <div class="modal-content">
+      <div class="call-user-name" id="incoming-caller-name"></div>
+      <div class="incoming-btns">
+        <button class="accept-btn" id="accept-call-btn">Accept</button>
+        <button class="reject-btn" id="reject-call-btn">Reject</button>
+      </div>
+    </div>
+  </div>
+
   <div id="status-modal" class="modal">
     <div class="modal-content fullscreen">
       <button class="modal-close" onclick="closeStatusModal()">&times;</button>
@@ -1229,6 +1339,17 @@
     </div>
   </div>
 
+  <!-- New Call Bottom Sheet -->
+  <div id="new-call-sheet" class="bottom-sheet">
+    <div class="bottom-sheet-header">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 700; color: var(--text-primary);">Select Friend to Call</h2>
+      <button onclick="closeNewCallSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px;"><span class="material-icons">close</span></button>
+    </div>
+    <div class="call-friends-list" id="call-friends-list">
+      <!-- Friends loaded here -->
+    </div>
+  </div>
+
   <div id="spinner-overlay" class="spinner-overlay" aria-label="Loading spinner">
     <div class="spinner">
       <div class="dot"></div>
@@ -1241,7 +1362,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -1269,6 +1390,18 @@
     let currentIndex = 0;
     let statusTimer = null;
     let currentStatusId = null;
+
+    // WebRTC Globals
+    const pcConfig = {
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    };
+    let pc = null;
+    let localStream = null;
+    let remoteStream = null;
+    let currentCallId = null;
+    let currentOtherUid = null;
+    let isOutgoingCall = false;
+    let callsListener = null;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1532,6 +1665,280 @@
         showAlert('Failed to start chat.');
       }
     };
+
+    // WebRTC Functions
+    async function getMedia(isVideo = false) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({ video: isVideo, audio: true });
+      } catch (err) {
+        showAlert('Error accessing media devices.');
+        throw err;
+      }
+    }
+
+    async function startCall(targetUid, isVideo = false) {
+      currentOtherUid = targetUid;
+      isOutgoingCall = true;
+      currentCallId = [currentUser.uid, targetUid].sort().join('_');
+
+      if (pc) pc.close();
+      pc = new RTCPeerConnection(pcConfig);
+
+      localStream = await getMedia(isVideo);
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      document.getElementById('local-video').srcObject = localStream;
+
+      remoteStream = new MediaStream();
+      pc.ontrack = event => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        document.getElementById('remote-video').srcObject = remoteStream;
+      };
+
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          push(ref(db, `calls/${currentCallId}/offerCandidates`), event.candidate.toJSON());
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      await set(ref(db, `calls/${currentCallId}`), {
+        offer: { type: offer.type, sdp: offer.sdp },
+        caller: currentUser.uid,
+        callee: targetUid,
+        status: 'offering',
+        timestamp: Date.now()
+      });
+
+      // Listen for answer
+      onValue(ref(db, `calls/${currentCallId}/answer`), async (snap) => {
+        const answer = snap.val();
+        if (answer && !pc.currentRemoteDescription) {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+      });
+
+      // Listen for answer candidates
+      onValue(ref(db, `calls/${currentCallId}/answerCandidates`), (snap) => {
+        const candidates = snap.val();
+        if (candidates) {
+          Object.values(candidates).forEach(async (c) => {
+            if (c) await pc.addIceCandidate(new RTCIceCandidate(c));
+          });
+        }
+      });
+
+      // Listen for status changes
+      onValue(ref(db, `calls/${currentCallId}`), (snap) => {
+        const call = snap.val();
+        if (call && call.status === 'rejected') {
+          endCall();
+          showAlert('Call rejected.');
+        } else if (call && call.status === 'ended') {
+          endCall();
+        }
+      });
+
+      showCallModal();
+    }
+
+    async function acceptCall(callId, callerUid) {
+      currentCallId = callId;
+      currentOtherUid = callerUid;
+      isOutgoingCall = false;
+
+      document.getElementById('incoming-call-modal').classList.remove('active');
+
+      if (pc) pc.close();
+      pc = new RTCPeerConnection(pcConfig);
+
+      localStream = await getMedia(false);
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      document.getElementById('local-video').srcObject = localStream;
+
+      remoteStream = new MediaStream();
+      pc.ontrack = event => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        document.getElementById('remote-video').srcObject = remoteStream;
+      };
+
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          push(ref(db, `calls/${currentCallId}/answerCandidates`), event.candidate.toJSON());
+        }
+      };
+
+      const callSnap = await get(ref(db, `calls/${currentCallId}`));
+      const offer = callSnap.val().offer;
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      await set(ref(db, `calls/${currentCallId}/answer`), { type: answer.type, sdp: answer.sdp });
+      await update(ref(db, `calls/${currentCallId}`), { status: 'answered' });
+
+      // Listen for offer candidates
+      onValue(ref(db, `calls/${currentCallId}/offerCandidates`), (snap) => {
+        const candidates = snap.val();
+        if (candidates) {
+          Object.values(candidates).forEach(async (c) => {
+            if (c) await pc.addIceCandidate(new RTCIceCandidate(c));
+          });
+        }
+      });
+
+      // Listen for status changes
+      onValue(ref(db, `calls/${currentCallId}`), (snap) => {
+        const call = snap.val();
+        if (call && call.status === 'ended') {
+          endCall();
+        }
+      });
+
+      showCallModal();
+    }
+
+    window.rejectCall = async (callId) => {
+      await update(ref(db, `calls/${callId}`), { status: 'rejected' });
+      document.getElementById('incoming-call-modal').classList.remove('active');
+    };
+
+    function showCallModal() {
+      document.getElementById('call-modal').classList.add('active');
+      document.getElementById('mute-btn').onclick = toggleMute;
+      document.getElementById('end-call-btn').onclick = endCall;
+    }
+
+    function hideCallModal() {
+      document.getElementById('call-modal').classList.remove('active');
+    }
+
+    function toggleMute() {
+      const audioTrack = localStream.getAudioTracks()[0];
+      audioTrack.enabled = !audioTrack.enabled;
+      document.getElementById('mute-btn').innerHTML = audioTrack.enabled ? 'mic' : 'mic_off';
+    }
+
+    async function endCall() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+      if (remoteStream) {
+        remoteStream.getTracks().forEach(track => track.stop());
+        remoteStream = null;
+      }
+      document.getElementById('local-video').srcObject = null;
+      document.getElementById('remote-video').srcObject = null;
+
+      if (currentCallId) {
+        await update(ref(db, `calls/${currentCallId}`), { status: 'ended' });
+        // Log the call
+        const callType = isOutgoingCall ? 'outgoing' : 'incoming';
+        await push(ref(db, `users/${currentUser.uid}/calls`), {
+          otherUserId: currentOtherUid,
+          type: callType,
+          timestamp: Date.now()
+        });
+        // Log for other user
+        const otherCallType = isOutgoingCall ? 'incoming' : 'outgoing';
+        await push(ref(db, `users/${currentOtherUid}/calls`), {
+          otherUserId: currentUser.uid,
+          type: otherCallType,
+          timestamp: Date.now()
+        });
+        currentCallId = null;
+        currentOtherUid = null;
+        isOutgoingCall = false;
+      }
+
+      hideCallModal();
+    }
+
+    function showIncomingCallModal(callId, callerUid) {
+      // Get caller name
+      get(ref(db, `users/${callerUid}`)).then(snap => {
+        const user = snap.val();
+        document.getElementById('incoming-caller-name').textContent = user.displayName || 'User';
+      });
+      document.getElementById('accept-call-btn').onclick = () => acceptCall(callId, callerUid);
+      document.getElementById('reject-call-btn').onclick = () => rejectCall(callId);
+      document.getElementById('incoming-call-modal').classList.add('active');
+    }
+
+    function setupCallsListener() {
+      if (callsListener) return;
+      callsListener = onValue(ref(db, 'calls'), (snapshot) => {
+        if (!snapshot.exists()) return;
+        const calls = snapshot.val();
+        Object.entries(calls).forEach(([callId, call]) => {
+          if (call.callee === currentUser.uid && call.status === 'offering') {
+            showIncomingCallModal(callId, call.caller);
+          }
+        });
+      });
+    }
+
+    function openNewCallSheet() {
+      const sheet = document.getElementById('new-call-sheet');
+      sheet.classList.add('active');
+      loadFriendsForCall();
+    }
+
+    window.closeNewCallSheet = () => {
+      document.getElementById('new-call-sheet').classList.remove('active');
+    };
+
+    async function loadFriendsForCall() {
+      showSpinner();
+      const list = document.getElementById('call-friends-list');
+      list.innerHTML = '';
+      const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
+      const snapshot = await get(userChatsRef);
+      let chats = [];
+      if (snapshot.exists()) {
+        chats = Object.entries(snapshot.val())
+          .map(([otherUid, chat]) => ({ otherUid, ...chat }))
+          .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
+      }
+      if (chats.length === 0) {
+        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px;">No friends to call yet. Start a chat!</p>';
+      } else {
+        for (let i = 0; i < chats.length; i++) {
+          const chat = chats[i];
+          const otherUid = chat.otherUserId;
+          const userRef = ref(db, `users/${otherUid}`);
+          const userSnapshot = await get(userRef);
+          const user = userSnapshot.val();
+          if (!user) continue;
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName}" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          const item = document.createElement('div');
+          item.className = 'chat-item';
+          item.onclick = () => {
+            closeNewCallSheet();
+            startCall(otherUid);
+          };
+          item.innerHTML = `
+            ${avatarHtml}
+            <div class="chat-info">
+              <div class="chat-name">${user.displayName}</div>
+              <div class="chat-preview">Call ${user.displayName}</div>
+            </div>
+          `;
+          list.appendChild(item);
+        }
+      }
+      hideSpinner();
+    }
 
     async function loadFriendStatuses() {
       showSpinner();
@@ -2208,7 +2615,7 @@
           const callItem = document.createElement('div');
           callItem.className = 'call-item fade-in';
           callItem.style.animationDelay = `${i * 0.1}s`;
-          callItem.onclick = () => openCall(call.callId);
+          callItem.onclick = () => startCall(otherUserId);
           callItem.innerHTML = `
             ${avatarHtml}
             <div class="call-info">
@@ -2416,10 +2823,6 @@
       window.location.href = `chat.html?chatId=${chatId}&userId=${otherUserId}`;
     }
 
-    function openCall(callId) {
-      showAlert(`Calling from history: ${callId}`);
-    }
-
     window.openProfile = () => {
       // Inline editing now in settings, no redirect
       showAlert('Edit your profile in the Settings tab!');
@@ -2490,7 +2893,7 @@
           loadFriendStatuses();
         } else if (tab === 'calls') {
           fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">call</span>New Call`;
-          fab.onclick = () => showAlert('New call functionality coming soon!');
+          fab.onclick = openNewCallSheet;
           loadCalls();
         }
       }
@@ -2516,6 +2919,7 @@
           }
           await loadUserPreferences();
           loadChats();
+          setupCallsListener();
           setupNotifications();
         } else {
           window.location.href = 'signup.html';
