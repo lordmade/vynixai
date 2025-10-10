@@ -13,6 +13,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <!-- Add AdSense JavaScript Library -->
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=pub-1322747625222761"
@@ -857,6 +858,11 @@
       opacity: 0.7;
       cursor: not-allowed;
     }
+    .profile-save-btn {
+      width: auto !important;
+      padding: 10px 20px !important;
+      margin-top: 16px;
+    }
     .logout-btn {
       background: #ff0080;
       color: white;
@@ -1165,6 +1171,20 @@
       max-height: 400px;
       overflow-y: auto;
     }
+    .profile-pic-edit {
+      position: relative;
+      display: inline-block;
+      margin-bottom: 16px;
+    }
+    .profile-pic-edit input[type=file] {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -1361,9 +1381,10 @@
 
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-    import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+    import { getAuth, onAuthStateChanged, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, onValue, get, set, push, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
+    import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -1381,7 +1402,7 @@
       uploadPreset: 'banter_box' // Replace with your unsigned upload preset
     };
 
-    let app, auth, db, analytics, currentUser;
+    let app, auth, db, analytics, storage, currentUser;
     let hasChats = false;
     let totalUnread = 0;
     let currentUploadType = '';
@@ -2719,6 +2740,43 @@
       }
     }
 
+    window.saveProfile = async () => {
+      if (!currentUser) return;
+      const displayName = document.getElementById('profile-name-input').value.trim();
+      const bio = document.getElementById('profile-bio-input').value.trim();
+      const photoFile = document.getElementById('profile-photo-input').files[0];
+      const saveBtn = document.querySelector('#profile-save-btn');
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+      try {
+        let photoURL = currentUserData.photoURL;
+        if (photoFile) {
+          const photoRef = storageRef(storage, `profiles/${currentUser.uid}/photo`);
+          await uploadBytes(photoRef, photoFile);
+          photoURL = await getDownloadURL(photoRef);
+        }
+        await updateProfile(currentUser, { displayName, photoURL });
+        await update(ref(db, `users/${currentUser.uid}`), { displayName, bio, photoURL });
+        showAlert('Profile updated!');
+        // Reload settings to reflect changes
+        loadSettings();
+        // Update profile pic in header
+        const initial = displayName ? displayName[0].toUpperCase() : 'U';
+        const profilePic = document.getElementById('profile-pic');
+        if (photoURL) {
+          profilePic.innerHTML = `<img src="${photoURL}" alt="Profile" loading="lazy">`;
+        } else {
+          profilePic.innerHTML = initial;
+        }
+      } catch (error) {
+        console.error('Error updating profile:', error);
+        showAlert('Failed to update profile.');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save Profile';
+      }
+    };
+
     async function loadSettings() {
       showSpinner();
       const settingsContent = document.getElementById('settings-content');
@@ -2737,16 +2795,27 @@
         const swipeStatusEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
         const initial = currentUserData.displayName ? currentUserData.displayName[0].toUpperCase() : 'U';
         const currentPhoto = currentUserData.photoURL || '';
-        const avatarHtml = currentPhoto ? `<img src="${currentPhoto}" alt="${currentUserData.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+        const avatarHtml = currentPhoto ? `<img src="${currentPhoto}" alt="${currentUserData.displayName} avatar" class="profile-pic-preview" loading="lazy">` : `<div class="profile-pic-preview" style="background: var(--gradient); color: #000; font-size: 40px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
         const settingsHtml = `
           <div class="settings-section">
-            <div class="chat-item" style="margin-bottom: 20px; cursor: pointer;" onclick="window.location.href='profile.html';">
-              ${avatarHtml}
-              <div class="chat-info">
-                <div class="chat-name">${currentUserData.displayName || 'User'}</div>
-                <div class="chat-preview">${currentUserData.email || 'No email'}</div>
+            <h3 style="font-size: 20px; font-weight: 700; margin-bottom: 16px; color: var(--text-primary);">Profile</h3>
+            <div class="profile-setting-item">
+              <label class="setting-label">Profile Picture</label>
+              <div class="profile-pic-edit">
+                ${avatarHtml}
+                <input type="file" id="profile-photo-input" accept="image/*" style="display: none;" onchange="updateProfilePreview(this.files[0])">
+                <label for="profile-photo-input" class="file-input-label" style="position: absolute; top: 0; left: 0; width: 80px; height: 80px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0;">Edit Photo</label>
               </div>
             </div>
+            <div class="profile-setting-item">
+              <label class="setting-label">Display Name</label>
+              <input type="text" id="profile-name-input" class="input-field" value="${currentUserData.displayName || ''}" placeholder="Enter your name">
+            </div>
+            <div class="profile-setting-item">
+              <label class="setting-label">Bio</label>
+              <textarea id="profile-bio-input" class="input-field" rows="3" placeholder="Tell us about yourself...">${currentUserData.bio || ''}</textarea>
+            </div>
+            <button id="profile-save-btn" class="save-btn profile-save-btn" onclick="saveProfile()">Save Profile</button>
 
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">palette</span> Appearance</summary>
@@ -2819,17 +2888,34 @@
       hideSpinner();
     }
 
+    function updateProfilePreview(file) {
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const preview = document.querySelector('.profile-pic-preview');
+          if (preview.tagName === 'IMG') {
+            preview.src = e.target.result;
+          } else {
+            preview.style.backgroundImage = `url(${e.target.result})`;
+            preview.style.backgroundSize = 'cover';
+            preview.innerHTML = '';
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
     function openChat(chatId, otherUserId) {
       window.location.href = `chat.html?chatId=${chatId}&userId=${otherUserId}`;
     }
 
     window.openProfile = () => {
-      // Inline editing now in settings, no redirect
-      showAlert('Edit your profile in the Settings tab!');
+      // Now inline in settings
+      showAlert('Edit your profile in the Profile section below!');
     };
 
     window.updateProfile = () => {
-      // No longer needed
+      // Deprecated
     };
 
     window.logout = async () => {
@@ -2904,6 +2990,7 @@
       auth = getAuth(app);
       db = getDatabase(app);
       analytics = getAnalytics(app);
+      storage = getStorage(app);
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
         if (user) {
