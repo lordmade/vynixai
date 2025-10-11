@@ -1409,6 +1409,7 @@
     let currentStatusId = null;
     let prevUnread = {};
     let chatsListener = null;
+    let statusesListener = null;
 
     // WebRTC Globals
     const pcConfig = {
@@ -1564,8 +1565,8 @@
       }
     }
 
-    async function loadTopStatuses() {
-      showSpinner();
+    async function loadTopStatuses(silent = false) {
+      if (!silent) showSpinner();
       const statusesCarousel = document.getElementById('statuses-carousel');
       statusesCarousel.innerHTML = '';
       if (currentUser) {
@@ -1637,7 +1638,7 @@
           }
         }
       }
-      hideSpinner();
+      if (!silent) hideSpinner();
     }
 
     async function updateChatsUI(snapshot) {
@@ -1746,15 +1747,31 @@
       prevUnread = {};
       const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
       chatsListener = onValue(userChatsRef, async (snapshot) => {
-        showSpinner();
-        try {
-          await updateChatsUI(snapshot);
-        } finally {
-          hideSpinner();
-        }
+        await updateChatsUI(snapshot);
       }, (error) => {
         console.error('Error listening to chats:', error);
-        hideSpinner();
+      });
+    }
+
+    function setupStatusesListener() {
+      const statusesRef = ref(db, 'statuses');
+      statusesListener = onValue(statusesRef, async (snapshot) => {
+        // Clean old statuses silently
+        const oldPromises = [];
+        if (snapshot.exists()) {
+          Object.entries(snapshot.val()).forEach(([id, s]) => {
+            if (s.timestamp < Date.now() - 24 * 60 * 60 * 1000) {
+              oldPromises.push(set(ref(db, `statuses/${id}`), null));
+            }
+          });
+        }
+        await Promise.all(oldPromises);
+        // Update if chats sub-tab active
+        if (document.getElementById('sub-chats-content').classList.contains('active')) {
+          await loadTopStatuses(true); // silent update
+        }
+      }, (error) => {
+        console.error('Error listening to statuses:', error);
       });
     }
 
@@ -2363,7 +2380,8 @@
       input.value = '';
       try {
         const status = currentUserData.statuses[currentIndex];
-        const chatId = [currentUser.uid, status.userId].sort().join('_');
+        const targetUid = status.userId;
+        const chatId = [currentUser.uid, targetUid].sort().join('_');
         const encrypted = await encryptMessage(msg, chatId);
         const messagesRef = ref(db, `chats/${chatId}/messages`);
         const newMsgRef = push(messagesRef);
@@ -2373,7 +2391,7 @@
           timestamp: Date.now()
         });
         // Update last message for current user
-        const currentChatRef = ref(db, `users/${currentUser.uid}/chats/${status.userId}`);
+        const currentChatRef = ref(db, `users/${currentUser.uid}/chats/${targetUid}`);
         const currentChatSnap = await get(currentChatRef);
         if (currentChatSnap.exists()) {
           await set(currentChatRef, {
@@ -2381,11 +2399,29 @@
             lastMessage: encrypted,
             lastMessageTime: Date.now()
           });
+        } else {
+          // Create chat if not exists
+          await set(currentChatRef, {
+            chatId,
+            otherUserId: targetUid,
+            lastMessage: encrypted,
+            lastMessageTime: Date.now(),
+            unreadCount: 0
+          });
+          // Create for target user
+          const targetChatRef = ref(db, `users/${targetUid}/chats/${currentUser.uid}`);
+          await set(targetChatRef, {
+            chatId,
+            otherUserId: currentUser.uid,
+            lastMessage: encrypted,
+            lastMessageTime: Date.now(),
+            unreadCount: 1
+          });
         }
         // Update for recipient (increase unread if not open)
-        const recipientChatRef = ref(db, `users/${status.userId}/chats/${currentUser.uid}`);
+        const recipientChatRef = ref(db, `users/${targetUid}/chats/${currentUser.uid}`);
         const recipientChatSnap = await get(recipientChatRef);
-        let unread = 0;
+        let unread = 1;
         if (recipientChatSnap.exists()) {
           unread = (recipientChatSnap.val().unreadCount || 0) + 1;
           await set(recipientChatRef, {
@@ -2811,7 +2847,7 @@
       showAlert(enabled ? 'Swipe to delete enabled' : 'Swipe to delete disabled');
       // Reload chats to apply gesture changes
       if (document.getElementById('chats-tab').classList.contains('active')) {
-        loadChats();
+        // Listener will handle
       }
     }
 
@@ -3103,6 +3139,7 @@
 
     window.logout = async () => {
       if (chatsListener) off(chatsListener);
+      if (statusesListener) off(statusesListener);
       if (callsListener) off(callsListener);
       await auth.signOut();
       window.location.href = 'login.html';
@@ -3123,7 +3160,6 @@
       document.getElementById(`sub-${subTab}-content`).classList.add('active');
       // Load the appropriate content
       if (subTab === 'chats') {
-        loadChats();
         loadTopStatuses();
         const fab = document.getElementById('fab-btn');
         fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">person_add</span>Add Friends`;
@@ -3133,18 +3169,6 @@
         const fab = document.getElementById('fab-btn');
         fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">group_add</span>Create Group`;
         fab.onclick = openCreateGroupModal;
-      }
-    }
-
-    async function loadChats() {
-      if (!currentUser) return;
-      showSpinner();
-      try {
-        const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
-        const snapshot = await get(userChatsRef);
-        await updateChatsUI(snapshot);
-      } finally {
-        hideSpinner();
       }
     }
 
@@ -3204,6 +3228,7 @@
           }
           await loadUserPreferences();
           setupChatsListener();
+          setupStatusesListener();
           setupCallsListener();
           setupNotifications();
           switchTab('chats', null);
