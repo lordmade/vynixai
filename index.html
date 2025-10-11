@@ -319,6 +319,7 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      padding-bottom: 100px;
     }
     .chat-item, .call-item {
       display: flex;
@@ -1493,6 +1494,21 @@
       margin-bottom: 12px;
       max-height: 400px;
       object-fit: cover;
+      cursor: pointer;
+    }
+    .video-progress {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      margin-top: 4px;
+      cursor: pointer;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--grok-blue);
+      width: 0%;
+      transition: width 0.1s;
+      border-radius: 2px;
     }
     .status-actions {
       display: flex;
@@ -1815,6 +1831,7 @@
     let currentVideo = null;
     let isMuted = false;
     let isZoomed = false;
+    let videoObserver = null;
 
     // WebRTC Globals
     const pcConfig = {
@@ -2110,6 +2127,7 @@
               const postItem = document.createElement('div');
               postItem.className = 'status-post fade-in';
               postItem.style.animationDelay = `${i * 0.1}s`;
+              postItem.setAttribute('data-status-id', status.statusId);
               const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
               let avatarHtml;
               if (user?.photoURL) {
@@ -2122,11 +2140,13 @@
                 nameHtml += verifiedIcon;
               }
               let mediaHtml = '';
+              let progressHtml = '';
               if (status.mediaUrl) {
                 if (status.type === 'image') {
                   mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy">`;
                 } else if (status.type === 'video') {
-                  mediaHtml = `<video src="${status.mediaUrl}" class="status-post-media" controls loading="lazy"></video>`;
+                  mediaHtml = `<video src="${status.mediaUrl}" class="status-post-media" loading="lazy"></video>`;
+                  progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
                 }
               }
               const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
@@ -2135,6 +2155,10 @@
               const comments = Object.keys(commentsSnap.val() || {}).length;
               const shares = status.shares || 0;
               const impressions = status.impressions || 0;
+              const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+              const likeSnap = await get(likeRef);
+              const isLiked = likeSnap.exists();
+              const likeIcon = isLiked ? 'favorite' : 'favorite_border';
               postItem.innerHTML = `
                 <div class="status-post-header">
                   ${avatarHtml}
@@ -2145,23 +2169,66 @@
                 </div>
                 <div class="status-post-content">${status.content || ''}</div>
                 ${mediaHtml}
+                ${progressHtml}
                 <div class="status-actions">
-                  <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">favorite_border</span> ${likes}</span>
+                  <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
                   <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
                   <span onclick="shareStatus('${status.statusId}')"><span class="material-icons">share</span> ${shares}</span>
                   <span><span class="material-icons">visibility</span> ${impressions}</span>
                 </div>
               `;
-              postItem.onclick = (e) => {
-                if (e.target.tagName === 'SPAN' && e.target.onclick) return;
-                openUserStatuses(status.userId);
-              };
+              // Setup video if present
+              const videoEl = postItem.querySelector('video');
+              if (videoEl) {
+                videoEl.addEventListener('click', () => {
+                  if (videoEl.paused) {
+                    videoEl.play();
+                  } else {
+                    videoEl.pause();
+                  }
+                });
+                const progressEl = videoEl.nextElementSibling;
+                if (progressEl && progressEl.classList.contains('video-progress')) {
+                  videoEl.addEventListener('loadedmetadata', () => {
+                    videoEl.addEventListener('timeupdate', () => {
+                      const fill = progressEl.querySelector('.progress-fill');
+                      if (fill && videoEl.duration) {
+                        fill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+                      }
+                    });
+                  });
+                }
+                if (videoObserver) {
+                  videoObserver.observe(videoEl);
+                }
+              }
               container.appendChild(postItem);
             }
           }
         }
       }
       if (!silent) hideSpinner();
+    }
+
+    async function setupVideoObserver() {
+      videoObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          const video = entry.target;
+          if (entry.isIntersecting) {
+            video.play().catch(console.error);
+          } else {
+            video.pause();
+          }
+        });
+      }, { threshold: 0.5 });
+      // Pause all videos on window blur
+      window.addEventListener('blur', () => {
+        document.querySelectorAll('video').forEach(v => v.pause());
+      });
+      // On focus, observer will handle if in view
+      window.addEventListener('focus', () => {
+        // Observer handles
+      });
     }
 
     async function loadTopStatuses(silent = false) {
@@ -2887,11 +2954,21 @@
         } else {
           await set(likeRef, true);
         }
-        await updateLikeButton(statusId);
-        showAlert(liked ? 'Like removed' : 'Status liked!');
-        if (document.getElementById('status-tab').classList.contains('active')) {
-          loadStatuses('statuses-list', 'list');
+        const newLikesSnap = await get(ref(db, `statuses/${statusId}/likes`));
+        const newLikes = Object.keys(newLikesSnap.val() || {}).length;
+        const newIsLiked = !liked;
+        const newIcon = newIsLiked ? 'favorite' : 'favorite_border';
+        // Update modal button
+        updateLikeButton(statusId);
+        // Update list post if exists
+        const post = document.querySelector(`[data-status-id="${statusId}"]`);
+        if (post) {
+          const likeSpan = post.querySelector('.status-actions span:first-child');
+          if (likeSpan) {
+            likeSpan.innerHTML = `<span class="material-icons">${newIcon}</span> ${newLikes}`;
+          }
         }
+        showAlert(liked ? 'Like removed' : 'Status liked!');
       } catch (error) {
         console.error('Error toggling like:', error);
         showAlert('Failed to update like.');
@@ -2904,8 +2981,13 @@
       const snap = await get(shareRef);
       const curr = snap.val() || 0;
       await set(shareRef, curr + 1);
-      if (document.getElementById('status-tab').classList.contains('active')) {
-        loadStatuses('statuses-list', 'list');
+      // Update list if exists
+      const post = document.querySelector(`[data-status-id="${statusId}"]`);
+      if (post) {
+        const shareSpan = post.querySelector('.status-actions span:nth-child(3)');
+        if (shareSpan) {
+          shareSpan.innerHTML = `<span class="material-icons">share</span> ${curr + 1}`;
+        }
       }
     };
 
@@ -2959,10 +3041,17 @@
         timestamp: Date.now()
       });
       input.value = '';
-      await loadComments(currentStatusId);
-      if (document.getElementById('status-tab').classList.contains('active')) {
-        loadStatuses('statuses-list', 'list');
+      const newCommentsSnap = await get(commentsRef);
+      const newComments = Object.keys(newCommentsSnap.val() || {}).length;
+      // Update list post if exists
+      const post = document.querySelector(`[data-status-id="${currentStatusId}"]`);
+      if (post) {
+        const commentSpan = post.querySelector('.status-actions span:nth-child(2)');
+        if (commentSpan) {
+          commentSpan.innerHTML = `<span class="material-icons">chat_bubble_outline</span> ${newComments}`;
+        }
       }
+      await loadComments(currentStatusId);
     };
 
     function setStatusTimer(duration) {
@@ -3883,6 +3972,7 @@
           setupChatsListener();
           setupStatusesListener();
           setupCallsListener();
+          setupVideoObserver();
           setupNotifications();
           switchTab('chats', null);
         } else {
