@@ -80,7 +80,7 @@
     .header-left {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 16px;
     }
     .logo {
       font-weight: 800;
@@ -639,6 +639,11 @@
       justify-content: center;
       z-index: 2000;
       backdrop-filter: blur(10px);
+      animation: fadeInModal 0.3s ease-out;
+    }
+    @keyframes fadeInModal {
+      from { opacity: 0; }
+      to { opacity: 1; }
     }
     .modal.active {
       display: flex;
@@ -790,6 +795,11 @@
       width: 100%;
       height: calc(100vh - 150px);
       object-fit: cover;
+      transition: transform 0.3s ease;
+    }
+    .status-media.zoomed {
+      transform: scale(1.5);
+      cursor: zoom-out;
     }
     .status-nav-btn {
       position: fixed;
@@ -1218,6 +1228,7 @@
       border: none;
       background: black;
       position: relative;
+      box-shadow: none;
     }
     /* Redesigned Status Modal */
     #status-modal .status-header {
@@ -1417,12 +1428,46 @@
     .delete-calls-btn:hover {
       color: #ff4444;
     }
+    .status-reply-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(0,0,0,0.5);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 15;
+    }
+    .status-reply-input {
+      flex: 1;
+      background: rgba(255,255,255,0.2);
+      border: none;
+      border-radius: 20px;
+      padding: 10px 15px;
+      color: white;
+      outline: none;
+      font-size: 16px;
+    }
+    .status-reply-send {
+      background: var(--grok-blue);
+      color: white;
+      border: none;
+      border-radius: 20px;
+      padding: 10px 15px;
+      cursor: pointer;
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
   <header class="header">
     <div class="header-left">
-      <div class="logo" onclick="showAlert('Chatting with Grok AI...')"><span class="material-icons" style="font-size: 24px; vertical-align: middle;">smart_toy</span></div>
+      <div class="profile-container" id="profile-container">
+        <div class="profile-pic" id="profile-pic"></div>
+        <span id="verified-icon" class="verified-icon-container"></span>
+      </div>
     </div>
     <div class="header-center">
       <div class="search-container">
@@ -1435,11 +1480,6 @@
         <button id="dark-mode-btn" title="Toggle Dark Mode" aria-label="Toggle Dark Mode">
           <span class="material-icons">bedtime</span>
         </button>
-        <div class="profile-container" id="profile-container">
-          <div class="profile-pic" id="profile-pic"></div>
-          <span id="username" class="header-username"></span>
-          <span id="verified-icon" class="verified-icon-container"></span>
-        </div>
       </div>
     </div>
   </header>
@@ -1552,6 +1592,10 @@
       </div>
       <div class="status-reactions">
         <button class="reaction-btn like-btn" id="like-status-btn" onclick="likeStatus(currentStatusId)">♡</button>
+      </div>
+      <div class="status-reply-bar" id="status-reply-bar" style="display: none;">
+        <input type="text" class="status-reply-input" placeholder="Reply to status..." id="status-reply-input">
+        <button class="status-reply-send" onclick="sendStatusReply()">Send</button>
       </div>
     </div>
   </div>
@@ -1667,6 +1711,8 @@
     let statusesLoaded = { carousel: false, list: false }; // Flag to prevent duplication
     let currentVideo = null;
     let isMuted = false;
+    let isZoomed = false;
+    let replyTimeout = null;
 
     // WebRTC Globals
     const pcConfig = {
@@ -2549,50 +2595,75 @@
       const nextBtn = document.getElementById('next-status-btn');
       const speakerBtn = document.getElementById('speaker-btn');
       const header = document.getElementById('status-header');
+      const replyBar = document.getElementById('status-reply-bar');
       const hasMultiple = allStatuses.length > 1;
       prevBtn.style.display = hasMultiple ? 'block' : 'none';
       nextBtn.style.display = hasMultiple ? 'block' : 'none';
       header.style.display = 'flex';
+      replyBar.style.display = 'flex';
       prevBtn.onclick = () => goPrev();
       nextBtn.onclick = () => goNext();
       speakerBtn.style.display = 'none';
       isMuted = false;
+      isZoomed = false;
       showStatus(currentIndex);
       modal.classList.add('active');
 
-      // Vertical swipe gesture support if enabled
-      const swipeEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
-      if (swipeEnabled && hasMultiple) {
-        let startY = 0;
-        let currentY = 0;
-        let startX = 0;
-        let currentX = 0;
-        const body = document.getElementById('status-modal-body');
-        body.addEventListener('touchstart', (e) => {
-          startY = e.touches[0].clientY;
-          currentY = startY;
-          startX = e.touches[0].clientX;
-          currentX = startX;
-        });
-        body.addEventListener('touchmove', (e) => {
-          currentY = e.touches[0].clientY;
-          currentX = e.touches[0].clientX;
-          const deltaY = startY - currentY;
-          const deltaX = Math.abs(startX - currentX);
-          if (Math.abs(deltaY) > deltaX) {
-            body.style.transform = `translateY(${-deltaY}px)`;
+      // Horizontal swipe gesture support
+      const body = document.getElementById('status-modal-body');
+      let startX = 0;
+      let currentX = 0;
+      let startY = 0;
+      let currentY = 0;
+      body.addEventListener('touchstart', (e) => {
+        startX = e.touches[0].clientX;
+        currentX = startX;
+        startY = e.touches[0].clientY;
+        currentY = startY;
+      });
+      body.addEventListener('touchmove', (e) => {
+        currentX = e.touches[0].clientX;
+        currentY = e.touches[0].clientY;
+        const deltaX = startX - currentX;
+        const deltaY = Math.abs(startY - currentY);
+        if (Math.abs(deltaX) > deltaY) {
+          body.style.transform = `translateX(${-deltaX}px)`;
+        }
+      });
+      body.addEventListener('touchend', (e) => {
+        body.style.transform = '';
+        const deltaX = startX - currentX;
+        const deltaY = Math.abs(startY - currentY);
+        if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > deltaY) {
+          if (deltaX > 0) {
+            goNext();
+          } else {
+            goPrev();
           }
-        });
-        body.addEventListener('touchend', (e) => {
-          body.style.transform = '';
-          const deltaY = startY - currentY;
-          const deltaX = Math.abs(startX - currentX);
-          if (Math.abs(deltaY) > 50 && Math.abs(deltaY) > deltaX) {
-            if (deltaY > 0) {
-              goNext();
-            } else {
-              goPrev();
+        }
+      });
+
+      // Tap to zoom and double-tap like
+      let tapCount = 0;
+      let tapTimer = null;
+      const mediaEl = document.querySelector('.status-media');
+      if (mediaEl) {
+        mediaEl.addEventListener('click', (e) => {
+          tapCount++;
+          if (tapTimer) clearTimeout(tapTimer);
+          tapTimer = setTimeout(() => {
+            if (tapCount === 1) {
+              // Single tap: toggle zoom
+              isZoomed = !isZoomed;
+              mediaEl.classList.toggle('zoomed', isZoomed);
             }
+            tapCount = 0;
+          }, 300);
+          if (tapCount === 2) {
+            // Double tap: like
+            likeStatus(currentStatusId);
+            clearTimeout(tapTimer);
+            tapCount = 0;
           }
         });
       }
@@ -2620,6 +2691,25 @@
         speakerBtn.innerHTML = isMuted ? 'volume_off' : 'volume_up';
       }
     }
+
+    window.sendStatusReply = async () => {
+      const input = document.getElementById('status-reply-input');
+      const replyText = input.value.trim();
+      if (!replyText || !currentStatusId) return;
+      try {
+        const replyRef = ref(db, `statuses/${currentStatusId}/replies/${currentUser.uid}`);
+        await set(replyRef, {
+          text: replyText,
+          userId: currentUser.uid,
+          timestamp: Date.now()
+        });
+        input.value = '';
+        showAlert('Reply sent!');
+      } catch (error) {
+        console.error('Failed to send reply:', error);
+        showAlert('Failed to send reply.');
+      }
+    };
 
     async function updateLikeButton(statusId) {
       if (!currentUser) return;
@@ -2725,6 +2815,31 @@
       }
       updateProgress();
       updateLikeButton(status.statusId);
+      // Reset zoom
+      const mediaEl = document.querySelector('.status-media');
+      if (mediaEl) {
+        mediaEl.classList.remove('zoomed');
+        isZoomed = false;
+        // Re-attach tap events
+        let tapCount = 0;
+        let tapTimer = null;
+        mediaEl.onclick = (e) => {
+          tapCount++;
+          if (tapTimer) clearTimeout(tapTimer);
+          tapTimer = setTimeout(() => {
+            if (tapCount === 1) {
+              isZoomed = !isZoomed;
+              mediaEl.classList.toggle('zoomed', isZoomed);
+            }
+            tapCount = 0;
+          }, 300);
+          if (tapCount === 2) {
+            likeStatus(status.statusId);
+            clearTimeout(tapTimer);
+            tapCount = 0;
+          }
+        };
+      }
     }
 
     function updateProgress() {
@@ -2764,6 +2879,9 @@
       currentStatusId = null;
       currentVideo = null;
       isMuted = false;
+      isZoomed = false;
+      const replyInput = document.getElementById('status-reply-input');
+      if (replyInput) replyInput.value = '';
     };
 
     function openUploadSheet() {
@@ -3523,10 +3641,6 @@
               } else {
                 profilePic.innerHTML = initial;
               }
-            }
-            const usernameEl = document.getElementById('username');
-            if (usernameEl) {
-              usernameEl.textContent = currentUserData.displayName || user.email.split('@')[0];
             }
             const verifiedEl = document.getElementById('verified-icon');
             if (verifiedEl) {
