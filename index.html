@@ -681,14 +681,36 @@
       background: rgba(255, 255, 255, 0.2);
       display: flex;
       z-index: 10;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    #progress-bar-container:hover {
+      height: 4px;
+      box-shadow: 0 0 10px var(--grok-blue);
     }
     .progress-item {
       flex: 1;
       background: rgba(255, 255, 255, 0.3);
-      transition: background 0.3s ease;
+      transition: background 0.3s ease, box-shadow 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .progress-item::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 0;
+      background: var(--grok-gradient);
+      transition: width 0.3s ease;
     }
     .progress-item.active {
       background: var(--grok-blue);
+      box-shadow: 0 0 5px var(--grok-blue);
+    }
+    .progress-item.active::after {
+      width: 100%;
     }
     .status-header {
       position: fixed;
@@ -705,6 +727,11 @@
       backdrop-filter: blur(10px);
     }
     .status-header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .status-header-right {
       display: flex;
       align-items: center;
       gap: 10px;
@@ -733,6 +760,15 @@
       font-size: 14px;
       font-weight: 500;
     }
+    .comments-icon {
+      font-size: 24px;
+      cursor: pointer;
+      opacity: 0.8;
+      transition: opacity 0.3s ease;
+    }
+    .comments-icon:hover {
+      opacity: 1;
+    }
     #status-modal-body {
       flex: 1;
       display: flex;
@@ -742,7 +778,7 @@
       overflow: hidden;
       position: relative;
       z-index: 1;
-      touch-action: pan-y pan-x;
+      touch-action: pan-y;
       height: 100vh;
       padding-top: 96px;
       padding-bottom: 80px;
@@ -784,6 +820,11 @@
     }
     #next-status-btn {
       right: 20px;
+    }
+    @media (max-width: 768px) {
+      .status-nav-btn {
+        display: none !important;
+      }
     }
     .status-text {
       font-size: 18px;
@@ -1279,6 +1320,25 @@
       margin-left: 4px;
       vertical-align: middle;
     }
+    .speaker-btn {
+      position: fixed;
+      bottom: 100px;
+      right: 20px;
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      font-size: 24px;
+      cursor: pointer;
+      z-index: 10;
+      display: none;
+      transition: opacity 0.3s ease;
+    }
+    .speaker-btn:hover {
+      opacity: 0.8;
+    }
   </style>
 </head>
 <body>
@@ -1403,11 +1463,12 @@
       <div id="status-modal-body"></div>
       <button id="prev-status-btn" class="status-nav-btn">&lsaquo;</button>
       <button id="next-status-btn" class="status-nav-btn">&rsaquo;</button>
-      <div id="status-input-bar" class="status-input-bar" style="display: none;">
-        <button class="like-btn" id="status-like-btn" onclick="likeStatus(window.currentStatusId)">♡</button>
-        <div class="input-pill">
-          <input type="text" id="status-comment-input" placeholder="Send a reply..." onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); sendComment(); }">
-          <button class="send-btn" onclick="sendComment()">Send</button>
+      <button id="speaker-btn" class="speaker-btn material-icons" onclick="toggleSound()"></button>
+      <div id="status-header" class="status-header" style="display: none;">
+        <div class="status-header-left"></div>
+        <div class="status-header-right">
+          <span class="status-time"></span>
+          <span class="material-icons comments-icon" onclick="openCommentsSheet()">chat_bubble</span>
         </div>
       </div>
     </div>
@@ -1467,6 +1528,20 @@
     </div>
   </div>
 
+  <!-- Comments Bottom Sheet -->
+  <div id="comments-sheet" class="bottom-sheet">
+    <div class="bottom-sheet-header">
+      <h2 style="margin: 0; font-size: 22px; font-weight: 700; color: var(--text-primary);">Reply to Status</h2>
+      <button onclick="closeCommentsSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px;"><span class="material-icons">close</span></button>
+    </div>
+    <div style="padding: 20px;">
+      <div class="input-pill" style="margin-bottom: 16px;">
+        <input type="text" id="comments-input" placeholder="Send a reply..." onkeypress="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); sendComment(); }">
+        <button class="send-btn" onclick="sendComment()">Send</button>
+      </div>
+    </div>
+  </div>
+
   <!-- New Call Bottom Sheet -->
   <div id="new-call-sheet" class="bottom-sheet">
     <div class="bottom-sheet-header">
@@ -1522,6 +1597,8 @@
     let chatsListener = null;
     let statusesListener = null;
     let statusesLoaded = { carousel: false, list: false }; // Flag to prevent duplication
+    let currentVideo = null;
+    let isMuted = true;
 
     // WebRTC Globals
     const pcConfig = {
@@ -1732,8 +1809,28 @@
           }
         }
         window.currentStatusesByUser = recentStatusesByUser;
+
+        // Flatten all statuses for global reel, owner first
+        let allStatuses = [];
+        Object.entries(recentStatusesByUser).forEach(([uid, data]) => {
+          data.statuses.forEach(status => {
+            status.user = data.user;
+            allStatuses.push(status);
+          });
+        });
+        const ownerStatuses = allStatuses.filter(s => s.userId === currentUser.uid).sort((a, b) => b.timestamp - a.timestamp);
+        const otherStatuses = allStatuses.filter(s => s.userId !== currentUser.uid).sort((a, b) => b.timestamp - a.timestamp);
+        allStatuses = [...ownerStatuses, ...otherStatuses];
+        window.currentAllStatuses = allStatuses;
+
+        // For carousel/list, sort uids with owner first
         const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
-          .sort((a, b) => recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp);
+          .sort((a, b) => {
+            if (a === currentUser.uid) return -1;
+            if (b === currentUser.uid) return 1;
+            return recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp;
+          });
+
         if (uids.length === 0) {
           container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
         } else {
@@ -2367,57 +2464,63 @@
     }
 
     function openUserStatuses(uid) {
-      const data = window.currentStatusesByUser[uid];
-      if (!data || data.statuses.length === 0) return;
-      showUserStatuses(data);
+      const allStatuses = window.currentAllStatuses;
+      if (!allStatuses || allStatuses.length === 0) return;
+      const firstIndex = allStatuses.findIndex(s => s.userId === uid);
+      if (firstIndex !== -1) {
+        currentIndex = firstIndex;
+        showAllStatuses();
+      }
     }
 
-    function showUserStatuses(data) {
-      currentUserData = data;
-      currentIndex = 0;
+    function showAllStatuses() {
+      const allStatuses = window.currentAllStatuses;
+      currentIndex = currentIndex % allStatuses.length;
       const modal = document.getElementById('status-modal');
-      const modalContent = modal.querySelector('.modal-content');
       const prevBtn = document.getElementById('prev-status-btn');
       const nextBtn = document.getElementById('next-status-btn');
-      const inputBar = document.getElementById('status-input-bar');
-      const body = document.getElementById('status-modal-body');
-      const hasMultiple = data.statuses.length > 1;
+      const speakerBtn = document.getElementById('speaker-btn');
+      const header = document.getElementById('status-header');
+      const hasMultiple = allStatuses.length > 1;
       prevBtn.style.display = hasMultiple ? 'block' : 'none';
       nextBtn.style.display = hasMultiple ? 'block' : 'none';
-      inputBar.style.display = 'flex';
+      header.style.display = 'flex';
       prevBtn.onclick = () => goPrev();
       nextBtn.onclick = () => goNext();
+      speakerBtn.style.display = 'none';
+      isMuted = true;
       showStatus(currentIndex);
       modal.classList.add('active');
 
-      // Swipe gesture support if enabled
+      // Vertical swipe gesture support if enabled
       const swipeEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
       if (swipeEnabled && hasMultiple) {
-        let startX = 0;
-        let currentX = 0;
         let startY = 0;
         let currentY = 0;
+        let startX = 0;
+        let currentX = 0;
+        const body = document.getElementById('status-modal-body');
         body.addEventListener('touchstart', (e) => {
-          startX = e.touches[0].clientX;
-          currentX = startX;
           startY = e.touches[0].clientY;
           currentY = startY;
+          startX = e.touches[0].clientX;
+          currentX = startX;
         });
         body.addEventListener('touchmove', (e) => {
-          currentX = e.touches[0].clientX;
           currentY = e.touches[0].clientY;
-          const deltaX = startX - currentX;
-          const deltaY = Math.abs(startY - currentY);
-          if (Math.abs(deltaX) > deltaY) {
-            body.style.transform = `translateX(${-deltaX}px)`;
+          currentX = e.touches[0].clientX;
+          const deltaY = startY - currentY;
+          const deltaX = Math.abs(startX - currentX);
+          if (Math.abs(deltaY) > deltaX) {
+            body.style.transform = `translateY(${-deltaY}px)`;
           }
         });
         body.addEventListener('touchend', (e) => {
           body.style.transform = '';
-          const deltaX = startX - currentX;
-          const deltaY = Math.abs(startY - currentY);
-          if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > deltaY) {
-            if (deltaX > 0) {
+          const deltaY = startY - currentY;
+          const deltaX = Math.abs(startX - currentX);
+          if (Math.abs(deltaY) > 50 && Math.abs(deltaY) > deltaX) {
+            if (deltaY > 0) {
               goNext();
             } else {
               goPrev();
@@ -2428,18 +2531,33 @@
     }
 
     function goPrev() {
-      showStatus(currentIndex - 1);
+      const allStatuses = window.currentAllStatuses;
+      const length = allStatuses.length;
+      currentIndex = (currentIndex - 1 + length) % length;
+      showStatus(currentIndex);
     }
 
     function goNext() {
-      showStatus(currentIndex + 1);
+      const allStatuses = window.currentAllStatuses;
+      const length = allStatuses.length;
+      currentIndex = (currentIndex + 1) % length;
+      showStatus(currentIndex);
+    }
+
+    function toggleSound() {
+      if (currentVideo) {
+        isMuted = !isMuted;
+        currentVideo.muted = isMuted;
+        const speakerBtn = document.getElementById('speaker-btn');
+        speakerBtn.innerHTML = isMuted ? 'volume_off' : 'volume_up';
+      }
     }
 
     async function updateLikeButton(statusId) {
       if (!currentUser) return;
       const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
       const snap = await get(likeRef);
-      const btn = document.getElementById('status-like-btn');
+      const btn = document.querySelector('.like-btn'); // Adjust if needed
       if (snap.exists()) {
         btn.classList.add('liked');
         btn.innerHTML = '♥';
@@ -2470,12 +2588,13 @@
 
     window.sendComment = async () => {
       if (!currentUser || !currentStatusId) return;
-      const input = document.getElementById('status-comment-input');
+      const input = document.getElementById('comments-input');
       const msg = input.value.trim();
       if (!msg) return;
       input.value = '';
       try {
-        const status = currentUserData.statuses[currentIndex];
+        const allStatuses = window.currentAllStatuses;
+        const status = allStatuses[currentIndex];
         const targetUid = status.userId;
         const chatId = [currentUser.uid, targetUid].sort().join('_');
         const encrypted = await encryptMessage(msg, chatId);
@@ -2535,32 +2654,34 @@
       }
     };
 
+    window.openCommentsSheet = () => {
+      document.getElementById('comments-sheet').classList.add('active');
+    };
+
+    window.closeCommentsSheet = () => {
+      document.getElementById('comments-sheet').classList.remove('active');
+    };
+
     function setStatusTimer(duration) {
       if (statusTimer) clearTimeout(statusTimer);
       statusTimer = setTimeout(() => {
-        if (currentIndex < currentUserData.statuses.length - 1) {
-          goNext();
-        } else {
-          closeStatusModal();
-        }
+        goNext();
       }, duration);
     }
 
     function showStatus(index) {
-      if (index < 0 || index >= currentUserData.statuses.length) {
-        closeStatusModal();
-        return;
-      }
+      const allStatuses = window.currentAllStatuses;
+      if (index < 0 || index >= allStatuses.length) return;
       if (statusTimer) clearTimeout(statusTimer);
       currentIndex = index;
-      const status = currentUserData.statuses[index];
+      const status = allStatuses[index];
       window.currentStatusId = status.statusId;
-      const user = currentUserData.user;
+      const user = status.user;
       let mediaHtml = '';
       let textHtml = '';
       if (status.mediaUrl) {
         if (status.type === 'video') {
-          mediaHtml = `<video src="${status.mediaUrl}" autoplay muted playsinline class="status-media"></video>`;
+          mediaHtml = `<video src="${status.mediaUrl}" autoplay muted playsinline class="status-media" id="current-video"></video>`;
         } else if (status.type === 'image') {
           mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-media" loading="lazy">`;
         }
@@ -2581,58 +2702,76 @@
       }
       const body = document.getElementById('status-modal-body');
       body.innerHTML = `
-        <div class="status-header">
-          <div class="status-header-left">
-            ${avatarHtml}
-            <span class="user-name">${nameHtml}</span>
-          </div>
-          <span class="status-time">${formatTimestamp(status.timestamp)}</span>
-        </div>
         ${textHtml}
         ${mediaHtml}
       `;
+      const headerLeft = document.querySelector('.status-header-left');
+      const statusTime = document.querySelector('.status-time');
+      headerLeft.innerHTML = `
+        ${avatarHtml}
+        <span class="user-name">${nameHtml}</span>
+      `;
+      statusTime.textContent = formatTimestamp(status.timestamp);
+      const currentVideoEl = document.getElementById('current-video');
+      if (currentVideoEl) {
+        currentVideo = currentVideoEl;
+        const speakerBtn = document.getElementById('speaker-btn');
+        speakerBtn.style.display = 'block';
+        speakerBtn.innerHTML = 'volume_off';
+        currentVideoEl.addEventListener('loadedmetadata', (e) => {
+          const vidDur = Math.min(e.target.duration * 1000, 60000);
+          setStatusTimer(vidDur);
+        }, { once: true });
+        currentVideoEl.play().catch(console.error);
+        setStatusTimer(60000);
+      } else {
+        currentVideo = null;
+        document.getElementById('speaker-btn').style.display = 'none';
+        setStatusTimer(60000);
+      }
       updateProgress();
       updateLikeButton(status.statusId);
-      let duration = 60000;
-      if (status.type === 'video') {
-        const video = body.querySelector('video');
-        if (video) {
-          video.addEventListener('loadedmetadata', (e) => {
-            const vidDur = Math.min(e.target.duration * 1000, 60000);
-            setStatusTimer(vidDur);
-          }, { once: true });
-          video.play().catch(console.error);
-          // Fallback to 60s if metadata fails
-          setStatusTimer(60000);
-        }
-      } else {
-        setStatusTimer(duration);
-      }
     }
 
     function updateProgress() {
-      const num = currentUserData.statuses.length;
+      const allStatuses = window.currentAllStatuses;
+      const num = allStatuses.length;
       let progressHtml = '';
       for (let i = 0; i < num; i++) {
         const active = i === currentIndex ? 'active' : '';
         progressHtml += `<div class="progress-item ${active}"></div>`;
       }
-      document.getElementById('progress-bar-container').innerHTML = progressHtml;
+      const progressContainer = document.getElementById('progress-bar-container');
+      progressContainer.innerHTML = progressHtml;
+      progressContainer.onclick = (e) => {
+        const rect = progressContainer.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const progress = x / rect.width;
+        const newIndex = Math.round(progress * (num - 1));
+        currentIndex = newIndex;
+        showStatus(newIndex);
+        if (statusTimer) clearTimeout(statusTimer);
+        const status = allStatuses[newIndex];
+        let duration = 60000;
+        if (status.type === 'video' && currentVideo) {
+          duration = Math.min(currentVideo.duration * 1000, 60000);
+        }
+        setStatusTimer(duration);
+      };
     }
 
     window.closeStatusModal = () => {
       document.getElementById('status-modal').classList.remove('active');
-      const input = document.getElementById('status-comment-input');
+      const input = document.getElementById('comments-input');
       if (input) input.value = '';
-      const inputBar = document.getElementById('status-input-bar');
-      if (inputBar) inputBar.style.display = 'none';
       if (statusTimer) {
         clearTimeout(statusTimer);
         statusTimer = null;
       }
-      currentUserData = null;
       currentIndex = 0;
       currentStatusId = null;
+      currentVideo = null;
+      isMuted = true;
     };
 
     function openUploadSheet() {
@@ -3171,19 +3310,6 @@
             </div>
 
             <details>
-              <summary><span class="material-icons" style="font-size: 20px;">palette</span> Appearance</summary>
-              <div class="settings-content" role="region" aria-label="Appearance">
-                <div class="setting-item">
-                  <label class="setting-label">Dark Mode</label>
-                  <label class="toggle-switch" aria-label="Toggle dark mode">
-                    <input type="checkbox" id="dark-mode-toggle" ${darkMode ? 'checked' : ''} onchange="toggleDarkMode()">
-                    <span class="slider"></span>
-                  </label>
-                </div>
-              </div>
-            </details>
-
-            <details>
               <summary><span class="material-icons" style="font-size: 20px;">notifications</span> Notifications</summary>
               <div class="settings-content" role="region" aria-label="Notifications">
                 <div class="setting-item">
@@ -3209,6 +3335,17 @@
                   </select>
                 </div>
                 <button class="save-btn" onclick="showAlert('Privacy settings updated!')">Save</button>
+              </div>
+            </details>
+
+            <details>
+              <summary><span class="material-icons" style="font-size: 20px;">accounts</span> Accounts</summary>
+              <div class="settings-content">
+                <div class="profile-setting-item">
+                  <span class="setting-label">Current Account: ${nameHtml}</span>
+                </div>
+                <button class="logout-btn" onclick="logout()">Switch Account</button>
+                <button class="start-chat-btn" onclick="window.location.href='signup.html'" style="margin-top: 8px;">Create New Account</button>
               </div>
             </details>
 
