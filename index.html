@@ -1403,7 +1403,7 @@
 
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-    import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+    import { getAuth, onAuthStateChanged, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
@@ -1447,6 +1447,8 @@
     let currentOtherUid = null;
     let isOutgoingCall = false;
     let callsListener = null;
+
+    const verifiedIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-left: 4px; vertical-align: middle;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" fill="#1DA1F2"/></svg>`;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1590,10 +1592,10 @@
       }
     }
 
-    async function loadTopStatuses(silent = false) {
+    async function loadStatuses(containerId, mode = 'carousel', silent = false) {
       if (!silent) showSpinner();
-      const statusesCarousel = document.getElementById('statuses-carousel');
-      statusesCarousel.innerHTML = '';
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
       if (currentUser) {
         const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
         const chatsSnapshot = await get(userChatsRef);
@@ -1643,27 +1645,58 @@
         const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
           .sort((a, b) => recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp);
         if (uids.length === 0) {
-          statusesCarousel.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
+          container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
         } else {
           for (let i = 0; i < uids.length; i++) {
             const uid = uids[i];
             const { user, statuses } = recentStatusesByUser[uid];
             const latestStatus = statuses[0];
             const statusItem = document.createElement('div');
-            statusItem.className = 'status-item fade-in';
+            statusItem.className = `${mode === 'carousel' ? 'status-item' : 'chat-item'} fade-in`;
             statusItem.style.animationDelay = `${i * 0.1}s`;
             statusItem.onclick = () => openUserStatuses(uid);
             const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const avatarHtml = user?.photoURL ? `<img src="${user.photoURL}" alt="${user?.displayName} avatar" class="status-avatar" loading="lazy">` : `<div class="status-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-            statusItem.innerHTML = `
-              ${avatarHtml}
-              <div class="status-name">${user?.displayName || 'User'}</div>
-            `;
-            statusesCarousel.appendChild(statusItem);
+            let avatarHtml;
+            if (user?.photoURL) {
+              avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="${mode === 'carousel' ? 'status-avatar' : 'chat-avatar'}" loading="lazy">`;
+            } else {
+              avatarHtml = `<div class="${mode === 'carousel' ? 'status-avatar' : 'chat-avatar'}" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+            }
+            let nameHtml = user?.displayName || 'User';
+            if (user?.verified) {
+              nameHtml += verifiedIcon;
+            }
+            if (mode === 'carousel') {
+              statusItem.innerHTML = `
+                ${avatarHtml}
+                <div class="status-name">${nameHtml}</div>
+              `;
+            } else {
+              const preview = latestStatus.type === 'text' 
+                ? (latestStatus.content.length > 30 ? latestStatus.content.substring(0, 30) + '...' : latestStatus.content) 
+                : (latestStatus.type === 'image' ? '📷 Photo' : latestStatus.type === 'video' ? '🎥 Video' : 'Status');
+              statusItem.innerHTML = `
+                ${avatarHtml}
+                <div class="chat-info">
+                  <div class="chat-name">${nameHtml}</div>
+                  <div class="chat-preview">${preview}</div>
+                </div>
+                <div class="chat-time">${formatTimestamp(latestStatus.timestamp || 0)}</div>
+              `;
+            }
+            container.appendChild(statusItem);
           }
         }
       }
       if (!silent) hideSpinner();
+    }
+
+    async function loadTopStatuses(silent = false) {
+      loadStatuses('statuses-carousel', 'carousel', silent);
+    }
+
+    async function loadFriendStatuses() {
+      loadStatuses('statuses-list', 'list');
     }
 
     async function updateChatsUI(snapshot) {
@@ -1708,7 +1741,16 @@
           prevUnread[otherUserId] = unread;
           totalUnread += unread;
           const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          let avatarHtml;
+          if (user.photoURL) {
+            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">`;
+          } else {
+            avatarHtml = `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          }
+          let nameHtml = user.displayName;
+          if (user.verified) {
+            nameHtml += verifiedIcon;
+          }
           const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
           const chatItem = document.createElement('div');
           chatItem.className = 'chat-item fade-in';
@@ -1720,7 +1762,7 @@
             ${avatarHtml}
             ${unreadBadge}
             <div class="chat-info">
-              <div class="chat-name">${user.displayName}</div>
+              <div class="chat-name">${nameHtml}</div>
               <div class="chat-preview">${messagePreview}</div>
             </div>
             <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
@@ -1793,7 +1835,7 @@
         await Promise.all(oldPromises);
         // Update if chats sub-tab active
         if (document.getElementById('sub-chats-content').classList.contains('active')) {
-          await loadTopStatuses(true); // silent update
+          await loadStatuses('statuses-carousel', 'carousel', true); // silent update
         }
       }, (error) => {
         console.error('Error listening to statuses:', error);
@@ -1877,7 +1919,16 @@
           for (let i = 0; i < users.length; i++) {
             const user = users[i];
             const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy">` : `<div class="user-avatar" style="font-size: 22px;">${initial}</div>`;
+            let avatarHtml;
+            if (user.photoURL) {
+              avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy">`;
+            } else {
+              avatarHtml = `<div class="user-avatar" style="font-size: 22px;">${initial}</div>`;
+            }
+            let nameHtml = user.displayName || 'User';
+            if (user.verified) {
+              nameHtml += verifiedIcon;
+            }
             const userCard = document.createElement('div');
             userCard.className = 'user-card fade-in';
             userCard.style.animationDelay = `${i * 0.1}s`;
@@ -1885,7 +1936,7 @@
             userCard.innerHTML = `
               ${avatarHtml}
               <div class="user-info">
-                <div class="user-name">${user.displayName || 'User'}</div>
+                <div class="user-name">${nameHtml}</div>
                 <div class="user-bio">${user.bio || 'No bio yet'}</div>
               </div>
               <button class="start-chat-btn" onclick="event.stopPropagation(); startChat('${user.uid}')">Start Chat</button>
@@ -2192,7 +2243,16 @@
           const user = userSnapshot.val();
           if (!user) continue;
           const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName}" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          let avatarHtml;
+          if (user.photoURL) {
+            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName}" class="chat-avatar" loading="lazy">`;
+          } else {
+            avatarHtml = `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          }
+          let nameHtml = user.displayName;
+          if (user.verified) {
+            nameHtml += verifiedIcon;
+          }
           const item = document.createElement('div');
           item.className = 'chat-item';
           item.onclick = () => {
@@ -2202,94 +2262,11 @@
           item.innerHTML = `
             ${avatarHtml}
             <div class="chat-info">
-              <div class="chat-name">${user.displayName}</div>
+              <div class="chat-name">${nameHtml}</div>
               <div class="chat-preview">Call ${user.displayName}</div>
             </div>
           `;
           list.appendChild(item);
-        }
-      }
-      hideSpinner();
-    }
-
-    async function loadFriendStatuses() {
-      showSpinner();
-      const statusesList = document.getElementById('statuses-list');
-      statusesList.innerHTML = '';
-      if (currentUser) {
-        const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
-        const chatsSnapshot = await get(userChatsRef);
-        let friendIds = [];
-        if (chatsSnapshot.exists()) {
-          friendIds = Object.keys(chatsSnapshot.val());
-        }
-        const statusesRef = ref(db, 'statuses');
-        const snapshot = await get(statusesRef);
-        const oldPromises = [];
-        if (snapshot.exists()) {
-          Object.entries(snapshot.val()).forEach(([id, s]) => {
-            if (s.timestamp < Date.now() - 24 * 60 * 60 * 1000) {
-              oldPromises.push(set(ref(db, `statuses/${id}`), null));
-            }
-          });
-        }
-        await Promise.all(oldPromises);
-        const newSnapshot = await get(statusesRef);
-        let recentStatusesByUser = {};
-        if (newSnapshot.exists()) {
-          Object.entries(newSnapshot.val()).forEach(([id, s]) => {
-            const status = { statusId: id, ...s };
-            if (friendIds.includes(status.userId) || status.userId === currentUser.uid) {
-              const uid = status.userId;
-              if (!recentStatusesByUser[uid]) {
-                recentStatusesByUser[uid] = { user: null, statuses: [] };
-              }
-              recentStatusesByUser[uid].statuses.push(status);
-            }
-          });
-          Object.keys(recentStatusesByUser).forEach(uid => {
-            recentStatusesByUser[uid].statuses.sort((a, b) => b.timestamp - a.timestamp);
-          });
-          const userIdsWithStatuses = Object.keys(recentStatusesByUser);
-          if (userIdsWithStatuses.length > 0) {
-            const userPromises = userIdsWithStatuses.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-            const userResults = await Promise.all(userPromises);
-            userResults.forEach(ur => {
-              if (recentStatusesByUser[ur.uid]) {
-                recentStatusesByUser[ur.uid].user = ur.user;
-              }
-            });
-          }
-        }
-        window.currentStatusesByUser = recentStatusesByUser;
-        const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
-          .sort((a, b) => recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp);
-        if (uids.length === 0) {
-          statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
-        } else {
-          for (let i = 0; i < uids.length; i++) {
-            const uid = uids[i];
-            const { user, statuses } = recentStatusesByUser[uid];
-            const latestStatus = statuses[0];
-            const preview = latestStatus.type === 'text' 
-              ? (latestStatus.content.length > 30 ? latestStatus.content.substring(0, 30) + '...' : latestStatus.content) 
-              : (latestStatus.type === 'image' ? 'Photo' : latestStatus.type === 'video' ? 'Video' : 'Status');
-            const statusItem = document.createElement('div');
-            statusItem.className = 'chat-item fade-in';
-            statusItem.style.animationDelay = `${i * 0.1}s`;
-            statusItem.onclick = () => openUserStatuses(uid);
-            const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-            const avatarHtml = user?.photoURL ? `<img src="${user.photoURL}" alt="${user?.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-            statusItem.innerHTML = `
-              ${avatarHtml}
-              <div class="chat-info">
-                <div class="chat-name">${user?.displayName || 'User'}</div>
-                <div class="chat-preview">${preview}</div>
-              </div>
-              <div class="chat-time">${formatTimestamp(latestStatus.timestamp || 0)}</div>
-            `;
-            statusesList.appendChild(statusItem);
-          }
         }
       }
       hideSpinner();
@@ -2498,13 +2475,22 @@
         textHtml = `<div class="status-text">${status.content}</div>`;
       }
       const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-      const avatarHtml = user?.photoURL ? `<img src="${user.photoURL}" alt="${user?.displayName}" class="status-header-avatar" loading="lazy">` : `<div class="status-header-avatar">${initial}</div>`;
+      let avatarHtml;
+      if (user?.photoURL) {
+        avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName}" class="status-header-avatar" loading="lazy">`;
+      } else {
+        avatarHtml = `<div class="status-header-avatar">${initial}</div>`;
+      }
+      let nameHtml = user?.displayName || 'User';
+      if (user?.verified) {
+        nameHtml += verifiedIcon;
+      }
       const body = document.getElementById('status-modal-body');
       body.innerHTML = `
         <div class="status-header">
           <div class="status-header-left">
             ${avatarHtml}
-            <span class="user-name">${user?.displayName || 'User'}</span>
+            <span class="user-name">${nameHtml}</span>
           </div>
           <span class="status-time">${formatTimestamp(status.timestamp)}</span>
         </div>
@@ -2733,7 +2719,12 @@
           .filter(user => user.uid !== currentUser.uid);
         users.forEach(user => {
           const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy" style="width: 40px; height: 40px;">` : `<div class="user-avatar" style="font-size: 18px; width: 40px; height: 40px;">${initial}</div>`;
+          let avatarHtml;
+          if (user.photoURL) {
+            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy" style="width: 40px; height: 40px;">`;
+          } else {
+            avatarHtml = `<div class="user-avatar" style="font-size: 18px; width: 40px; height: 40px;">${initial}</div>`;
+          }
           const div = document.createElement('div');
           div.style = 'display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; background: var(--glass);';
           div.innerHTML = `
@@ -2817,7 +2808,16 @@
           const user = userSnapshot.val();
           if (!user) continue;
           const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-          const avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="call-avatar" loading="lazy">` : `<div class="call-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          let avatarHtml;
+          if (user.photoURL) {
+            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="call-avatar" loading="lazy">`;
+          } else {
+            avatarHtml = `<div class="call-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          }
+          let nameHtml = user.displayName;
+          if (user.verified) {
+            nameHtml += verifiedIcon;
+          }
           const callTypeIcon = call.type === 'incoming' ? 'call_received' : 'call_made';
           const callTypeColor = call.type === 'incoming' ? '#00ff88' : '#ff00ff';
           const callItem = document.createElement('div');
@@ -2827,7 +2827,7 @@
           callItem.innerHTML = `
             ${avatarHtml}
             <div class="call-info">
-              <div class="call-name">${user.displayName}</div>
+              <div class="call-name">${nameHtml}</div>
               <div class="call-type">${call.type} • ${formatTimestamp(call.timestamp)}</div>
             </div>
             <span class="material-icons" style="color: ${callTypeColor}; font-size: 26px;">${callTypeIcon}</span>
@@ -3026,6 +3026,91 @@
       }
     };
 
+    window.handleProfilePhotoUpload = async (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const preview = document.getElementById('profile-pic-preview');
+        preview.src = URL.createObjectURL(file);
+        preview.style.display = 'block';
+        window.tempPhotoFile = file;
+      }
+    };
+
+    async function toggleVerified(verified) {
+      if (!currentUser) return;
+      try {
+        await set(ref(db, `users/${currentUser.uid}/verified`), verified);
+        currentUserData.verified = verified;
+        showAlert(verified ? 'Verified badge enabled!' : 'Verified badge disabled.');
+      } catch (error) {
+        console.error('Failed to update verified:', error);
+        showAlert('Failed to update verified status.');
+      }
+    }
+
+    window.saveProfile = async () => {
+      const nameInput = document.getElementById('profile-name-input');
+      const bioInput = document.getElementById('profile-bio-input');
+      const newName = nameInput.value.trim();
+      const newBio = bioInput.value.trim();
+      if (!newName) {
+        showAlert('Name is required.');
+        return;
+      }
+      try {
+        showSpinner();
+        let photoUrl = currentUserData.photoURL;
+        if (window.tempPhotoFile) {
+          const formData = new FormData();
+          formData.append('file', window.tempPhotoFile);
+          formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
+          await new Promise((resolve, reject) => {
+            xhr.onload = () => {
+              if (xhr.status === 200) {
+                const data = JSON.parse(xhr.responseText);
+                photoUrl = data.secure_url;
+                resolve();
+              } else {
+                reject(new Error('Upload failed'));
+              }
+            };
+            xhr.onerror = reject;
+            xhr.send(formData);
+          });
+          delete window.tempPhotoFile;
+        }
+        await update(ref(db, `users/${currentUser.uid}`), {
+          displayName: newName,
+          bio: newBio,
+          photoURL: photoUrl
+        });
+        // update auth
+        await updateProfile(currentUser, {
+          displayName: newName,
+          photoURL: photoUrl
+        });
+        currentUserData.displayName = newName;
+        currentUserData.bio = newBio;
+        currentUserData.photoURL = photoUrl;
+        // update profile pic in header
+        const profilePic = document.getElementById('profile-pic');
+        if (photoUrl) {
+          profilePic.innerHTML = `<img src="${photoUrl}" alt="Profile" loading="lazy">`;
+        } else {
+          const initial = newName[0].toUpperCase();
+          profilePic.innerHTML = initial;
+        }
+        showAlert('Profile updated!');
+      } catch (error) {
+        console.error('Error saving profile:', error);
+        showAlert('Failed to save profile.');
+      } finally {
+        hideSpinner();
+      }
+    };
+
     async function loadSettings() {
       showSpinner();
       const settingsContent = document.getElementById('settings-content');
@@ -3044,16 +3129,55 @@
         const swipeStatusEnabled = localStorage.getItem('swipeStatusEnabled') !== 'false';
         const initial = currentUserData.displayName ? currentUserData.displayName[0].toUpperCase() : 'U';
         const currentPhoto = currentUserData.photoURL || '';
-        const avatarHtml = currentPhoto ? `<img src="${currentPhoto}" alt="${currentUserData.displayName} avatar" class="chat-avatar" loading="lazy">` : `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+        let avatarHtml;
+        if (currentPhoto) {
+          avatarHtml = `<img src="${currentPhoto}" alt="${currentUserData.displayName} avatar" class="chat-avatar" loading="lazy">`;
+        } else {
+          avatarHtml = `<div class="chat-avatar" style="background: var(--gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+        }
+        let nameHtml = currentUserData.displayName || 'User';
+        if (currentUserData.verified) {
+          nameHtml += verifiedIcon;
+        }
         const settingsHtml = `
           <div class="settings-section">
-            <div class="chat-item" style="margin-bottom: 20px; cursor: pointer;" onclick="window.location.href='profile.html';">
+            <div class="chat-item" style="margin-bottom: 20px; cursor: default;">
               ${avatarHtml}
               <div class="chat-info">
-                <div class="chat-name">${currentUserData.displayName || 'User'}</div>
+                <div class="chat-name">${nameHtml}</div>
                 <div class="chat-preview">${currentUserData.email || 'No email'}</div>
               </div>
             </div>
+
+            <details>
+              <summary><span class="material-icons" style="font-size: 20px;">person</span> Edit Profile</summary>
+              <div class="settings-content">
+                <div class="profile-setting-item">
+                  <label class="setting-label">Profile Picture</label>
+                  <div class="file-input-wrapper">
+                    <input type="file" id="profile-photo-input" accept="image/*" style="display: none;" onchange="handleProfilePhotoUpload(event)">
+                    <label for="profile-photo-input" class="file-input-label">Upload Photo</label>
+                  </div>
+                  <img id="profile-pic-preview" class="profile-pic-preview" src="${currentPhoto}" alt="Preview" style="display: ${currentPhoto ? 'block' : 'none'};">
+                </div>
+                <div class="profile-setting-item">
+                  <label class="setting-label">Display Name</label>
+                  <input type="text" id="profile-name-input" class="input-field" value="${currentUserData.displayName || ''}">
+                </div>
+                <div class="profile-setting-item">
+                  <label class="setting-label">Bio</label>
+                  <textarea id="profile-bio-input" class="input-field" placeholder="Tell us about yourself..." rows="3">${currentUserData.bio || ''}</textarea>
+                </div>
+                <div class="profile-setting-item">
+                  <label class="setting-label">Verified Badge</label>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="verified-toggle" ${currentUserData.verified ? 'checked' : ''} onchange="toggleVerified(this.checked)">
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                <button id="save-profile-btn" class="save-btn" onclick="saveProfile()">Save Profile</button>
+              </div>
+            </details>
 
             <details>
               <summary><span class="material-icons" style="font-size: 20px;">palette</span> Appearance</summary>
@@ -3145,8 +3269,6 @@
                 </div>
               </div>
             </details>
-
-            <button class="logout-btn" onclick="showConfirm('Are you sure you want to log out?', (confirmed) => { if (confirmed) logout(); })">Log Out</button>
           </div>
         `;
         settingsContent.innerHTML = settingsHtml;
