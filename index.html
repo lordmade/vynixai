@@ -1464,6 +1464,8 @@
       margin-bottom: 12px;
       border: 1px solid var(--border);
       backdrop-filter: blur(25px);
+      width: 100%;
+      height: auto;
     }
     .status-post-header {
       display: flex;
@@ -1496,11 +1498,17 @@
     }
     .status-post-media {
       width: 100%;
+      height: auto;
+      max-height: none;
+      object-fit: contain;
       border-radius: 15px;
       margin-bottom: 12px;
-      max-height: 400px;
-      object-fit: cover;
       cursor: pointer;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .status-post-media[oncontextmenu="return false;"] {
+      -webkit-touch-callout: none;
     }
     .video-progress {
       height: 4px;
@@ -1771,7 +1779,7 @@
         <span>Video</span>
       </div>
       <input type="file" id="media-input" accept="image/*,video/*" style="display: none;" onchange="handleMediaUpload(event)">
-      <textarea id="text-input" placeholder="Enter your status text..." style="display: none;"></textarea>
+      <textarea id="caption-input" placeholder="Add a caption (optional)..." style="display: none; min-height: 100px;"></textarea>
       <div id="upload-progress" class="hidden" style="width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 12px 0;">
         <div id="progress-bar" style="height: 100%; background: var(--grok-gradient); width: 0%; transition: width 0.2s ease;"></div>
       </div>
@@ -1838,6 +1846,7 @@
     let isMuted = false;
     let isZoomed = false;
     let videoObserver = null;
+    let viewedStatuses = new Set(); // Local set for viewed statuses in list
 
     // WebRTC Globals
     const pcConfig = {
@@ -2127,31 +2136,33 @@
           if (sortedStatuses.length === 0) {
             container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
           } else {
+            // Load viewed statuses
+            viewedStatuses.clear();
             for (let i = 0; i < sortedStatuses.length; i++) {
               const status = sortedStatuses[i];
-              const user = status.user;
               const postItem = document.createElement('div');
               postItem.className = 'status-post fade-in';
               postItem.style.animationDelay = `${i * 0.1}s`;
               postItem.setAttribute('data-status-id', status.statusId);
-              const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
+              const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
               let avatarHtml;
-              if (user?.photoURL) {
-                avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+              if (status.user?.photoURL) {
+                avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
               } else {
                 avatarHtml = `<div class="status-avatar" style="background: var(--grok-gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
               }
-              let nameHtml = user?.displayName || 'User';
-              if (user?.verified) {
+              let nameHtml = status.user?.displayName || 'User';
+              if (status.user?.verified) {
                 nameHtml += verifiedIcon;
               }
               let mediaHtml = '';
               let progressHtml = '';
               if (status.mediaUrl) {
+                const oncontext = 'oncontextmenu="return false;"';
                 if (status.type === 'image') {
-                  mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy">`;
+                  mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}>`;
                 } else if (status.type === 'video') {
-                  mediaHtml = `<video src="${status.mediaUrl}" class="status-post-media" loading="lazy"></video>`;
+                  mediaHtml = `<video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>`;
                   progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
                 }
               }
@@ -2170,7 +2181,7 @@
                 deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
               }
               let downloadHtml = '';
-              if (status.user?.verified && status.mediaUrl) {
+              if (currentUserData?.verified && status.mediaUrl) {
                 downloadHtml = `<span onclick="downloadMedia('${status.mediaUrl}', '${status.type}')"><span class="material-icons">download</span></span>`;
               }
               postItem.innerHTML = `
@@ -2218,6 +2229,26 @@
                 }
                 if (videoObserver) {
                   videoObserver.observe(videoEl);
+                }
+              }
+              // Setup view observer
+              if (mode === 'list') {
+                if (!viewedStatuses.has(status.statusId)) {
+                  const viewObserver = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                      if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+                        // Count view
+                        const impRef = ref(db, `statuses/${status.statusId}/impressions`);
+                        get(impRef).then(snap => {
+                          const curr = snap.val() || 0;
+                          set(impRef, curr + 1);
+                        });
+                        viewedStatuses.add(status.statusId);
+                        viewObserver.unobserve(postItem);
+                      }
+                    });
+                  }, { threshold: 0.5 });
+                  viewObserver.observe(postItem);
                 }
               }
               container.appendChild(postItem);
@@ -2994,18 +3025,44 @@
     };
 
     window.shareStatus = async (statusId) => {
-      showAlert('Status shared!');
-      const shareRef = ref(db, `statuses/${statusId}/shares`);
-      const snap = await get(shareRef);
-      const curr = snap.val() || 0;
-      await set(shareRef, curr + 1);
-      // Update list if exists
-      const post = document.querySelector(`[data-status-id="${statusId}"]`);
-      if (post) {
-        const shareSpan = post.querySelector('.status-actions span:nth-child(3)');
-        if (shareSpan) {
-          shareSpan.innerHTML = `<span class="material-icons">share</span> ${curr + 1}`;
+      try {
+        // Create repost
+        const statusRef = ref(db, `statuses/${statusId}`);
+        const statusSnap = await get(statusRef);
+        const originalStatus = statusSnap.val();
+        if (originalStatus) {
+          const repostRef = ref(db, 'statuses');
+          const newRepostRef = push(repostRef);
+          await set(newRepostRef, {
+            userId: currentUser.uid,
+            userName: currentUserData.displayName,
+            type: 'repost',
+            originalId: statusId,
+            content: originalStatus.content,
+            mediaUrl: originalStatus.mediaUrl,
+            timestamp: Date.now(),
+            impressions: 0,
+            shares: 0
+          });
+          // Increment original shares
+          const shareRef = ref(db, `statuses/${statusId}/shares`);
+          const shareSnap = await get(shareRef);
+          const currShares = shareSnap.val() || 0;
+          await set(shareRef, currShares + 1);
+          // Update list if exists
+          const post = document.querySelector(`[data-status-id="${statusId}"]`);
+          if (post) {
+            const shareSpan = post.querySelector('.status-actions span:nth-child(3)');
+            if (shareSpan) {
+              shareSpan.innerHTML = `<span class="material-icons">share</span> ${currShares + 1}`;
+            }
+          }
+          showAlert('Status reposted!');
+          loadFriendStatuses(); // Reload to show repost
         }
+      } catch (error) {
+        console.error('Error reposting status:', error);
+        showAlert('Failed to repost status.');
       }
     };
 
@@ -3239,7 +3296,7 @@
     function openUploadSheet() {
       document.getElementById('upload-sheet').classList.add('active');
       currentUploadType = '';
-      document.getElementById('text-input').style.display = 'none';
+      document.getElementById('caption-input').style.display = 'none';
       document.getElementById('media-input').style.display = 'none';
       document.getElementById('upload-btn').style.display = 'none';
       document.getElementById('upload-progress').classList.add('hidden');
@@ -3251,16 +3308,15 @@
 
     window.selectUploadType = (type) => {
       currentUploadType = type;
-      const textInput = document.getElementById('text-input');
+      const captionInput = document.getElementById('caption-input');
       const mediaInput = document.getElementById('media-input');
       const uploadBtn = document.getElementById('upload-btn');
+      captionInput.style.display = 'block';
+      captionInput.value = '';
       if (type === 'text') {
-        textInput.style.display = 'block';
         mediaInput.style.display = 'none';
         mediaInput.value = '';
-        textInput.value = '';
       } else {
-        textInput.style.display = 'none';
         mediaInput.style.display = 'block';
         mediaInput.accept = type === 'image' ? 'image/*' : 'video/*';
         mediaInput.click();
@@ -3281,13 +3337,12 @@
       const progressDiv = document.getElementById('upload-progress');
       const progressBar = document.getElementById('progress-bar');
       let mediaUrl = null;
-      let content = null;
+      let content = document.getElementById('caption-input').value.trim();
       let type = currentUploadType;
       try {
         const statusRef = ref(db, 'statuses');
         const newStatusRef = push(statusRef);
         if (type === 'text') {
-          content = document.getElementById('text-input').value.trim();
           if (!content) {
             showAlert('Please provide content.');
             return;
@@ -3331,7 +3386,7 @@
         }
         await set(newStatusRef, {
           userId: currentUser.uid,
-          userName: currentUser.displayName,
+          userName: currentUserData.displayName,
           type,
           content,
           mediaUrl,
