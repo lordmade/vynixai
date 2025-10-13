@@ -1258,6 +1258,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      touch-action: pan-y pan-x;
     }
     .status-content {
       position: relative;
@@ -1616,6 +1617,95 @@
       font-size: 12px;
       color: var(--text-secondary);
     }
+    /* Full-width status cards on status tab */
+    #status-tab .chat-list {
+      padding: 0;
+      gap: 0;
+    }
+    #status-tab .status-post {
+      width: 100vw;
+      margin-left: calc(50% - 50vw);
+      margin-right: 0;
+      margin-bottom: 12px;
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+      padding-left: 16px;
+      padding-right: 16px;
+    }
+    #status-tab .status-post-media {
+      width: calc(100% + 32px);
+      margin-left: -16px;
+      margin-right: -16px;
+      border-radius: 0;
+    }
+    @media (min-width: 768px) {
+      #status-tab .status-post {
+        width: 100%;
+        margin-left: 0;
+        margin-right: 0;
+        border-radius: 20px;
+        border-left: 1px solid var(--border);
+        border-right: 1px solid var(--border);
+      }
+      #status-tab .status-post-media {
+        width: 100%;
+        margin-left: 0;
+        margin-right: 0;
+        border-radius: 15px;
+      }
+    }
+    /* Status post with multi-image indicator */
+    .status-post-multi-indicator {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+      z-index: 2;
+    }
+    .image-carousel {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 15px;
+    }
+    .carousel-slide {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .carousel-slide.active {
+      opacity: 1;
+    }
+    .carousel-dots {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 6px;
+      z-index: 3;
+    }
+    .dot-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.5);
+      transition: background 0.3s ease;
+    }
+    .dot-indicator.active {
+      background: white;
+    }
   </style>
 </head>
 <body>
@@ -1749,6 +1839,8 @@
       </div>
       <div class="status-reactions">
         <button class="reaction-btn like-btn" id="like-status-btn" onclick="likeStatus(currentStatusId)">♡</button>
+        <button class="reaction-btn" id="comment-status-btn"><span class="material-icons">chat_bubble_outline</span></button>
+        <button class="reaction-btn" id="share-status-btn"><span class="material-icons">share</span></button>
       </div>
     </div>
   </div>
@@ -1811,7 +1903,7 @@
         <span class="material-icons" style="font-size: 24px;">videocam</span>
         <span>Video</span>
       </div>
-      <input type="file" id="media-input" accept="image/*,video/*" style="display: none;" onchange="handleMediaUpload(event)">
+      <input type="file" id="media-input" accept="image/*" multiple style="display: none;" onchange="handleMediaUpload(event)">
       <textarea id="caption-input" placeholder="Add a caption (optional)..." style="display: none; min-height: 100px;"></textarea>
       <div id="upload-progress" class="hidden" style="width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 12px 0;">
         <div id="progress-bar" style="height: 100%; background: var(--grok-gradient); width: 0%; transition: width 0.2s ease;"></div>
@@ -1858,8 +1950,8 @@
     };
 
     const cloudinaryConfig = {
-      cloudName: 'dqkujefxj', // Replace with your Cloudinary cloud name
-      uploadPreset: 'banter_box' // Replace with your unsigned upload preset
+      cloudName: 'dqkujefxj',
+      uploadPreset: 'banter_box'
     };
 
     let app, auth, db, analytics, currentUser;
@@ -1874,12 +1966,15 @@
     let prevUnread = {};
     let chatsListener = null;
     let statusesListener = null;
-    let statusesLoaded = { carousel: false, list: false }; // Flag to prevent duplication
+    let statusesLoaded = { carousel: false, list: false };
     let currentVideo = null;
     let isMuted = false;
     let isZoomed = false;
     let videoObserver = null;
-    let viewedStatuses = new Set(); // Local set for viewed statuses in list
+    let viewedStatuses = new Set();
+    let currentSlide = 0;
+    let numSlides = 0;
+    let pendingMediaUrls = [];
 
     // WebRTC Globals
     const pcConfig = {
@@ -1922,7 +2017,7 @@
         const gainNode = audioCtx.createGain();
         oscillator.connect(gainNode);
         gainNode.connect(audioCtx.destination);
-        oscillator.frequency.value = 800; // A4 note
+        oscillator.frequency.value = 800;
         oscillator.type = 'sine';
         gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
         gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
@@ -2040,7 +2135,7 @@
     async function loadStatuses(containerId, mode = 'carousel', silent = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
-      if (statusesLoaded[loadKey] && silent) return; // Prevent listener duplication
+      if (statusesLoaded[loadKey] && silent) return;
       if (!silent) showSpinner();
       container.innerHTML = '';
       statusesLoaded[loadKey] = true;
@@ -2068,6 +2163,10 @@
         if (newSnapshot.exists()) {
           Object.entries(newSnapshot.val()).forEach(([id, s]) => {
             const status = { statusId: id, ...s };
+            // Backward compat for old single mediaUrl
+            if (status.mediaUrl && !status.mediaUrls) {
+              status.mediaUrls = [status.mediaUrl];
+            }
             const shouldInclude = mode === 'carousel' ? (friendIds.includes(status.userId) || status.userId === currentUser.uid) : true;
             if (shouldInclude) {
               const uid = status.userId;
@@ -2093,18 +2192,15 @@
           }
         }
         window.currentStatusesByUser = recentStatusesByUser;
-        // Attach users to allStatuses
         allStatuses.forEach(status => {
           status.user = recentStatusesByUser[status.userId]?.user;
         });
-        // Sort for list mode
         let sortedStatuses = allStatuses;
         if (mode === 'list') {
           const ownerStatuses = allStatuses.filter(s => s.userId === currentUser.uid).sort((a, b) => b.timestamp - a.timestamp);
           const otherStatuses = allStatuses.filter(s => s.userId !== currentUser.uid).sort((a, b) => b.timestamp - a.timestamp);
           const recentOthers = otherStatuses.slice(0, 3);
           let restOthers = otherStatuses.slice(3);
-          // Shuffle rest
           for (let i = restOthers.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [restOthers[i], restOthers[j]] = [restOthers[j], restOthers[i]];
@@ -2113,7 +2209,6 @@
         }
         window.currentAllStatuses = sortedStatuses;
 
-        // For carousel, sort uids with owner first
         const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
           .sort((a, b) => {
             if (a === currentUser.uid) return -1;
@@ -2130,38 +2225,24 @@
               const { user, statuses } = recentStatusesByUser[uid];
               const latestStatus = statuses[0];
               const statusItem = document.createElement('div');
-              statusItem.className = `${mode === 'carousel' ? 'status-item' : 'chat-item'} fade-in`;
+              statusItem.className = 'status-item fade-in';
               statusItem.style.animationDelay = `${i * 0.1}s`;
-              statusItem.onclick = () => openUserStatuses(uid);
+              statusItem.onclick = () => openSingleStatus(latestStatus.statusId);
               const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
               let avatarHtml;
               if (user?.photoURL) {
-                avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="${mode === 'carousel' ? 'status-avatar' : 'chat-avatar'}" loading="lazy">`;
+                avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
               } else {
-                avatarHtml = `<div class="${mode === 'carousel' ? 'status-avatar' : 'chat-avatar'}" style="background: var(--grok-gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                avatarHtml = `<div class="status-avatar" style="background: var(--grok-gradient); color: #000; font-size: 22px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
               }
               let nameHtml = user?.displayName || 'User';
               if (user?.verified) {
                 nameHtml += verifiedIcon;
               }
-              if (mode === 'carousel') {
-                statusItem.innerHTML = `
-                  ${avatarHtml}
-                  <div class="status-name">${nameHtml}</div>
-                `;
-              } else {
-                const preview = latestStatus.type === 'text' 
-                  ? (latestStatus.content.length > 30 ? latestStatus.content.substring(0, 30) + '...' : latestStatus.content) 
-                  : (latestStatus.type === 'image' ? 'Photo' : latestStatus.type === 'video' ? 'Video' : 'Status');
-                statusItem.innerHTML = `
-                  ${avatarHtml}
-                  <div class="chat-info">
-                    <div class="chat-name">${nameHtml}</div>
-                    <div class="chat-preview">${preview}</div>
-                  </div>
-                  <div class="chat-time">${formatTimestamp(latestStatus.timestamp || 0)}</div>
-                `;
-              }
+              statusItem.innerHTML = `
+                ${avatarHtml}
+                <div class="status-name">${nameHtml}</div>
+              `;
               container.appendChild(statusItem);
             }
           }
@@ -2169,7 +2250,6 @@
           if (sortedStatuses.length === 0) {
             container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No statuses yet.</p>';
           } else {
-            // Load viewed statuses
             viewedStatuses.clear();
             for (let i = 0; i < sortedStatuses.length; i++) {
               const status = sortedStatuses[i];
@@ -2177,6 +2257,12 @@
               postItem.className = 'status-post fade-in';
               postItem.style.animationDelay = `${i * 0.1}s`;
               postItem.setAttribute('data-status-id', status.statusId);
+              postItem.onclick = (e) => {
+                if (!e.target.closest('.status-actions')) {
+                  openSingleStatus(status.statusId);
+                }
+              };
+              postItem.style.cursor = 'pointer';
               const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
               let avatarHtml;
               if (status.user?.photoURL) {
@@ -2189,14 +2275,26 @@
                 nameHtml += verifiedIcon;
               }
               let mediaHtml = '';
-              let progressHtml = '';
-              if (status.mediaUrl) {
+              let indicatorHtml = '';
+              let carouselClickHandler = '';
+              let mediaWrapperStyle = '';
+              if (status.mediaUrls && status.mediaUrls.length > 0) {
                 const oncontext = 'oncontextmenu="return false;"';
-                if (status.type === 'image') {
-                  mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}>`;
+                if (status.type === 'images') {
+                  mediaHtml = `
+                    <div class="status-post-media-container" style="position: relative;">
+                      <img src="${status.mediaUrls[0]}" alt="Status image 1/${status.mediaUrls.length}" class="status-post-media" loading="lazy" ${oncontext}>
+                      <div class="status-post-multi-indicator">1/${status.mediaUrls.length}</div>
+                    </div>
+                  `;
+                  carouselClickHandler = `onclick="openSingleStatus('${status.statusId}')"`;
+                  mediaWrapperStyle = 'position: relative;';
+                } else if (status.type === 'image') {
+                  mediaHtml = `<img src="${status.mediaUrls[0]}" alt="Status image" class="status-post-media" loading="lazy" ${oncontext}>`;
                 } else if (status.type === 'video') {
-                  mediaHtml = `<div class="video-container"><video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video><div class="video-overlay"><button class="play-again-btn" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.play();"><span class="material-icons">replay</span>Play Again</button></div></div>`;
-                  progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
+                  mediaHtml = `<div class="video-container"><video src="${status.mediaUrls[0]}" class="status-post-media" loading="lazy" ${oncontext}></video><div class="video-overlay"><button class="play-again-btn" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.play();"><span class="material-icons">replay</span>Play Again</button></div></div>`;
+                  const progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
+                  mediaHtml += progressHtml;
                 }
               }
               const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
@@ -2210,11 +2308,11 @@
               const likeIcon = isLiked ? 'favorite' : 'favorite_border';
               let deleteHtml = '';
               if (status.userId === currentUser.uid) {
-                deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
+                deleteHtml = `<span onclick="event.stopPropagation(); deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
               }
               let downloadHtml = '';
-              if (currentUserData?.verified && status.mediaUrl) {
-                downloadHtml = `<span onclick="downloadMedia('${status.mediaUrl}', '${status.type}')"><span class="material-icons">download</span></span>`;
+              if (currentUserData?.verified && status.mediaUrls && status.mediaUrls.length > 0) {
+                downloadHtml = `<span onclick="event.stopPropagation(); downloadMedia('${status.mediaUrls[0]}', '${status.type}')"><span class="material-icons">download</span></span>`;
               }
               postItem.innerHTML = `
                 <div class="status-post-header">
@@ -2225,17 +2323,15 @@
                   </div>
                 </div>
                 <div class="status-post-content">${status.content || ''}</div>
-                ${mediaHtml}
-                ${progressHtml}
+                <div class="status-post-media-wrapper" style="${mediaWrapperStyle}" ${carouselClickHandler}>${mediaHtml}</div>
                 <div class="status-actions">
-                  <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
-                  <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
-                  <span onclick="shareStatus('${status.statusId}')"><span class="material-icons">share</span> ${shares}</span>
+                  <span onclick="event.stopPropagation(); likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+                  <span onclick="event.stopPropagation(); openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+                  <span onclick="event.stopPropagation(); shareStatus('${status.statusId}')"><span class="material-icons">share</span> ${shares}</span>
                   ${downloadHtml}
                   ${deleteHtml}
                 </div>
               `;
-              // Setup video if present
               const videoEl = postItem.querySelector('video');
               if (videoEl) {
                 videoEl.playbackRate = 1;
@@ -2260,19 +2356,23 @@
                         fill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
                       }
                     });
+                    videoEl.addEventListener('seeked', () => {
+                      const fill = progressEl.querySelector('.progress-fill');
+                      if (fill && videoEl.duration) {
+                        fill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+                      }
+                    });
                   });
                 }
                 if (videoObserver) {
                   videoObserver.observe(videoEl);
                 }
               }
-              // Setup view observer
               if (mode === 'list') {
                 if (!viewedStatuses.has(status.statusId)) {
                   const viewObserver = new IntersectionObserver((entries) => {
                     entries.forEach(entry => {
                       if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
-                        // Count view
                         const impRef = ref(db, `statuses/${status.statusId}/impressions`);
                         get(impRef).then(snap => {
                           const curr = snap.val() || 0;
@@ -2305,11 +2405,9 @@
           }
         });
       }, { threshold: 0.5 });
-      // Pause all videos on window blur
       window.addEventListener('blur', () => {
         document.querySelectorAll('video').forEach(v => v.pause());
       });
-      // On focus, observer will handle if in view
       window.addEventListener('focus', () => {
         // Observer handles
       });
@@ -2391,7 +2489,6 @@
             </div>
             <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
           `;
-          // Swipe to delete if enabled
           const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
           if (swipeDeleteEnabled) {
             let startX = 0;
@@ -2447,7 +2544,6 @@
     function setupStatusesListener() {
       const statusesRef = ref(db, 'statuses');
       statusesListener = onValue(statusesRef, async (snapshot) => {
-        // Clean old statuses silently
         const oldPromises = [];
         if (snapshot.exists()) {
           Object.entries(snapshot.val()).forEach(([id, s]) => {
@@ -2457,9 +2553,8 @@
           });
         }
         await Promise.all(oldPromises);
-        // Update if chats sub-tab active
         if (document.getElementById('sub-chats-content').classList.contains('active')) {
-          await loadStatuses('statuses-carousel', 'carousel', true); // silent update
+          await loadStatuses('statuses-carousel', 'carousel', true);
         }
       }, (error) => {
         console.error('Error listening to statuses:', error);
@@ -2469,13 +2564,10 @@
     async function removeChat(chatId, otherUid) {
       try {
         showSpinner();
-        // Delete from current user
         const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
         await set(currentChatsRef, null);
-        // Delete from other user
         const targetChatsRef = ref(db, `users/${otherUid}/chats/${currentUser.uid}`);
         await set(targetChatsRef, null);
-        // Delete messages
         const messagesRef = ref(db, `chats/${chatId}`);
         await set(messagesRef, null);
         showAlert('Friend removed.');
@@ -2659,7 +2751,6 @@
         timestamp: Date.now()
       });
 
-      // Listen for answer
       onValue(ref(db, `calls/${currentCallId}/answer`), async (snap) => {
         const answer = snap.val();
         if (answer && !pc.currentRemoteDescription) {
@@ -2667,7 +2758,6 @@
         }
       });
 
-      // Listen for answer candidates
       onValue(ref(db, `calls/${currentCallId}/answerCandidates`), (snap) => {
         const candidates = snap.val();
         if (candidates) {
@@ -2677,7 +2767,6 @@
         }
       });
 
-      // Listen for status changes
       onValue(ref(db, `calls/${currentCallId}`), (snap) => {
         const call = snap.val();
         if (call && call.status === 'rejected') {
@@ -2728,7 +2817,6 @@
       await set(ref(db, `calls/${currentCallId}/answer`), { type: answer.type, sdp: answer.sdp });
       await update(ref(db, `calls/${currentCallId}`), { status: 'answered' });
 
-      // Listen for offer candidates
       onValue(ref(db, `calls/${currentCallId}/offerCandidates`), (snap) => {
         const candidates = snap.val();
         if (candidates) {
@@ -2738,7 +2826,6 @@
         }
       });
 
-      // Listen for status changes
       onValue(ref(db, `calls/${currentCallId}`), (snap) => {
         const call = snap.val();
         if (call && call.status === 'ended') {
@@ -2788,14 +2875,12 @@
 
       if (currentCallId) {
         await update(ref(db, `calls/${currentCallId}`), { status: 'ended' });
-        // Log the call
         const callType = isOutgoingCall ? 'outgoing' : 'incoming';
         await push(ref(db, `users/${currentUser.uid}/calls`), {
           otherUserId: currentOtherUid,
           type: callType,
           timestamp: Date.now()
         });
-        // Log for other user
         const otherCallType = isOutgoingCall ? 'incoming' : 'outgoing';
         await push(ref(db, `users/${currentOtherUid}/calls`), {
           otherUserId: currentUser.uid,
@@ -2811,7 +2896,6 @@
     }
 
     function showIncomingCallModal(callId, callerUid) {
-      // Get caller name
       get(ref(db, `users/${callerUid}`)).then(snap => {
         const user = snap.val();
         let name = user.displayName || 'User';
@@ -2900,15 +2984,58 @@
       hideSpinner();
     }
 
-    function openUserStatuses(uid) {
-      const allStatuses = window.currentAllStatuses;
-      if (!allStatuses || allStatuses.length === 0) return;
-      const firstIndex = allStatuses.findIndex(s => s.userId === uid);
-      if (firstIndex !== -1) {
-        currentIndex = firstIndex;
-        showAllStatuses();
+    window.openSingleStatus = async (statusId) => {
+      const statusRef = ref(db, `statuses/${statusId}`);
+      const statusSnap = await get(statusRef);
+      if (!statusSnap.exists()) return;
+      const status = { statusId, ...statusSnap.val() };
+      if (status.mediaUrl && !status.mediaUrls) {
+        status.mediaUrls = [status.mediaUrl];
       }
+      const userSnap = await get(ref(db, `users/${status.userId}`));
+      status.user = userSnap.val();
+      window.currentAllStatuses = [status];
+      currentIndex = 0;
+      currentStatusId = statusId;
+      showAllStatuses();
+      await updateModalReactions(statusId, status);
+    };
+
+    async function updateModalReactions(statusId, status) {
+      await updateLikeButton(statusId);
+      const commentsSnap = await get(ref(db, `statuses/${statusId}/comments`));
+      const commentsCount = Object.keys(commentsSnap.val() || {}).length;
+      const commentBtn = document.getElementById('comment-status-btn');
+      if (commentBtn) {
+        commentBtn.innerHTML = `<span class="material-icons">chat_bubble_outline</span> ${commentsCount}`;
+        commentBtn.onclick = () => openComments(statusId);
+      }
+      if (!status.shares) {
+        const sharesSnap = await get(ref(db, `statuses/${statusId}/shares`));
+        status.shares = sharesSnap.val() || 0;
+      }
+      const shareBtn = document.getElementById('share-status-btn');
+      if (shareBtn) {
+        shareBtn.innerHTML = `<span class="material-icons">share</span> ${status.shares}`;
+        shareBtn.onclick = () => shareStatus(statusId);
+      }
+      const reactionsDiv = document.querySelector('.status-reactions');
+      let extraBtns = '';
+      if (currentUser.uid === status.userId) {
+        extraBtns += `<button class="reaction-btn" onclick="deleteStatus('${statusId}')"><span class="material-icons">delete</span></button>`;
+      }
+      if (currentUserData?.verified && status.mediaUrls && status.mediaUrls.length > 0) {
+        extraBtns += `<button class="reaction-btn" onclick="downloadMedia('${status.mediaUrls[0]}', '${status.type}')"><span class="material-icons">download</span></button>`;
+      }
+      reactionsDiv.insertAdjacentHTML('beforeend', extraBtns);
     }
+
+    window.openUserStatuses = (uid) => {
+      const recentStatusesByUser = window.currentStatusesByUser;
+      if (!recentStatusesByUser || !recentStatusesByUser[uid] || recentStatusesByUser[uid].statuses.length === 0) return;
+      const latestStatus = recentStatusesByUser[uid].statuses[0];
+      openSingleStatus(latestStatus.statusId);
+    };
 
     function showAllStatuses() {
       const allStatuses = window.currentAllStatuses;
@@ -2930,7 +3057,6 @@
       showStatus(currentIndex);
       modal.classList.add('active');
 
-      // Horizontal swipe gesture support
       const body = document.getElementById('status-modal-body');
       let startX = 0;
       let currentX = 0;
@@ -2964,7 +3090,6 @@
         }
       });
 
-      // Tap to zoom and double-tap like
       let tapCount = 0;
       let tapTimer = null;
       const mediaEl = document.querySelector('.status-media');
@@ -2974,14 +3099,12 @@
           if (tapTimer) clearTimeout(tapTimer);
           tapTimer = setTimeout(() => {
             if (tapCount === 1) {
-              // Single tap: toggle zoom
               isZoomed = !isZoomed;
               mediaEl.classList.toggle('zoomed', isZoomed);
             }
             tapCount = 0;
           }, 300);
           if (tapCount === 2) {
-            // Double tap: like
             likeStatus(currentStatusId);
             clearTimeout(tapTimer);
             tapCount = 0;
@@ -3042,9 +3165,7 @@
         const newLikes = Object.keys(newLikesSnap.val() || {}).length;
         const newIsLiked = !liked;
         const newIcon = newIsLiked ? 'favorite' : 'favorite_border';
-        // Update modal button
         updateLikeButton(statusId);
-        // Update list post if exists
         const post = document.querySelector(`[data-status-id="${statusId}"]`);
         if (post) {
           const likeSpan = post.querySelector('.status-actions span:first-child');
@@ -3061,7 +3182,6 @@
 
     window.shareStatus = async (statusId) => {
       try {
-        // Create repost
         const statusRef = ref(db, `statuses/${statusId}`);
         const statusSnap = await get(statusRef);
         const originalStatus = statusSnap.val();
@@ -3074,17 +3194,15 @@
             type: 'repost',
             originalId: statusId,
             content: originalStatus.content,
-            mediaUrl: originalStatus.mediaUrl,
+            mediaUrls: originalStatus.mediaUrls || [originalStatus.mediaUrl],
             timestamp: Date.now(),
             impressions: 0,
             shares: 0
           });
-          // Increment original shares
           const shareRef = ref(db, `statuses/${statusId}/shares`);
           const shareSnap = await get(shareRef);
           const currShares = shareSnap.val() || 0;
           await set(shareRef, currShares + 1);
-          // Update list if exists
           const post = document.querySelector(`[data-status-id="${statusId}"]`);
           if (post) {
             const shareSpan = post.querySelector('.status-actions span:nth-child(3)');
@@ -3093,7 +3211,7 @@
             }
           }
           showAlert('Status reposted!');
-          loadFriendStatuses(); // Reload to show repost
+          loadFriendStatuses();
         }
       } catch (error) {
         console.error('Error reposting status:', error);
@@ -3172,7 +3290,6 @@
       input.value = '';
       const newCommentsSnap = await get(commentsRef);
       const newComments = Object.keys(newCommentsSnap.val() || {}).length;
-      // Update list post if exists
       const post = document.querySelector(`[data-status-id="${currentStatusId}"]`);
       if (post) {
         const commentSpan = post.querySelector('.status-actions span:nth-child(2)');
@@ -3197,7 +3314,6 @@
       currentIndex = index;
       const status = allStatuses[index];
       window.currentStatusId = status.statusId;
-      // Increment impressions
       const impRef = ref(db, `statuses/${status.statusId}/impressions`);
       const impSnap = await get(impRef);
       const currImp = impSnap.val() || 0;
@@ -3205,11 +3321,23 @@
       const user = status.user;
       let mediaHtml = '';
       let textHtml = '';
-      if (status.mediaUrl) {
-        if (status.type === 'video') {
-          mediaHtml = `<video src="${status.mediaUrl}" autoplay muted="false" playsinline class="status-media" id="current-video" webkit-playsinline></video>`;
+      if (status.mediaUrls && status.mediaUrls.length > 0) {
+        if (status.type === 'images') {
+          mediaHtml = `
+            <div class="image-carousel" id="status-carousel">
+              ${status.mediaUrls.map((url, idx) => `
+                <img src="${url}" alt="Status image ${idx + 1}" class="carousel-slide status-media" style="${idx === 0 ? 'opacity:1;' : ''}" loading="lazy">
+              `).join('')}
+              <div class="carousel-dots">
+                ${status.mediaUrls.map((_, idx) => `<div class="dot-indicator ${idx === 0 ? 'active' : ''}" onclick="goToSlide(${idx})"></div>`).join('')}
+              </div>
+            </div>
+          `;
+          setupCarouselSwipe(status.mediaUrls.length);
         } else if (status.type === 'image') {
-          mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-media" loading="lazy">`;
+          mediaHtml = `<img src="${status.mediaUrls[0]}" alt="Status image" class="status-media" loading="lazy">`;
+        } else if (status.type === 'video') {
+          mediaHtml = `<video src="${status.mediaUrls[0]}" autoplay muted="false" playsinline class="status-media" id="current-video" webkit-playsinline></video>`;
         }
       }
       if (status.type === 'text') {
@@ -3261,12 +3389,11 @@
       }
       updateProgress();
       updateLikeButton(status.statusId);
-      // Reset zoom
+      updateModalReactions(status.statusId, status);
       const mediaEl = document.querySelector('.status-media');
       if (mediaEl) {
         mediaEl.classList.remove('zoomed');
         isZoomed = false;
-        // Re-attach tap events
         let tapCount = 0;
         let tapTimer = null;
         mediaEl.onclick = (e) => {
@@ -3326,6 +3453,36 @@
       currentVideo = null;
       isMuted = false;
       isZoomed = false;
+      currentSlide = 0;
+      numSlides = 0;
+    };
+
+    function setupCarouselSwipe(num) {
+      numSlides = num;
+      currentSlide = 0;
+      const body = document.getElementById('status-modal-body');
+      let startX = 0;
+      body.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; }, { passive: true });
+      body.addEventListener('touchend', (e) => {
+        const endX = e.changedTouches[0].clientX;
+        const deltaX = startX - endX;
+        if (Math.abs(deltaX) > 50) {
+          if (deltaX > 0 && currentSlide < numSlides - 1) goToSlide(currentSlide + 1);
+          else if (deltaX < 0 && currentSlide > 0) goToSlide(currentSlide - 1);
+        }
+      }, { passive: true });
+    }
+
+    window.goToSlide = (idx) => {
+      currentSlide = idx;
+      document.querySelectorAll('#status-carousel .carousel-slide').forEach((slide, i) => {
+        slide.style.opacity = i === idx ? '1' : '0';
+      });
+      document.querySelectorAll('.dot-indicator').forEach((dot, i) => {
+        dot.classList.toggle('active', i === idx);
+      });
+      if (statusTimer) clearTimeout(statusTimer);
+      setStatusTimer(60000);
     };
 
     function openUploadSheet() {
@@ -3335,6 +3492,7 @@
       document.getElementById('media-input').style.display = 'none';
       document.getElementById('upload-btn').style.display = 'none';
       document.getElementById('upload-progress').classList.add('hidden');
+      pendingMediaUrls = [];
     }
 
     window.closeUploadSheet = () => {
@@ -3342,7 +3500,7 @@
     };
 
     window.selectUploadType = (type) => {
-      currentUploadType = type;
+      currentUploadType = type === 'image' ? 'images' : type;
       const captionInput = document.getElementById('caption-input');
       const mediaInput = document.getElementById('media-input');
       const uploadBtn = document.getElementById('upload-btn');
@@ -3354,16 +3512,43 @@
       } else {
         mediaInput.style.display = 'block';
         mediaInput.accept = type === 'image' ? 'image/*' : 'video/*';
+        if (type === 'image') mediaInput.setAttribute('multiple', '');
+        else mediaInput.removeAttribute('multiple');
         mediaInput.click();
       }
       uploadBtn.style.display = 'block';
       uploadBtn.textContent = `Upload ${type.charAt(0).toUpperCase() + type.slice(1)}`;
     };
 
-    window.handleMediaUpload = (event) => {
-      const file = event.target.files[0];
-      if (file) {
-        showAlert(`Selected ${file.name}`);
+    window.handleMediaUpload = async (event) => {
+      const files = Array.from(event.target.files);
+      if (files.length === 0) return;
+      if (files.length > 10) {
+        showAlert('Max 10 images.');
+        return;
+      }
+      showSpinner();
+      const mediaUrls = [];
+      for (let file of files) {
+        try {
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+          const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`, {
+            method: 'POST',
+            body: formData
+          });
+          const data = await response.json();
+          if (data.secure_url) mediaUrls.push(data.secure_url);
+        } catch (error) {
+          console.error('Upload failed for', file.name, error);
+          showAlert(`Failed to upload ${file.name}`);
+        }
+      }
+      hideSpinner();
+      if (mediaUrls.length > 0) {
+        pendingMediaUrls = mediaUrls;
+        showAlert(`${mediaUrls.length} image(s) selected`);
       }
     };
 
@@ -3371,9 +3556,9 @@
       showSpinner();
       const progressDiv = document.getElementById('upload-progress');
       const progressBar = document.getElementById('progress-bar');
-      let mediaUrl = null;
       let content = document.getElementById('caption-input').value.trim();
       let type = currentUploadType;
+      let mediaUrls = [];
       try {
         const statusRef = ref(db, 'statuses');
         const newStatusRef = push(statusRef);
@@ -3382,31 +3567,44 @@
             showAlert('Please provide content.');
             return;
           }
-        } else {
+          type = 'text';
+        } else if (type === 'images') {
+          mediaUrls = pendingMediaUrls;
+          if (mediaUrls.length === 0) {
+            showAlert('Please select images.');
+            return;
+          }
+          type = mediaUrls.length > 1 ? 'images' : 'image';
+          progressDiv.classList.remove('hidden');
+          for (let i = 0; i <= mediaUrls.length; i++) {
+            progressBar.style.width = `${(i / mediaUrls.length) * 100}%`;
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        } else if (type === 'video') {
           const file = document.getElementById('media-input').files[0];
           if (!file) {
-            showAlert('Please select a file.');
+            showAlert('Please select a video.');
             return;
           }
           progressDiv.classList.remove('hidden');
           progressBar.style.width = '0%';
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              const percent = Math.round((e.loaded / e.total) * 100);
+              progressBar.style.width = percent + '%';
+            }
+          });
           await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('upload_preset', cloudinaryConfig.uploadPreset);
-            xhr.upload.addEventListener('progress', (e) => {
-              if (e.lengthComputable) {
-                const percent = Math.round((e.loaded / e.total) * 100);
-                progressBar.style.width = percent + '%';
-              }
-            });
             xhr.onload = () => {
               if (xhr.status === 200) {
                 const data = JSON.parse(xhr.responseText);
-                mediaUrl = data.secure_url;
-                type = file.type.startsWith('image') ? 'image' : 'video';
+                mediaUrls = [data.secure_url];
+                type = 'video';
                 resolve();
               } else {
                 reject(new Error(`Upload failed: ${xhr.statusText}`));
@@ -3415,23 +3613,21 @@
             xhr.onerror = () => reject(new Error('Upload error'));
             xhr.send(formData);
           });
-          if (!mediaUrl) {
-            throw new Error('Failed to get media URL.');
-          }
         }
         await set(newStatusRef, {
           userId: currentUser.uid,
           userName: currentUserData.displayName,
           type,
           content,
-          mediaUrl,
+          mediaUrls,
           timestamp: Date.now(),
           impressions: 0,
           shares: 0
         });
+        pendingMediaUrls = [];
         closeUploadSheet();
         loadFriendStatuses();
-        showAlert('Status uploaded!');
+        showAlert(`${mediaUrls.length || 1} item(s) uploaded!`);
       } catch (error) {
         console.error('Upload failed:', error);
         showAlert(error.message || 'Failed to upload status.');
@@ -3656,7 +3852,6 @@
       if (!currentUser) return;
       const isDark = !document.body.classList.contains('dark');
       document.body.classList.toggle('dark', isDark);
-      // Set CSS variables based on theme
       const root = document.documentElement;
       if (isDark) {
         root.style.setProperty('--bg', '#0f0f23');
@@ -3696,10 +3891,6 @@
     function toggleSwipeDelete(enabled) {
       localStorage.setItem('swipeDeleteEnabled', enabled);
       showAlert(enabled ? 'Swipe to delete enabled' : 'Swipe to delete disabled');
-      // Reload chats to apply gesture changes
-      if (document.getElementById('chats-tab').classList.contains('active')) {
-        // Listener will handle
-      }
     }
 
     function toggleSwipeStatus(enabled) {
@@ -3739,7 +3930,6 @@
         }
       } catch (error) {
         console.error('Failed to load user preferences from Firebase:', error);
-        // Fallback to localStorage
         const isDark = localStorage.getItem('darkMode') === 'true';
         if (isDark) {
           document.body.classList.add('dark');
@@ -3749,7 +3939,6 @@
 
     async function updatePermissionStates() {
       if (!('permissions' in navigator)) {
-        // Fallback if Permissions API not supported
         const states = ['notif-state', 'mic-state', 'cam-state'];
         states.forEach(id => {
           const el = document.getElementById(id);
@@ -3759,7 +3948,6 @@
       }
 
       try {
-        // Notifications
         const notifPerm = await navigator.permissions.query({ name: 'notifications' });
         const notifStateEl = document.getElementById('notif-state');
         const notifBtn = document.getElementById('notif-request-btn');
@@ -3773,7 +3961,6 @@
           }
         }
 
-        // Microphone
         const micPerm = await navigator.permissions.query({ name: 'microphone' });
         const micStateEl = document.getElementById('mic-state');
         const micBtn = document.getElementById('mic-request-btn');
@@ -3787,7 +3974,6 @@
           }
         }
 
-        // Camera
         const camPerm = await navigator.permissions.query({ name: 'camera' });
         const camStateEl = document.getElementById('cam-state');
         const camBtn = document.getElementById('cam-request-btn');
@@ -3986,12 +4172,7 @@
     }
 
     window.openProfile = () => {
-      // Inline editing now in settings, no redirect
       showAlert('Edit your profile in the Settings tab!');
-    };
-
-    window.updateProfile = () => {
-      // No longer needed
     };
 
     window.logout = async () => {
@@ -4003,7 +4184,6 @@
     };
 
     function switchSubTab(subTab, event) {
-      // Switch sub-tabs within chats tab
       document.querySelectorAll('#chats-tab .sub-tab-item').forEach(i => {
         if (i.dataset.subtab !== subTab) {
           i.classList.remove('active');
@@ -4015,7 +4195,6 @@
       });
       document.querySelectorAll('#chats-tab .sub-tab-content').forEach(content => content.classList.remove('active'));
       document.getElementById(`sub-${subTab}-content`).classList.add('active');
-      // Load the appropriate content
       if (subTab === 'chats') {
         loadTopStatuses();
         const fab = document.getElementById('fab-btn');
@@ -4048,7 +4227,6 @@
       } else {
         fab.style.display = '';
         if (tab === 'chats') {
-          // Default to chats sub-tab
           switchSubTab('chats', null);
         } else if (tab === 'status') {
           fab.innerHTML = `<span class="material-icons" style="font-size: 18px;">add</span>Add Status`;
@@ -4125,7 +4303,6 @@
       document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => switchTab(e.currentTarget.dataset.tab, e));
       });
-      // Sub-tab listeners for chats tab
       document.querySelectorAll('.sub-tab-item').forEach(item => {
         item.addEventListener('click', (e) => switchSubTab(e.currentTarget.dataset.subtab, e));
       });
@@ -4137,7 +4314,6 @@
       });
       const fab = document.getElementById('fab-btn');
       fab.onclick = openAddFriendsSheet;
-      // Comment input enter
       document.getElementById('comment-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendComment();
       });
