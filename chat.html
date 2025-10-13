@@ -1028,7 +1028,10 @@
       <button id="call-btn" title="Voice Call" aria-label="Voice Call" style="display: none;">
         <span class="material-icons">call</span>
       </button>
-      <button id="info-btn" title="Chat Info" aria-label="Chat Info">
+      <button id="add-member-btn" title="Add Member" aria-label="Add Member" style="display: none;">
+        <span class="material-icons">person_add</span>
+      </button>
+      <button id="info-btn" title="Group Info" aria-label="Group Info">
         <span class="material-icons">info</span>
       </button>
       <button id="delete-chat-btn" title="Delete Chat" aria-label="Delete Chat">
@@ -1130,6 +1133,17 @@
       <button onclick="closeGroupSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px;"><span class="material-icons">close</span></button>
     </div>
     <div id="group-members-list" style="padding: 0 24px 20px;"></div>
+  </div>
+
+  <!-- Add Member Bottom Sheet -->
+  <div id="add-member-sheet" class="bottom-sheet">
+    <div class="bottom-sheet-header">
+      <h2 style="margin: 0; font-size: 24px; font-weight: 700; color: var(--text-primary);">Add Members</h2>
+      <button onclick="closeAddMemberSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px;"><span class="material-icons">close</span></button>
+    </div>
+    <div id="add-member-users-list" style="padding: 0 24px 20px;">
+      <!-- Users list loaded here -->
+    </div>
   </div>
 
   <div id="reaction-picker" class="reaction-picker"></div>
@@ -1594,6 +1608,11 @@
         avatarEl.innerHTML = `<div class="chat-avatar" style="background: var(--gradient); color: #ffffff; font-size: 18px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
         nameEl.innerHTML = groupData.name || 'Group';
         lastSeenEl.style.display = 'none';
+        // Show group-specific buttons
+        document.getElementById('add-member-btn').style.display = 'block';
+        document.getElementById('add-member-btn').onclick = openAddMemberSheet;
+        document.getElementById('info-btn').title = 'Group Info';
+        document.getElementById('info-btn').onclick = openGroupSheet;
       }
     }
 
@@ -2195,6 +2214,77 @@
       }
     };
 
+    async function loadUsersForAddMember() {
+      showSpinner();
+      const usersList = document.getElementById('add-member-users-list');
+      usersList.innerHTML = '';
+      const usersRef = ref(db, 'users');
+      const snapshot = await get(usersRef);
+      if (snapshot.exists()) {
+        const users = Object.entries(snapshot.val())
+          .map(([uid, user]) => ({ uid, ...user }))
+          .filter(user => user.uid !== currentUser.uid && !groupData.members[user.uid]); // Exclude self and existing members
+        if (users.length === 0) {
+          usersList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 50px; font-size: 16px;">No users to add.</p>';
+        } else {
+          for (let i = 0; i < users.length; i++) {
+            const user = users[i];
+            const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+            let avatarHtml;
+            if (user.photoURL) {
+              avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy">`;
+            } else {
+              avatarHtml = `<div class="user-avatar" style="font-size: 22px;">${initial}</div>`;
+            }
+            let nameHtml = user.displayName || 'User';
+            if (user.verified) {
+              nameHtml += verifiedIcon;
+            }
+            const userCard = document.createElement('div');
+            userCard.className = 'user-card fade-in';
+            userCard.style.animationDelay = `${i * 0.1}s`;
+            userCard.onclick = () => addMemberToGroup(user.uid);
+            userCard.innerHTML = `
+              ${avatarHtml}
+              <div class="user-info">
+                <div class="user-name">${nameHtml}</div>
+                <div class="user-bio">${user.bio || 'No bio yet'}</div>
+              </div>
+              <button class="start-chat-btn" onclick="event.stopPropagation(); addMemberToGroup('${user.uid}')">Add</button>
+            `;
+            usersList.appendChild(userCard);
+          }
+        }
+      }
+      hideSpinner();
+    }
+
+    window.addMemberToGroup = async (targetUid) => {
+      try {
+        showSpinner();
+        const memberRole = { role: 'member', joinedAt: Date.now() };
+        await set(ref(db, `groups/${chatId}/members/${targetUid}`), memberRole);
+        await set(ref(db, `users/${targetUid}/groups/${chatId}`), { groupId: chatId, name: groupData.name, role: 'member', lastMessageTime: Date.now() });
+        showAlert('Member added!');
+        closeAddMemberSheet();
+        openGroupSheet(); // Refresh group sheet
+      } catch (error) {
+        console.error('Error adding member:', error);
+        showAlert('Failed to add member.');
+      } finally {
+        hideSpinner();
+      }
+    };
+
+    window.openAddMemberSheet = () => {
+      loadUsersForAddMember();
+      document.getElementById('add-member-sheet').classList.add('active');
+    };
+
+    window.closeAddMemberSheet = () => {
+      document.getElementById('add-member-sheet').classList.remove('active');
+    };
+
     function initializeFirebase() {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
@@ -2215,17 +2305,22 @@
           const infoBtn = document.getElementById('info-btn');
           const deleteBtn = document.getElementById('delete-chat-btn');
           const callBtn = document.getElementById('call-btn');
+          const addMemberBtn = document.getElementById('add-member-btn');
           callBtn.onclick = startCall;
           if (isGroup) {
             infoBtn.innerHTML = '<span class="material-icons">group</span>';
             infoBtn.title = 'Group Info';
             infoBtn.onclick = openGroupSheet;
+            addMemberBtn.style.display = 'block';
+            addMemberBtn.onclick = openAddMemberSheet;
             await loadGroupData();
           } else {
             infoBtn.innerHTML = '<span class="material-icons">info</span>';
             infoBtn.title = 'Chat Info';
             infoBtn.onclick = showInfoDialog;
+            addMemberBtn.style.display = 'none';
             await loadOtherUser();
+            callBtn.style.display = 'block';
           }
           deleteBtn.onclick = showDeleteDialog;
           await updateUserLastSeen(user.uid); // Set initial lastSeen
