@@ -989,6 +989,25 @@
         background: var(--bg);
       }
     }
+    .verified-icon {
+      width: 16px;
+      height: 16px;
+      margin-left: 4px;
+      vertical-align: middle;
+      animation: pulse 2s infinite;
+    }
+    .verified-icon path {
+      stroke-dasharray: 20;
+      stroke-dashoffset: 20;
+      animation: drawCheck 1s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+    }
+    @keyframes drawCheck {
+      to { stroke-dashoffset: 0; }
+    }
   </style>
 </head>
 <body>
@@ -1132,7 +1151,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, push, set, update, onChildAdded } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, push, set, update, onChildAdded, onChildChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -1152,13 +1171,15 @@
 
     let app, auth, db, analytics, currentUser;
     let chatId, otherUserId, otherUserData, groupData, isGroup = false;
-    let messagesRef, messagesListener, typingRef, typingListener;
+    let messagesRef, messagesListener, childAddedListener, childChangedListener, typingRef, typingListener;
     let callRef, peerConnection, localStream, remoteStream, callTimer, ringInterval;
     let isMuted = false;
     let isOutgoing = false;
     let callStartTime;
     const ONLINE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
     const commonEmojis = ['😀', '😂', '❤️', '👍', '👎', '😢', '😡', '🔥', '⭐', '🙌'];
+
+    const verifiedIcon = `<svg class="verified-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><filter id="wavy"><feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" result="noise"/><feDisplacementMap in="SourceGraphic" in2="noise" scale="2" xChannelSelector="R" yChannelSelector="G"/></filter></defs><circle cx="12" cy="12" r="10" fill="#1DA1F2" filter="url(#wavy)"/><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" stroke="white" stroke-width="2" fill="none"/></svg>`;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1538,7 +1559,7 @@
         } else {
           avatarEl.innerHTML = `<div class="chat-avatar" style="background: var(--gradient); color: #ffffff; font-size: 18px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
         }
-        nameEl.textContent = otherUserData.displayName || 'User';
+        nameEl.innerHTML = (otherUserData.displayName || 'User') + (otherUserData.verified ? verifiedIcon : '');
         updateLastSeenStatus();
         // Listen for real-time lastSeen and typing updates
         const otherLastSeenRef = ref(db, `users/${otherUserId}/lastSeen`);
@@ -1571,7 +1592,7 @@
         const lastSeenEl = document.getElementById('chat-last-seen');
         const initial = groupData.name ? groupData.name[0].toUpperCase() : 'G';
         avatarEl.innerHTML = `<div class="chat-avatar" style="background: var(--gradient); color: #ffffff; font-size: 18px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-        nameEl.textContent = groupData.name || 'Group';
+        nameEl.innerHTML = groupData.name || 'Group';
         lastSeenEl.style.display = 'none';
       }
     }
@@ -1597,6 +1618,19 @@
         newContainer.className = 'reactions-container';
         newContainer.innerHTML = reactionsHtml;
         messageEl.appendChild(newContainer);
+      }
+    }
+
+    function updateMessageTicks(messageId, readBy, otherUserId) {
+      const messageEl = document.querySelector(`[data-message-id="${messageId}"]`);
+      if (!messageEl || messageEl.classList.contains('received')) return;
+      const timeEl = messageEl.querySelector('.message-time');
+      if (timeEl) {
+        let ticksHtml = '<span class="tick">✓</span>';
+        if (readBy && readBy[otherUserId]) {
+          ticksHtml = '<span class="tick read">✓✓</span>';
+        }
+        timeEl.innerHTML = `<span class="time-text">${formatTimestamp(Date.now())}</span>${ticksHtml}`;
       }
     }
 
@@ -1736,49 +1770,84 @@
       if (messagesListener) {
         messagesListener();
       }
-      messagesRef = ref(db, `chats/${chatId}/messages`);
-      messagesListener = onValue(messagesRef, async (snapshot) => {
-        const messagesContainer = document.getElementById('messages-container');
-        const wasAtBottom = (messagesContainer.scrollTop + messagesContainer.clientHeight) >= messagesContainer.scrollHeight - 1;
-
-        messagesContainer.innerHTML = '';
-
-        let messages = [];
-        if (snapshot.exists()) {
-          messages = Object.entries(snapshot.val())
-            .map(([id, msg]) => ({ id, ...msg }))
-            .sort((a, b) => a.timestamp - b.timestamp);
-          for (const msg of messages) {
-            let senderName = msg.senderName;
-            if (isGroup && !isSent) {
-              const userSnap = await get(ref(db, `users/${msg.senderId}`));
-              senderName = userSnap.val()?.displayName || 'Unknown';
-            }
-            let content;
-            if (msg.type === 'image') {
-              content = msg.url;
-            } else {
-              content = await decryptMessage(msg.message, chatId);
-            }
-            addMessage({ ...msg, content, senderName }, msg.senderId === currentUser.uid, messagesContainer);
+      if (childAddedListener) {
+        childAddedListener();
+      }
+      if (childChangedListener) {
+        childChangedListener();
+      }
+      const snapshot = await get(messagesRef);
+      const messagesContainer = document.getElementById('messages-container');
+      messagesContainer.innerHTML = '';
+      let messages = [];
+      if (snapshot.exists()) {
+        messages = Object.entries(snapshot.val())
+          .map(([id, msg]) => ({ id, ...msg }))
+          .sort((a, b) => a.timestamp - b.timestamp);
+        for (const msg of messages) {
+          let senderName = msg.senderName;
+          if (isGroup && msg.senderId !== currentUser.uid) {
+            const userSnap = await get(ref(db, `users/${msg.senderId}`));
+            senderName = userSnap.val()?.displayName || 'Unknown';
           }
+          let content;
+          if (msg.type === 'image') {
+            content = msg.url;
+          } else {
+            content = await decryptMessage(msg.message, chatId);
+          }
+          addMessage({ ...msg, content, senderName }, msg.senderId === currentUser.uid, messagesContainer);
         }
-        // Mark received messages as read
-        const receivedMessages = messages.filter(m => m.senderId !== currentUser.uid && !m.readBy?.[currentUser.uid]);
-        for (const msg of receivedMessages) {
-          const readRef = ref(db, `chats/${chatId}/messages/${msg.id}/readBy/${currentUser.uid}`);
+      }
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      // Mark received messages as read
+      const receivedMessages = messages.filter(m => m.senderId !== currentUser.uid && !m.readBy?.[currentUser.uid]);
+      for (const msg of receivedMessages) {
+        const readRef = ref(db, `chats/${chatId}/messages/${msg.id}/readBy/${currentUser.uid}`);
+        await set(readRef, Date.now());
+      }
+      // Update lastSeen when messages are loaded (user has read them)
+      await updateUserLastSeen(currentUser.uid);
+      // Now onChildAdded for new
+      childAddedListener = onChildAdded(messagesRef, async (snapshot) => {
+        const msg = snapshot.val();
+        const msgId = snapshot.key;
+        // Check if already rendered (for initial load, skip if exists)
+        if (document.querySelector(`[data-message-id="${msgId}"]`)) return;
+        let senderName = msg.senderName;
+        if (isGroup && msg.senderId !== currentUser.uid) {
+          const userSnap = await get(ref(db, `users/${msg.senderId}`));
+          senderName = userSnap.val()?.displayName || 'Unknown';
+        }
+        let content;
+        if (msg.type === 'image') {
+          content = msg.url;
+        } else {
+          content = await decryptMessage(msg.message, chatId);
+        }
+        addMessage({ id: msgId, ...msg, content, senderName }, msg.senderId === currentUser.uid, messagesContainer);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        // Mark as read if received
+        if (msg.senderId !== currentUser.uid && !msg.readBy?.[currentUser.uid]) {
+          const readRef = ref(db, `chats/${chatId}/messages/${msgId}/readBy/${currentUser.uid}`);
           await set(readRef, Date.now());
         }
-        // Update lastSeen when messages are loaded (user has read them)
-        await updateUserLastSeen(currentUser.uid);
-
-        if (wasAtBottom) {
-          messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-
-        hideSpinner();
-        renderTypingIndicator();
       });
+      // onChildChanged for updates like reactions and readBy
+      childChangedListener = onChildChanged(messagesRef, (snapshot) => {
+        const msgId = snapshot.key;
+        const msgData = snapshot.val();
+        const msgEl = document.querySelector(`[data-message-id="${msgId}"]`);
+        if (!msgEl) return;
+        // Update reactions
+        renderReactions(msgId, msgData.reactions);
+        // Update ticks if sent message
+        if (msgData.senderId === currentUser.uid) {
+          updateMessageTicks(msgId, msgData.readBy, otherUserId);
+        }
+      });
+      hideSpinner();
+      renderTypingIndicator();
     }
 
     async function highlightMessageIfNeeded() {
@@ -2160,6 +2229,7 @@
           }
           deleteBtn.onclick = showDeleteDialog;
           await updateUserLastSeen(user.uid); // Set initial lastSeen
+          messagesRef = ref(db, `chats/${chatId}/messages`);
           await loadMessages();
           await highlightMessageIfNeeded();
         } else {
