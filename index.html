@@ -341,6 +341,11 @@
       display: flex;
       flex-shrink: 0;
     }
+    .status-post-media-container {
+      width: 100%;
+      margin: 0 -20px 16px -20px;
+      padding: 0 20px;
+    }
     .status-post-media {
       width: 100%;
       flex-shrink: 0;
@@ -348,7 +353,6 @@
       max-height: 550px;
       object-fit: contain;
       border-radius: 20px;
-      margin-bottom: 20px;
       box-shadow: var(--shadow-md);
       transition: transform 0.3s ease;
     }
@@ -433,6 +437,12 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .typing-indicator {
+      color: var(--bbm-red);
+      font-style: italic;
+      font-size: 14px;
+      margin-top: 2px;
     }
     .chat-time, .call-time {
       color: var(--text-secondary);
@@ -1726,6 +1736,7 @@
       color: var(--text-secondary);
       padding-top: 12px;
       border-top: 1px solid var(--border);
+      justify-content: center;
     }
     .status-actions span {
       cursor: pointer;
@@ -2068,6 +2079,7 @@
     let videoObserver = null;
     let viewedStatuses = new Set(); // Local set for viewed statuses in list
     let currentStatusFilter = null;
+    let typingListeners = {}; // Track typing listeners per chat
 
     // WebRTC Globals
     const pcConfig = {
@@ -2381,13 +2393,13 @@
             let mediaHtml = '';
             let progressHtml = '';
             if (status.mediaUrls && Array.isArray(status.mediaUrls)) {
-              mediaHtml = `<div class="status-carousel"><div class="status-carousel-inner">${status.mediaUrls.map(url => `<img src="${url}" alt="Status image" class="status-post-media" loading="lazy" oncontextmenu="return false;">`).join('')}</div></div>`;
+              mediaHtml = `<div class="status-post-media-container"><div class="status-carousel"><div class="status-carousel-inner">${status.mediaUrls.map(url => `<img src="${url}" alt="Status image" class="status-post-media" loading="lazy" oncontextmenu="return false;">`).join('')}</div></div></div>`;
             } else if (status.mediaUrl) {
               const oncontext = 'oncontextmenu="return false;"';
               if (status.type === 'image') {
-                mediaHtml = `<img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}>`;
+                mediaHtml = `<div class="status-post-media-container"><img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
               } else if (status.type === 'video') {
-                mediaHtml = `<div class="video-container"><video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video><div class="video-overlay"><button class="play-again-btn" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.play();"><span class="material-icons">replay</span>Play Again</button></div></div>`;
+                mediaHtml = `<div class="status-post-media-container"><div class="video-container"><video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video><div class="video-overlay"><button class="play-again-btn" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.play();"><span class="material-icons">replay</span>Play Again</button></div></div></div>`;
                 progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
               }
             }
@@ -2583,6 +2595,7 @@
             <div class="chat-info">
               <div class="chat-name">${nameHtml}</div>
               <div class="chat-preview">${messagePreview}</div>
+              <div id="typing-indicator-${otherUserId}" class="typing-indicator hidden">Typing...</div>
             </div>
             <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
           `;
@@ -2622,6 +2635,8 @@
             });
           }
           chatList.appendChild(chatItem);
+          // Setup typing listener for this chat
+          setupTypingListener(otherUserId, chat.chatId);
         }
       } else {
         chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No chats yet. Add friends to start!</p>';
@@ -2629,8 +2644,32 @@
       updateNavUnread(totalUnread);
     }
 
+    function setupTypingListener(otherUserId, chatId) {
+      if (typingListeners[otherUserId]) return; // Already listening
+      const typingRef = ref(db, `chats/${chatId}/typing`);
+      typingListeners[otherUserId] = onValue(typingRef, (snapshot) => {
+        const typing = snapshot.val();
+        const indicator = document.getElementById(`typing-indicator-${otherUserId}`);
+        if (indicator) {
+          if (typing && typing[otherUserId] && !typing[currentUser.uid]) {
+            indicator.classList.remove('hidden');
+          } else {
+            indicator.classList.add('hidden');
+          }
+        }
+      });
+    }
+
+    function cleanupTypingListeners() {
+      Object.keys(typingListeners).forEach(uid => {
+        off(typingListeners[uid]);
+      });
+      typingListeners = {};
+    }
+
     function setupChatsListener() {
       prevUnread = {};
+      cleanupTypingListeners();
       const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
       chatsListener = onValue(userChatsRef, async (snapshot) => {
         await updateChatsUI(snapshot);
@@ -4184,8 +4223,19 @@
       hideSpinner();
     }
 
-    function openChat(chatId, otherUserId) {
+    async function openChat(chatId, otherUserId) {
       if (otherUserId) {
+        try {
+          // Mark as read before navigating
+          const userChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+          await update(userChatsRef, { unreadCount: 0 });
+          // Update local unread count
+          totalUnread = Math.max(0, totalUnread - (prevUnread[otherUserId] || 0));
+          updateNavUnread(totalUnread);
+          prevUnread[otherUserId] = 0;
+        } catch (error) {
+          console.error('Failed to mark chat as read:', error);
+        }
         window.location.href = `chat.html?chatId=${chatId}&userId=${otherUserId}`;
       } else {
         window.location.href = `group.html?groupId=${chatId}`;
@@ -4202,6 +4252,7 @@
     };
 
     window.logout = async () => {
+      cleanupTypingListeners();
       if (chatsListener) off(chatsListener);
       if (statusesListener) off(statusesListener);
       if (callsListener) off(callsListener);
