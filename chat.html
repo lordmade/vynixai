@@ -117,6 +117,25 @@
       font-size: 17px;
       color: var(--text-primary);
     }
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .online-dot {
+      width: 8px;
+      height: 8px;
+      background: #00ff88;
+      border-radius: 50%;
+    }
+    .offline-dot {
+      width: 8px;
+      height: 8px;
+      background: #666;
+      border-radius: 50%;
+    }
     .header-right {
       display: flex;
       align-items: center;
@@ -198,8 +217,30 @@
     .message-time {
       font-size: 12px;
       color: var(--text-secondary);
-      text-align: right;
       margin-top: 4px;
+    }
+    .message-bubble.sent .message-time {
+      text-align: right;
+    }
+    .message-bubble.received .message-time {
+      text-align: left;
+    }
+    .message-status {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    .status-icon {
+      font-size: 14px;
+    }
+    .read-icon {
+      color: #00ff88;
+    }
+    .delivered-icon {
+      color: #b0b0b0;
     }
     .media-message {
       max-width: 100%;
@@ -236,6 +277,30 @@
       font-size: 12px;
       text-decoration: underline;
       cursor: pointer;
+    }
+    .audio-message {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      margin: 8px 0;
+    }
+    .audio-message audio {
+      width: 100%;
+      max-width: 250px;
+    }
+    .audio-message canvas {
+      width: 100%;
+      max-width: 250px;
+      height: 40px;
+      border-radius: 20px;
+      background: rgba(0,0,0,0.1);
+      margin-top: 5px;
+    }
+    .audio-duration {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-align: center;
+      margin-top: 2px;
     }
     .typing-indicator {
       align-self: flex-start;
@@ -283,7 +348,7 @@
       box-shadow: var(--shadow-sm);
       transition: all 0.3s ease;
     }
-    .attach-btn {
+    .attach-btn, .record-btn {
       background: var(--card-bg);
       border: 1px solid var(--border);
       color: var(--text-primary);
@@ -297,9 +362,27 @@
       transition: all 0.3s ease;
       font-size: 20px;
     }
-    .attach-btn:hover {
+    .attach-btn:hover, .record-btn:hover:not(.recording) {
       border-color: var(--bbm-red);
       box-shadow: var(--glow);
+    }
+    .record-btn.recording {
+      background: var(--bbm-red);
+      color: white;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+      100% { transform: scale(1); }
+    }
+    #recording-waveform {
+      display: none;
+      margin-left: 10px;
+    }
+    #recording-waveform canvas {
+      border-radius: 20px;
+      background: var(--card-bg);
     }
     .input-pill {
       flex: 1;
@@ -327,6 +410,10 @@
       max-height: 120px;
       min-height: 20px;
       line-height: 1.4;
+    }
+    .message-input:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     .send-btn {
       background: var(--bbm-red);
@@ -520,6 +607,10 @@
 
   <div class="input-bar">
     <button id="attach-btn" class="attach-btn material-icons" title="Attach file" aria-label="Attach file">attach_file</button>
+    <button id="record-btn" class="record-btn material-icons" title="Record voice message" aria-label="Record voice message">mic</button>
+    <div id="recording-waveform">
+      <canvas id="wave-canvas" width="100" height="40"></canvas>
+    </div>
     <div class="input-pill">
       <textarea id="message-input" class="message-input" placeholder="Type a message..." rows="1" aria-label="Message input"></textarea>
     </div>
@@ -532,7 +623,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, push, set, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, push, set, update, off, onDisconnect } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -570,6 +661,19 @@
     let messagesListener = null;
     let typingTimeout = null;
     let isTyping = false;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let audioStream = null;
+    let isRecording = false;
+    let isInitialLoad = true;
+    let lastLoadedTimestamp = 0;
+    let recorderCtx = null;
+    let recorderSource = null;
+    let recorderAnalyser = null;
+    let recorderDataArray = null;
+    let recorderRafId = null;
+    let presenceListener = null;
+    let otherUserPresence = { online: false, lastSeen: null };
 
     const showAlert = (message) => {
       const alert = document.getElementById('alert-message');
@@ -589,6 +693,61 @@
       if (diffSec < 60) return `${diffSec}s`;
       if (diffMin < 60) return `${diffMin}m`;
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatLastSeen(timestamp) {
+      if (!timestamp) return 'Never';
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffSec = Math.floor(diffMs / 1000);
+      const diffMin = Math.floor(diffSec / 60);
+      const diffHours = Math.floor(diffMin / 60);
+      const diffDays = Math.floor(diffHours / 24);
+      if (diffSec < 60) return 'Just now';
+      if (diffMin < 60) return `${diffMin}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return date.toLocaleDateString();
+    }
+
+    function updatePresenceStatus() {
+      const statusDiv = document.querySelector('#chat-header-info .status-indicator');
+      if (!statusDiv) return;
+      if (otherUserPresence.online) {
+        statusDiv.innerHTML = `<div class="online-dot"></div> online`;
+      } else {
+        statusDiv.innerHTML = `<div class="offline-dot"></div> Last seen ${formatLastSeen(otherUserPresence.lastSeen)}`;
+      }
+    }
+
+    async function setupPresenceListener() {
+      if (!currentOtherUid) return;
+      const otherPresenceRef = ref(db, `users/${currentOtherUid}/presence`);
+      presenceListener = onValue(otherPresenceRef, (snapshot) => {
+        const presence = snapshot.val() || { online: false, lastSeen: null };
+        otherUserPresence = presence;
+        updatePresenceStatus();
+      });
+    }
+
+    function setupUserPresence() {
+      if (!currentUser) return;
+      const connectedRef = ref(db, '.info/connected');
+      const userPresenceRef = ref(db, `users/${currentUser.uid}/presence`);
+      onValue(connectedRef, (snap) => {
+        if (snap.val() === true) {
+          // Online
+          set(userPresenceRef, { online: true, lastSeen: Date.now() });
+          onDisconnect(userPresenceRef).set({ online: false, lastSeen: Date.now() });
+        }
+      });
+    }
+
+    async function markMessageAsRead(msgId) {
+      if (!currentUser || !currentChatId) return;
+      const messageRef = ref(db, `chats/${currentChatId}/messages/${msgId}/readBy`);
+      await update(messageRef, { [currentUser.uid]: true });
     }
 
     async function encryptMessage(message, chatId) {
@@ -707,15 +866,23 @@
     async function sendMediaMessage(mediaUrl, mediaType, filename = null) {
       if (!currentUser || !currentChatId) return;
       try {
+        let text = '';
+        if (mediaType === 'document') {
+          text = `Sent a document: ${filename}`;
+        } else if (mediaType === 'audio') {
+          text = 'Voice message';
+        }
         const messageData = {
           senderId: currentUser.uid,
           mediaUrl,
           mediaType,
           filename,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          deliveredBy: { [currentOtherUid]: false },
+          readBy: {}
         };
-        if (mediaType === 'document') {
-          messageData.text = `Sent a document: ${filename}`;
+        if (text) {
+          messageData.text = text;
         }
         const messagesRef = ref(db, `chats/${currentChatId}/messages`);
         const newMessageRef = push(messagesRef);
@@ -735,10 +902,99 @@
           lastMessageTime: Date.now(),
           unreadCount: otherUnread
         });
-        scrollToBottom();
       } catch (error) {
         console.error('Error sending media:', error);
         showAlert('Failed to send media.');
+      }
+    }
+
+    async function startRecording() {
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+        recordedChunks = [];
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            recordedChunks.push(event.data);
+          }
+        };
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+          const file = new File([blob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+          try {
+            showAlert('Uploading voice message...');
+            const mediaUrl = await uploadFile(file);
+            await sendMediaMessage(mediaUrl, 'audio');
+          } catch (error) {
+            console.error('Upload failed:', error);
+            showAlert('Failed to upload voice message.');
+          }
+          stopRecording();
+        };
+        mediaRecorder.start();
+        isRecording = true;
+        document.getElementById('record-btn').classList.add('recording');
+        document.getElementById('record-btn').innerHTML = 'stop';
+        document.getElementById('message-input').disabled = true;
+        document.getElementById('send-btn').disabled = true;
+        document.getElementById('recording-waveform').style.display = 'block';
+
+        // Setup live waveform for recording
+        recorderCtx = new AudioContext();
+        recorderSource = recorderCtx.createMediaStreamSource(audioStream);
+        recorderAnalyser = recorderCtx.createAnalyser();
+        recorderAnalyser.fftSize = 256;
+        const recorderBufferLength = recorderAnalyser.frequencyBinCount;
+        recorderDataArray = new Uint8Array(recorderBufferLength);
+        recorderSource.connect(recorderAnalyser);
+
+        function drawRecorder() {
+          recorderRafId = requestAnimationFrame(drawRecorder);
+          recorderAnalyser.getByteFrequencyData(recorderDataArray);
+          const canvas = document.getElementById('wave-canvas');
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = 'rgb(0, 0, 0)';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          const barWidth = (canvas.width / recorderBufferLength) * 2.5;
+          let barHeight;
+          let x = 0;
+          for(let i = 0; i < recorderBufferLength; i++) {
+            barHeight = recorderDataArray[i];
+            ctx.fillStyle = `rgb(${barHeight + 100},50,50)`;
+            ctx.fillRect(x, canvas.height - barHeight / 2, barWidth, barHeight / 2);
+            x += barWidth + 1;
+          }
+        }
+        drawRecorder();
+      } catch (error) {
+        console.error('Error starting recording:', error);
+        showAlert('Failed to start recording. Please check microphone permissions.');
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && isRecording) {
+        mediaRecorder.stop();
+        isRecording = false;
+        document.getElementById('record-btn').classList.remove('recording');
+        document.getElementById('record-btn').innerHTML = 'mic';
+        document.getElementById('message-input').disabled = false;
+        updateSendButton();
+        document.getElementById('recording-waveform').style.display = 'none';
+        if (recorderRafId) {
+          cancelAnimationFrame(recorderRafId);
+        }
+        if (recorderCtx) {
+          recorderCtx.close();
+        }
+        if (audioStream) {
+          audioStream.getTracks().forEach(track => track.stop());
+          audioStream = null;
+        }
+        recorderCtx = null;
+        recorderSource = null;
+        recorderAnalyser = null;
+        recorderDataArray = null;
       }
     }
 
@@ -771,9 +1027,12 @@
           ${avatarHtml}
           <div>
             <div class="chat-name">${nameHtml}</div>
-            <div style="font-size: 13px; color: var(--text-secondary);">online</div>
+            <div class="status-indicator" id="status-indicator">
+              <div class="online-dot"></div> online
+            </div>
           </div>
         `;
+        await setupPresenceListener();
       }
     }
 
@@ -788,14 +1047,31 @@
         const container = document.getElementById('messages-container');
         const previousScrollHeight = container.scrollHeight;
         const previousScrollTop = container.scrollTop;
-        const atBottom = (previousScrollHeight - previousScrollTop) <= (window.innerHeight - 200);
-        container.innerHTML = '';
+        const wasAtBottom = (previousScrollHeight - previousScrollTop) < 10;
+        let newMessages = [];
         if (snapshot.exists()) {
-          const messages = Object.entries(snapshot.val())
-            .map(([msgId, msg]) => ({ msgId, ...msg }))
-            .sort((a, b) => a.timestamp - b.timestamp);
-          for (const msg of messages) {
+          const allData = snapshot.val();
+          const timestamps = Object.values(allData).map(m => m.timestamp || 0);
+          const maxTimestamp = Math.max(...timestamps);
+          if (isInitialLoad) {
+            newMessages = Object.entries(allData)
+              .map(([msgId, msg]) => ({ msgId, ...msg }))
+              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            container.innerHTML = '';
+            isInitialLoad = false;
+          } else {
+            newMessages = Object.entries(allData)
+              .filter(([msgId, msg]) => (msg.timestamp || 0) > lastLoadedTimestamp)
+              .map(([msgId, msg]) => ({ msgId, ...msg }))
+              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+          }
+          lastLoadedTimestamp = maxTimestamp;
+          for (const msg of newMessages) {
             const isSent = msg.senderId === currentUser.uid;
+            // Mark received messages as read if not already
+            if (!isSent && !msg.readBy?.[currentUser.uid]) {
+              await markMessageAsRead(msg.msgId);
+            }
             const bubble = document.createElement('div');
             bubble.className = `message-bubble ${isSent ? 'sent' : 'received'}`;
             let contentHtml = '';
@@ -826,19 +1102,110 @@
                     </div>
                   </div>
                 `;
+              } else if (msg.mediaType === 'audio') {
+                contentHtml = `
+                  <div class="media-message audio-message">
+                    <audio controls src="${msg.mediaUrl}" id="audio-${msg.msgId}"></audio>
+                    <canvas id="wave-canvas-${msg.msgId}" width="200" height="40"></canvas>
+                    <div class="audio-duration" id="duration-${msg.msgId}">00:00</div>
+                  </div>
+                `;
               }
             }
             if (decryptedText) {
               contentHtml += `<div>${decryptedText}</div>`;
             }
+            let statusHtml = `<div class="message-time">${formatTimestamp(msg.timestamp)}</div>`;
+            if (isSent) {
+              const delivered = msg.deliveredBy?.[currentOtherUid] || false;
+              const read = msg.readBy?.[currentOtherUid] || false;
+              let statusIcon = '';
+              if (read) {
+                statusIcon = '<span class="status-icon read-icon material-icons">done_all</span>';
+              } else if (delivered) {
+                statusIcon = '<span class="status-icon delivered-icon material-icons">done_all</span>';
+              } else {
+                statusIcon = '<span class="status-icon material-icons">schedule</span>';
+              }
+              statusHtml = `
+                <div class="message-status">
+                  ${statusIcon}
+                </div>
+                <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
+              `;
+            }
             bubble.innerHTML = `
               ${contentHtml}
-              <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
+              ${statusHtml}
             `;
             container.appendChild(bubble);
+            if (msg.mediaType === 'audio') {
+              const audioEl = bubble.querySelector(`#audio-${msg.msgId}`);
+              const canvasEl = bubble.querySelector(`#wave-canvas-${msg.msgId}`);
+              const durationEl = bubble.querySelector(`#duration-${msg.msgId}`);
+              if (audioEl && canvasEl && durationEl) {
+                // Duration
+                audioEl.addEventListener('loadedmetadata', () => {
+                  const duration = audioEl.duration;
+                  if (!isNaN(duration)) {
+                    const mins = Math.floor(duration / 60);
+                    const secs = Math.floor(duration % 60);
+                    const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                    durationEl.textContent = durationStr;
+                  }
+                }, { once: true });
+
+                // Waveform
+                let playbackCtx = null;
+                let playbackAnalyser = null;
+                let playbackDataArray = null;
+                let playbackRafId = null;
+                function drawPlayback() {
+                  playbackRafId = requestAnimationFrame(drawPlayback);
+                  if (playbackAnalyser) {
+                    playbackAnalyser.getByteFrequencyData(playbackDataArray);
+                    const ctx = canvasEl.getContext('2d');
+                    ctx.fillStyle = 'rgb(0, 0, 0)';
+                    ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+                    const barWidth = (canvasEl.width / playbackDataArray.length) * 2.5;
+                    let barHeight;
+                    let x = 0;
+                    for(let i = 0; i < playbackDataArray.length; i++) {
+                      barHeight = playbackDataArray[i];
+                      ctx.fillStyle = `rgb(${barHeight + 100},50,50)`;
+                      ctx.fillRect(x, canvasEl.height - barHeight / 2, barWidth, barHeight / 2);
+                      x += barWidth + 1;
+                    }
+                  }
+                }
+                audioEl.addEventListener('play', () => {
+                  if (!playbackCtx) {
+                    playbackCtx = new AudioContext();
+                    const source = playbackCtx.createMediaElementSource(audioEl);
+                    playbackAnalyser = playbackCtx.createAnalyser();
+                    playbackAnalyser.fftSize = 256;
+                    const bufferLength = playbackAnalyser.frequencyBinCount;
+                    playbackDataArray = new Uint8Array(bufferLength);
+                    source.connect(playbackAnalyser);
+                    playbackAnalyser.connect(playbackCtx.destination);
+                  }
+                  drawPlayback();
+                });
+                audioEl.addEventListener('pause', () => {
+                  if (playbackRafId) {
+                    cancelAnimationFrame(playbackRafId);
+                  }
+                });
+                audioEl.addEventListener('ended', () => {
+                  if (playbackRafId) {
+                    cancelAnimationFrame(playbackRafId);
+                  }
+                });
+              }
+            }
           }
         }
-        if (atBottom) {
+        if (isInitialLoad || (newMessages.length > 0 && wasAtBottom)) {
           scrollToBottom();
         }
       }, (error) => {
@@ -855,11 +1222,14 @@
         const encrypted = await encryptMessage(text, currentChatId);
         const messagesRef = ref(db, `chats/${currentChatId}/messages`);
         const newMessageRef = push(messagesRef);
-        await set(newMessageRef, {
+        const messageData = {
           senderId: currentUser.uid,
           text: encrypted,
-          timestamp: Date.now()
-        });
+          timestamp: Date.now(),
+          deliveredBy: { [currentOtherUid]: false },
+          readBy: {}
+        };
+        await set(newMessageRef, messageData);
         // Update last message for both users
         const currentUserChatRef = ref(db, `users/${currentUser.uid}/chats/${currentOtherUid}`);
         await update(currentUserChatRef, {
@@ -877,7 +1247,6 @@
         });
         input.value = '';
         updateSendButton();
-        scrollToBottom();
       } catch (error) {
         console.error('Error sending message:', error);
         showAlert('Failed to send message.');
@@ -888,11 +1257,11 @@
       const input = document.getElementById('message-input');
       const sendBtn = document.getElementById('send-btn');
       const text = input.value.trim();
-      sendBtn.disabled = !text;
+      sendBtn.disabled = !text || isRecording;
     }
 
     function handleTyping() {
-      if (!currentChatId || !currentOtherUid) return;
+      if (!currentChatId || !currentOtherUid || isRecording) return;
       const typingRef = ref(db, `chats/${currentChatId}/typing`);
       const input = document.getElementById('message-input');
       const text = input.value.trim();
@@ -916,12 +1285,12 @@
       const typingRef = ref(db, `chats/${currentChatId}/typing`);
       onValue(typingRef, (snapshot) => {
         const typing = snapshot.val() || {};
-        const typingIndicator = document.querySelector('.typing-indicator');
+        let typingIndicator = document.querySelector('.typing-indicator');
         if (typing[currentOtherUid] && !typing[currentUser.uid]) {
           if (!typingIndicator) {
-            const indicator = document.createElement('div');
-            indicator.className = 'typing-indicator';
-            indicator.innerHTML = `
+            typingIndicator = document.createElement('div');
+            typingIndicator.className = 'typing-indicator';
+            typingIndicator.innerHTML = `
               <span>Typing...</span>
               <div class="typing-dots">
                 <div class="typing-dot"></div>
@@ -929,7 +1298,7 @@
                 <div class="typing-dot"></div>
               </div>
             `;
-            document.getElementById('messages-container').appendChild(indicator);
+            document.getElementById('messages-container').appendChild(typingIndicator);
             scrollToBottom();
           }
         } else {
@@ -955,6 +1324,17 @@
       };
     }
 
+    function setupRecordButton() {
+      const recordBtn = document.getElementById('record-btn');
+      recordBtn.onclick = () => {
+        if (!isRecording) {
+          startRecording();
+        } else {
+          stopRecording();
+        }
+      };
+    }
+
     function initializeFirebase() {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
@@ -964,11 +1344,13 @@
         currentUser = user;
         if (user) {
           setUserId(analytics, user.uid);
+          setupUserPresence();
           await loadChatInfo();
           await loadMessages();
           setupTypingListener();
           setupCallButtons();
           setupAttachButton();
+          setupRecordButton();
           // Mark as read
           const chatRef = ref(db, `users/${currentUser.uid}/chats/${currentOtherUid}`);
           await update(chatRef, { unreadCount: 0 });
@@ -1003,10 +1385,12 @@
     window.addEventListener('beforeunload', () => {
       if (typingTimeout) clearTimeout(typingTimeout);
       if (messagesListener) off(messagesListener);
+      if (presenceListener) off(presenceListener);
       if (currentUser && currentChatId) {
         const typingRef = ref(db, `chats/${currentChatId}/typing`);
         set(typingRef, { [currentUser.uid]: false });
       }
+      stopRecording();
     });
 
     document.addEventListener('DOMContentLoaded', () => {
