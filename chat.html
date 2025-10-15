@@ -646,8 +646,6 @@
     let recordedChunks = [];
     let audioStream = null;
     let isRecording = false;
-    let isInitialLoad = true;
-    let lastLoadedTimestamp = 0;
     let recorderCtx = null;
     let recorderSource = null;
     let recorderAnalyser = null;
@@ -655,6 +653,7 @@
     let recorderRafId = null;
     let presenceListener = null;
     let otherUserPresence = { online: false, lastSeen: null };
+    let typingRef = null;
 
     const showAlert = (message) => {
       const alert = document.getElementById('alert-message');
@@ -1026,168 +1025,195 @@
       const messagesRef = ref(db, `chats/${currentChatId}/messages`);
       messagesListener = onValue(messagesRef, async (snapshot) => {
         const container = document.getElementById('messages-container');
-        const previousScrollHeight = container.scrollHeight;
-        const previousScrollTop = container.scrollTop;
-        const wasAtBottom = (previousScrollHeight - previousScrollTop) < 10;
-        let newMessages = [];
+        const wasNearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 10;
+
+        // Remove existing typing indicator
+        const existingTyping = document.querySelector('.typing-indicator');
+        if (existingTyping) {
+          existingTyping.remove();
+        }
+
+        let allMessages = [];
         if (snapshot.exists()) {
-          const allData = snapshot.val();
-          const timestamps = Object.values(allData).map(m => m.timestamp || 0);
-          const maxTimestamp = Math.max(...timestamps);
-          if (isInitialLoad) {
-            newMessages = Object.entries(allData)
-              .map(([msgId, msg]) => ({ msgId, ...msg }))
-              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-            container.innerHTML = '';
-            isInitialLoad = false;
-          } else {
-            newMessages = Object.entries(allData)
-              .filter(([msgId, msg]) => (msg.timestamp || 0) > lastLoadedTimestamp)
-              .map(([msgId, msg]) => ({ msgId, ...msg }))
-              .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+          allMessages = Object.entries(snapshot.val())
+            .map(([msgId, msg]) => ({ msgId, ...msg }))
+            .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        }
+
+        container.innerHTML = '';
+
+        for (const msg of allMessages) {
+          const isSent = msg.senderId === currentUser.uid;
+
+          // Mark as delivered and read for received messages (fire and forget)
+          if (!isSent) {
+            if (!msg.deliveredBy?.[currentUser.uid]) {
+              const delRef = ref(db, `chats/${currentChatId}/messages/${msg.msgId}/deliveredBy`);
+              update(delRef, { [currentUser.uid]: true });
+            }
+            if (!msg.readBy?.[currentUser.uid]) {
+              const readRef = ref(db, `chats/${currentChatId}/messages/${msg.msgId}/readBy`);
+              update(readRef, { [currentUser.uid]: true });
+            }
           }
-          lastLoadedTimestamp = maxTimestamp;
-          for (const msg of newMessages) {
-            const isSent = msg.senderId === currentUser.uid;
-            // Mark received messages as read if not already
-            if (!isSent && !msg.readBy?.[currentUser.uid]) {
-              await markMessageAsRead(msg.msgId);
+
+          const bubble = document.createElement('div');
+          bubble.className = `message-bubble ${isSent ? 'sent' : 'received'}`;
+          let contentHtml = '';
+          let decryptedText = msg.text || '';
+          if (msg.text) {
+            try {
+              decryptedText = await decryptMessage(msg.text, currentChatId);
+            } catch (error) {
+              console.error('Failed to decrypt message:', error);
             }
-            const bubble = document.createElement('div');
-            bubble.className = `message-bubble ${isSent ? 'sent' : 'received'}`;
-            let contentHtml = '';
-            let decryptedText = msg.text || '';
-            if (msg.text) {
-              try {
-                decryptedText = await decryptMessage(msg.text, currentChatId);
-              } catch (error) {
-                console.error('Failed to decrypt message:', error);
-              }
-            }
-            if (msg.mediaUrl) {
-              if (msg.mediaType === 'image') {
-                contentHtml = `
-                  <div class="media-message">
-                    <img src="${msg.mediaUrl}" alt="Sent image" loading="lazy" onclick="this.style.maxHeight='none'; this.style.cursor='zoom-out';">
-                  </div>
-                `;
-              } else if (msg.mediaType === 'document') {
-                contentHtml = `
-                  <div class="media-message">
-                    <div class="document-message">
-                      <span class="document-icon material-icons">description</span>
-                      <div class="document-info">
-                        <div class="document-name">${msg.filename || 'Document'}</div>
-                        <a href="${msg.mediaUrl}" download class="document-download">Download</a>
-                      </div>
+          }
+          if (msg.mediaUrl) {
+            if (msg.mediaType === 'image') {
+              contentHtml = `
+                <div class="media-message">
+                  <img src="${msg.mediaUrl}" alt="Sent image" loading="lazy" onclick="this.style.maxHeight='none'; this.style.cursor='zoom-out';">
+                </div>
+              `;
+            } else if (msg.mediaType === 'document') {
+              contentHtml = `
+                <div class="media-message">
+                  <div class="document-message">
+                    <span class="document-icon material-icons">description</span>
+                    <div class="document-info">
+                      <div class="document-name">${msg.filename || 'Document'}</div>
+                      <a href="${msg.mediaUrl}" download class="document-download">Download</a>
                     </div>
                   </div>
-                `;
-              } else if (msg.mediaType === 'audio') {
-                contentHtml = `
-                  <div class="media-message audio-message">
-                    <audio controls src="${msg.mediaUrl}" id="audio-${msg.msgId}"></audio>
-                    <canvas id="wave-canvas-${msg.msgId}" width="200" height="40"></canvas>
-                    <div class="audio-duration" id="duration-${msg.msgId}">00:00</div>
-                  </div>
-                `;
-              }
-            }
-            if (decryptedText) {
-              contentHtml += `<div>${decryptedText}</div>`;
-            }
-            let statusHtml = `<div class="message-time">${formatTimestamp(msg.timestamp)}</div>`;
-            if (isSent) {
-              const delivered = msg.deliveredBy?.[currentOtherUid] || false;
-              const read = msg.readBy?.[currentOtherUid] || false;
-              let statusIcon = '';
-              if (read) {
-                statusIcon = '<span class="status-icon read-icon material-icons">done_all</span>';
-              } else if (delivered) {
-                statusIcon = '<span class="status-icon delivered-icon material-icons">done_all</span>';
-              } else {
-                statusIcon = '<span class="status-icon material-icons">schedule</span>';
-              }
-              statusHtml = `
-                <div class="message-status">
-                  ${statusIcon}
                 </div>
-                <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
+              `;
+            } else if (msg.mediaType === 'audio') {
+              contentHtml = `
+                <div class="media-message audio-message">
+                  <audio controls src="${msg.mediaUrl}" id="audio-${msg.msgId}"></audio>
+                  <canvas id="wave-canvas-${msg.msgId}" width="200" height="40"></canvas>
+                  <div class="audio-duration" id="duration-${msg.msgId}">00:00</div>
+                </div>
               `;
             }
-            bubble.innerHTML = `
-              ${contentHtml}
-              ${statusHtml}
+          }
+          if (decryptedText) {
+            contentHtml += `<div>${decryptedText}</div>`;
+          }
+          let statusHtml = `<div class="message-time">${formatTimestamp(msg.timestamp)}</div>`;
+          if (isSent) {
+            const delivered = msg.deliveredBy?.[currentOtherUid] || false;
+            const read = msg.readBy?.[currentOtherUid] || false;
+            let statusIcon = '';
+            if (read) {
+              statusIcon = '<span class="status-icon read-icon material-icons">done_all</span>';
+            } else if (delivered) {
+              statusIcon = '<span class="status-icon delivered-icon material-icons">done_all</span>';
+            } else {
+              statusIcon = '<span class="status-icon material-icons">schedule</span>';
+            }
+            statusHtml = `
+              <div class="message-status">
+                ${statusIcon}
+              </div>
+              <div class="message-time">${formatTimestamp(msg.timestamp)}</div>
             `;
-            container.appendChild(bubble);
-            if (msg.mediaType === 'audio') {
-              const audioEl = bubble.querySelector(`#audio-${msg.msgId}`);
-              const canvasEl = bubble.querySelector(`#wave-canvas-${msg.msgId}`);
-              const durationEl = bubble.querySelector(`#duration-${msg.msgId}`);
-              if (audioEl && canvasEl && durationEl) {
-                // Duration
-                audioEl.addEventListener('loadedmetadata', () => {
-                  const duration = audioEl.duration;
-                  if (!isNaN(duration)) {
-                    const mins = Math.floor(duration / 60);
-                    const secs = Math.floor(duration % 60);
-                    const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-                    durationEl.textContent = durationStr;
-                  }
-                }, { once: true });
+          }
+          bubble.innerHTML = `
+            ${contentHtml}
+            ${statusHtml}
+          `;
+          container.appendChild(bubble);
+          if (msg.mediaType === 'audio') {
+            const audioEl = bubble.querySelector(`#audio-${msg.msgId}`);
+            const canvasEl = bubble.querySelector(`#wave-canvas-${msg.msgId}`);
+            const durationEl = bubble.querySelector(`#duration-${msg.msgId}`);
+            if (audioEl && canvasEl && durationEl) {
+              // Duration
+              audioEl.addEventListener('loadedmetadata', () => {
+                const duration = audioEl.duration;
+                if (!isNaN(duration)) {
+                  const mins = Math.floor(duration / 60);
+                  const secs = Math.floor(duration % 60);
+                  const durationStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                  durationEl.textContent = durationStr;
+                }
+              }, { once: true });
 
-                // Waveform
-                let playbackCtx = null;
-                let playbackAnalyser = null;
-                let playbackDataArray = null;
-                let playbackRafId = null;
-                function drawPlayback() {
-                  playbackRafId = requestAnimationFrame(drawPlayback);
-                  if (playbackAnalyser) {
-                    playbackAnalyser.getByteFrequencyData(playbackDataArray);
-                    const ctx = canvasEl.getContext('2d');
-                    ctx.fillStyle = 'rgb(0, 0, 0)';
-                    ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-                    const barWidth = (canvasEl.width / playbackDataArray.length) * 2.5;
-                    let barHeight;
-                    let x = 0;
-                    for(let i = 0; i < playbackDataArray.length; i++) {
-                      barHeight = playbackDataArray[i];
-                      ctx.fillStyle = `rgb(${barHeight + 100},50,50)`;
-                      ctx.fillRect(x, canvasEl.height - barHeight / 2, barWidth, barHeight / 2);
-                      x += barWidth + 1;
-                    }
+              // Waveform
+              let playbackCtx = null;
+              let playbackAnalyser = null;
+              let playbackDataArray = null;
+              let playbackRafId = null;
+              function drawPlayback() {
+                playbackRafId = requestAnimationFrame(drawPlayback);
+                if (playbackAnalyser) {
+                  playbackAnalyser.getByteFrequencyData(playbackDataArray);
+                  const ctx = canvasEl.getContext('2d');
+                  ctx.fillStyle = 'rgb(0, 0, 0)';
+                  ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+                  const barWidth = (canvasEl.width / playbackDataArray.length) * 2.5;
+                  let barHeight;
+                  let x = 0;
+                  for(let i = 0; i < playbackDataArray.length; i++) {
+                    barHeight = playbackDataArray[i];
+                    ctx.fillStyle = `rgb(${barHeight + 100},50,50)`;
+                    ctx.fillRect(x, canvasEl.height - barHeight / 2, barWidth, barHeight / 2);
+                    x += barWidth + 1;
                   }
                 }
-                audioEl.addEventListener('play', () => {
-                  if (!playbackCtx) {
-                    playbackCtx = new AudioContext();
-                    const source = playbackCtx.createMediaElementSource(audioEl);
-                    playbackAnalyser = playbackCtx.createAnalyser();
-                    playbackAnalyser.fftSize = 256;
-                    const bufferLength = playbackAnalyser.frequencyBinCount;
-                    playbackDataArray = new Uint8Array(bufferLength);
-                    source.connect(playbackAnalyser);
-                    playbackAnalyser.connect(playbackCtx.destination);
-                  }
-                  drawPlayback();
-                });
-                audioEl.addEventListener('pause', () => {
-                  if (playbackRafId) {
-                    cancelAnimationFrame(playbackRafId);
-                  }
-                });
-                audioEl.addEventListener('ended', () => {
-                  if (playbackRafId) {
-                    cancelAnimationFrame(playbackRafId);
-                  }
-                });
               }
+              audioEl.addEventListener('play', () => {
+                if (!playbackCtx) {
+                  playbackCtx = new AudioContext();
+                  const source = playbackCtx.createMediaElementSource(audioEl);
+                  playbackAnalyser = playbackCtx.createAnalyser();
+                  playbackAnalyser.fftSize = 256;
+                  const bufferLength = playbackAnalyser.frequencyBinCount;
+                  playbackDataArray = new Uint8Array(bufferLength);
+                  source.connect(playbackAnalyser);
+                  playbackAnalyser.connect(playbackCtx.destination);
+                }
+                drawPlayback();
+              });
+              audioEl.addEventListener('pause', () => {
+                if (playbackRafId) {
+                  cancelAnimationFrame(playbackRafId);
+                }
+              });
+              audioEl.addEventListener('ended', () => {
+                if (playbackRafId) {
+                  cancelAnimationFrame(playbackRafId);
+                }
+              });
             }
           }
         }
-        if (isInitialLoad || (newMessages.length > 0 && wasAtBottom)) {
+
+        if (wasNearBottom) {
           scrollToBottom();
+        }
+
+        // Re-check and add typing indicator if needed
+        if (typingRef) {
+          const typingSnapshot = await get(typingRef);
+          const typing = typingSnapshot.val() || {};
+          if (typing[currentOtherUid] && !typing[currentUser?.uid]) {
+            const indicator = document.createElement('div');
+            indicator.className = 'typing-indicator';
+            indicator.innerHTML = `
+              <span>Typing...</span>
+              <div class="typing-dots">
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+              </div>
+            `;
+            container.appendChild(indicator);
+            if (wasNearBottom) {
+              scrollToBottom();
+            }
+          }
         }
       }, (error) => {
         console.error('Error loading messages:', error);
@@ -1243,7 +1269,6 @@
 
     function handleTyping() {
       if (!currentChatId || !currentOtherUid || isRecording) return;
-      const typingRef = ref(db, `chats/${currentChatId}/typing`);
       const input = document.getElementById('message-input');
       const text = input.value.trim();
       if (text && !isTyping) {
@@ -1263,11 +1288,11 @@
     }
 
     function setupTypingListener() {
-      const typingRef = ref(db, `chats/${currentChatId}/typing`);
+      typingRef = ref(db, `chats/${currentChatId}/typing`);
       onValue(typingRef, (snapshot) => {
         const typing = snapshot.val() || {};
         let typingIndicator = document.querySelector('.typing-indicator');
-        if (typing[currentOtherUid] && !typing[currentUser.uid]) {
+        if (typing[currentOtherUid] && !typing[currentUser?.uid]) {
           if (!typingIndicator) {
             typingIndicator = document.createElement('div');
             typingIndicator.className = 'typing-indicator';
@@ -1279,8 +1304,12 @@
                 <div class="typing-dot"></div>
               </div>
             `;
-            document.getElementById('messages-container').appendChild(typingIndicator);
-            scrollToBottom();
+            const container = document.getElementById('messages-container');
+            container.appendChild(typingIndicator);
+            const wasNearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 10;
+            if (wasNearBottom) {
+              scrollToBottom();
+            }
           }
         } else {
           if (typingIndicator) {
@@ -1332,9 +1361,11 @@
           setupCallButtons();
           setupAttachButton();
           setupRecordButton();
-          // Mark as read
-          const chatRef = ref(db, `users/${currentUser.uid}/chats/${currentOtherUid}`);
-          await update(chatRef, { unreadCount: 0 });
+          // Mark unread as 0
+          if (currentOtherUid) {
+            const chatRef = ref(db, `users/${currentUser.uid}/chats/${currentOtherUid}`);
+            await update(chatRef, { unreadCount: 0 });
+          }
         } else {
           window.location.href = 'login.html';
         }
@@ -1367,8 +1398,7 @@
       if (typingTimeout) clearTimeout(typingTimeout);
       if (messagesListener) off(messagesListener);
       if (presenceListener) off(presenceListener);
-      if (currentUser && currentChatId) {
-        const typingRef = ref(db, `chats/${currentChatId}/typing`);
+      if (currentUser && currentChatId && typingRef) {
         set(typingRef, { [currentUser.uid]: false });
       }
       stopRecording();
