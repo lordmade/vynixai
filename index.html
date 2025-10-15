@@ -2134,9 +2134,7 @@
     let statusTimer = null;
     let currentStatusId = null;
     let prevUnread = {};
-    let prevGroupUnread = {};
     let chatsListener = null;
-    let groupsListener = null;
     let statusesListener = null;
     let statusesLoaded = { carousel: false, list: false }; // Flag to prevent duplication
     let currentVideo = null;
@@ -2676,72 +2674,6 @@
       chatItem.dataset.lastTime = chatData.lastMessageTime || 0;
     }
 
-    // Incremental group update function
-    async function updateSingleGroup(groupId, groupData) {
-      const groupItem = document.querySelector(`[data-groupid="${groupId}"]`);
-      if (!groupItem) return;
-
-      const unread = groupData.unreadCount || 0;
-      let messagePreview = 'No messages yet';
-      if (groupData.lastMessage) {
-        try {
-          messagePreview = await decryptMessage(groupData.lastMessage, groupId);
-          messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
-        } catch (error) {
-          console.error('Failed to decrypt preview:', error);
-        }
-      }
-
-      const groupName = groupData.name || 'Unnamed Group';
-
-      // Update unread badge
-      let unreadBadge = groupItem.querySelector('.unread-badge');
-      if (unread > 0) {
-        if (!unreadBadge) {
-          unreadBadge = document.createElement('span');
-          unreadBadge.className = 'unread-badge';
-          groupItem.insertBefore(unreadBadge, groupItem.querySelector('.chat-info'));
-        }
-        unreadBadge.textContent = unread > 99 ? '99+' : unread;
-        unreadBadge.style.display = 'flex';
-      } else if (unreadBadge) {
-        unreadBadge.style.display = 'none';
-      }
-
-      // Update preview and time
-      const previewEl = groupItem.querySelector('.chat-preview');
-      const timeEl = groupItem.querySelector('.chat-time');
-      if (previewEl) previewEl.textContent = messagePreview;
-      if (timeEl) timeEl.textContent = formatTimestamp(groupData.lastMessageTime || 0);
-
-      // Update total unread
-      const prevUnreadCount = prevGroupUnread[groupId] || 0;
-      if (unread > prevUnreadCount) {
-        playNotificationSound();
-        showAlert(`New message in ${groupName}: ${messagePreview}`);
-        if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification(groupName, {
-            body: messagePreview,
-            icon: ''
-          });
-        }
-      }
-      prevGroupUnread[groupId] = unread;
-      totalUnread = Math.max(0, totalUnread - prevUnreadCount + unread);
-      updateNavUnread(totalUnread);
-
-      // Re-sort the list to move updated group to top
-      const groupsList = document.getElementById('groups-list');
-      const groups = Array.from(groupsList.children).filter(el => el.classList.contains('chat-item'));
-      groups.sort((a, b) => {
-        const aTime = parseInt(a.dataset.lastTime || 0);
-        const bTime = parseInt(b.dataset.lastTime || 0);
-        return bTime - aTime;
-      });
-      groups.forEach(group => groupsList.appendChild(group));
-      groupItem.dataset.lastTime = groupData.lastMessageTime || 0;
-    }
-
     async function updateChatsUI(snapshot) {
       const chatList = document.getElementById('chat-list');
       if (!chatList) return;
@@ -2849,84 +2781,12 @@
         chatList.insertBefore(chatItem, chatList.firstChild); // Add to top
         // Setup typing listener for this chat
         setupTypingListener(otherUserId, chat.chatId);
-        // Add to total unread
-        totalUnread += unread;
-        prevUnread[otherUserId] = unread;
       }
 
       hasChats = chats.length > 0;
       if (chats.length === 0) {
         chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No chats yet. Add friends to start!</p>';
       }
-      updateNavUnread(totalUnread);
-    }
-
-    async function updateGroupsUI(snapshot) {
-      const groupsList = document.getElementById('groups-list');
-      if (!groupsList) return;
-
-      let groups = [];
-      if (snapshot.exists()) {
-        groups = Object.entries(snapshot.val())
-          .map(([groupId, group]) => ({ groupId, ...group }))
-          .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
-      }
-
-      // Check for new groups
-      const existingGroupIds = Array.from(groupsList.querySelectorAll('.chat-item')).map(item => item.dataset.groupid);
-      const newGroups = groups.filter(group => !existingGroupIds.includes(group.groupId));
-
-      // Update existing groups incrementally
-      for (const group of groups) {
-        if (existingGroupIds.includes(group.groupId)) {
-          await updateSingleGroup(group.groupId, group);
-        }
-      }
-
-      // Add new groups
-      for (const group of newGroups) {
-        const groupId = group.groupId;
-        const unread = group.unreadCount || 0;
-        let messagePreview = 'No messages yet';
-        if (group.lastMessage) {
-          try {
-            messagePreview = await decryptMessage(group.lastMessage, groupId);
-            messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
-          } catch (error) {
-            console.error('Failed to decrypt preview:', error);
-          }
-        }
-
-        const groupName = group.name || 'Unnamed Group';
-        const initial = groupName[0].toUpperCase();
-        const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
-        const groupItem = document.createElement('div');
-        groupItem.className = 'chat-item';
-        groupItem.setAttribute('data-groupid', groupId);
-        groupItem.dataset.lastTime = group.lastMessageTime || 0;
-        groupItem.onclick = () => openChat(groupId, null);
-        groupItem.innerHTML = `
-          <div class="chat-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center;">${initial}</div>
-          ${unreadBadge}
-          <div class="chat-info">
-            <div class="chat-name">${groupName}</div>
-            <div class="chat-preview">${messagePreview}</div>
-            <div id="typing-indicator-group-${groupId}" class="typing-indicator hidden">Someone is typing...</div>
-          </div>
-          <div class="chat-time">${formatTimestamp(group.lastMessageTime || 0)}</div>
-        `;
-        groupsList.insertBefore(groupItem, groupsList.firstChild); // Add to top
-        // Setup typing listener for this group
-        setupGroupTypingListener(groupId);
-        // Add to total unread
-        totalUnread += unread;
-        prevGroupUnread[groupId] = unread;
-      }
-
-      if (groups.length === 0) {
-        groupsList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No groups yet. Create or join a group to get started!</p>';
-      }
-      updateNavUnread(totalUnread);
     }
 
     function setupTypingListener(otherUserId, chatId) {
@@ -2945,48 +2805,21 @@
       });
     }
 
-    function setupGroupTypingListener(groupId) {
-      if (typingListeners[groupId]) return;
-      const typingRef = ref(db, `chats/${groupId}/typing`);
-      typingListeners[groupId] = onValue(typingRef, (snapshot) => {
-        const typing = snapshot.val() || {};
-        const numTyping = Object.keys(typing).filter(uid => uid !== currentUser.uid).length;
-        const indicator = document.getElementById(`typing-indicator-group-${groupId}`);
-        if (indicator) {
-          if (numTyping > 0) {
-            indicator.textContent = numTyping > 1 ? `${numTyping} people typing...` : 'Someone is typing...';
-            indicator.classList.remove('hidden');
-          } else {
-            indicator.classList.add('hidden');
-          }
-        }
-      });
-    }
-
     function cleanupTypingListeners() {
-      Object.keys(typingListeners).forEach(key => {
-        off(typingListeners[key]);
+      Object.keys(typingListeners).forEach(uid => {
+        off(typingListeners[uid]);
       });
       typingListeners = {};
     }
 
     function setupChatsListener() {
       prevUnread = {};
+      cleanupTypingListeners();
       const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
       chatsListener = onValue(userChatsRef, async (snapshot) => {
         await updateChatsUI(snapshot);
       }, (error) => {
         console.error('Error listening to chats:', error);
-      });
-    }
-
-    function setupGroupsListener() {
-      prevGroupUnread = {};
-      const userGroupsRef = ref(db, `users/${currentUser.uid}/groups`);
-      groupsListener = onValue(userGroupsRef, async (snapshot) => {
-        await updateGroupsUI(snapshot);
-      }, (error) => {
-        console.error('Error listening to groups:', error);
       });
     }
 
@@ -4006,6 +3839,44 @@
       });
     }
 
+    async function loadGroups() {
+      showSpinner();
+      const groupsList = document.getElementById('groups-list');
+      groupsList.innerHTML = '';
+      if (currentUser) {
+        const userGroupsRef = ref(db, `users/${currentUser.uid}/groups`);
+        const snapshot = await get(userGroupsRef);
+        let groups = [];
+        if (snapshot.exists()) {
+          groups = Object.entries(snapshot.val())
+            .map(([gId, g]) => ({ groupId: gId, ...g }))
+            .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
+        }
+        if (groups.length === 0) {
+          groupsList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No groups yet. Create or join a group to get started!</p>';
+        } else {
+          for (let i = 0; i < groups.length; i++) {
+            const group = groups[i];
+            const groupName = group.name || 'Unnamed Group';
+            const item = document.createElement('div');
+            item.className = 'chat-item';
+            item.onclick = () => openChat(group.groupId, null);
+            const initial = groupName[0].toUpperCase();
+            item.innerHTML = `
+              <div class="chat-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center;">${initial}</div>
+              <div class="chat-info">
+                <div class="chat-name">${groupName}</div>
+                <div class="chat-preview">Group chat</div>
+              </div>
+              <div class="chat-time">${formatTimestamp(group.lastMessageTime || Date.now())}</div>
+            `;
+            groupsList.appendChild(item);
+          }
+        }
+      }
+      hideSpinner();
+    }
+
     async function loadUsersForGroup() {
       showSpinner();
       const usersList = document.getElementById('group-users-list');
@@ -4078,12 +3949,13 @@
         for (let uid of memberIds) {
           await set(ref(db, `groups/${groupId}/members/${uid}`), memberRole);
         }
-        await set(ref(db, `users/${currentUser.uid}/groups/${groupId}`), { groupId, name: groupName, role: 'admin', lastMessageTime: Date.now(), unreadCount: 0 });
+        await set(ref(db, `users/${currentUser.uid}/groups/${groupId}`), { groupId, name: groupName, role: 'admin', lastMessageTime: Date.now() });
         for (let uid of memberIds) {
-          await set(ref(db, `users/${uid}/groups/${groupId}`), { groupId, name: groupName, role: 'member', lastMessageTime: Date.now(), unreadCount: 0 });
+          await set(ref(db, `users/${uid}/groups/${groupId}`), { groupId, name: groupName, role: 'member', lastMessageTime: Date.now() });
         }
         closeCreateGroupModal();
         showAlert('Group created!');
+        loadGroups();
       } catch (error) {
         console.error('Error creating group:', error);
         showAlert('Failed to create group.');
@@ -4503,16 +4375,6 @@
         }
         window.location.href = `chat.html?chatId=${chatId}&userId=${otherUserId}`;
       } else {
-        // Group
-        try {
-          const userGroupsRef = ref(db, `users/${currentUser.uid}/groups/${chatId}`);
-          await update(userGroupsRef, { unreadCount: 0 });
-          totalUnread = Math.max(0, totalUnread - (prevGroupUnread[chatId] || 0));
-          updateNavUnread(totalUnread);
-          prevGroupUnread[chatId] = 0;
-        } catch (error) {
-          console.error('Failed to mark group as read:', error);
-        }
         window.location.href = `group.html?groupId=${chatId}`;
       }
     }
@@ -4529,7 +4391,6 @@
     window.logout = async () => {
       cleanupTypingListeners();
       if (chatsListener) off(chatsListener);
-      if (groupsListener) off(groupsListener);
       if (statusesListener) off(statusesListener);
       if (callsListener) off(callsListener);
       await auth.signOut();
@@ -4551,12 +4412,11 @@
       document.getElementById(`sub-${subTab}-content`).classList.add('active');
       // Load the appropriate content
       if (subTab === 'chats') {
-        setupChatsListener();
         const fab = document.getElementById('fab-btn');
         fab.innerHTML = `<span class="material-icons" style="font-size: 24px;">person_add</span>`;
         fab.onclick = openAddFriendsSheet;
       } else if (subTab === 'groups') {
-        setupGroupsListener();
+        loadGroups();
         const fab = document.getElementById('fab-btn');
         fab.innerHTML = `<span class="material-icons" style="font-size: 24px;">group_add</span>`;
         fab.onclick = openCreateGroupModal;
@@ -4636,6 +4496,7 @@
             }
           }
           await loadUserPreferences();
+          setupChatsListener();
           setupStatusesListener();
           setupCallsListener();
           setupVideoObserver();
