@@ -349,10 +349,9 @@
       justify-content: center;
     }
     .status-post-media {
-      width: 100%;
-      height: auto;
+      max-width: 100%;
       max-height: 550px;
-      object-fit: cover;
+      object-fit: contain;
       border-radius: 20px;
       box-shadow: var(--shadow-md);
       transition: transform 0.3s ease;
@@ -1665,7 +1664,7 @@
       width: 100%;
       height: auto;
       max-height: none;
-      object-fit: cover;
+      object-fit: contain;
       border-radius: 20px;
       margin-bottom: 16px;
       cursor: pointer;
@@ -2605,188 +2604,117 @@
       loadFriendStatuses();
     };
 
-    // Incremental chat update function
-    async function updateSingleChat(chatId, otherUserId, chatData) {
-      const chatItem = document.querySelector(`[data-chatid="${chatId}"]`);
-      if (!chatItem) return; // Item not found, will be added on full reload if needed
-
-      const userRef = ref(db, `users/${otherUserId}`);
-      const userSnapshot = await get(userRef);
-      const user = userSnapshot.val();
-      if (!user) return;
-
-      const unread = chatData.unreadCount || 0;
-      let messagePreview = 'No messages yet';
-      if (chatData.lastMessage) {
-        try {
-          messagePreview = await decryptMessage(chatData.lastMessage, chatId);
-          messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
-        } catch (error) {
-          console.error('Failed to decrypt preview:', error);
-        }
-      }
-
-      // Update unread badge
-      let unreadBadge = chatItem.querySelector('.unread-badge');
-      if (unread > 0) {
-        if (!unreadBadge) {
-          unreadBadge = document.createElement('span');
-          unreadBadge.className = 'unread-badge';
-          chatItem.insertBefore(unreadBadge, chatItem.querySelector('.chat-info'));
-        }
-        unreadBadge.textContent = unread > 99 ? '99+' : unread;
-        unreadBadge.style.display = 'flex';
-      } else if (unreadBadge) {
-        unreadBadge.style.display = 'none';
-      }
-
-      // Update preview and time
-      const previewEl = chatItem.querySelector('.chat-preview');
-      const timeEl = chatItem.querySelector('.chat-time');
-      if (previewEl) previewEl.textContent = messagePreview;
-      if (timeEl) timeEl.textContent = formatTimestamp(chatData.lastMessageTime || 0);
-
-      // Update total unread
-      const prevUnreadCount = prevUnread[otherUserId] || 0;
-      if (unread > prevUnreadCount) {
-        playNotificationSound();
-        showAlert(`New message from ${user.displayName}: ${messagePreview}`);
-        if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification(user.displayName, {
-            body: messagePreview,
-            icon: user.photoURL || ''
-          });
-        }
-      }
-      prevUnread[otherUserId] = unread;
-      totalUnread = Math.max(0, totalUnread - prevUnreadCount + unread);
-      updateNavUnread(totalUnread);
-
-      // Re-sort the list to move updated chat to top
-      const chatList = document.getElementById('chat-list');
-      const chats = Array.from(chatList.children).filter(el => el.classList.contains('chat-item'));
-      chats.sort((a, b) => {
-        const aTime = parseInt(a.dataset.lastTime || 0);
-        const bTime = parseInt(b.dataset.lastTime || 0);
-        return bTime - aTime;
-      });
-      chats.forEach(chat => chatList.appendChild(chat)); // This will reorder without full rebuild
-      chatItem.dataset.lastTime = chatData.lastMessageTime || 0;
-    }
-
     async function updateChatsUI(snapshot) {
       const chatList = document.getElementById('chat-list');
-      if (!chatList) return;
-
+      chatList.innerHTML = '';
+      totalUnread = 0;
       let chats = [];
       if (snapshot.exists()) {
         chats = Object.entries(snapshot.val())
           .map(([chatId, chat]) => ({ chatId, ...chat }))
           .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
       }
-
-      // Check for new chats
-      const existingChatIds = Array.from(chatList.querySelectorAll('.chat-item')).map(item => item.dataset.chatid);
-      const newChats = chats.filter(chat => !existingChatIds.includes(chat.chatId));
-
-      // Update existing chats incrementally
-      for (const chat of chats) {
-        if (existingChatIds.includes(chat.chatId)) {
-          await updateSingleChat(chat.chatId, chat.otherUserId, chat);
-        }
-      }
-
-      // Add new chats
-      for (const chat of newChats) {
-        const otherUserId = chat.otherUserId;
-        const userRef = ref(db, `users/${otherUserId}`);
-        const userSnapshot = await get(userRef);
-        const user = userSnapshot.val();
-        if (!user) continue;
-
-        const unread = chat.unreadCount || 0;
-        let messagePreview = 'No messages yet';
-        if (chat.lastMessage) {
-          try {
-            messagePreview = await decryptMessage(chat.lastMessage, chat.chatId);
-            messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
-          } catch (error) {
-            console.error('Failed to decrypt preview:', error);
-          }
-        }
-
-        const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-        let avatarHtml;
-        if (user.photoURL) {
-          avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">`;
-        } else {
-          avatarHtml = `<div class="chat-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-        }
-        let nameHtml = user.displayName;
-        if (user.verified) {
-          nameHtml += verifiedIcon;
-        }
-        const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
-        const chatItem = document.createElement('div');
-        chatItem.className = 'chat-item';
-        chatItem.setAttribute('data-chatid', chat.chatId);
-        chatItem.setAttribute('data-otheruid', otherUserId);
-        chatItem.dataset.lastTime = chat.lastMessageTime || 0;
-        chatItem.onclick = () => openChat(chat.chatId, otherUserId);
-        chatItem.innerHTML = `
-          ${avatarHtml}
-          ${unreadBadge}
-          <div class="chat-info">
-            <div class="chat-name">${nameHtml}</div>
-            <div class="chat-preview">${messagePreview}</div>
-            <div id="typing-indicator-${otherUserId}" class="typing-indicator hidden">Typing...</div>
-          </div>
-          <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
-        `;
-        // Swipe to delete if enabled
-        const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
-        if (swipeDeleteEnabled) {
-          let startX = 0;
-          let currentX = 0;
-          let startY = 0;
-          let currentY = 0;
-          chatItem.addEventListener('touchstart', (e) => {
-            startX = e.touches[0].clientX;
-            currentX = startX;
-            startY = e.touches[0].clientY;
-            currentY = startY;
-          });
-          chatItem.addEventListener('touchmove', (e) => {
-            currentX = e.touches[0].clientX;
-            currentY = e.touches[0].clientY;
-            const deltaX = startX - currentX;
-            const deltaY = Math.abs(startY - currentY);
-            if (Math.abs(deltaX) > deltaY && deltaX > 0) {
-              chatItem.style.transform = `translateX(${-deltaX}px)`;
+      hasChats = chats.length > 0;
+      if (chats.length > 0) {
+        for (let i = 0; i < chats.length; i++) {
+          const chat = chats[i];
+          const otherUserId = chat.otherUserId;
+          const userRef = ref(db, `users/${otherUserId}`);
+          const userSnapshot = await get(userRef);
+          const user = userSnapshot.val();
+          if (!user) continue;
+          const unread = chat.unreadCount || 0;
+          let messagePreview = 'No messages yet';
+          if (chat.lastMessage) {
+            try {
+              messagePreview = await decryptMessage(chat.lastMessage, chat.chatId);
+              messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
+            } catch (error) {
+              console.error('Failed to decrypt preview:', error);
             }
-          });
-          chatItem.addEventListener('touchend', (e) => {
-            chatItem.style.transform = '';
-            const deltaX = startX - currentX;
-            const deltaY = Math.abs(startY - currentY);
-            if (deltaX > 50 && deltaX > deltaY) {
-              showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
-                if (confirmed) {
-                  removeChat(chat.chatId, otherUserId);
-                }
+          }
+          if (prevUnread[otherUserId] !== undefined && unread > prevUnread[otherUserId]) {
+            playNotificationSound();
+            showAlert(`New message from ${user.displayName}: ${messagePreview}`);
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification(user.displayName, {
+                body: messagePreview,
+                icon: user.photoURL || ''
               });
             }
-          });
+          }
+          prevUnread[otherUserId] = unread;
+          totalUnread += unread;
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          let avatarHtml;
+          if (user.photoURL) {
+            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">`;
+          } else {
+            avatarHtml = `<div class="chat-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          }
+          let nameHtml = user.displayName;
+          if (user.verified) {
+            nameHtml += verifiedIcon;
+          }
+          const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
+          const chatItem = document.createElement('div');
+          chatItem.className = 'chat-item';
+          chatItem.setAttribute('data-chatid', chat.chatId);
+          chatItem.setAttribute('data-otheruid', otherUserId);
+          chatItem.onclick = () => openChat(chat.chatId, otherUserId);
+          chatItem.innerHTML = `
+            ${avatarHtml}
+            ${unreadBadge}
+            <div class="chat-info">
+              <div class="chat-name">${nameHtml}</div>
+              <div class="chat-preview">${messagePreview}</div>
+              <div id="typing-indicator-${otherUserId}" class="typing-indicator hidden">Typing...</div>
+            </div>
+            <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
+          `;
+          // Swipe to delete if enabled
+          const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
+          if (swipeDeleteEnabled) {
+            let startX = 0;
+            let currentX = 0;
+            let startY = 0;
+            let currentY = 0;
+            chatItem.addEventListener('touchstart', (e) => {
+              startX = e.touches[0].clientX;
+              currentX = startX;
+              startY = e.touches[0].clientY;
+              currentY = startY;
+            });
+            chatItem.addEventListener('touchmove', (e) => {
+              currentX = e.touches[0].clientX;
+              currentY = e.touches[0].clientY;
+              const deltaX = startX - currentX;
+              const deltaY = Math.abs(startY - currentY);
+              if (Math.abs(deltaX) > deltaY && deltaX > 0) {
+                chatItem.style.transform = `translateX(${-deltaX}px)`;
+              }
+            });
+            chatItem.addEventListener('touchend', (e) => {
+              chatItem.style.transform = '';
+              const deltaX = startX - currentX;
+              const deltaY = Math.abs(startY - currentY);
+              if (deltaX > 50 && deltaX > deltaY) {
+                showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
+                  if (confirmed) {
+                    removeChat(chat.chatId, otherUserId);
+                  }
+                });
+              }
+            });
+          }
+          chatList.appendChild(chatItem);
+          // Setup typing listener for this chat
+          setupTypingListener(otherUserId, chat.chatId);
         }
-        chatList.insertBefore(chatItem, chatList.firstChild); // Add to top
-        // Setup typing listener for this chat
-        setupTypingListener(otherUserId, chat.chatId);
-      }
-
-      hasChats = chats.length > 0;
-      if (chats.length === 0) {
+      } else {
         chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No chats yet. Add friends to start!</p>';
       }
+      updateNavUnread(totalUnread);
     }
 
     function setupTypingListener(otherUserId, chatId) {
