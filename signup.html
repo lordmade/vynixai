@@ -491,6 +491,57 @@
     const db = getDatabase(app);
     const googleProvider = new GoogleAuthProvider();
 
+    function levenshtein(a, b) {
+      if (a.length === 0) return b.length;
+      if (b.length === 0) return a.length;
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) {
+        matrix[i] = [i];
+      }
+      for (let j = 0; j <= a.length; j++) {
+        matrix[0][j] = j;
+      }
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          if (b.charAt(i - 1) === a.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(
+              matrix[i - 1][j - 1] + 1,
+              matrix[i][j - 1] + 1,
+              matrix[i - 1][j] + 1
+            );
+          }
+        }
+      }
+      return matrix[b.length][a.length];
+    }
+
+    async function validateUsername(username) {
+      const normalized = username.trim().toLowerCase();
+      const usernameSnapshot = await get(ref(db, 'usernames/' + normalized));
+      const available = !usernameSnapshot.exists();
+      let similar = false;
+      if (available) {
+        const usersSnapshot = await get(ref(db, 'users'));
+        if (usersSnapshot.exists()) {
+          const users = usersSnapshot.val();
+          const verifiedUsernames = Object.values(users)
+            .filter(user => user.verified)
+            .map(user => (user.username || '').toLowerCase().trim());
+          let minDist = Infinity;
+          for (let v of verifiedUsernames) {
+            if (v) {
+              const dist = levenshtein(normalized, v);
+              if (dist < minDist) minDist = dist;
+            }
+          }
+          similar = minDist <= 2 && minDist !== Infinity;
+        }
+      }
+      return { available, similar };
+    }
+
     function showError(id, message) {
       const errorEl = document.getElementById(id);
       errorEl.textContent = message;
@@ -563,20 +614,14 @@
       }
     }
 
-    async function checkUsernameAvailable(username) {
-      if (!username || username.trim() === '') return false;
-      const normalized = username.trim().toLowerCase();
-      const snapshot = await get(ref(db, 'usernames/' + normalized));
-      return !snapshot.exists();
-    }
-
     async function getUsernameSuggestions(base) {
       const normalizedBase = base.trim().toLowerCase();
       const suggestions = [];
       // Try appending numbers
       for (let i = 1; i <= 10; i++) {
         const sug = normalizedBase + i;
-        if (await checkUsernameAvailable(sug)) {
+        const { available, similar } = await validateUsername(sug);
+        if (available && !similar) {
           suggestions.push(sug);
           if (suggestions.length >= 3) break;
         }
@@ -585,7 +630,8 @@
       if (suggestions.length < 3) {
         for (let i = 1; i <= 10; i++) {
           const sug = normalizedBase + '_' + i;
-          if (await checkUsernameAvailable(sug)) {
+          const { available, similar } = await validateUsername(sug);
+          if (available && !similar) {
             suggestions.push(sug);
             if (suggestions.length >= 3) break;
           }
@@ -636,12 +682,18 @@
       statusEl.style.display = 'block';
       usernameTimeout = setTimeout(async () => {
         try {
-          const available = await checkUsernameAvailable(value);
-          if (available) {
+          const { available, similar } = await validateUsername(value);
+          if (available && !similar) {
             statusEl.textContent = 'Username available';
             statusEl.className = 'password-match match-yes';
-          } else {
+          } else if (!available) {
             statusEl.textContent = 'Username taken';
+            statusEl.className = 'password-match match-no';
+            // Get and display suggestions
+            const suggestions = await getUsernameSuggestions(value);
+            displaySuggestions(suggestions);
+          } else if (similar) {
+            statusEl.textContent = 'Username too similar to a verified user';
             statusEl.className = 'password-match match-no';
             // Get and display suggestions
             const suggestions = await getUsernameSuggestions(value);
@@ -681,9 +733,13 @@
         showError('signup-error', 'Please enter a username.');
         return;
       }
-      const available = await checkUsernameAvailable(username);
+      const { available, similar } = await validateUsername(username);
       if (!available) {
         showError('signup-error', 'Username already taken. Please choose another.');
+        return;
+      }
+      if (similar) {
+        showError('signup-error', 'Username too similar to a verified user. Please choose another.');
         return;
       }
       try {
