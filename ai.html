@@ -253,7 +253,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, push, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -341,40 +341,58 @@
       console.log('Added new training data:', { input, output });
     }
 
-    async function initializeBrainJS() {
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        const trainingData = [];
-        snapshot.forEach((child) => {
-          trainingData.push(...child.val());
+    async function trainOnStatuses() {
+      const statusesRef = ref(db, 'statuses');
+      const snapshot = await get(statusesRef);
+      if (!snapshot.exists()) return;
+
+      let rawStatuses = [];
+      snapshot.forEach(child => rawStatuses.push({ id: child.key, ...child.val() }));
+
+      // Filter noise: length >20, impressions >1, recent (last 30 days), no spam
+      const now = Date.now();
+      const filtered = rawStatuses.filter(s => 
+        s.content && s.content.length > 20 &&
+        (s.impressions || 0) > 1 &&
+        (now - s.timestamp) < (30 * 24 * 60 * 60 * 1000) &&
+        !s.content.match(/spam|buy now|click here/i)
+      );
+
+      if (filtered.length === 0) return;
+
+      // Generate training pairs: input = status.content, output = derived response (mock based on sentiment)
+      const trainingData = filtered.map(s => ({
+        input: normalizeText(s.content),
+        output: `That's interesting! ${s.content.includes('happy') || s.content.includes('great') ? "Sounds positive—what's making you smile?" : "Tell me more about that."}`
+      })).slice(-100); // Cap at 100
+
+      // Incremental training
+      const newData = lastTrainingSnapshot 
+        ? trainingData.filter(item => !lastTrainingSnapshot.some(prev => prev.input === item.input))
+        : trainingData;
+
+      if (newData.length > 0) {
+        net.train([...defaultTrainingData, ...newData], {
+          iterations: 100, // Increased for better convergence
+          errorThresh: 0.01, // Tighter threshold to reduce gibberish
+          log: true,
+          logPeriod: 10
         });
-        const cappedData = trainingData.slice(-100); // Limit to last 100 entries
-        const newData = lastTrainingSnapshot
-          ? cappedData.filter(item => !lastTrainingSnapshot.some(prev => prev.input === item.input && prev.output === item.output))
-          : cappedData;
+        console.log(`Trained on ${newData.length} new statuses from ${filtered.length} filtered`);
+        lastTrainingSnapshot = trainingData;
+      }
+    }
 
-        if (newData.length > 0) {
-          net.train(newData, {
-            iterations: 50,
-            errorThresh: 0.015,
-            log: true,
-            logPeriod: 10
-          });
-          console.log('Brain.js trained with', newData.length, 'new patterns');
-        }
-        lastTrainingSnapshot = cappedData;
+    async function initializeBrainJS() {
+      // Initial train on defaults
+      net.train(defaultTrainingData, { iterations: 50, errorThresh: 0.015 });
+      // Train on statuses
+      await trainOnStatuses();
+      // Periodic retrain every 5 min
+      setInterval(trainOnStatuses, 300000);
 
-        // Hide loading after initial training
-        if (!state.isReady) {
-          hideLoading();
-        }
-      });
-
-      onValue(patternsRef, () => {
-        setTimeout(() => {
-          initializeBrainJS();
-        }, 300000);
-      });
+      // Hide loading
+      if (!state.isReady) hideLoading();
     }
 
     async function initializeFirebase() {
@@ -396,7 +414,6 @@
           elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}!`;
           initializeBrainJS();
         } else {
-          // Optionally hide loading before redirect, or let it show briefly
           setTimeout(() => {
             hideLoading();
             window.location.href = 'signup.html';
@@ -440,32 +457,29 @@
       const tempMsg = appendMessage('', 'ai', true);
       try {
         const normalizedPrompt = normalizeText(prompt);
-        let trainingData = [];
-        await new Promise(resolve => {
-          onValue(ref(db, 'chatPatterns'), (snapshot) => {
-            snapshot.forEach((child) => {
-              trainingData.push(...child.val());
-            });
-            resolve();
-          }, { onlyOnce: true });
-        });
+        let response = net.run(normalizedPrompt);
 
-        const response = net.run(normalizedPrompt);
-        if (!response || response === 'undefined') {
-          const closestInput = getClosestMatch(normalizedPrompt, trainingData);
-          const fallback = closestInput
-            ? trainingData.find(item => item.input === closestInput).output
+        // Anti-gibberish: Check length, coherence (simple heuristic), fallback if bad
+        if (!response || response.length < 5 || response.includes('undefined') || Math.random() < 0.1) { // 10% fallback rate
+          // Fallback to closest match from defaults
+          const fallbackData = [...defaultTrainingData];
+          const closestInput = getClosestMatch(normalizedPrompt, fallbackData);
+          response = closestInput
+            ? fallbackData.find(item => item.input === closestInput).output
             : 'Hmm, not sure what to say—teach me more!';
-          tempMsg.textContent = fallback;
-        } else {
-          tempMsg.textContent = response;
         }
+
+        // Ensure response is coherent: Cap length, no repeats
+        response = response.substring(0, 200).replace(/(.)\1{2,}/g, '$1$1'); // Remove triple repeats
+
+        tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
-        state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
+        state.messages.push({ content: response, sender: 'ai', timestamp: Date.now() });
       } catch (error) {
-        tempMsg.textContent = 'Whoops, my circuits got tangled!';
+        const fallback = 'Whoops, my circuits got tangled! Try rephrasing.';
+        tempMsg.textContent = fallback;
         tempMsg.classList.remove('processing');
-        state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
+        state.messages.push({ content: fallback, sender: 'ai', timestamp: Date.now() });
         console.error('Brain.js Error:', error);
       }
     }
