@@ -294,7 +294,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, push, onValue, get, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, push, onValue, get, set, runTransaction } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -325,6 +325,7 @@
 
     let app, auth, db, net = new brain.recurrent.LSTM(), lastTrainingSnapshot = null;
     let pendingFeedback = [];
+    let currentModelVersion = 0;  // Track local version
 
     const defaultTrainingData = [
       { input: "hello", output: "Hey there!" },
@@ -405,6 +406,51 @@
       return anonymized.trim();
     }
 
+    function serializeModel() {
+      return {
+        json: net.toJSON(),
+        version: currentModelVersion,
+        trainedAt: Date.now()
+      };
+    }
+
+    function deserializeModel(modelData) {
+      if (modelData && modelData.json) {
+        net.fromJSON(modelData.json);
+        currentModelVersion = modelData.version || 0;
+        console.log(`Deserialized model v${currentModelVersion}, trained at ${new Date(modelData.trainedAt).toLocaleString()}`);
+      }
+    }
+
+    async function updateSharedModel() {
+      if (!auth.currentUser) return;  // Only authenticated users can contribute
+      
+      const modelRef = ref(db, 'sharedModel/latest');
+      const newModelData = serializeModel();
+      
+      // Use transaction for atomicity: Only update if our version is newer or equal (with tiebreak on timestamp)
+      await runTransaction(modelRef, (currentData) => {
+        if (!currentData) {
+          // No existing: Accept ours
+          return newModelData;
+        }
+        
+        if (newModelData.version > currentData.version ||
+            (newModelData.version === currentData.version && newModelData.trainedAt > currentData.trainedAt)) {
+          // Ours is newer: Update
+          console.log('Pushing updated shared model v' + newModelData.version);
+          return newModelData;
+        }
+        
+        // Existing is newer: Reject
+        console.log('Shared model is already newer; skipping push');
+        return currentData;  // No change
+      });
+      
+      // If successful, bump version for next local train
+      currentModelVersion++;
+    }
+
     function addTrainingData(input, output) {
       if (!input || !output || input.length > 100 || output.length > 200) {
         console.error('Invalid input/output: must be non-empty and within length limits');
@@ -456,6 +502,7 @@
         });
         console.log(`Trained on ${newData.length} new statuses from ${filtered.length} filtered`);
         lastTrainingSnapshot = trainingData;
+        await updateSharedModel();  // Push if newer
       }
     }
 
@@ -483,19 +530,69 @@
           errorThresh: 0.005  // Tighter for precision
         });
         console.log(`Retrained on ${feedbackData.length} feedback samples`);
+        await updateSharedModel();  // Push if newer
       }
     }
 
     async function initializeBrainJS() {
-      // Initial train on defaults
+      const modelRef = ref(db, 'sharedModel/latest');
+      
+      try {
+        // Load shared model
+        const snapshot = await get(modelRef);
+        if (snapshot.exists()) {
+          const modelData = snapshot.val();
+          deserializeModel(modelData);
+          
+          // Optional: Quick fine-tune on user's personal feedback (lightweight, 10 iterations)
+          if (auth.currentUser) {
+            const userFeedbackRef = ref(db, `userFeedback/${auth.currentUser.uid}`);
+            const fbSnapshot = await get(userFeedbackRef);
+            if (fbSnapshot.exists()) {
+              let userFbData = [];
+              fbSnapshot.forEach(snap => {
+                const fb = snap.val();
+                if (fb.isUp && fb.prompt && fb.response) {
+                  userFbData.push({ input: fb.prompt, output: fb.response });
+                }
+              });
+              if (userFbData.length > 0) {
+                net.train(userFbData.slice(-10), { iterations: 10, errorThresh: 0.02 });  // Personal delta
+                currentModelVersion += 0.1;  // Minor bump for personal tweaks
+                console.log(`Fine-tuned on ${userFbData.length} personal samples`);
+              }
+            }
+          }
+        } else {
+          console.warn('No shared model found; training defaults locally');
+        }
+      } catch (error) {
+        console.error('Failed to load shared model:', error);
+      }
+      
+      // Always ensure basics are trained (fallback)
       net.train(defaultTrainingData, { iterations: 50, errorThresh: 0.015 });
-      // Train on statuses
-      await trainOnStatuses();
-      // Periodic retrain every 5 min
+      
+      // Periodic: Check for updates every 5min (pull if newer)
+      setInterval(async () => {
+        try {
+          const snapshot = await get(modelRef);
+          if (snapshot.exists()) {
+            const remoteData = snapshot.val();
+            if (remoteData.version > currentModelVersion) {
+              deserializeModel(remoteData);
+              console.log('Pulled newer shared model!');
+            }
+          }
+        } catch (error) {
+          console.error('Periodic model check failed:', error);
+        }
+      }, 300000);
+      
+      // Train on statuses and feedback intervals
       setInterval(trainOnStatuses, 300000);
-      setInterval(trainOnFeedback, 600000);  // Every 10 min
-
-      // Hide loading
+      setInterval(trainOnFeedback, 600000);
+      
       if (!state.isReady) hideLoading();
     }
 
@@ -573,7 +670,7 @@
       await push(ref(db, `userFeedback/${userId}`), { 
         messageId, 
         isUp, 
-        prompt: state.messages.find(m => m.messageId === messageId)?.prompt || '',  // Assume store prompt in state
+        prompt: state.messages.find(m => m.messageId === messageId)?.prompt || '',  // On AI msg
         response: state.messages.find(m => m.messageId === messageId)?.content || '',
         timestamp: Date.now() 
       });  // Per-user log
@@ -611,10 +708,11 @@
       const tempMsg = appendMessage('', 'ai', true, false, messageId);
       try {
         const normalizedPrompt = normalizeText(prompt);
+        
+        // Fix: Set prompt on the AI message for easy lookup in feedback
+        state.messages[state.messages.length - 1].prompt = normalizedPrompt;
+        
         let response = net.run(normalizedPrompt);
-
-        // Store prompt in state for feedback
-        state.messages[state.messages.length - 2].prompt = normalizedPrompt;  // Previous user msg
 
         // Anti-gibberish: Check length, coherence (simple heuristic), fallback if bad
         if (!response || response.length < 5 || response.includes('undefined') || Math.random() < 0.1) { // 10% fallback rate
@@ -662,6 +760,26 @@
         tempMsg.appendChild(feedbackContainer);
       }, 100);
     }
+
+    // Image Upload Listener
+    elements.imageUploadButton.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const imgUrl = ev.target.result;
+            appendMessage(imgUrl, 'user', false, true);  // isImage: true
+            // Optional: Upload to Firebase Storage and get public URL
+          };
+          reader.readAsDataURL(file);
+        }
+      };
+      input.click();
+    });
 
     elements.sendButton.addEventListener('click', async () => {
       const prompt = elements.chatInput.value.trim();
