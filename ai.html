@@ -11,7 +11,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.24/dist/brain-browser.min.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -459,14 +458,19 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    let app, auth, db, currentUser, net, statusesData = [], isTraining = false;
+    // Gemini API Configuration
+    const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE'; // Replace with your actual Gemini API key
+    const GEMINI_MODEL = 'gemini-1.5-flash-latest'; // Or 'gemini-pro' for the other variant
+    const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+    let app, auth, db, currentUser, statusesData = [];
 
     // AI Identity and Purpose with SA Context
     const AI_NAME = 'Vynix';
     const AI_CREATOR = 'VynixAI team from South Africa';
     const AI_PURPOSE = `I'm ${AI_NAME}, created by the ${AI_CREATOR}. My purpose is to provide contextual replies infused with South African culture—think braai chats, rugby banter, township vibes, and the latest slang like 'delulu' for wild dreams, 'rizz' for smooth charm, or 'lekker' for that feel-good flow. Trained on public statuses, I help users dive into SA trends, reply with local flair, and keep conversations ubuntu-style.`;
 
-    // SA Cultural Seeds for Training (to infuse context)
+    // SA Cultural Seeds for Prompt Context (to infuse context without training)
     const saCulturalSeeds = [
       "Braai on the weekend in Joburg, feeling lekker with some boerewors and pap.",
       "Rugby fever in Cape Town, Springboks smashing it! Who's got the rizz to predict the score?",
@@ -476,26 +480,7 @@
       "What's sybau? Just SA slang for 'shut your beak and listen'—chat with some bop energy!"
     ];
 
-    // SAST timezone check for auto-retrain (2 AM daily)
-    function shouldRetrain() {
-      const now = new Date();
-      const sastNow = new Date(now.toLocaleString("en-US", {timeZone: "Africa/Johannesburg"}));
-      const hour = sastNow.getHours();
-      const lastTrainStr = localStorage.getItem('lastTrainTime');
-      if (!lastTrainStr) return true;
-
-      const lastTrain = new Date(lastTrainStr);
-      const lastSAST = new Date(lastTrain.toLocaleString("en-US", {timeZone: "Africa/Johannesburg"}));
-      const todayMidnight = new Date(sastNow.getFullYear(), sastNow.getMonth(), sastNow.getDate(), 2, 0, 0);
-
-      return lastSAST < todayMidnight;
-    }
-
-    function setLastTrainTime() {
-      localStorage.setItem('lastTrainTime', new Date().toISOString());
-    }
-
-    // Simple tokenizer for sentiment scan
+    // Simple tokenizer for sentiment scan (retained for optional use)
     function tokenize(text) {
       return text.toLowerCase()
         .replace(/[^\w\s]/g, '')
@@ -519,54 +504,61 @@
       return statusesData;
     }
 
-    async function trainModel(auto = false) {
-      if (isTraining || statusesData.length === 0) return;
-      isTraining = true;
-      document.getElementById('status').innerHTML = '<div class="spinner"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div> Optimizing data & training optimized LSTM with SA vibes...';
+    // Call Gemini API for response generation
+    async function callGemini(prompt, contextStatuses = []) {
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY_HERE') {
+        throw new Error('Gemini API key not configured. Please set GEMINI_API_KEY.');
+      }
+
+      // Build system prompt with SA context
+      const systemPrompt = `${AI_PURPOSE}
+
+SA Cultural Context: ${saCulturalSeeds.join(' ')}.
+
+Recent Public Statuses for Trends: ${contextStatuses.slice(0, 5).join('. ')}.
+
+You are ${AI_NAME}. Always respond in a fun, engaging SA style: Use slang like 'lekker', 'rizz', 'delulu', 'ubuntu', 'eish'. Keep replies concise (under 150 words), end with a question to continue the chat. Infuse ubuntu warmth and local vibes.`;
+
+      const fullPrompt = `${systemPrompt}
+
+User: ${prompt}
+
+${AI_NAME}: `;
+
+      const requestBody = {
+        contents: [{
+          parts: [{
+            text: fullPrompt
+          }]
+        }],
+        generationConfig: {
+          temperature: 0.8, // For creative, SA-flavored responses
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 200
+        }
+      };
 
       try {
-        // Filter: Only meaningful statuses (>50 chars for LSTM)
-        let filteredTexts = statusesData.filter(text => text.length > 50);
-        // Infuse SA cultural seeds to enhance training
-        filteredTexts = [...filteredTexts, ...saCulturalSeeds];
-        if (filteredTexts.length === 0) throw new Error('No sufficient data after filtering.');
-
-        net = new brain.recurrent.LSTM({ hiddenLayers: [50] });
-        const result = net.train(filteredTexts, { 
-          iterations: 10000, 
-          errorThresh: 0.005,
-          log: true, 
-          logPeriod: 50,
-          learningRate: 0.01,
-          momentum: 0.1 
+        const response = await fetch(GEMINI_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody)
         });
 
-        document.getElementById('status').innerHTML = `LSTM-trained with SA flair! Loss: ${result.error.toFixed(4)}. Ready for contextual replies.`;
-        document.getElementById('messages').style.display = 'flex';
-        isTraining = false;
-        setLastTrainTime();
-
-        // Save model for persistence
-        const saveData = { model: net.toJSON(), timestamp: Date.now() };
-        localStorage.setItem('aiModel', JSON.stringify(saveData));
-
-        // Introduce AI identity and purpose on first load
-        addMessage('AI', AI_PURPOSE);
-
-        // Context if statusId
-        const urlParams = new URLSearchParams(window.location.search);
-        const statusId = urlParams.get('statusId');
-        if (statusId) {
-          const statusRef = ref(db, `statuses/${statusId}`);
-          const snap = await get(statusRef);
-          if (snap.exists()) {
-            const status = snap.val().content;
-            addMessage('AI', `Context: "${status.substring(0, 100)}..." What would you like to know? Let's chat with some SA rizz!`);
-          }
+        if (!response.ok) {
+          throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
         }
+
+        const data = await response.json();
+        const generatedText = data.candidates[0]?.content?.parts[0]?.text || 'Eish, something went wrong—let's try that again!';
+        // Trim AI prefix if present
+        return generatedText.replace(/^(Vynix|${AI_NAME}):?\s*/i, '').trim();
       } catch (error) {
-        document.getElementById('status').innerHTML = `Prep/Train error: ${error.message}`;
-        isTraining = false;
+        console.error('Gemini API call failed:', error);
+        throw error;
       }
     }
 
@@ -579,58 +571,49 @@
       messages.scrollTop = messages.scrollHeight;
     }
 
-    // LSTM generation: Char-level continuation with SA seed
+    // Enhanced sendMessage using Gemini
     async function sendMessage() {
       const input = document.getElementById('user-input');
       const prompt = input.value.trim();
-      if (!prompt || !net) return;
+      if (!prompt) return;
       input.value = '';
 
       addMessage('User', prompt);
 
-      // Check if user is asking about itself
-      const lowerPrompt = prompt.toLowerCase();
-      const selfQueries = ['who are you', 'what are you', 'explain yourself', 'tell me about yourself', 'your purpose'];
-      const isSelfQuery = selfQueries.some(query => lowerPrompt.includes(query));
+      // Add typing indicator
+      const typingMsg = document.createElement('div');
+      typingMsg.className = 'message ai';
+      typingMsg.innerHTML = '<strong>Vynix:</strong> <div class="spinner"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div> Thinking with some SA rizz...';
+      document.getElementById('messages').appendChild(typingMsg);
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
 
-      if (isSelfQuery) {
-        addMessage('AI', AI_PURPOSE);
-        setTimeout(() => addMessage('AI', "Now that you know me better, what's on your mind today? Got any SA stories to share?"), 500);
-        return;
+      try {
+        // Check if user is asking about itself
+        const lowerPrompt = prompt.toLowerCase();
+        const selfQueries = ['who are you', 'what are you', 'explain yourself', 'tell me about yourself', 'your purpose'];
+        const isSelfQuery = selfQueries.some(query => lowerPrompt.includes(query));
+
+        let response;
+        if (isSelfQuery) {
+          response = AI_PURPOSE;
+        } else {
+          // Use recent statuses as context
+          const contextStatuses = statusesData.filter(text => text.length > 50).slice(-10);
+          response = await callGemini(prompt, contextStatuses);
+        }
+
+        // Remove typing indicator
+        document.getElementById('messages').removeChild(typingMsg);
+        addMessage('AI', response);
+
+      } catch (error) {
+        console.error('Error generating response:', error);
+        document.getElementById('messages').removeChild(typingMsg);
+        addMessage('AI', `Eish, load shedding on the API side! Try again? Error: ${error.message}`);
       }
-
-      // Seed prompt with AI identity and SA cultural context for consistent self-awareness and flair
-      const saSeed = "In true SA style, with ubuntu and a dash of delulu dreams: ";
-      const seededPrompt = `${AI_NAME}: ${AI_PURPOSE.split('.')[0]} ${saSeed}Responding to: ${prompt}. `;
-
-      // Generate continuation with LSTM
-      let fullResponse = net.run(seededPrompt, 150); // Generate up to 150 chars after prompt
-      let response = fullResponse.substring(seededPrompt.length);
-      // Limit to ~15 words for readability
-      response = response.split(' ').slice(0, 15).join(' ');
-      response = response || 'Based on SA trends, that's lekker! What next?';
-      if (response.length > 120) response = response.substring(0, 120) + '...';
-
-      // Tie in SA-infused trends (updated with local slang)
-      const saTrendWords = ['lekker', 'braai', 'rizz', 'delulu', 'ubuntu', 'amapiano', 'sigma'];
-      const sentiment = saTrendWords.some(w => statusesData.some(t => tokenize(t).includes(w))) ? 'positive SA vibes' : 'neutral Mzansi mood';
-      response += ` (${sentiment}, powered by LSTM with cultural flow)`;
-
-      // Add engaging follow-up question
-      const followUps = [
-        " Eish, what's your take on that?",
-        " Lekker chat! Got a braai story to share?",
-        " With that rizz, what's next on your mind?",
-        " Ubuntu vibes—how does that hit for you?",
-        " Delulu dreams aside, what's the real tea?"
-      ];
-      const randomFollowUp = followUps[Math.floor(Math.random() * followUps.length)];
-      response += randomFollowUp;
-
-      setTimeout(() => addMessage('AI', response), 500);
     }
 
-    // Init
+    // Init - Simplified without training
     try {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
@@ -691,22 +674,29 @@
         showOverlay('Fetching public statuses from Firebase...');
         await fetchPublicStatuses();
         hideOverlay();
-        const savedModelStr = localStorage.getItem('aiModel');
-        if (savedModelStr && !shouldRetrain()) {
-          try {
-            const saved = JSON.parse(savedModelStr);
-            net = brain.recurrent.LSTM.fromJSON(saved.model);
-            document.getElementById('status').innerHTML = `Loaded LSTM model with SA vibes (from ${new Date(saved.timestamp).toLocaleDateString()}). Ready for contextual replies!`;
-            document.getElementById('messages').style.display = 'flex';
 
-            // Introduce AI identity and purpose on load if model is loaded
-            addMessage('AI', AI_PURPOSE);
-          } catch (e) {
-            console.warn('Saved model invalid, retraining...');
-            await trainModel();
+        document.getElementById('status').innerHTML = `Powered by Gemini API with SA flair! Ready for contextual replies.`;
+        document.getElementById('messages').style.display = 'flex';
+
+        // Introduce AI identity and purpose on first load
+        addMessage('AI', AI_PURPOSE);
+
+        // Context if statusId
+        const urlParams = new URLSearchParams(window.location.search);
+        const statusId = urlParams.get('statusId');
+        if (statusId) {
+          showOverlay('Loading context...');
+          try {
+            const statusRef = ref(db, `statuses/${statusId}`);
+            const snap = await get(statusRef);
+            if (snap.exists()) {
+              const status = snap.val().content;
+              addMessage('AI', `Context: "${status.substring(0, 100)}..." What would you like to know? Let's chat with some SA rizz!`);
+            }
+          } catch (error) {
+            console.error('Error fetching status:', error);
           }
-        } else {
-          await trainModel(true); // Auto if needed
+          hideOverlay();
         }
       } else {
         window.location.href = 'login.html';
