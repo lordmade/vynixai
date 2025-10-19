@@ -8,7 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@google/generative-ai@0.2.1/dist/index.js"></script> <!-- New: Google Generative AI SDK -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -438,13 +438,11 @@
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
       </button>
       <div class="emoji-panel" id="emoji-panel">
-        <!-- Simple emoji grid; add more as needed -->
         <span class="emoji" onclick="insertEmoji('😊')">😊</span>
         <span class="emoji" onclick="insertEmoji('😂')">😂</span>
         <span class="emoji" onclick="insertEmoji('❤️')">❤️</span>
         <span class="emoji" onclick="insertEmoji('👍')">👍</span>
         <span class="emoji" onclick="insertEmoji('🔥')">🔥</span>
-        <!-- Extend with more -->
       </div>
       <button id="image-upload-button" class="input-btn">
         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -460,7 +458,6 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, push, get, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-    import { pipeline, TextStreamer } from "@huggingface/transformers";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -473,13 +470,17 @@
       measurementId: "G-V4W97VMSKL"
     };
 
+    // New: Gemini API Key (get from https://aistudio.google.com/app/apikey)
+    const GEMINI_API_KEY = 'AIzaSyBf_ez9GZeqgEsk6HYMamjqSOegjBRyBTg';
+
     const NEWS_API_KEY = 'YOUR_NEWSAPI_KEY_HERE';
 
     const state = {
       messages: [],
       hasChatted: false,
       isReady: false,
-      generator: null,
+      genAI: null,  // New: Google Generative AI instance
+      model: null,  // New: Gemini model instance
       defaultTrainingData: [
         { input: "hello", output: "Hey there!" },
         { input: "how are you", output: "I'm doing great, thanks for asking!" },
@@ -493,7 +494,7 @@
         { input: "latest news", output: "Stay tuned—I'll fetch some headlines soon!" }
       ],
       currentTheme: 'light',
-      feedbackScores: {}  // Track per message
+      feedbackScores: {}
     };
 
     const elements = {
@@ -575,7 +576,7 @@
       return synonyms[text] || text;
     }
 
-    function buildPrompt(userPrompt, extraContext = '') {
+    function buildPrompt(userPrompt, extraContext = '', imageDataUrl = null) {
       const normalized = normalizeText(userPrompt);
       const relevantExamples = state.defaultTrainingData
         .filter(ex => ex.input.includes(normalized.split(' ')[0]))
@@ -586,26 +587,31 @@
       const fullPrompt = [
         systemPrompt,
         ...relevantExamples,
-        `User: ${userPrompt}\nVynix:`,
+        `User: ${userPrompt}${imageDataUrl ? '\n[Image attached for context]' : ''}\nVynix:`,
         extraContext ? `\nContext: ${extraContext}` : ''
       ].join('\n');
 
       return fullPrompt;
     }
 
+    // New: Async init for Gemini
     async function initializeGenerator() {
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY') {
+        console.error('Gemini API key not set!');
+        hideLoading();
+        return;
+      }
       try {
-        console.log('Loading GPT-2 model...');
-        state.generator = await pipeline(
-          "text-generation",
-          "Xenova/gpt2",
-          { dtype: "q4" }
-        );
-        console.log('GPT-2 ready!');
+        console.log('Initializing Gemini...');
+        const { GoogleGenerativeAI } = GoogleGenerativeAI;
+        state.genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+        state.model = state.genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        console.log('Gemini ready!');
         hideLoading();
       } catch (error) {
-        console.error('Failed to load GPT-2:', error);
-        state.generator = { async run(prompt) { return 'Sorry, my AI brain is offline—try a greeting!'; } };
+        console.error('Failed to initialize Gemini:', error);
+        // Fallback
+        state.model = { async generateContent(prompt) { return { response: { text: 'Sorry, AI is offline—try a greeting!' } }; } };
         hideLoading();
       }
     }
@@ -653,7 +659,6 @@
       return '';
     }
 
-    // Update history list based on search
     function updateHistory() {
       const query = elements.searchInput.value.toLowerCase();
       const filtered = state.messages.filter(m => m.content.toLowerCase().includes(query));
@@ -699,12 +704,13 @@
       });
     }
 
-    function appendMessage(content, sender, isTyping = false, isImage = false, messageId = null) {
+    function appendMessage(content, sender, isTyping = false, isImage = false, messageId = null, imageDataUrl = null) {
       const now = new Date();
       const timeStr = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
       const div = document.createElement('div');
       div.className = `message ${sender}${isTyping ? ' processing' : ''}`;
       if (messageId) div.dataset.messageId = messageId;
+      if (imageDataUrl) div.dataset.imageDataUrl = imageDataUrl;
 
       let html = '';
       if (sender === 'ai' && !isTyping && !isImage) {
@@ -721,7 +727,7 @@
       }
 
       div.innerHTML = html + `<div class="message-time">${timeStr}</div>`;
-      state.messages.push({ content, sender, isImage, timestamp: now.getTime(), messageId });
+      state.messages.push({ content, sender, isImage, timestamp: now.getTime(), messageId, imageDataUrl });
       elements.chatMessages.appendChild(div);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
       updateHistory();
@@ -745,7 +751,6 @@
       existing[userId] = isUp ? 'up' : 'down';
       await set(ref(db, feedbackRef), existing);
 
-      // Update local score
       state.feedbackScores[messageId] = state.feedbackScores[messageId] || { up: 0, down: 0 };
       state.feedbackScores[messageId][isUp ? 'up' : 'down']++;
 
@@ -756,7 +761,6 @@
       const otherBtn = container.querySelector('.feedback-btn:not([disabled])');
       if (otherBtn) otherBtn.disabled = true;
 
-      // Refresh score display
       const scoreEl = container.querySelector('.feedback-score');
       if (!scoreEl) {
         const scoreDiv = document.createElement('div');
@@ -770,15 +774,17 @@
       console.log(`Feedback: ${isUp ? 'Up' : 'Down'} on ${messageId}`);
     }
 
-    async function getAIResponse(prompt) {
+    // Updated: Use Gemini for response
+    async function getAIResponse(prompt, imageDataUrl = null) {
       if (!state.hasChatted) {
         state.hasChatted = true;
       }
       const messageId = Date.now() + Math.random().toString(36);
-      const tempMsg = appendMessage('', 'ai', true, false, messageId);
+      const tempMsg = appendMessage('', 'ai', true, false, messageId, imageDataUrl);
       try {
         const normalizedPrompt = normalizeText(prompt);
-        state.messages[state.messages.length - 1].prompt = normalizedPrompt;
+        const lastMessage = state.messages[state.messages.length - 2];  // User's message
+        lastMessage.prompt = normalizedPrompt;
 
         let extraContext = '';
         if (normalizedPrompt.includes('quote') && Math.random() < 0.1) {
@@ -789,19 +795,24 @@
           extraContext = await fetchQuickNews();
         }
 
-        const fullPrompt = buildPrompt(prompt, extraContext);
+        const fullPrompt = buildPrompt(prompt, extraContext, imageDataUrl);
 
-        const streamer = new TextStreamer(state.generator.tokenizer, { skip_prompt: true });
-        const result = await state.generator(fullPrompt, { 
-          max_new_tokens: 100,
-          do_sample: true,
-          temperature: 0.7,
-          streamer,
-          pad_token_id: state.generator.tokenizer.eos_token_id
-        });
+        // Prepare content for Gemini (text or multimodal)
+        let content;
+        if (imageDataUrl) {
+          // Multimodal: Image + text
+          const base64Image = imageDataUrl.split(',')[1];  // Extract base64
+          content = [
+            { inlineData: { data: base64Image, mimeType: 'image/jpeg' } },  // Assume JPEG; adjust if PNG
+            { text: fullPrompt }
+          ];
+        } else {
+          content = fullPrompt;
+        }
 
-        let response = result[0].generated_text.split('Vynix:').pop().trim();
-        response = response.substring(0, 150);
+        const result = await state.model.generateContent(content);
+        let response = result.response.text().trim();
+        response = response.substring(0, 150);  // Cap length
 
         if (!response || response.length < 10) {
           response = 'Hmm, that stumped me—tell me more!';
@@ -815,7 +826,7 @@
         tempMsg.querySelector('.message-content').textContent = fallback;
         tempMsg.classList.remove('processing');
         state.messages[state.messages.length - 1].content = fallback;
-        console.error('GPT-2 Error:', error);
+        console.error('Gemini Error:', error);
       }
 
       // Add feedback
@@ -841,16 +852,21 @@
       }, 100);
     }
 
-    // Event Listeners
+    // Image upload: Now passes DataURL to AI for multimodal
     elements.imageUploadButton.addEventListener('click', () => {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
-      input.onchange = (e) => {
+      input.onchange = async (e) => {
         const file = e.target.files[0];
         if (file) {
           const reader = new FileReader();
-          reader.onload = (ev) => appendMessage(ev.target.result, 'user', false, true);
+          reader.onload = (ev) => {
+            const imgUrl = ev.target.result;
+            appendMessage(imgUrl, 'user', false, true, null, imgUrl);  // Pass imgUrl for multimodal
+            // Trigger AI response with image context
+            getAIResponse('Describe this image and tell me something fun about it.', imgUrl);
+          };
           reader.readAsDataURL(file);
         }
       };
