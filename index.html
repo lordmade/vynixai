@@ -2043,6 +2043,15 @@
     border-radius: 0;
   }
 }
+    .status-post-repost-badge {
+  background: rgba(29, 155, 240, 0.1);
+  color: #1d9bf0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 12px;
+  margin-left: 8px;
+}
   </style>
 </head>
 <body class="dark">
@@ -2248,6 +2257,17 @@
     </div>
   </div>
 
+  <div id="repost-sheet" class="bottom-sheet">
+  <div class="bottom-sheet-header">
+    <h2 style="margin: 0; font-size: 24px; font-weight: 800; color: var(--text-primary);">Repost Status</h2>
+    <button onclick="closeRepostSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 8px;"><span class="material-icons">close</span></button>
+  </div>
+  <div style="padding: 24px;">
+    <textarea id="repost-caption" placeholder="Add a caption (optional)..." style="width: 100%; min-height: 120px; padding: 20px; border: 1px solid var(--border); border-radius: 20px; background: var(--card-bg); color: var(--text-primary); resize: vertical;"></textarea>
+    <button id="submit-repost-btn" class="start-chat-btn" style="width: 100%; margin-top: 20px;" onclick="submitRepost()">Repost</button>
+  </div>
+</div>
+
   <!-- New Call Bottom Sheet -->
   <div id="new-call-sheet" class="bottom-sheet">
     <div class="bottom-sheet-header">
@@ -2345,6 +2365,62 @@
         setTimeout(() => alert.classList.remove('active'), 4000);
       }
     };
+
+
+
+let currentRepostStatusId = null;
+
+window.openRepostModal = (statusId) => {
+  currentRepostStatusId = statusId;
+  document.getElementById('repost-caption').value = '';
+  document.getElementById('repost-sheet').classList.add('active');
+};
+
+window.closeRepostSheet = () => {
+  document.getElementById('repost-sheet').classList.remove('active');
+};
+
+window.submitRepost = async () => {
+  if (!currentRepostStatusId) return;
+  const caption = document.getElementById('repost-caption').value.trim();
+  try {
+    showSpinner();
+    const statusRef = ref(db, `statuses/${currentRepostStatusId}`);
+    const statusSnap = await get(statusRef);
+    const originalStatus = statusSnap.val();
+    if (originalStatus) {
+      const repostRef = ref(db, 'statuses');
+      const newRepostRef = push(repostRef);
+      await set(newRepostRef, {
+        userId: currentUser.uid,
+        userName: currentUserData.displayName,
+        type: 'repost',
+        originalId: currentRepostStatusId,
+        content: caption || `${originalStatus.content} (Reposted)`,
+        mediaUrl: originalStatus.mediaUrl,
+        timestamp: Date.now(),
+        impressions: 0,
+        reposts: 0  // Initialize for the repost itself
+      });
+      // Increment original repost count
+      const repostCountRef = ref(db, `statuses/${currentRepostStatusId}/repostsCount`);
+      const curr = (await get(repostCountRef)).val() || 0;
+      await set(repostCountRef, curr + 1);
+      closeRepostSheet();
+      showAlert(caption ? 'Reposted with caption!' : 'Reposted!');
+      loadFriendStatuses(); // Reload to show the new repost
+    }
+  } catch (error) {
+    console.error('Error reposting status:', error);
+    showAlert('Failed to repost status.');
+  } finally {
+    hideSpinner();
+  }
+};
+
+
+
+    
 
     function playNotificationSound() {
       if (!('AudioContext' in window)) return;
@@ -2628,6 +2704,8 @@
                 progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
               }
             }
+            const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
+const reposts = repostsSnap.val() || 0;
             const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
             const likes = Object.keys(likesSnap.val() || {}).length;
             const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
@@ -2647,6 +2725,7 @@
     <div class="status-post-user">
       <div class="status-post-user-name">${nameHtml}</div>
       ${businessHtml}
+      ${status.type === 'repost' ? '<span class="status-post-repost-badge">Reposted</span>' : ''}
       <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
     </div>
   </div>
@@ -2656,6 +2735,7 @@
   <div class="status-actions">
     <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
     <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+    <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
     ${deleteHtml}
   </div>
 `;
