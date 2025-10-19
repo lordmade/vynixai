@@ -307,11 +307,17 @@
       measurementId: "G-V4W97VMSKL"
     };
 
+    // New: NewsAPI Key (Get free at https://newsapi.org/ - replace with your key)
+    const NEWS_API_KEY = 'YOUR_NEWSAPI_KEY_HERE';  // TODO: Replace with actual key
+
     const state = {
       messages: [],
       hasChatted: false,
       conversationId: null,
-      isReady: false
+      isReady: false,
+      lastQuoteSnapshot: null,  // For quote dedup
+      lastJokeSnapshot: null,   // For joke dedup
+      lastNewsSnapshot: null    // New: For news dedup
     };
 
     const elements = {
@@ -336,7 +342,8 @@
       { input: "what's your name", output: "I'm Vynix AI, your friendly chat buddy!" },
       { input: "how's the weather", output: "No clue, I'm in the cloud! What's it like where you are?" },
       { input: "who made you", output: "Katlego from Mokopane, South Africa, brought me to life!" },
-      { input: "help me", output: "Sure thing! What's on your mind?" }
+      { input: "help me", output: "Sure thing! What's on your mind?" },
+      { input: "latest news", output: "Stay tuned—I'll fetch some headlines soon!" }
     ];
 
     // SVG Icons for Thumbs
@@ -361,7 +368,8 @@
         "hi": "hello",
         "hey": "hello",
         "whats up": "what's up",
-        "joke": "tell me a joke"
+        "joke": "tell me a joke",
+        "news": "latest news"
       };
       return synonyms[text] || text;
     }
@@ -534,6 +542,127 @@
       }
     }
 
+    // Train on internet quotes (Quotable.io)
+    async function trainOnQuotes() {
+      try {
+        const response = await fetch('https://api.quotable.io/quotes?limit=20&tags=inspirational');
+        if (!response.ok) throw new Error('Fetch failed');
+        const data = await response.json();
+        const quotes = data.results || [];
+
+        // Generate training pairs: Map to chat-like inputs/outputs
+        const trainingData = quotes.slice(-10).map(q => ({  // Cap at 10 to avoid bloat
+          input: normalizeText(`give me a quote about ${q.tags?.[0] || 'life'}`),
+          output: anonymizeContent(`${q.content} — ${q.author}`)  // Use your anonymizer
+        }));
+
+        if (trainingData.length > 0) {
+          // Incremental: Only new/unseen (simple check vs last snapshot)
+          const newData = state.lastQuoteSnapshot 
+            ? trainingData.filter(item => !state.lastQuoteSnapshot.some(prev => prev.input === item.input))
+            : trainingData;
+          
+          if (newData.length > 0) {
+            net.train([...defaultTrainingData, ...newData], {
+              iterations: 80,  // Balanced for text quality
+              errorThresh: 0.008,  // Tighter for coherent outputs
+              log: true,
+              logPeriod: 20
+            });
+            console.log(`Trained on ${newData.length} new quotes from ${quotes.length} fetched`);
+            state.lastQuoteSnapshot = trainingData;  // Track for dedup
+            await updateSharedModel();  // Share if improved
+          }
+        }
+      } catch (error) {
+        console.error('Quotes training failed:', error);
+      }
+    }
+
+    // Train on internet jokes (Official Joke API)
+    async function trainOnJokes() {
+      try {
+        const response = await fetch('https://official-joke-api.appspot.com/jokes/random/15');
+        if (!response.ok) throw new Error('Fetch failed');
+        const jokes = await response.json();
+
+        // Generate pairs: e.g., input triggers joke output
+        const trainingData = jokes.slice(-8).map(j => ({  // Cap at 8
+          input: normalizeText('tell me a joke'),
+          output: anonymizeContent(`${j.setup ? `${j.setup} ${j.punchline}` : j.joke}`)  // Handle setup/punchline
+        }));
+
+        if (trainingData.length > 0) {
+          const newData = state.lastJokeSnapshot 
+            ? trainingData.filter(item => !state.lastJokeSnapshot.some(prev => prev.output.includes(item.output.substring(0, 50))))
+            : trainingData;  // Rough dedup by content prefix
+          
+          if (newData.length > 0) {
+            net.train([...defaultTrainingData, ...newData], {
+              iterations: 60,
+              errorThresh: 0.01,
+              log: true,
+              logPeriod: 15
+            });
+            console.log(`Trained on ${newData.length} new jokes from ${jokes.length} fetched`);
+            state.lastJokeSnapshot = trainingData;
+            await updateSharedModel();
+          }
+        }
+      } catch (error) {
+        console.error('Jokes training failed:', error);
+      }
+    }
+
+    // New: Train on internet news (NewsAPI.org)
+    async function trainOnNews() {
+      if (!NEWS_API_KEY || NEWS_API_KEY === 'YOUR_NEWSAPI_KEY_HERE') {
+        console.warn('NewsAPI key not set; skipping news training');
+        return;
+      }
+      try {
+        const response = await fetch(`https://newsapi.org/v2/top-headlines?country=us&apiKey=${NEWS_API_KEY}`);
+        if (!response.ok) throw new Error('Fetch failed');
+        const data = await response.json();
+        const articles = data.articles || [];
+
+        // Filter for engaging/non-sensitive news (e.g., tech/science, avoid politics/war)
+        const filteredArticles = articles.filter(a => 
+          a.title && a.description && 
+          (a.title.toLowerCase().includes('tech') || a.title.toLowerCase().includes('science') || 
+           a.title.toLowerCase().includes('health') || a.title.toLowerCase().includes('environment')) &&
+          !a.title.toLowerCase().match(/war|conflict|politics|election|crime/)
+        ).slice(0, 15);  // Limit fetch
+
+        // Generate training pairs: input = news query, output = headline + snippet
+        const trainingData = filteredArticles.slice(-10).map(a => ({  // Cap at 10
+          input: normalizeText(`latest news on ${a.source.name.toLowerCase() || 'world'}`),
+          output: anonymizeContent(`${a.title}. ${a.description.substring(0, 100)}... — ${a.source.name}`)
+        }));
+
+        if (trainingData.length > 0) {
+          // Incremental: Dedup by title prefix
+          const newData = state.lastNewsSnapshot 
+            ? trainingData.filter(item => !state.lastNewsSnapshot.some(prev => prev.output.includes(item.output.substring(0, 50))))
+            : trainingData;
+          
+          if (newData.length > 0) {
+            net.train([...defaultTrainingData, ...newData], {
+              iterations: 70,  // Moderate for factual content
+              errorThresh: 0.009,  // Balanced coherence
+              log: true,
+              logPeriod: 18
+            });
+            console.log(`Trained on ${newData.length} new news items from ${filteredArticles.length} filtered`);
+            state.lastNewsSnapshot = trainingData;
+            await updateSharedModel();  // Share if improved
+          }
+        }
+      } catch (error) {
+        console.error('News training failed:', error);
+      }
+    }
+
     async function initializeBrainJS() {
       const modelRef = ref(db, 'sharedModel/latest');
       
@@ -592,6 +721,11 @@
       // Train on statuses and feedback intervals
       setInterval(trainOnStatuses, 300000);
       setInterval(trainOnFeedback, 600000);
+      
+      // Internet training intervals (staggered to avoid rate limits)
+      setInterval(trainOnQuotes, 600000);  // Every 10 min
+      setInterval(trainOnJokes, 900000);   // Every 15 min
+      setInterval(trainOnNews, 1200000);   // Every 20 min (news updates slower)
       
       if (!state.isReady) hideLoading();
     }
@@ -713,6 +847,33 @@
         state.messages[state.messages.length - 1].prompt = normalizedPrompt;
         
         let response = net.run(normalizedPrompt);
+
+        // If prompt matches quote/joke/news triggers, boost with fresh data (10% chance for variety)
+        if ((normalizedPrompt.includes('quote') || normalizedPrompt.includes('inspir')) && Math.random() < 0.1) {
+          try {
+            const quickQuote = await (await fetch('https://api.quotable.io/random')).json();
+            response = `${response} P.S. "${quickQuote.content}" — ${quickQuote.author}`;
+          } catch (e) {
+            console.error('Quick quote fetch failed:', e);
+          }
+        } else if (normalizedPrompt.includes('joke') && Math.random() < 0.1) {
+          try {
+            const quickJoke = await (await fetch('https://official-joke-api.appspot.com/jokes/random')).json();
+            response = `${response} Here's a quick one: ${quickJoke.setup ? `${quickJoke.setup} ${quickJoke.punchline}` : quickJoke.joke}`;
+          } catch (e) {
+            console.error('Quick joke fetch failed:', e);
+          }
+        } else if (normalizedPrompt.includes('news') && Math.random() < 0.1 && NEWS_API_KEY !== 'YOUR_NEWSAPI_KEY_HERE') {
+          try {
+            const quickNews = await (await fetch(`https://newsapi.org/v2/top-headlines?country=us&apiKey=${NEWS_API_KEY}`)).json();
+            const topArticle = quickNews.articles?.[0];
+            if (topArticle) {
+              response = `${response} Breaking: "${topArticle.title}" from ${topArticle.source.name}. ${topArticle.description.substring(0, 80)}...`;
+            }
+          } catch (e) {
+            console.error('Quick news fetch failed:', e);
+          }
+        }
 
         // Anti-gibberish: Check length, coherence (simple heuristic), fallback if bad
         if (!response || response.length < 5 || response.includes('undefined') || Math.random() < 0.1) { // 10% fallback rate
