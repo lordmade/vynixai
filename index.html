@@ -2572,6 +2572,32 @@ window.submitRepost = async () => {
       }
     }
 
+
+async function computeStatusScore(statusId, status) {
+  try {
+    const likesSnap = await get(ref(db, `statuses/${statusId}/likes`));
+    const likes = Object.keys(likesSnap.val() || {}).length;
+
+    const commentsSnap = await get(ref(db, `statuses/${statusId}/comments`));
+    const comments = Object.keys(commentsSnap.val() || {}).length;
+
+    const repostsSnap = await get(ref(db, `statuses/${statusId}/repostsCount`));
+    const reposts = repostsSnap.val() || 0;
+
+    const now = Date.now();
+    const recency = Math.exp(-(now - status.timestamp) / (24 * 60 * 60 * 1000)); // Exponential decay over days
+
+    const engagement = likes + (comments * 2) + (reposts * 3);
+    const score = (recency * 0.7) + ((engagement / 100) * 0.3); // Normalize engagement
+
+    return { score, likes, comments, reposts };
+  } catch (error) {
+    console.error('Error computing score:', error);
+    return { score: 0, likes: 0, comments: 0, reposts: 0 };
+  }
+}
+    
+
     async function loadStatuses(containerId, mode = 'carousel', silent = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
@@ -2627,17 +2653,23 @@ window.submitRepost = async () => {
         // Sort for list mode
         let sortedStatuses = allStatuses;
         if (mode === 'list') {
-          const ownerStatuses = allStatuses.filter(s => s.userId === currentUser.uid).sort((a, b) => b.timestamp - a.timestamp);
-          const otherStatuses = allStatuses.filter(s => s.userId !== currentUser.uid).sort((a, b) => b.timestamp - a.timestamp);
-          const recentOthers = otherStatuses.slice(0, 1);
-          let restOthers = otherStatuses.slice(1);
-          // Shuffle rest
-          for (let i = restOthers.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [restOthers[i], restOthers[j]] = [restOthers[j], restOthers[i]];
-          }
-          sortedStatuses = [...ownerStatuses, ...recentOthers, ...restOthers];
-        }
+  // Compute scores for all statuses
+  const statusesWithScores = await Promise.all(allStatuses.map(async (status) => {
+    const { score, likes, comments, reposts } = await computeStatusScore(status.statusId, status);
+    return { ...status, score, likes, comments, reposts };
+  }));
+
+  // Boost owner statuses score
+  const ownerStatuses = statusesWithScores.filter(s => s.userId === currentUser.uid).map(s => ({ ...s, score: s.score + 1 }));
+  const otherStatuses = statusesWithScores.filter(s => s.userId !== currentUser.uid);
+
+  // Sort owner by time descending
+  ownerStatuses.sort((a, b) => b.timestamp - a.timestamp);
+  // Sort others by score descending
+  otherStatuses.sort((a, b) => b.score - a.score);
+
+  sortedStatuses = [...ownerStatuses, ...otherStatuses];
+}
         window.currentAllStatuses = sortedStatuses;
 
         // For carousel, sort uids with owner first
@@ -2791,16 +2823,13 @@ window.submitRepost = async () => {
                 // Repost caption
                 const repostCaptionHtml = status.content ? `<div class="status-post-content" style="margin-top: 12px;">${status.content}</div>` : '';
                 // Actions for repost (likes/comments on repost, reposts on original)
-                const repostsSnap = await get(ref(db, `statuses/${status.originalId}/repostsCount`));
-                const reposts = repostsSnap.val() || 0;
-                const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
-                const likes = Object.keys(likesSnap.val() || {}).length;
-                const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
-                const comments = Object.keys(commentsSnap.val() || {}).length;
-                const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
-                const likeSnap = await get(likeRef);
-                const isLiked = likeSnap.exists();
-                const likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                const reposts = status.reposts || 0;
+const likes = status.likes || 0;
+const comments = status.comments || 0;
+const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+const likeSnap = await get(likeRef);
+const isLiked = likeSnap.exists();
+const likeIcon = isLiked ? 'favorite' : 'favorite_border';
                 aiTargetId = original.statusId; // Analyze original for repost
                 innerHTML = `
                   <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
