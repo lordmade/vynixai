@@ -1987,6 +1987,89 @@
     display: none !important;
   }
 }
+
+
+
+/* Add to <style> tag */
+#comments-list {
+  position: relative;
+  padding-left: 20px;
+  max-height: calc(85vh - 120px);
+}
+#comments-list::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+  z-index: 1;
+}
+.comment-item {
+  position: relative;
+  margin-bottom: 24px;
+  padding-left: 40px;
+  display: flex;
+  gap: 16px;
+}
+.comment-item::before {
+  content: '';
+  position: absolute;
+  left: -31px;
+  top: 40px;
+  width: 16px;
+  height: 16px;
+  background: var(--bbm-red);
+  border-radius: 50%;
+  z-index: 2;
+  border: 2px solid var(--card-bg);
+}
+.comment-avatar {
+  position: absolute;
+  left: -56px;
+  top: 0;
+  z-index: 3;
+}
+.comment-content {
+  flex: 1;
+  background: var(--card-bg);
+  padding: 12px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  position: relative;
+}
+.reply-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(212, 0, 0, 0.1);
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--bbm-red);
+  transition: all 0.3s ease;
+}
+.reply-option:hover {
+  background: rgba(212, 0, 0, 0.2);
+  transform: scale(1.02);
+}
+.reply-option .material-icons {
+  font-size: 16px;
+}
+#comment-input::placeholder {
+  color: var(--text-secondary);
+}
+.replying-placeholder::before {
+  content: "Replying to @" attr(data-reply-user) ": ";
+  font-weight: 600;
+  color: var(--bbm-red);
+}
+
+
+    
   </style>
 </head>
 <body class="dark">
@@ -3720,58 +3803,112 @@ window.submitRepost = async () => {
       document.getElementById('comment-modal').classList.remove('active');
     };
 
-    async function loadComments(statusId) {
-      const commentsRef = ref(db, `statuses/${statusId}/comments`);
-      const snap = await get(commentsRef);
-      const list = document.getElementById('comments-list');
-      list.innerHTML = '';
-      if (snap.exists()) {
-        const comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
-        for (const c of comments) {
-          const userSnap = await get(ref(db, `users/${c.userId}`));
-          const u = userSnap.val();
-          if (u) {
-            const initial = u.displayName ? u.displayName[0].toUpperCase() : 'U';
-            const commentDiv = document.createElement('div');
-            commentDiv.className = 'comment-item';
-            commentDiv.innerHTML = `
-              <div class="comment-avatar" style="font-size: 18px;">${initial}</div>
-              <div class="comment-content">
-                <div class="comment-user">${u.displayName}</div>
-                <div class="comment-text">${c.text}</div>
-                <div class="comment-time">${formatTimestamp(c.timestamp)}</div>
-              </div>
-            `;
-            list.appendChild(commentDiv);
-          }
-        }
+// Replace the loadComments function:
+let replyingTo = null;
+let replyingToUser = null;
+
+window.setReplyTo = (commentId, username) => {
+  replyingTo = commentId;
+  replyingToUser = username;
+  const input = document.getElementById('comment-input');
+  input.placeholder = `Replying to @${username}...`;
+  input.focus();
+  input.classList.add('replying-placeholder');
+  input.setAttribute('data-reply-user', username);
+  showAlert(`Replying to @${username}`);
+};
+
+window.cancelReply = () => {
+  replyingTo = null;
+  replyingToUser = null;
+  const input = document.getElementById('comment-input');
+  input.placeholder = 'Add a comment...';
+  input.classList.remove('replying-placeholder');
+  input.removeAttribute('data-reply-user');
+};
+
+async function loadComments(statusId) {
+  const commentsRef = ref(db, `statuses/${statusId}/comments`);
+  const snap = await get(commentsRef);
+  const list = document.getElementById('comments-list');
+  list.innerHTML = '';
+  if (snap.exists()) {
+    const comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
+    for (const c of comments) {
+      const userSnap = await get(ref(db, `users/${c.userId}`));
+      const u = userSnap.val();
+      if (u) {
+        const initial = u.displayName ? u.displayName[0].toUpperCase() : 'U';
+        const commentDiv = document.createElement('div');
+        commentDiv.className = 'comment-item';
+        commentDiv.innerHTML = `
+          <div class="comment-avatar" style="font-size: 18px;">${initial}</div>
+          <div class="comment-content">
+            <div class="comment-user">${u.displayName}</div>
+            <div class="comment-text">${c.text}</div>
+            <div class="comment-time">${formatTimestamp(c.timestamp)}</div>
+            <div class="reply-option" onclick="setReplyTo('${c.id}', '${u.displayName}')">
+              <span class="material-icons">reply</span>
+              Reply
+            </div>
+          </div>
+        `;
+        list.appendChild(commentDiv);
       }
     }
+  }
+  // Add cancel reply button if replying
+  if (replyingTo) {
+    const inputBar = document.querySelector('#comment-modal .status-input-bar');
+    let cancelBtn = inputBar.querySelector('.cancel-reply');
+    if (!cancelBtn) {
+      cancelBtn = document.createElement('button');
+      cancelBtn.className = 'send-btn material-icons cancel-reply';
+      cancelBtn.innerHTML = 'close';
+      cancelBtn.onclick = cancelReply;
+      inputBar.insertBefore(cancelBtn, document.getElementById('comment-input').parentElement);
+    }
+  }
+}
 
-    window.sendComment = async () => {
-      const input = document.getElementById('comment-input');
-      const text = input.value.trim();
-      if (!text || !currentStatusId) return;
-      const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
-      const newRef = push(commentsRef);
-      await set(newRef, {
-        userId: currentUser.uid,
-        text,
-        timestamp: Date.now()
-      });
-      input.value = '';
-      const newCommentsSnap = await get(commentsRef);
-      const newComments = Object.keys(newCommentsSnap.val() || {}).length;
-      // Update list post if exists
-      const post = document.querySelector(`[data-status-id="${currentStatusId}"]`);
-      if (post) {
-        const commentSpan = post.querySelector('.status-actions span:nth-child(2)');
-        if (commentSpan) {
-          commentSpan.innerHTML = `<span class="material-icons">chat_bubble_outline</span> ${newComments}`;
-        }
-      }
-      await loadComments(currentStatusId);
-    };
+// Update sendComment function:
+window.sendComment = async () => {
+  const input = document.getElementById('comment-input');
+  const text = input.value.trim();
+  if (!text || !currentStatusId) return;
+  let finalText = text;
+  if (replyingTo) {
+    finalText = `Replying to @${replyingToUser}: ${text}`;
+    // Optionally store parentId: await set(newRef, { ..., parentId: replyingTo });
+  }
+  const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
+  const newRef = push(commentsRef);
+  await set(newRef, {
+    userId: currentUser.uid,
+    text: finalText,
+    timestamp: Date.now(),
+    ...(replyingTo && { parentId: replyingTo })
+  });
+  input.value = '';
+  replyingTo = null;
+  replyingToUser = null;
+  input.placeholder = 'Add a comment...';
+  input.classList.remove('replying-placeholder');
+  input.removeAttribute('data-reply-user');
+  const cancelBtn = document.querySelector('.cancel-reply');
+  if (cancelBtn) cancelBtn.remove();
+  const newCommentsSnap = await get(commentsRef);
+  const newComments = Object.keys(newCommentsSnap.val() || {}).length;
+  // Update list post if exists
+  const post = document.querySelector(`[data-status-id="${currentStatusId}"]`);
+  if (post) {
+    const commentSpan = post.querySelector('.status-actions span:nth-child(2)');
+    if (commentSpan) {
+      commentSpan.innerHTML = `<span class="material-icons">chat_bubble_outline</span> ${newComments}`;
+    }
+  }
+  await loadComments(currentStatusId);
+};
 
     function setStatusTimer(duration) {
       if (statusTimer) clearTimeout(statusTimer);
