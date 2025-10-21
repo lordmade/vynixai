@@ -2068,7 +2068,41 @@
   color: var(--bbm-red);
 }
 
-
+.replies-container {
+  margin-top: 8px;
+  margin-left: 20px;
+  border-left: 2px solid var(--border);
+  padding-left: 20px;
+}
+.reply-toggle {
+  cursor: pointer;
+  color: var(--bbm-red);
+  font-size: 14px;
+  padding: 8px 0;
+  display: block;
+  font-weight: 600;
+  transition: color 0.3s ease;
+}
+.reply-toggle:hover {
+  color: #ff6666;
+}
+.reply-toggle::-webkit-details-marker {
+  display: none;
+}
+.comment-item {
+  margin-left: 0 !important; /* Override base padding for dynamic */
+  padding-left: 0 !important;
+}
+.comment-avatar {
+  position: absolute;
+  left: 0; /* Will be set dynamically in JS */
+}
+#comments-list::before {
+  left: 28px; /* Adjust main line for base avatar */
+}
+.comment-item::before {
+  left: 17px; /* Adjust dot position */
+}
     
   </style>
 </head>
@@ -3855,36 +3889,105 @@ window.cancelReply = () => {
   input.removeAttribute('data-reply-user');
 };
 
+function sortChildren(comment) {
+  comment.children.sort((a, b) => b.timestamp - a.timestamp);
+  comment.children.forEach(sortChildren);
+}
+
+function renderComment(comment, container, level = 0, userMap) {
+  const user = userMap[comment.userId];
+  if (!user) return; // Skip if no user
+
+  const commentDiv = document.createElement('div');
+  commentDiv.className = `comment-item level-${level}`;
+  commentDiv.style.marginLeft = `${level * 40}px`;
+
+  const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+  const avatarLeft = -56 - (level * 40);
+  const avatarStyle = `left: ${avatarLeft}px;`;
+
+  const commentDivHTML = `
+    <div class="comment-avatar" style="font-size: 18px; ${avatarStyle}">${initial}</div>
+    <div class="comment-content">
+      <div class="comment-user">${user.displayName}</div>
+      <div class="comment-text">${comment.text}</div>
+      <div class="comment-time">${formatTimestamp(comment.timestamp)}</div>
+      <div class="reply-option" onclick="setReplyTo('${comment.id}', '${user.displayName}')">
+        <span class="material-icons">reply</span>
+        Reply
+      </div>
+    </div>
+  `;
+  commentDiv.innerHTML = commentDivHTML;
+
+  // Add collapsible replies if any
+  if (comment.children && comment.children.length > 0) {
+    const details = document.createElement('details');
+    details.style.marginTop = '8px';
+    const summary = document.createElement('summary');
+    summary.className = 'reply-toggle';
+    summary.innerHTML = `View ${comment.children.length} reply${comment.children.length > 1 ? 's' : ''}`;
+    details.appendChild(summary);
+
+    const repliesDiv = document.createElement('div');
+    repliesDiv.className = 'replies-container';
+    renderCommentTree(comment.children, repliesDiv, level + 1, userMap);
+    details.appendChild(repliesDiv);
+
+    commentDiv.appendChild(details);
+  }
+
+  container.appendChild(commentDiv);
+}
+
+function renderCommentTree(comments, container, level = 0, userMap) {
+  comments.forEach(comment => renderComment(comment, container, level, userMap));
+}
+
+          
+
 async function loadComments(statusId) {
   const commentsRef = ref(db, `statuses/${statusId}/comments`);
   const snap = await get(commentsRef);
   const list = document.getElementById('comments-list');
   list.innerHTML = '';
-  if (snap.exists()) {
-    const comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
-    for (const c of comments) {
-      const userSnap = await get(ref(db, `users/${c.userId}`));
-      const u = userSnap.val();
-      if (u) {
-        const initial = u.displayName ? u.displayName[0].toUpperCase() : 'U';
-        const commentDiv = document.createElement('div');
-        commentDiv.className = 'comment-item';
-        commentDiv.innerHTML = `
-          <div class="comment-avatar" style="font-size: 18px;">${initial}</div>
-          <div class="comment-content">
-            <div class="comment-user">${u.displayName}</div>
-            <div class="comment-text">${c.text}</div>
-            <div class="comment-time">${formatTimestamp(c.timestamp)}</div>
-            <div class="reply-option" onclick="setReplyTo('${c.id}', '${u.displayName}')">
-              <span class="material-icons">reply</span>
-              Reply
-            </div>
-          </div>
-        `;
-        list.appendChild(commentDiv);
-      }
-    }
+
+  if (!snap.exists()) {
+    list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No comments yet.</p>';
+    return;
   }
+
+  let comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
+
+  // Collect unique user IDs
+  const userIds = [...new Set(comments.map(c => c.userId))];
+  const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+  const userResults = await Promise.all(userPromises);
+  const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.user]));
+
+  // Build comment map and tree
+  let commentMap = {};
+  comments.forEach(c => {
+    c.children = [];
+    commentMap[c.id] = c;
+  });
+  comments.forEach(c => {
+    if (c.parentId && commentMap[c.parentId]) {
+      commentMap[c.parentId].children.push(c);
+    }
+  });
+  const commentTree = Object.values(commentMap).filter(c => !c.parentId);
+
+  // Sort children recursively
+  commentTree.forEach(sortChildren);
+
+  // Render tree
+  if (commentTree.length > 0) {
+    renderCommentTree(commentTree, list, 0, userMap);
+  } else {
+    list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No comments yet.</p>';
+  }
+
   // Add cancel reply button if replying
   if (replyingTo) {
     const inputBar = document.querySelector('#comment-modal .status-input-bar');
