@@ -1611,6 +1611,16 @@
       line-height: 1.5;
       font-size: 16px;
     }
+    .status-post-content a {
+      color: #1d9bf0;
+      text-decoration: underline;
+    }
+    .status-post-content .more-toggle {
+      color: var(--bbm-red);
+      cursor: pointer;
+      font-weight: 600;
+      text-decoration: underline;
+    }
     .status-post-media {
       width: 100%;
       height: auto;
@@ -2106,6 +2116,37 @@ details[open] .reply-toggle {
   color: var(--text-primary);
 }
 
+.mention-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 10;
+  display: none;
+}
+
+.mention-suggestion {
+  padding: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mention-suggestion:hover {
+  background: rgba(212, 0, 0, 0.1);
+}
+
+.mention-suggestion:last-child {
+  border-bottom: none;
+}
+
   </style>
 </head>
 <body class="dark">
@@ -2299,7 +2340,10 @@ details[open] .reply-toggle {
         <span>Video</span>
       </div>
       <input type="file" id="media-input" accept="image/*,video/*" style="display: none;" onchange="handleMediaUpload(event)">
-      <textarea id="caption-input" placeholder="Add a caption (optional)..." style="display: none; min-height: 120px;"></textarea>
+      <div style="position: relative;">
+        <textarea id="caption-input" placeholder="Add a caption (optional)..." style="display: none; min-height: 120px;"></textarea>
+        <div id="mention-suggestions" class="mention-suggestions"></div>
+      </div>
       <div id="upload-progress" class="hidden" style="width: 100%; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 16px 0;">
         <div id="progress-bar" style="height: 100%; background: var(--bbm-red); width: 0%; transition: width 0.3s ease;"></div>
       </div>
@@ -2385,6 +2429,7 @@ details[open] .reply-toggle {
     let currentStatusFilter = null;
     let typingListeners = {}; // Track typing listeners per chat
     let prevNotifCount = 0;
+    let allUsers = {}; // Cache for @mentions
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -2823,7 +2868,7 @@ async function computeStatusScore(statusId, status) {
                 // Original content
                 let origContentHtml = '';
                 if (original.content) {
-                  const highlightedOrigContent = original.content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
+                  const highlightedOrigContent = highlightContent(original.content);
                   origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
                 }
                 // Original media
@@ -2850,7 +2895,7 @@ async function computeStatusScore(statusId, status) {
                 // Repost caption
                 let repostCaptionHtml = '';
                 if (status.content) {
-                  const highlightedRepostContent = status.content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
+                  const highlightedRepostContent = highlightContent(status.content);
                   repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
                 }
                 // Actions for repost (likes/comments on repost, reposts on original)
@@ -2932,7 +2977,7 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
               const likeIcon = isLiked ? 'favorite' : 'favorite_border';
               let contentHtml = '';
               if (status.content) {
-                const highlightedContent = status.content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
+                const highlightedContent = highlightContent(status.content);
                 contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
               }
               innerHTML = `
@@ -3016,6 +3061,72 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
       if (!silent) hideSpinner();
     }
 
+    function highlightContent(content) {
+      // Highlight @mentions
+      let highlighted = content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
+      // Highlight URLs
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      highlighted = highlighted.replace(urlRegex, '<a href="$1" target="_blank" style="color: #1d9bf0; text-decoration: underline;">$1</a>');
+      return highlighted;
+    }
+
+    async function loadAllUsersForMentions() {
+      const usersRef = ref(db, 'users');
+      const snapshot = await get(usersRef);
+      if (snapshot.exists()) {
+        allUsers = snapshot.val();
+      }
+    }
+
+    function setupMentionSuggestions(textarea) {
+      textarea.addEventListener('input', (e) => {
+        const value = e.target.value;
+        const cursorPos = e.target.selectionStart;
+        const textBeforeCursor = value.substring(0, cursorPos);
+        const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+        if (lastAtIndex !== -1 && (cursorPos === lastAtIndex + 1 || textBeforeCursor.substring(lastAtIndex + 1).indexOf(' ') === -1)) {
+          const query = textBeforeCursor.substring(lastAtIndex + 1).toLowerCase();
+          const suggestions = document.getElementById('mention-suggestions');
+          suggestions.innerHTML = '';
+          let count = 0;
+          for (let uid in allUsers) {
+            const user = allUsers[uid];
+            if (user.displayName && user.displayName.toLowerCase().startsWith(query)) {
+              const suggestion = document.createElement('div');
+              suggestion.className = 'mention-suggestion';
+              suggestion.innerHTML = `<span style="font-weight: 600;">${user.displayName}</span> <span style="color: var(--text-secondary); font-size: 14px;">@${user.displayName.toLowerCase()}</span>`;
+              suggestion.onclick = () => {
+                const insertText = `@${user.displayName} `;
+                e.target.value = value.substring(0, lastAtIndex) + insertText + value.substring(cursorPos);
+                e.target.focus();
+                suggestions.style.display = 'none';
+              };
+              suggestions.appendChild(suggestion);
+              count++;
+              if (count >= 5) break;
+            }
+          }
+          if (suggestions.children.length > 0) {
+            suggestions.style.display = 'block';
+            const rect = textarea.getBoundingClientRect();
+            suggestions.style.top = (rect.bottom + 5) + 'px';
+            suggestions.style.left = rect.left + 'px';
+            suggestions.style.width = rect.width + 'px';
+          } else {
+            suggestions.style.display = 'none';
+          }
+        } else {
+          document.getElementById('mention-suggestions').style.display = 'none';
+        }
+      });
+
+      textarea.addEventListener('blur', () => {
+        setTimeout(() => {
+          document.getElementById('mention-suggestions').style.display = 'none';
+        }, 200);
+      });
+    }
+
     async function setupVideoObserver() {
       videoObserver = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -3071,7 +3182,11 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
           if (!user) continue;
           const unread = chat.unreadCount || 0;
           let messagePreview = 'No messages yet';
-          if (chat.lastMessage) {
+          if (chat.lastMessageType === 'image') {
+            messagePreview = 'Photo';
+          } else if (chat.lastMessageType === 'video') {
+            messagePreview = 'Video';
+          } else if (chat.lastMessage) {
             try {
               messagePreview = await decryptMessage(chat.lastMessage, chat.chatId);
               messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
@@ -3347,6 +3462,7 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
             chatId,
             otherUserId: targetUid,
             lastMessage: encrypted,
+            lastMessageType: 'text',
             lastMessageTime: Date.now(),
             unreadCount: 0
           });
@@ -3354,6 +3470,7 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
             chatId,
             otherUserId: currentUser.uid,
             lastMessage: encrypted,
+            lastMessageType: 'text',
             lastMessageTime: Date.now(),
             unreadCount: 0
           });
@@ -3362,6 +3479,7 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
           await set(newMessageRef, {
             senderId: currentUser.uid,
             message: encrypted,
+            type: 'text',
             timestamp: Date.now()
           });
           hasChats = true;
@@ -3919,7 +4037,7 @@ window.sendComment = async () => {
         }
       }
       if (status.type === 'text') {
-        let highlightedText = status.content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">$&</span>');
+        let highlightedText = highlightContent(status.content);
         textHtml = `<div class="status-text-overlay">${highlightedText}</div>`;
       }
       const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
@@ -4045,6 +4163,7 @@ window.sendComment = async () => {
       document.getElementById('media-input').style.display = 'none';
       document.getElementById('upload-btn').style.display = 'none';
       document.getElementById('upload-progress').classList.add('hidden');
+      setupMentionSuggestions(document.getElementById('caption-input'));
     }
 
     window.closeUploadSheet = () => {
@@ -4654,7 +4773,7 @@ window.sendComment = async () => {
         const profilePreview = currentUserData.verified ? 'Verified' : currentUserData.email || 'No email';
         const settingsHtml = `
           <div class="settings-section">
-            <div class="chat-item" style="margin-bottom: 24px; cursor: pointer;" onclick="showAlert('Profile editing is inline below!');">
+            <div class="chat-item" style="margin-bottom: 24px; cursor: pointer;" onclick="window.location.href='profile.html';">
               ${avatarHtml}
               <div class="chat-info">
                 <div class="chat-name">${nameHtml}</div>
@@ -5009,6 +5128,7 @@ switchTab = function(tab, event) {
             }
           }
           await loadUserPreferences();
+          await loadAllUsersForMentions();
           setupChatsListener();
           setupStatusesListener();
           setupNotificationsListener();
