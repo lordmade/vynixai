@@ -112,8 +112,9 @@
       top: 100px;
       left: 20px;
       display: flex;
-      flex-direction: column;
-      gap: 8px;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 12px;
       pointer-events: auto;
     }
     .reel-user-avatar {
@@ -132,11 +133,13 @@
     .reel-user-info {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 2px;
     }
     .reel-username {
       font-weight: 700;
       font-size: 16px;
+      display: flex;
+      align-items: center;
     }
     .reel-description {
       font-size: 14px;
@@ -316,6 +319,9 @@
       font-size: 17px;
       box-shadow: var(--shadow-md), var(--glow);
       transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     .upload-btn:hover {
       box-shadow: var(--shadow-md), 0 0 30px rgba(212, 0, 0, 0.7);
@@ -438,7 +444,9 @@
       <div id="upload-progress" class="hidden">
         <div class="upload-progress"><div class="progress-bar-upload" id="progress-bar"></div></div>
       </div>
-      <button id="upload-btn" class="upload-btn" onclick="uploadStatus()">Upload Video</button>
+      <button id="upload-btn" class="upload-btn" onclick="uploadStatus()">
+        <span class="material-icons" style="font-size: 24px;">add</span>
+      </button>
     </div>
   </div>
 
@@ -519,7 +527,7 @@
         let videoStatuses = [];
         if (snapshot.exists()) {
           Object.entries(snapshot.val()).forEach(([id, s]) => {
-            if (s.type === 'video' && s.mediaUrl) {
+            if ((s.type === 'video' || s.type === 'repost') && s.mediaUrl) {
               videoStatuses.push({ statusId: id, ...s });
             }
           });
@@ -540,7 +548,7 @@
         videoStatuses.forEach((status, index) => {
           const reelDiv = document.createElement('div');
           reelDiv.className = 'reel-item';
-          reelDiv.setAttribute('data-index', index);
+          reelDiv.setAttribute('data-status-id', status.statusId);
           const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
           let avatarHtml = '';
           if (status.user?.photoURL) {
@@ -574,7 +582,7 @@
               <div class="reel-actions">
                 <button class="action-btn material-icons" onclick="likeReel('${status.statusId}')">${likeIcon} ${likes}</button>
                 <button class="action-btn material-icons" onclick="openComments('${status.statusId}')">chat_bubble_outline ${comments}</button>
-                <button class="action-btn material-icons" onclick="shareReel('${status.statusId}')">share ${shares}</button>
+                <button class="action-btn material-icons" onclick="repostReel('${status.statusId}')">repeat ${shares}</button>
               </div>
               <div class="progress-bar">
                 <div class="progress-fill"></div>
@@ -630,24 +638,71 @@
 
     window.likeReel = async (statusId) => {
       if (!currentUser) return;
+      const reelItem = document.querySelector(`[data-status-id="${statusId}"]`);
+      if (!reelItem) return;
+      const likeBtn = reelItem.querySelector('.action-btn:first-child');
+      const currentText = likeBtn.textContent.trim();
+      const match = currentText.match(/(\d+)/);
+      let currentLikes = match ? parseInt(match[1]) : 0;
       try {
         const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
         const snap = await get(likeRef);
         const liked = snap.exists();
         if (liked) {
           await set(likeRef, null);
+          currentLikes--;
+          likeBtn.innerHTML = `favorite_border ${currentLikes}`;
         } else {
           await set(likeRef, true);
+          currentLikes++;
+          likeBtn.innerHTML = `favorite ${currentLikes}`;
         }
         showAlert(liked ? 'Like removed' : 'Video liked!');
-        loadReels();
       } catch (error) {
         console.error('Error toggling like:', error);
       }
     };
 
-    window.shareReel = async (statusId) => {
-      showAlert('Sharing...');
+    window.repostReel = async (statusId) => {
+      if (!currentUser) return;
+      try {
+        const statusRef = ref(db, `statuses/${statusId}`);
+        const snap = await get(statusRef);
+        if (!snap.exists()) return;
+        const original = snap.val();
+        const statusRefNew = ref(db, 'statuses');
+        const newStatusRef = push(statusRefNew);
+        await set(newStatusRef, {
+          userId: currentUser.uid,
+          userName: currentUserData.displayName,
+          type: 'repost',
+          originalStatusId: statusId,
+          mediaUrl: original.mediaUrl,
+          content: original.content ? `Reposted: ${original.content}` : `Reposted ${original.userName || 'a user\'s'} video`,
+          timestamp: Date.now(),
+          impressions: 0,
+          likes: 0,
+          comments: 0,
+          shares: 0
+        });
+        const currentSharesRef = ref(db, `statuses/${statusId}/shares`);
+        const sharesSnap = await get(currentSharesRef);
+        let currentShares = sharesSnap.val() || 0;
+        await set(currentSharesRef, currentShares + 1);
+        const reelItem = document.querySelector(`[data-status-id="${statusId}"]`);
+        if (reelItem) {
+          const repostBtn = reelItem.querySelector('.action-btn:nth-child(3)');
+          const currentText = repostBtn.textContent.trim();
+          const match = currentText.match(/(\d+)/);
+          let currentReposts = match ? parseInt(match[1]) : 0;
+          repostBtn.innerHTML = `repeat ${currentReposts + 1}`;
+        }
+        loadReels();
+        showAlert('Reposted!');
+      } catch (error) {
+        console.error('Error reposting:', error);
+        showAlert('Failed to repost.');
+      }
     };
 
     window.openComments = (statusId) => {
