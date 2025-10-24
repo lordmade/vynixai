@@ -246,6 +246,25 @@
       margin-bottom: 20px;
       text-shadow: 0 0 10px rgba(212, 0, 0, 0.3);
     }
+    #model-progress {
+      width: 200px;
+      height: 8px;
+      border-radius: 4px;
+      background: #e0e0e0;
+      overflow: hidden;
+    }
+    #model-progress::-webkit-progress-bar {
+      background: #e0e0e0;
+      border-radius: 4px;
+    }
+    #model-progress::-webkit-progress-value {
+      background: var(--bbm-red);
+      border-radius: 4px;
+    }
+    #model-progress::-moz-progress-bar {
+      background: var(--bbm-red);
+      border-radius: 4px;
+    }
     @media (min-width: 1024px) {
       .chat-input-container {
         margin: 0;
@@ -266,8 +285,9 @@
 <body class="light">
   <!-- Loading Overlay -->
   <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-text">Vynix AI is thinking...</div>
-    <div class="typing-indicator">
+    <div class="loading-text" id="loading-text">Downloading DistilGPT-2 model...</div>
+    <progress id="model-progress" value="0" max="100"></progress>
+    <div class="typing-indicator" style="margin-top: 20px;">
       <span class="typing-dot"></span>
       <span class="typing-dot"></span>
       <span class="typing-dot"></span>
@@ -320,7 +340,9 @@
       sendButton: document.getElementById('send-button'),
       welcomeContainer: document.getElementById('welcome-container'),
       newConversationButton: document.getElementById('new-conversation-button'),
-      loadingOverlay: document.getElementById('loading-overlay')
+      loadingOverlay: document.getElementById('loading-overlay'),
+      loadingText: document.getElementById('loading-text'),
+      modelProgress: document.getElementById('model-progress')
     };
 
     let app, auth, db;
@@ -361,14 +383,24 @@
     async function loadPreTrainedModel() {
       try {
         const { pipeline } = await import('@xenova/transformers');
-        state.generator = await pipeline('text-generation', 'microsoft/DialoGPT-medium', { 
+        state.generator = await pipeline('text-generation', 'distilgpt2', { 
           quantized: true,
-          progress_callback: (data) => console.log(`Loading model: ${data.loaded / data.total * 100}%`)
+          progress_callback: (data) => {
+            if (data.status === 'downloading') {
+              const progress = (data.loaded / data.total) * 100;
+              elements.modelProgress.value = progress;
+              console.log(`Downloading model: ${Math.round(progress)}%`);
+            }
+          }
         });
-        console.log('Pre-trained model loaded!');
+        elements.loadingText.textContent = 'Model loaded! Initializing...';
+        elements.modelProgress.value = 100;
+        console.log('DistilGPT-2 model loaded successfully!');
       } catch (error) {
+        elements.loadingText.textContent = 'Fallback mode active...';
+        elements.modelProgress.value = 100;
         console.error('Model load failed:', error);
-        state.generator = null;  // Fallback mode
+        state.generator = null;  // Fallback to pattern matching
       }
     }
 
@@ -404,13 +436,12 @@
         let response;
         if (state.generator) {
           // Use pre-trained: Generate continuation
-          const output = await state.generator(`User: ${prompt}\nAI:`, { 
-            max_new_tokens: 50, 
+          const output = await state.generator(`${prompt}\n\n`, { 
+            max_new_tokens: 60, 
             do_sample: true, 
-            temperature: 0.7,
-            pad_token_id: 50256  // For GPT-like
+            temperature: 0.7
           });
-          response = output[0].generated_text.split('AI:')[1]?.trim() || 'Interesting! Tell me more.';
+          response = output[0].generated_text.split('\n\n')[1]?.trim() || 'Interesting! Tell me more.';
         } else {
           // Fallback to closest match
           let trainingData = [...defaultFallbacks];
@@ -485,7 +516,9 @@
         elements.chatInput.disabled = false;
         elements.sendButton.disabled = false;
         // Hide overlay after model load
-        elements.loadingOverlay.classList.add('hidden');
+        setTimeout(() => {
+          elements.loadingOverlay.classList.add('hidden');
+        }, 500);  // Brief delay for smooth transition
       });
     }
 
