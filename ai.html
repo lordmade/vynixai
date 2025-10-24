@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Vynix AI - BBM Edition</title>
+  <title>Vynix AI - BBM Edition (Pre-Trained)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
+  <!-- Transformers.js for pre-trained model -->
+  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -224,7 +225,7 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(248, 248, 248, 0.9);  /* Light theme overlay */
+      background: rgba(248, 248, 248, 0.9);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -292,7 +293,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue, get, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -310,9 +311,7 @@
       hasChatted: false,
       conversationId: null,
       statusCaptions: [],
-      lastStatusSnapshot: null,  // For delta detection
-      newStatusesBuffer: [],  // Buffer for debounced training
-      retrainTimeout: null  // For debouncing
+      generator: null  // For pre-trained model
     };
 
     const elements = {
@@ -324,10 +323,9 @@
       loadingOverlay: document.getElementById('loading-overlay')
     };
 
-    let app, auth, db, net = new brain.recurrent.LSTM();
-    let isTraining = false;
+    let app, auth, db;
 
-    const defaultTrainingData = [
+    const defaultFallbacks = [
       { input: "hello", output: "Hey there!" },
       { input: "how are you", output: "I'm doing great, thanks for asking!" },
       { input: "what's up", output: "Just chilling in the cloud, you?" },
@@ -343,16 +341,7 @@
       return text.toLowerCase().trim().replace(/[^\w\s]/g, '');
     }
 
-    function createTrainingFromStatuses(captions) {
-      return captions.map(caption => {  // No slice for deltas
-        const normCaption = normalizeText(caption);
-        const words = normCaption.split(' ');
-        const lastWord = words[words.length - 1] || 'vibe';
-        const reply = `Sounds fun! ${lastWord} totally matches my ${Math.random() > 0.5 ? 'energy' : 'style'} too. What's next?`;
-        return { input: normCaption.substring(0, 50), output: reply.substring(0, 50) };
-      });
-    }
-
+    // Fallback closest match
     function getClosestMatch(prompt, trainingData) {
       const words = prompt.split(' ');
       let bestMatch = null;
@@ -368,130 +357,19 @@
       return bestMatch ? trainingData.find(item => item.input === bestMatch).output : 'Fascinating! Tell me more about that.';
     }
 
-    function debounceRetrain() {
-      if (state.retrainTimeout) clearTimeout(state.retrainTimeout);
-      state.retrainTimeout = setTimeout(async () => {
-        if (state.newStatusesBuffer.length > 0) {
-          console.log(`Retraining incrementally on ${state.newStatusesBuffer.length} new statuses...`);
-          await incrementalTrain();
-          state.newStatusesBuffer = [];  // Clear after train
-        }
-      }, 5000);  // Debounce: Wait 5s after last update
-    }
-
-    async function incrementalTrain() {
-      if (isTraining) return;
-      isTraining = true;
+    // Load pre-trained model
+    async function loadPreTrainedModel() {
       try {
-        const newTrainingData = createTrainingFromStatuses(state.newStatusesBuffer);
-        if (newTrainingData.length > 0) {
-          net.train(newTrainingData, {
-            iterations: 20,  // Reduced for incremental: faster
-            errorThresh: 0.005,  // Slightly looser for speed
-            log: false,
-            logPeriod: 20
-          });
-          state.statusCaptions.push(...state.newStatusesBuffer);  // Update full cache
-          console.log(`Incremental train complete on ${newTrainingData.length} pairs.`);
-        }
-      } catch (error) {
-        console.error('Incremental training error:', error);
-      } finally {
-        isTraining = false;
-      }
-    }
-
-    async function initialTrain() {
-      if (isTraining) return;
-      isTraining = true;
-      try {
-        const statusesRef = ref(db, 'statuses');
-        const snapshot = await get(statusesRef);
-        const allStatuses = [];
-        snapshot.forEach((child) => {
-          const status = child.val();
-          if (status.content) {
-            allStatuses.push(status.content);
-          }
+        const { pipeline } = await import('@xenova/transformers');
+        state.generator = await pipeline('text-generation', 'microsoft/DialoGPT-medium', { 
+          quantized: true,
+          progress_callback: (data) => console.log(`Loading model: ${data.loaded / data.total * 100}%`)
         });
-        state.statusCaptions = allStatuses;
-        state.lastStatusSnapshot = snapshot.val();  // Store initial snapshot
-
-        const statusTraining = createTrainingFromStatuses(allStatuses.slice(-20));  // Initial: last 20 only
-        const fullTrainingData = [...defaultTrainingData, ...statusTraining];
-
-        net.train(fullTrainingData, {
-          iterations: 30,  // Reduced initial iterations
-          errorThresh: 0.01,
-          log: false,
-          logPeriod: 30
-        });
-        console.log(`Initial training complete on ${statusTraining.length} patterns.`);
+        console.log('Pre-trained model loaded!');
       } catch (error) {
-        console.error('Initial training error:', error);
-      } finally {
-        isTraining = false;
+        console.error('Model load failed:', error);
+        state.generator = null;  // Fallback mode
       }
-    }
-
-    function setupAutoTrainListener() {
-      const statusesRef = ref(db, 'statuses');
-      onValue(statusesRef, (snapshot) => {
-        const currentSnapshot = snapshot.val();
-        if (state.lastStatusSnapshot && currentSnapshot) {
-          // Detect new statuses by comparing keys/values
-          const newOnes = [];
-          snapshot.forEach((child) => {
-            const key = child.key;
-            const val = child.val();
-            if (!state.lastStatusSnapshot[key] && val.content) {
-              newOnes.push(val.content);
-            }
-          });
-          if (newOnes.length > 0) {
-            state.newStatusesBuffer.push(...newOnes);
-            state.lastStatusSnapshot = { ...state.lastStatusSnapshot, ...currentSnapshot };  // Update snapshot
-            debounceRetrain();  // Debounced incremental train
-          }
-        } else {
-          // First time: set snapshot
-          state.lastStatusSnapshot = currentSnapshot || {};
-        }
-      });
-    }
-
-    async function initializeFirebase() {
-      app = initializeApp(firebaseConfig);
-      auth = getAuth(app);
-      db = getDatabase(app);
-
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        if (!snapshot.exists()) {
-          push(ref(db, 'chatPatterns'), defaultTrainingData);
-          console.log('Initialized legacy chatPatterns with defaults');
-        }
-      }, { onlyOnce: true });
-
-      onAuthStateChanged(auth, async (user) => {
-        if (user) {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey there, ${user.displayName || 'friend'}!`;
-          await initialTrain();  // Client-side initial train
-          setupAutoTrainListener();  // Client-side auto-retrain
-          elements.chatInput.disabled = false;
-          elements.sendButton.disabled = false;
-        } else {
-          // Guest mode
-          console.log('Guest mode enabled for demo');
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey there, guest!`;
-          await initialTrain();
-          setupAutoTrainListener();
-          elements.chatInput.disabled = false;
-          elements.sendButton.disabled = false;
-        }
-        // Hide loading overlay after init
-        elements.loadingOverlay.classList.add('hidden');
-      });
     }
 
     function appendMessage(content, sender, isTyping = false, isImage = false) {
@@ -523,19 +401,28 @@
       }
       const tempMsg = appendMessage('', 'ai', true);
       try {
-        const normalizedPrompt = normalizeText(prompt);
-        let trainingData = [...defaultTrainingData];
-        const patternsSnapshot = await get(ref(db, 'chatPatterns'));
-        patternsSnapshot.forEach((child) => {
-          trainingData.push(...child.val());
-        });
-
-        let response = net.run(normalizedPrompt);
-        if (!response || response.length < 5) {
-          response = getClosestMatch(normalizedPrompt, trainingData);
+        let response;
+        if (state.generator) {
+          // Use pre-trained: Generate continuation
+          const output = await state.generator(`User: ${prompt}\nAI:`, { 
+            max_new_tokens: 50, 
+            do_sample: true, 
+            temperature: 0.7,
+            pad_token_id: 50256  // For GPT-like
+          });
+          response = output[0].generated_text.split('AI:')[1]?.trim() || 'Interesting! Tell me more.';
+        } else {
+          // Fallback to closest match
+          let trainingData = [...defaultFallbacks];
+          const patternsSnapshot = await get(ref(db, 'chatPatterns'));
+          patternsSnapshot.forEach((child) => {
+            trainingData.push(...child.val());
+          });
+          response = getClosestMatch(normalizeText(prompt), trainingData);
         }
+        // Inject status inspiration if available
         if (state.statusCaptions.length > 0) {
-          const relevantCaption = state.statusCaptions.find(cap => cap.toLowerCase().includes(normalizedPrompt.split(' ')[0]));
+          const relevantCaption = state.statusCaptions.find(cap => cap.toLowerCase().includes(prompt.split(' ')[0].toLowerCase()));
           if (relevantCaption) {
             response += ` (Inspired by: ${relevantCaption.substring(0, 30)}...)`;
           }
@@ -547,7 +434,7 @@
         tempMsg.textContent = 'Whoops, my circuits got tangled—drawing from the vibes in statuses though!';
         tempMsg.classList.remove('processing');
         state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
-        console.error('Brain.js Error:', error);
+        console.error('AI Response Error:', error);
       }
     }
 
@@ -557,6 +444,49 @@
       elements.welcomeContainer.classList.remove('hidden');
       state.hasChatted = false;
       state.conversationId = null;
+    }
+
+    // Status listener (for inspiration, no training)
+    function setupStatusListener() {
+      const statusesRef = ref(db, 'statuses');
+      onValue(statusesRef, (snapshot) => {
+        const allStatuses = [];
+        snapshot.forEach((child) => {
+          const status = child.val();
+          if (status.content) allStatuses.push(status.content);
+        });
+        state.statusCaptions = allStatuses.slice(-20);  // Keep recent for inspo
+      });
+    }
+
+    async function initializeFirebase() {
+      app = initializeApp(firebaseConfig);
+      auth = getAuth(app);
+      db = getDatabase(app);
+
+      // Load model during init
+      await loadPreTrainedModel();
+
+      const patternsRef = ref(db, 'chatPatterns');
+      onValue(patternsRef, (snapshot) => {
+        if (!snapshot.exists()) {
+          push(ref(db, 'chatPatterns'), defaultFallbacks);
+        }
+      }, { onlyOnce: true });
+
+      setupStatusListener();  // For status inspo
+
+      onAuthStateChanged(auth, (user) => {
+        if (user) {
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey there, ${user.displayName || 'friend'}!`;
+        } else {
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey there, guest!`;
+        }
+        elements.chatInput.disabled = false;
+        elements.sendButton.disabled = false;
+        // Hide overlay after model load
+        elements.loadingOverlay.classList.add('hidden');
+      });
     }
 
     // Event listeners
@@ -579,7 +509,6 @@
     window.addEventListener('beforeunload', () => {});
 
     document.addEventListener('DOMContentLoaded', () => {
-      // Show overlay immediately
       elements.loadingOverlay.classList.remove('hidden');
       initializeFirebase();
     });
