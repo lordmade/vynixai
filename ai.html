@@ -7,7 +7,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <!-- Transformers.js for pre-trained model -->
   <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
@@ -313,7 +312,6 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, get, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -330,7 +328,6 @@
       messages: [],
       hasChatted: false,
       conversationId: null,
-      statusCaptions: [],
       generator: null  // For pre-trained model
     };
 
@@ -345,64 +342,7 @@
       modelProgress: document.getElementById('model-progress')
     };
 
-    let app, auth, db;
-
-    const defaultFallbacks = [
-      { input: "hello", output: "Hey there!" },
-      { input: "how are you", output: "I'm doing great, thanks for asking!" },
-      { input: "what's up", output: "Just chilling in the cloud, you?" },
-      { input: "tell me a joke", output: "Why did the computer go to art school? It wanted to learn how to draw a better 'byte'!" },
-      { input: "goodbye", output: "Catch you later, pal!" },
-      { input: "what's your name", output: "I'm Vynix AI, your friendly chat buddy!" },
-      { input: "how's the weather", output: "No clue, I'm in the cloud! What's it like where you are?" },
-      { input: "who made you", output: "Katlego from Mokopane, South Africa, brought me to life!" },
-      { input: "help me", output: "Sure thing! What's on your mind?" }
-    ];
-
-    function normalizeText(text) {
-      return text.toLowerCase().trim().replace(/[^\w\s]/g, '');
-    }
-
-    // Fallback closest match
-    function getClosestMatch(prompt, trainingData) {
-      const words = prompt.split(' ');
-      let bestMatch = null;
-      let maxOverlap = 0;
-      trainingData.forEach(({ input }) => {
-        const inputWords = input.split(' ');
-        const overlap = words.filter(word => inputWords.includes(word)).length;
-        if (overlap > maxOverlap) {
-          maxOverlap = overlap;
-          bestMatch = input;
-        }
-      });
-      return bestMatch ? trainingData.find(item => item.input === bestMatch).output : 'Fascinating! Tell me more about that.';
-    }
-
-    // Load pre-trained model
-    async function loadPreTrainedModel() {
-      try {
-        const { pipeline } = await import('@xenova/transformers');
-        state.generator = await pipeline('text-generation', 'distilgpt2', { 
-          quantized: true,
-          progress_callback: (data) => {
-            if (data.status === 'downloading') {
-              const progress = (data.loaded / data.total) * 100;
-              elements.modelProgress.value = progress;
-              console.log(`Downloading model: ${Math.round(progress)}%`);
-            }
-          }
-        });
-        elements.loadingText.textContent = 'Model loaded! Initializing...';
-        elements.modelProgress.value = 100;
-        console.log('DistilGPT-2 model loaded successfully!');
-      } catch (error) {
-        elements.loadingText.textContent = 'Fallback mode active...';
-        elements.modelProgress.value = 100;
-        console.error('Model load failed:', error);
-        state.generator = null;  // Fallback to pattern matching
-      }
-    }
+    let app, auth;
 
     function appendMessage(content, sender, isTyping = false, isImage = false) {
       const div = document.createElement('div');
@@ -433,36 +373,28 @@
       }
       const tempMsg = appendMessage('', 'ai', true);
       try {
-        let response;
-        if (state.generator) {
-          // Use pre-trained: Generate continuation
-          const output = await state.generator(`${prompt}\n\n`, { 
-            max_new_tokens: 60, 
-            do_sample: true, 
-            temperature: 0.7
-          });
-          response = output[0].generated_text.split('\n\n')[1]?.trim() || 'Interesting! Tell me more.';
-        } else {
-          // Fallback to closest match
-          let trainingData = [...defaultFallbacks];
-          const patternsSnapshot = await get(ref(db, 'chatPatterns'));
-          patternsSnapshot.forEach((child) => {
-            trainingData.push(...child.val());
-          });
-          response = getClosestMatch(normalizeText(prompt), trainingData);
+        if (!state.generator) {
+          throw new Error('Model not loaded');
         }
-        // Inject status inspiration if available
-        if (state.statusCaptions.length > 0) {
-          const relevantCaption = state.statusCaptions.find(cap => cap.toLowerCase().includes(prompt.split(' ')[0].toLowerCase()));
-          if (relevantCaption) {
-            response += ` (Inspired by: ${relevantCaption.substring(0, 30)}...)`;
-          }
+        // Use pre-trained: Generate continuation
+        const output = await state.generator(`${prompt}\n\n`, { 
+          max_new_tokens: 60, 
+          do_sample: true, 
+          temperature: 0.7
+        });
+        let response = output[0].generated_text.split('\n\n')[1]?.trim() || 'Interesting! Tell me more.';
+        // Clean up if it starts with the prompt
+        if (response.startsWith(prompt)) {
+          response = response.substring(prompt.length).trim();
+        }
+        if (!response || response.length < 5) {
+          response = 'Fascinating! Tell me more about that.';
         }
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
         state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
       } catch (error) {
-        tempMsg.textContent = 'Whoops, my circuits got tangled—drawing from the vibes in statuses though!';
+        tempMsg.textContent = 'Whoops, my circuits got tangled—try again soon!';
         tempMsg.classList.remove('processing');
         state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
         console.error('AI Response Error:', error);
@@ -477,35 +409,37 @@
       state.conversationId = null;
     }
 
-    // Status listener (for inspiration, no training)
-    function setupStatusListener() {
-      const statusesRef = ref(db, 'statuses');
-      onValue(statusesRef, (snapshot) => {
-        const allStatuses = [];
-        snapshot.forEach((child) => {
-          const status = child.val();
-          if (status.content) allStatuses.push(status.content);
+    // Load pre-trained model
+    async function loadPreTrainedModel() {
+      try {
+        const { pipeline } = await import('@xenova/transformers');
+        state.generator = await pipeline('text-generation', 'distilgpt2', { 
+          quantized: true,
+          progress_callback: (data) => {
+            if (data.status === 'downloading') {
+              const progress = (data.loaded / data.total) * 100;
+              elements.modelProgress.value = progress;
+              console.log(`Downloading model: ${Math.round(progress)}%`);
+            }
+          }
         });
-        state.statusCaptions = allStatuses.slice(-20);  // Keep recent for inspo
-      });
+        elements.loadingText.textContent = 'Model loaded! Initializing...';
+        elements.modelProgress.value = 100;
+        console.log('DistilGPT-2 model loaded successfully!');
+      } catch (error) {
+        elements.loadingText.textContent = 'Error loading model—retrying on first message...';
+        elements.modelProgress.value = 100;
+        console.error('Model load failed:', error);
+        state.generator = null;
+      }
     }
 
     async function initializeFirebase() {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
-      db = getDatabase(app);
 
       // Load model during init
       await loadPreTrainedModel();
-
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        if (!snapshot.exists()) {
-          push(ref(db, 'chatPatterns'), defaultFallbacks);
-        }
-      }, { onlyOnce: true });
-
-      setupStatusListener();  // For status inspo
 
       onAuthStateChanged(auth, (user) => {
         if (user) {
