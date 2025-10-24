@@ -2670,8 +2670,8 @@ async function computeStatusScore(statusId, status) {
 
     return { score, likes, comments, reposts };
   } catch (error) {
-    console.error('Error computing score:', error);
-    return { score: 0, likes: 0, comments: 0, reposts: 0 };
+    console.warn(`Failed to compute score for status ${statusId}:`, error); // Log but don't crash
+    return { score: 0, likes: 0, comments: 0, reposts: 0 }; // Fallback to prevent Promise.all rejection
   }
 }
     
@@ -2694,10 +2694,11 @@ async function computeStatusScore(statusId, status) {
           const statusesRef = ref(db, 'statuses');
           const snapshot = await get(statusesRef);
           
+          const newSnapshot = await get(statusesRef);
           let recentStatusesByUser = {};
           let allStatuses = [];
-          if (snapshot.exists()) {
-            Object.entries(snapshot.val()).forEach(([id, s]) => {
+          if (newSnapshot.exists()) {
+            Object.entries(newSnapshot.val()).forEach(([id, s]) => {
               const status = { statusId: id, ...s };
               const shouldInclude = mode === 'carousel' ? (friendIds.includes(status.userId) || status.userId === currentUser.uid) : true;
               if (shouldInclude) {
@@ -2731,20 +2732,27 @@ async function computeStatusScore(statusId, status) {
           // Sort for list mode
           let sortedStatuses = allStatuses;
           if (mode === 'list') {
-  // Compute scores for all statuses (including owner's)
-  const statusesWithScores = await Promise.all(allStatuses.map(async (status) => {
-    const { score, likes, comments, reposts } = await computeStatusScore(status.statusId, status);
-    return { ...status, score, likes, comments, reposts };
-  }));
+            try {
+              // Compute scores for all statuses (including owner's)
+              const statusesWithScores = await Promise.all(allStatuses.map(async (status) => {
+                const { score, likes, comments, reposts } = await computeStatusScore(status.statusId, status);
+                return { ...status, score, likes, comments, reposts };
+              }));
 
-  // Optional: Boost all owner statuses slightly to prioritize them without separation
-  const boostedStatuses = statusesWithScores.map(s => s.userId === currentUser.uid ? { ...s, score: s.score + 0.5 } : s);
+              // Optional: Boost all owner statuses slightly to prioritize them without separation
+              const boostedStatuses = statusesWithScores.map(s => s.userId === currentUser.uid ? { ...s, score: s.score + 0.5 } : s);
 
-  // Sort all by score descending (reshuffles based on X-like algorithm)
-  boostedStatuses.sort((a, b) => b.score - a.score);
+              // Sort all by score descending (reshuffles based on X-like algorithm)
+              boostedStatuses.sort((a, b) => b.score - a.score);
 
-  sortedStatuses = boostedStatuses;
-}
+              sortedStatuses = boostedStatuses;
+            } catch (error) {
+              console.error('Failed to compute status scores:', error); // Log the batch error
+              // Fallback: Sort by timestamp only if scoring fails entirely
+              sortedStatuses = allStatuses.sort((a, b) => b.timestamp - a.timestamp);
+              showAlert('Statuses loaded (some features limited due to connection issue)'); // Optional UX feedback
+            }
+          }
           window.currentAllStatuses = sortedStatuses;
 
           // For carousel, sort uids with owner first
@@ -2805,6 +2813,7 @@ async function computeStatusScore(statusId, status) {
             titleEl.innerHTML = titleHtml;
             if (sortedStatuses.length === 0) {
               container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
+              if (!silent) hideSpinner();
               return;
             }
             // Load viewed statuses
@@ -3074,11 +3083,11 @@ const likeIcon = isLiked ? 'favorite' : 'favorite_border';
             }
           }
         }
-      } catch (error) {
-        console.error('Error loading statuses:', error);
-        container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Error loading statuses. Please try again.</p>';
+      } catch (globalError) {
+        console.error(`loadStatuses failed: ${mode} mode`, globalError);
+        showAlert('Failed to load statuses. Please try refreshing.');
       } finally {
-        if (!silent) hideSpinner();
+        if (!silent) hideSpinner(); // ALWAYS hide spinner, even on error
       }
     }
 
