@@ -9,8 +9,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
-  <!-- Transformers.js for Hugging Face models -->
-  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
+  <!-- No Transformers.js needed for Gemini -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -327,11 +326,13 @@
       measurementId: "G-V4W97VMSKL"
     };
 
+    // TODO: Replace with your actual Gemini API key from https://aistudio.google.com/app/apikey
+    const GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE';  // SECURITY: In production, use env vars or server proxy
+
     const state = {
-      messages: [],
+      messages: [],  // Stores {role, content} for Gemini chat history
       hasChatted: false,
       conversationId: null,
-      pipeline: null,
       statusesData: [],
       newStatusesCount: 0,
       systemPrompt: "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Draw from recent friend updates if relevant."
@@ -401,50 +402,57 @@
     }
 
     async function generateResponse(userPrompt) {
-      if (!state.pipeline) {
-        elements.loadingText.textContent = 'Loading conversational AI...';
-        elements.modelProgress.value = 50;
-        // Switched to TinyLlama for stability (Qwen may have template/runtime issues in some browsers)
-        state.pipeline = await Xenova.pipeline('text-generation', 'Xenova/TinyLlama-1.1B-Chat-v1.0');
-        console.log('TinyLlama Chat Pipeline loaded');
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY_HERE') {
+        throw new Error('Gemini API key not set! Get one from https://aistudio.google.com/app/apikey');
       }
 
-      const historyLimit = 8;
+      const historyLimit = 8;  // Limit history turns
       const recentHistory = state.messages
-        .filter(msg => !msg.isImage)
+        .filter(msg => !msg.isImage && msg.role !== 'system')  // Exclude system, images
         .slice(-historyLimit)
-        .map(msg => ({ role: msg.role, content: msg.content }));
+        .map(msg => ({ role: msg.role, parts: [{ text: msg.content }] }));
 
-      const messages = [
-        { role: 'system', content: state.systemPrompt },
+      // Build contents for Gemini: Start with system as first user message
+      const contents = [
+        { role: 'user', parts: [{ text: state.systemPrompt }] },  // System as initial user
         ...recentHistory,
-        { role: 'user', content: userPrompt }
+        { role: 'user', parts: [{ text: userPrompt }] }
       ];
 
-      const formattedPrompt = state.pipeline.tokenizer.apply_chat_template(messages, {
-        tokenize: false,
-        add_generation_prompt: true
-      });
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
 
       try {
-        const output = await state.pipeline(formattedPrompt, {
-          max_new_tokens: 100,
-          temperature: 0.7,
-          do_sample: true,
-          repetition_penalty: 1.1,
-          return_full_text: false
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            generationConfig: {
+              maxOutputTokens: 300,
+              temperature: 0.7,
+              topP: 0.8,
+              topK: 40,
+              candidateCount: 1
+            }
+          })
         });
-        let response = output[0].generated_text.trim();
-        response = response.replace(/<\|endoftext\|>/g, '').trim();
-        if (response && !response.endsWith('.')) response += '.';
-        return response.substring(0, 300);
+
+        if (!response.ok) {
+          throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
+        if (responseText && !responseText.endsWith('.')) responseText += '.';
+        return responseText.substring(0, 300);
       } catch (error) {
-        console.error('Generation Error:', error);
-        // Enhanced fallback with greeting handling
+        console.error('Gemini Generation Error:', error);
+        // Fallback for greetings
         if (userPrompt.toLowerCase().match(/^(hi|hello|hey)/)) {
           return 'Hey! Great to hear from you—what\'s new in your world? 😊';
         }
-        return 'Hey! Sorry, my circuits are buzzing—try that again? 😊';
+        return 'Hey! Sorry, my connection to the AI hive mind is glitchy—try that again? 😊';
       }
     }
 
@@ -455,15 +463,13 @@
       }
       appendMessage(userPrompt, 'user');
       const tempMsg = appendMessage('', 'assistant', true);
-      // Update state for temp message
-      state.messages[state.messages.length - 2].content = '';  // User's message is at -2, temp at -1
       try {
-        elements.loadingText.textContent = 'Chatting back...';
+        elements.loadingText.textContent = 'Querying Gemini...';
         elements.modelProgress.value = 80;
         const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
-        // Update state message content instead of appending duplicate
+        // Update the last message in state
         state.messages[state.messages.length - 1].content = response;
         
         await saveConvoPair(userPrompt, response);
@@ -487,12 +493,12 @@
 
     async function initializeAIModel() {
       try {
-        elements.loadingText.textContent = 'Warming up chat brain...';
+        elements.loadingText.textContent = 'Connecting to Gemini...';
         elements.modelProgress.value = 20;
         await loadStatusesContext();
-        elements.loadingText.textContent = 'Ready to chat!';
+        elements.loadingText.textContent = 'Ready to chat with Gemini!';
         elements.modelProgress.value = 100;
-        console.log('Conversational AI initialized!');
+        console.log('Gemini AI initialized!');
       } catch (error) {
         elements.loadingText.textContent = 'Init hiccup—chat will load on demand.';
         elements.modelProgress.value = 100;
@@ -506,6 +512,8 @@
       onValue(statusesRef, async (snapshot) => {
         if (snapshot.exists()) {
           state.newStatusesCount = Object.keys(snapshot.val() || {}).length;
+          // Reset system prompt to re-append statuses
+          state.systemPrompt = "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Draw from recent friend updates if relevant.";
           await loadStatusesContext();
         }
       }, (error) => console.error('Statuses listener error:', error));
@@ -522,7 +530,7 @@
       onAuthStateChanged(auth, (user) => {
         currentUser = user;
         if (user) {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! AI ready for chat.`;
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Gemini AI ready for chat.`;
         } else {
           elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for more features.`;
         }
