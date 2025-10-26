@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Vynix AI - BBM Edition (Trained on Statuses)</title>
+  <title>Vynix AI - BBM Edition</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
-  <!-- Brain.js for training on statuses data -->
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.24/dist/brain-browser.min.js"></script>
+  <!-- Transformers.js for Hugging Face models -->
+  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -266,23 +266,6 @@
       background: var(--bbm-red);
       border-radius: 4px;
     }
-    .train-btn {
-      position: fixed;
-      top: 80px;
-      right: 20px;
-      background: var(--bbm-red);
-      color: #000000;
-      border: none;
-      padding: 10px 16px;
-      border-radius: 20px;
-      font-weight: 700;
-      cursor: pointer;
-      z-index: 100;
-      box-shadow: var(--shadow-md);
-    }
-    .train-btn:hover {
-      background: #b30000;
-    }
     @media (min-width: 1024px) {
       .chat-input-container {
         margin: 0;
@@ -303,7 +286,7 @@
 <body class="light">
   <!-- Loading Overlay -->
   <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-text" id="loading-text">Training AI on statuses data...</div>
+    <div class="loading-text" id="loading-text">Initializing AI...</div>
     <progress id="model-progress" value="0" max="100"></progress>
     <div class="typing-indicator" style="margin-top: 20px;">
       <span class="typing-dot"></span>
@@ -316,10 +299,9 @@
     <button id="new-conversation-button" class="new-chat-fab" title="New Conversation">
       <span class="material-icons">add</span>
     </button>
-    <button class="train-btn" onclick="retrainFromStatuses()">Retrain on Statuses</button>
     <div class="welcome-container" id="welcome-container">
       <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>
-      Hey there, friend! AI trained on BBM statuses for contextual replies.
+      Hey there, friend! Ready for a chat.
     </div>
     <div id="chat-messages"></div>
     <div class="chat-input-container">
@@ -349,11 +331,9 @@
       messages: [],
       hasChatted: false,
       conversationId: null,
-      brainNet: null,  // Brain.js LSTM trained on statuses
-      trainingData: [],  // Processed statuses as numerical sequences
-      newStatusesCount: 0,  // For retrain trigger
-      lastTrainTime: 0,  // Throttle training
-      sharedModelRef: null  // For shared serialized model
+      pipeline: null,  // Hugging Face pipeline
+      statusesData: [],  // Recent statuses for context
+      newStatusesCount: 0
     };
 
     const elements = {
@@ -405,125 +385,51 @@
       console.log('Saved AI convo pair:', { input, output });
     }
 
-    // Process statuses data into numerical training data for LSTM
-    // Convert text to simple numerical sequences (character-level tokenization for better output quality)
-    function processStatusesData(snapshotData) {
-      const sequences = [];
-      if (!snapshotData) return sequences;
-      Object.values(snapshotData).forEach((status) => {
-        if (status.content && status.isClean) {  // Use clean statuses
-          // Simple char-level tokenization: map chars to numbers (0-255 for ASCII)
-          const text = status.content.toLowerCase().replace(/[^\w\s]/g, '');  // Clean text
-          const chars = text.split('');
-          const charToNum = {};
-          let idx = 0;
-          chars.forEach(char => {
-            if (!(char in charToNum)) charToNum[char] = idx++;
-          });
-          const numericalSeq = chars.map(char => charToNum[char] / Math.max(idx, 100));  // Normalize to 0-1
-          if (numericalSeq.length > 5) {  // Min length for sequence
-            sequences.push(numericalSeq.slice(0, 50));  // Truncate for perf
-          }
-        }
-      });
-      return sequences;
-    }
-
-    // Load shared trained model from DB
-    async function loadSharedModel() {
+    // Load recent statuses for context
+    async function loadStatusesContext() {
       if (!db) return;
-      state.sharedModelRef = ref(db, 'ai_sharedModel');
-      const snapshot = await new Promise((resolve) => onValue(state.sharedModelRef, resolve, { onlyOnce: true }));
+      const statusesRef = ref(db, 'statuses');
+      const snapshot = await get(statusesRef);
       if (snapshot.exists()) {
-        const saved = snapshot.val();
-        state.brainNet = new brain.recurrent.LSTMTimeSteps({ inputSize: 1, hiddenLayers: [50], outputSize: 1 });
-        state.brainNet.fromJSON(saved);
-        console.log('Loaded shared AI model from DB');
-        return true;
+        const rawData = snapshot.val() || {};
+        state.statusesData = Object.values(rawData)
+          .filter(status => status.content && status.isClean)
+          .slice(-5)  // Last 5 for brevity
+          .map(status => status.content.trim())
+          .join(' | ');  // Simple concatenation
       }
-      console.log('No shared model yet—will train from statuses');
-      return false;
     }
 
-    // Train brain.js on statuses data (numerical sequences for prediction/generation)
-    async function trainFromStatuses() {
-      if (!db || Date.now() - state.lastTrainTime < 60000 || state.newStatusesCount < 5) return;  // Throttle: 1 min, 5+ new
-      const statusesRef = ref(db, 'statuses');
-      const snapshot = await new Promise((resolve) => onValue(statusesRef, resolve, { onlyOnce: true }));
-      const rawData = snapshot ? snapshot.val() || {} : {};
-      state.trainingData = processStatusesData(rawData);
-
-      if (state.trainingData.length < 10) {
-        console.log('Insufficient statuses data—waiting.');
-        return;
+    // Generate coherent response using Hugging Face model
+    async function generateResponse(prompt) {
+      if (!state.pipeline) {
+        elements.loadingText.textContent = 'Loading AI model...';
+        elements.modelProgress.value = 50;
+        state.pipeline = await Xenova.pipeline('text-generation', 'Xenova/distilgpt2');
+        console.log('HF Pipeline loaded');
       }
+
+      // Incorporate statuses as context if available
+      const context = state.statusesData ? `Context from recent statuses: ${state.statusesData}. ` : '';
+      const fullPrompt = `${context}User: ${prompt}\nAI:`;
 
       try {
-        elements.loadingText.textContent = 'Training AI on statuses...';
-        elements.loadingOverlay.classList.remove('hidden');
-        elements.loadingOverlay.style.opacity = '0.8';
-
-        if (!state.brainNet) {
-          state.brainNet = new brain.recurrent.LSTMTimeSteps({ inputSize: 1, hiddenLayers: [50], outputSize: 1 });
-        }
-
-        // Train on sequences (predict next char numerically for generation)
-        const result = await state.brainNet.trainAsync(state.trainingData, {
-          iterations: 100,  // Balanced for client-side
-          learningRate: 0.01,  // Lower for numerical stability
-          errorThresh: 0.005,
-          log: true,
-          logPeriod: 20,
-          callback: (stats) => {
-            elements.modelProgress.value = (stats.iterations / 100) * 100;
-          }
+        const output = await state.pipeline(fullPrompt, {
+          max_new_tokens: 50,
+          temperature: 0.7,
+          do_sample: true,
+          pad_token_id: 50256,
+          repetition_penalty: 1.1
         });
-
-        state.lastTrainTime = Date.now();
-        state.newStatusesCount = 0;
-
-        // Serialize and save shared model
-        const serialized = state.brainNet.toJSON();
-        await set(state.sharedModelRef, serialized);
-        console.log('AI model trained & saved! Final error:', result.error);
-
-        elements.loadingOverlay.classList.add('hidden');
-      } catch (err) {
-        console.error('Training failed:', err);
-        elements.loadingOverlay.classList.add('hidden');
+        let response = output[0].generated_text.split('AI:')[1]?.trim() || output[0].generated_text.trim();
+        response = response.replace(fullPrompt, '').trim();
+        response = response.charAt(0).toUpperCase() + response.slice(1);
+        if (!response.endsWith('.')) response += '.';
+        return response.substring(0, 200);  // Limit length
+      } catch (error) {
+        console.error('HF Generation Error:', error);
+        return 'AI is thinking—try again with something fun!';
       }
-    }
-
-    // Generate AI response using trained model (predict next sequence numerically, map back to text)
-    function generateResponse(prompt) {
-      if (!state.brainNet || state.trainingData.length === 0) {
-        return 'AI is still learning from statuses—ask something related to recent posts!';
-      }
-      // Simple numerical prompt: convert prompt to seq, predict next chars
-      const promptText = prompt.toLowerCase().replace(/[^\w\s]/g, '');
-      const chars = promptText.split('');
-      const charToNum = {};
-      let idx = 0;
-      chars.forEach(char => {
-        if (!(char in charToNum)) charToNum[char] = idx++;
-      });
-      let inputSeq = chars.map(char => [charToNum[char] / Math.max(idx, 100)]);  // 2D for LSTMTimeSteps
-      if (inputSeq.length < 10) inputSeq = state.trainingData[0].map(n => [n]);  // Fallback seed
-
-      const outputSeq = state.brainNet.run(inputSeq, 20);  // Predict 20 steps
-      // Map back to chars (simplified: use avg or threshold to select chars from vocab)
-      const vocabSize = Object.keys(charToNum).length;
-      const generatedNums = outputSeq.map(o => Math.round(o * vocabSize));
-      const generatedChars = generatedNums.map(num => {
-        const char = Object.keys(charToNum).find(k => charToNum[k] === num % vocabSize);
-        return char || 'a';  // Fallback
-      }).join('').substring(0, 50);
-
-      let response = generatedChars.replace(/\s+/g, ' ').trim();
-      if (!response || response.length < 10) {
-        response = 'Based on recent statuses, that sounds engaging—tell me more!';
-      }
-      return response;
     }
 
     async function getAIResponse(prompt) {
@@ -533,16 +439,17 @@
       }
       const tempMsg = appendMessage('', 'ai', true);
       try {
-        const response = generateResponse(prompt);
+        elements.loadingText.textContent = 'Generating response...';
+        elements.modelProgress.value = 80;
+        const response = await generateResponse(prompt);
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
         state.messages.push({ content: response, sender: 'ai', timestamp: Date.now() });
         
         await saveConvoPair(prompt, response);
-        
-        trainFromStatuses();  // Check for retrain
+        elements.modelProgress.value = 100;
       } catch (error) {
-        tempMsg.textContent = 'AI is processing statuses—try again?';
+        tempMsg.textContent = 'Sorry, try again?';
         tempMsg.classList.remove('processing');
         console.error('AI Response Error:', error);
       }
@@ -556,42 +463,30 @@
       state.conversationId = null;
     }
 
-    // Initial load and train
+    // Initial load
     async function initializeAIModel() {
       try {
-        elements.loadingText.textContent = 'Loading statuses for training...';
+        elements.loadingText.textContent = 'Preparing AI...';
         elements.modelProgress.value = 20;
-        await loadSharedModel();
-        if (!state.brainNet) {
-          elements.loadingText.textContent = 'Training initial model...';
-          elements.modelProgress.value = 50;
-          await trainFromStatuses();
-        }
-        elements.loadingText.textContent = 'AI ready! Trained on statuses.';
+        await loadStatusesContext();
+        elements.loadingText.textContent = 'AI ready!';
         elements.modelProgress.value = 100;
-        console.log('AI model initialized!');
+        console.log('AI model initialized with HF!');
       } catch (error) {
-        elements.loadingText.textContent = 'Error initializing AI—retrying on chat...';
+        elements.loadingText.textContent = 'Error initializing—retrying on chat...';
         elements.modelProgress.value = 100;
         console.error('AI init failed:', error);
       }
     }
 
-    // Retrain button handler
-    window.retrainFromStatuses = async () => {
-      state.newStatusesCount = 5;  // Force retrain
-      await trainFromStatuses();
-      showAlert('Retrained on latest statuses!');
-    };
-
-    // Realtime listener for new statuses
+    // Realtime listener for new statuses (optional, for context updates)
     function setupRealtimeListener() {
       if (!db) return;
       const statusesRef = ref(db, 'statuses');
-      onValue(statusesRef, (snapshot) => {
+      onValue(statusesRef, async (snapshot) => {
         if (snapshot.exists()) {
           state.newStatusesCount = Object.keys(snapshot.val() || {}).length;
-          trainFromStatuses();  // Debounced inside
+          await loadStatusesContext();  // Refresh context
         }
       }, (error) => console.error('Statuses listener error:', error));
     }
@@ -607,9 +502,9 @@
       onAuthStateChanged(auth, (user) => {
         currentUser = user;
         if (user) {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! AI powered by BBM statuses.`;
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! AI ready for chat.`;
         } else {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for personalized AI.`;
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for more features.`;
         }
         elements.chatInput.disabled = false;
         elements.sendButton.disabled = false;
