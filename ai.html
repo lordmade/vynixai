@@ -194,10 +194,9 @@
     .send-btn svg {
       font-size: 20px;
     }
-    .new-chat-fab {
+    .new-chat-fab, .export-fab {
       position: fixed;
       bottom: 90px;
-      right: 20px;
       background: var(--bbm-red);
       color: white;
       border: none;
@@ -213,7 +212,13 @@
       transition: all 0.3s ease;
       font-size: 28px;
     }
-    .new-chat-fab:hover {
+    .new-chat-fab {
+      right: 20px;
+    }
+    .export-fab {
+      left: 20px;
+    }
+    .new-chat-fab:hover, .export-fab:hover {
       background: #b30000;
       box-shadow: var(--glow);
       transform: scale(1.1);
@@ -265,67 +270,6 @@
       background: var(--bbm-red);
       border-radius: 4px;
     }
-    /* Modal Styles */
-    #limit-modal {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.5);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 2000;
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity 0.3s ease, visibility 0.3s ease;
-    }
-    #limit-modal.show {
-      opacity: 1;
-      visibility: visible;
-    }
-    .modal-content {
-      background: var(--card-bg);
-      border-radius: 20px;
-      padding: 32px;
-      max-width: 400px;
-      width: 90%;
-      text-align: center;
-      box-shadow: var(--shadow-md);
-      position: relative;
-      max-height: 80vh;
-      overflow-y: auto;
-    }
-    .modal-title {
-      font-family: 'Orbitron', monospace;
-      color: var(--bbm-red);
-      font-weight: 900;
-      font-size: 24px;
-      margin-bottom: 16px;
-      letter-spacing: 0.5px;
-    }
-    .modal-message {
-      color: var(--text-primary);
-      margin-bottom: 24px;
-      line-height: 1.5;
-    }
-    .modal-close {
-      background: var(--bbm-red);
-      color: white;
-      border: none;
-      padding: 12px 24px;
-      border-radius: 28px;
-      cursor: pointer;
-      font-weight: 600;
-      transition: all 0.3s ease;
-      box-shadow: var(--shadow-sm);
-    }
-    .modal-close:hover {
-      background: #b30000;
-      box-shadow: var(--glow);
-      transform: scale(1.05);
-    }
     @media (min-width: 1024px) {
       .chat-input-container {
         margin: 0;
@@ -340,68 +284,12 @@
         bottom: 90px;
         right: 20px;
       }
+      .export-fab {
+        bottom: 90px;
+        left: 20px;
+      }
     }
   </style>
-  <script>
-    // Global helpers for limits (Vynix rate limiting)
-    window.aiLimits = {
-      rpmLimit: 5,
-      tokenLimit: 5000,  // Daily
-      rpmWindowMs: 60000  // 1 min
-    };
-
-    function getUserUsageKey(type) {
-      const now = new Date();
-      const dateKey = now.toISOString().split('T')[0];  // YYYY-MM-DD for daily reset
-      return `usage/${currentUser?.uid || 'guest'}/${type}/${dateKey}`;
-    }
-
-    async function checkAndUpdateRpm() {
-      if (!currentUser) return true;  // Guests unlimited for now
-      const rpmRef = ref(db, getUserUsageKey('rpm'));
-      const snapshot = await get(rpmRef);
-      let timestamps = snapshot.val() || [];
-      const now = Date.now();
-      
-      // Filter old timestamps
-      timestamps = timestamps.filter(ts => now - ts < window.aiLimits.rpmWindowMs);
-      
-      if (timestamps.length >= window.aiLimits.rpmLimit) {
-        throw new Error('Chill—max 5 chats per minute. Try again soon!');
-      }
-      
-      timestamps.push(now);
-      await set(rpmRef, timestamps);
-      return true;
-    }
-
-    async function checkTokensAndUpdate(usedTokens) {
-      if (!currentUser) return true;
-      const tokenRef = ref(db, getUserUsageKey('tokens'));
-      const snapshot = await get(tokenRef);
-      let totalTokens = snapshot.val() || 0;
-      
-      if (totalTokens + usedTokens > window.aiLimits.tokenLimit) {
-        throw new Error(`Token cap hit! You've used ${totalTokens} today—upgrade for more.`);
-      }
-      
-      await set(tokenRef, totalTokens + usedTokens);
-      return true;
-    }
-
-    // Modal functions
-    function showLimitModal(message) {
-      const modal = document.getElementById('limit-modal');
-      const modalMsg = document.getElementById('modal-message');
-      modalMsg.textContent = message;
-      modal.classList.add('show');
-    }
-
-    function hideLimitModal() {
-      const modal = document.getElementById('limit-modal');
-      modal.classList.remove('show');
-    }
-  </script>
 </head>
 <body class="light">
   <!-- Loading Overlay -->
@@ -415,16 +303,10 @@
     </div>
   </div>
 
-  <!-- Limit Exceeded Modal -->
-  <div id="limit-modal" class="hidden">
-    <div class="modal-content">
-      <div class="modal-title">⏰ Limit Reached</div>
-      <div id="modal-message" class="modal-message"></div>
-      <button id="modal-close" class="modal-close">Got it</button>
-    </div>
-  </div>
-
   <main class="main-content">
+    <button id="export-button" class="export-fab" title="Export Conversation">
+      <span class="material-icons">download</span>
+    </button>
     <button id="new-conversation-button" class="new-chat-fab" title="New Conversation">
       <span class="material-icons">add</span>
     </button>
@@ -474,6 +356,7 @@
       sendButton: document.getElementById('send-button'),
       welcomeContainer: document.getElementById('welcome-container'),
       newConversationButton: document.getElementById('new-conversation-button'),
+      exportButton: document.getElementById('export-button'),
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
       modelProgress: document.getElementById('model-progress')
@@ -501,6 +384,32 @@
       elements.chatMessages.appendChild(div);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
       return div;
+    }
+
+    function exportConversation() {
+      if (state.messages.length === 0) {
+        alert('No conversation to export yet!');
+        return;
+      }
+      const exportData = {
+        exportTimestamp: new Date().toISOString(),
+        messages: state.messages.map(msg => ({
+          role: msg.role,
+          content: msg.content,
+          timestamp: new Date(msg.timestamp).toISOString(),
+          isImage: msg.isImage
+        }))
+      };
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `vynix-conversation-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
 
     async function saveConvoPair(input, output) {
@@ -535,9 +444,6 @@
       if (!VYNIX_API_KEY || VYNIX_API_KEY === 'YOUR_VYNIX_API_KEY_HERE') {
         throw new Error('Vynix API key not set! Get one from https://aistudio.google.com/app/apikey');
       }
-
-      // RPM check first
-      await checkAndUpdateRpm();
 
       const historyLimit = 8;  // Limit history turns
       const recentHistory = state.messages
@@ -578,20 +484,8 @@
         const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
         let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
         if (responseText && !responseText.endsWith('.')) responseText += '.';
-        
-        // Parse usage (prompt + completion tokens)
-        const promptTokens = result.usageMetadata?.promptTokenCount || 0;
-        const completionTokens = result.candidates?.[0]?.content?.usageMetadata?.completionTokenCount || 0;
-        const totalUsed = promptTokens + completionTokens;
-        
-        // Token check/update *after* successful call (to avoid false positives on errors)
-        await checkTokensAndUpdate(totalUsed);
-        
         return responseText.substring(0, 300);
       } catch (error) {
-        if (error.message.includes('Chill') || error.message.includes('Token cap')) {
-          throw error;  // Re-throw for UI handling
-        }
         console.error('Vynix Generation Error:', error);
         // Fallback for greetings
         if (userPrompt.toLowerCase().match(/^(hi|hello|hey)/)) {
@@ -620,16 +514,10 @@
         await saveConvoPair(userPrompt, response);
         elements.modelProgress.value = 100;
       } catch (error) {
-        let modalMessage = 'Oops, something went wrong! Let\'s try again.';
-        if (error.message.includes('Chill')) {
-          modalMessage = 'You\'ve sent too many messages too quickly. Wait a minute and try again!';
-        } else if (error.message.includes('Token cap')) {
-          modalMessage = 'You\'ve reached your daily limit. Come back tomorrow to start using AI again!';
-        }
+        const fallback = 'Oops, let\'s try something else!';
+        tempMsg.textContent = fallback;
         tempMsg.classList.remove('processing');
-        tempMsg.textContent = 'Sorry, I couldn\'t respond right now. Check the popup for details.';
-        state.messages[state.messages.length - 1].content = 'Sorry, I couldn\'t respond right now.';
-        showLimitModal(modalMessage);
+        state.messages[state.messages.length - 1].content = fallback;
         console.error('Vynix AI Response Error:', error);
       }
     }
@@ -693,11 +581,7 @@
       });
     }
 
-    // Modal close event
-    document.getElementById('modal-close').addEventListener('click', hideLimitModal);
-    document.getElementById('limit-modal').addEventListener('click', (e) => {
-      if (e.target === e.currentTarget) hideLimitModal();
-    });
+    elements.exportButton.addEventListener('click', exportConversation);
 
     elements.sendButton.addEventListener('click', async () => {
       const prompt = elements.chatInput.value.trim();
