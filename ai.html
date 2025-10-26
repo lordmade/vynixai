@@ -9,7 +9,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
-  <!-- No Transformers.js needed for Gemini -->
+  <!-- No Transformers.js needed for Vynix -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -281,11 +281,58 @@
       }
     }
   </style>
+  <script>
+    // Global helpers for limits (Vynix rate limiting)
+    window.aiLimits = {
+      rpmLimit: 5,
+      tokenLimit: 5000,  // Daily
+      rpmWindowMs: 60000  // 1 min
+    };
+
+    function getUserUsageKey(type) {
+      const now = new Date();
+      const dateKey = now.toISOString().split('T')[0];  // YYYY-MM-DD for daily reset
+      return `usage/${currentUser?.uid || 'guest'}/${type}/${dateKey}`;
+    }
+
+    async function checkAndUpdateRpm() {
+      if (!currentUser) return true;  // Guests unlimited for now
+      const rpmRef = ref(db, getUserUsageKey('rpm'));
+      const snapshot = await get(rpmRef);
+      let timestamps = snapshot.val() || [];
+      const now = Date.now();
+      
+      // Filter old timestamps
+      timestamps = timestamps.filter(ts => now - ts < window.aiLimits.rpmWindowMs);
+      
+      if (timestamps.length >= window.aiLimits.rpmLimit) {
+        throw new Error('Chill—max 5 chats per minute. Try again soon!');
+      }
+      
+      timestamps.push(now);
+      await set(rpmRef, timestamps);
+      return true;
+    }
+
+    async function checkTokensAndUpdate(usedTokens) {
+      if (!currentUser) return true;
+      const tokenRef = ref(db, getUserUsageKey('tokens'));
+      const snapshot = await get(tokenRef);
+      let totalTokens = snapshot.val() || 0;
+      
+      if (totalTokens + usedTokens > window.aiLimits.tokenLimit) {
+        throw new Error(`Token cap hit! You've used ${totalTokens} today—upgrade for more.`);
+      }
+      
+      await set(tokenRef, totalTokens + usedTokens);
+      return true;
+    }
+  </script>
 </head>
 <body class="light">
   <!-- Loading Overlay -->
   <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-text" id="loading-text">Initializing AI...</div>
+    <div class="loading-text" id="loading-text">Initializing Vynix AI...</div>
     <progress id="model-progress" value="0" max="100"></progress>
     <div class="typing-indicator" style="margin-top: 20px;">
       <span class="typing-dot"></span>
@@ -326,11 +373,11 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    // TODO: Replace with your actual Gemini API key from https://aistudio.google.com/app/apikey
-    const GEMINI_API_KEY = 'AIzaSyDnaG0JKAY3h49iiAT_NjxkXYch43XakhA';  // SECURITY: In production, use env vars or server proxy
+    // TODO: Replace with your actual Vynix API key from https://aistudio.google.com/app/apikey
+    const VYNIX_API_KEY = 'AIzaSyDnaG0JKAY3h49iiAT_NjxkXYch43XakhA';  // SECURITY: In production, use env vars or server proxy
 
     const state = {
-      messages: [],  // Stores {role, content} for Gemini chat history
+      messages: [],  // Stores {role, content} for Vynix chat history
       hasChatted: false,
       conversationId: null,
       statusesData: [],
@@ -383,7 +430,7 @@
         output,
         timestamp: Date.now()
       });
-      console.log('Saved AI convo pair:', { input, output });
+      console.log('Saved Vynix AI convo pair:', { input, output });
     }
 
     async function loadStatusesContext() {
@@ -402,9 +449,12 @@
     }
 
     async function generateResponse(userPrompt) {
-      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY_HERE') {
-        throw new Error('Gemini API key not set! Get one from https://aistudio.google.com/app/apikey');
+      if (!VYNIX_API_KEY || VYNIX_API_KEY === 'YOUR_VYNIX_API_KEY_HERE') {
+        throw new Error('Vynix API key not set! Get one from https://aistudio.google.com/app/apikey');
       }
+
+      // RPM check first
+      await checkAndUpdateRpm();
 
       const historyLimit = 8;  // Limit history turns
       const recentHistory = state.messages
@@ -412,14 +462,14 @@
         .slice(-historyLimit)
         .map(msg => ({ role: msg.role, parts: [{ text: msg.content }] }));
 
-      // Build contents for Gemini: Start with system as first user message
+      // Build contents for Vynix: Start with system as first user message
       const contents = [
         { role: 'user', parts: [{ text: state.systemPrompt }] },  // System as initial user
         ...recentHistory,
         { role: 'user', parts: [{ text: userPrompt }] }
       ];
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${VYNIX_API_KEY}`;
 
       try {
         const response = await fetch(url, {
@@ -438,16 +488,28 @@
         });
 
         if (!response.ok) {
-          throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+          throw new Error(`Vynix API error: ${response.status} ${response.statusText}`);
         }
 
         const result = await response.json();
         const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
         let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
         if (responseText && !responseText.endsWith('.')) responseText += '.';
+        
+        // Parse usage (prompt + completion tokens)
+        const promptTokens = result.usageMetadata?.promptTokenCount || 0;
+        const completionTokens = result.candidates?.[0]?.content?.usageMetadata?.completionTokenCount || 0;
+        const totalUsed = promptTokens + completionTokens;
+        
+        // Token check/update *after* successful call (to avoid false positives on errors)
+        await checkTokensAndUpdate(totalUsed);
+        
         return responseText.substring(0, 300);
       } catch (error) {
-        console.error('Gemini Generation Error:', error);
+        if (error.message.includes('Chill') || error.message.includes('Token cap')) {
+          throw error;  // Re-throw for UI handling
+        }
+        console.error('Vynix Generation Error:', error);
         // Fallback for greetings
         if (userPrompt.toLowerCase().match(/^(hi|hello|hey)/)) {
           return 'Hey! Great to hear from you—what\'s new in your world? 😊';
@@ -464,7 +526,7 @@
       appendMessage(userPrompt, 'user');
       const tempMsg = appendMessage('', 'assistant', true);
       try {
-        elements.loadingText.textContent = 'Querying Gemini...';
+        elements.loadingText.textContent = 'Querying Vynix...';
         elements.modelProgress.value = 80;
         const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
@@ -475,11 +537,18 @@
         await saveConvoPair(userPrompt, response);
         elements.modelProgress.value = 100;
       } catch (error) {
-        const fallback = 'Oops, let\'s try something else!';
-        tempMsg.textContent = fallback;
+        let errorMsg = 'Oops, something went wrong!';
+        if (error.message.includes('Chill')) {
+          errorMsg = error.message;
+        } else if (error.message.includes('Token cap')) {
+          errorMsg = error.message;
+        } else {
+          errorMsg = 'Hey! Sorry, my connection to the AI hive mind is glitchy—try that again? 😊';
+        }
+        tempMsg.textContent = errorMsg;
         tempMsg.classList.remove('processing');
-        state.messages[state.messages.length - 1].content = fallback;
-        console.error('AI Response Error:', error);
+        state.messages[state.messages.length - 1].content = errorMsg;
+        console.error('Vynix AI Response Error:', error);
       }
     }
 
@@ -493,16 +562,16 @@
 
     async function initializeAIModel() {
       try {
-        elements.loadingText.textContent = 'Connecting to Gemini...';
+        elements.loadingText.textContent = 'Connecting to Vynix...';
         elements.modelProgress.value = 20;
         await loadStatusesContext();
-        elements.loadingText.textContent = 'Ready to chat with Gemini!';
+        elements.loadingText.textContent = 'Ready to chat with Vynix AI!';
         elements.modelProgress.value = 100;
-        console.log('Gemini AI initialized!');
+        console.log('Vynix AI initialized!');
       } catch (error) {
         elements.loadingText.textContent = 'Init hiccup—chat will load on demand.';
         elements.modelProgress.value = 100;
-        console.error('AI init failed:', error);
+        console.error('Vynix AI init failed:', error);
       }
     }
 
@@ -530,7 +599,7 @@
       onAuthStateChanged(auth, (user) => {
         currentUser = user;
         if (user) {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Gemini AI ready for chat.`;
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Vynix AI ready for chat.`;
         } else {
           elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for more features.`;
         }
