@@ -331,9 +331,10 @@
       messages: [],
       hasChatted: false,
       conversationId: null,
-      pipeline: null,  // Hugging Face pipeline
-      statusesData: [],  // Recent statuses for context
-      newStatusesCount: 0
+      pipeline: null,
+      statusesData: [],
+      newStatusesCount: 0,
+      systemPrompt: "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Draw from recent friend updates if relevant."
     };
 
     const elements = {
@@ -349,9 +350,9 @@
 
     let app, auth, db, currentUser;
 
-    function appendMessage(content, sender, isTyping = false, isImage = false) {
+    function appendMessage(content, role, isTyping = false, isImage = false) {
       const div = document.createElement('div');
-      div.className = `message ${sender}${isTyping ? ' processing' : ''}`;
+      div.className = `message ${role === 'user' ? 'user' : 'ai'}${isTyping ? ' processing' : ''}`;
       if (isTyping) {
         div.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
       } else if (isImage) {
@@ -362,8 +363,8 @@
       } else {
         div.textContent = content;
       }
-      state.messages.push({ content, sender, isImage, timestamp: Date.now() });
-      if (sender === 'ai' && !isTyping) {
+      state.messages.push({ role, content, isImage, timestamp: Date.now() });
+      if (role === 'assistant' && !isTyping) {
         if ('vibrate' in navigator) navigator.vibrate(50);
       }
       elements.chatMessages.appendChild(div);
@@ -371,7 +372,6 @@
       return div;
     }
 
-    // Save convo pair to Firebase (optional, for future enhancements)
     async function saveConvoPair(input, output) {
       if (!currentUser) return;
       const convosRef = ref(db, 'ai_conversations');
@@ -385,71 +385,83 @@
       console.log('Saved AI convo pair:', { input, output });
     }
 
-    // Load recent statuses for context
     async function loadStatusesContext() {
       if (!db) return;
       const statusesRef = ref(db, 'statuses');
       const snapshot = await get(statusesRef);
       if (snapshot.exists()) {
         const rawData = snapshot.val() || {};
-        state.statusesData = Object.values(rawData)
+        const recentStatuses = Object.values(rawData)
           .filter(status => status.content && status.isClean)
-          .slice(-5)  // Last 5 for brevity
+          .slice(-3)
           .map(status => status.content.trim())
-          .join(' | ');  // Simple concatenation
+          .join(' | ');
+        state.systemPrompt += ` Recent friend updates: ${recentStatuses}.`;
       }
     }
 
-    // Generate coherent response using Hugging Face model
-    async function generateResponse(prompt) {
+    async function generateResponse(userPrompt) {
       if (!state.pipeline) {
-        elements.loadingText.textContent = 'Loading AI model...';
+        elements.loadingText.textContent = 'Loading conversational AI...';
         elements.modelProgress.value = 50;
-        state.pipeline = await Xenova.pipeline('text-generation', 'Xenova/distilgpt2');
-        console.log('HF Pipeline loaded');
+        state.pipeline = await Xenova.pipeline('text-generation', 'Xenova/Qwen1.5-0.5B-Chat');
+        console.log('Qwen Chat Pipeline loaded');
       }
 
-      // Incorporate statuses as context if available
-      const context = state.statusesData ? `Context from recent statuses: ${state.statusesData}. ` : '';
-      const fullPrompt = `${context}User: ${prompt}\nAI:`;
+      const historyLimit = 8;
+      const recentHistory = state.messages
+        .filter(msg => !msg.isImage)
+        .slice(-historyLimit)
+        .map(msg => ({ role: msg.role, content: msg.content }));
+
+      const messages = [
+        { role: 'system', content: state.systemPrompt },
+        ...recentHistory,
+        { role: 'user', content: userPrompt }
+      ];
+
+      const formattedPrompt = state.pipeline.tokenizer.apply_chat_template(messages, {
+        tokenize: false,
+        add_generation_prompt: true
+      });
 
       try {
-        const output = await state.pipeline(fullPrompt, {
-          max_new_tokens: 50,
+        const output = await state.pipeline(formattedPrompt, {
+          max_new_tokens: 100,
           temperature: 0.7,
           do_sample: true,
-          pad_token_id: 50256,
-          repetition_penalty: 1.1
+          repetition_penalty: 1.1,
+          return_full_text: false
         });
-        let response = output[0].generated_text.split('AI:')[1]?.trim() || output[0].generated_text.trim();
-        response = response.replace(fullPrompt, '').trim();
-        response = response.charAt(0).toUpperCase() + response.slice(1);
-        if (!response.endsWith('.')) response += '.';
-        return response.substring(0, 200);  // Limit length
+        let response = output[0].generated_text.trim();
+        response = response.replace(/<\|endoftext\|>/g, '').trim();
+        if (response && !response.endsWith('.')) response += '.';
+        return response.substring(0, 300);
       } catch (error) {
-        console.error('HF Generation Error:', error);
-        return 'AI is thinking—try again with something fun!';
+        console.error('Generation Error:', error);
+        return 'Hey! Sorry, my circuits are buzzing—try that again? 😊';
       }
     }
 
-    async function getAIResponse(prompt) {
+    async function getAIResponse(userPrompt) {
       if (!state.hasChatted) {
         state.hasChatted = true;
         elements.welcomeContainer.classList.add('hidden');
       }
-      const tempMsg = appendMessage('', 'ai', true);
+      appendMessage(userPrompt, 'user');
+      const tempMsg = appendMessage('', 'assistant', true);
       try {
-        elements.loadingText.textContent = 'Generating response...';
+        elements.loadingText.textContent = 'Chatting back...';
         elements.modelProgress.value = 80;
-        const response = await generateResponse(prompt);
+        const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
-        state.messages.push({ content: response, sender: 'ai', timestamp: Date.now() });
+        appendMessage(response, 'assistant');
         
-        await saveConvoPair(prompt, response);
+        await saveConvoPair(userPrompt, response);
         elements.modelProgress.value = 100;
       } catch (error) {
-        tempMsg.textContent = 'Sorry, try again?';
+        tempMsg.textContent = 'Oops, let\'s try something else!';
         tempMsg.classList.remove('processing');
         console.error('AI Response Error:', error);
       }
@@ -463,30 +475,28 @@
       state.conversationId = null;
     }
 
-    // Initial load
     async function initializeAIModel() {
       try {
-        elements.loadingText.textContent = 'Preparing AI...';
+        elements.loadingText.textContent = 'Warming up chat brain...';
         elements.modelProgress.value = 20;
         await loadStatusesContext();
-        elements.loadingText.textContent = 'AI ready!';
+        elements.loadingText.textContent = 'Ready to chat!';
         elements.modelProgress.value = 100;
-        console.log('AI model initialized with HF!');
+        console.log('Conversational AI initialized!');
       } catch (error) {
-        elements.loadingText.textContent = 'Error initializing—retrying on chat...';
+        elements.loadingText.textContent = 'Init hiccup—chat will load on demand.';
         elements.modelProgress.value = 100;
         console.error('AI init failed:', error);
       }
     }
 
-    // Realtime listener for new statuses (optional, for context updates)
     function setupRealtimeListener() {
       if (!db) return;
       const statusesRef = ref(db, 'statuses');
       onValue(statusesRef, async (snapshot) => {
         if (snapshot.exists()) {
           state.newStatusesCount = Object.keys(snapshot.val() || {}).length;
-          await loadStatusesContext();  // Refresh context
+          await loadStatusesContext();
         }
       }, (error) => console.error('Statuses listener error:', error));
     }
@@ -514,12 +524,11 @@
       });
     }
 
-    // Event listeners
     elements.sendButton.addEventListener('click', async () => {
       const prompt = elements.chatInput.value.trim();
       if (!prompt) return;
       elements.chatInput.value = '';
-      appendMessage(prompt, 'user');
+      elements.chatInput.focus();
       await getAIResponse(prompt);
     });
 
