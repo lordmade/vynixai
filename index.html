@@ -1614,12 +1614,24 @@
     .status-post-content a {
       color: #1d9bf0;
       text-decoration: underline;
+      background-color: rgba(29, 155, 240, 0.1);
+      padding: 2px 4px;
+      border-radius: 4px;
+      cursor: pointer;
     }
     .status-post-content .more-toggle {
       color: var(--bbm-red);
       cursor: pointer;
       font-weight: 600;
       text-decoration: underline;
+    }
+    .status-post-content .full-text {
+      display: none;
+    }
+    .status-post-content .show-more {
+      cursor: pointer;
+      color: var(--bbm-red);
+      font-weight: 600;
     }
     .status-post-media {
       width: 100%;
@@ -2208,6 +2220,39 @@
     .status-search-input::placeholder {
       color: var(--text-secondary);
     }
+
+    /* Infinite Scroll for Notifications */
+    .notifications-list {
+      max-height: calc(100vh - 200px);
+      overflow-y: auto;
+    }
+
+    .load-more-notifs {
+      text-align: center;
+      padding: 20px;
+      color: var(--text-secondary);
+    }
+
+    .load-more-notifs button {
+      background: var(--bbm-red);
+      color: #000000;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 20px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .load-more-notifs button:hover {
+      transform: scale(1.05);
+      box-shadow: var(--glow);
+    }
+
+    .load-more-notifs.loading {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body class="dark">
@@ -2453,7 +2498,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off, query, orderByChild, limitToLast, endBefore } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -2502,6 +2547,11 @@
     let replyingTo = null;
     let replyingToUser = null;
     let statusSearchTerm = '';
+    // New variables for infinite scroll notifications
+    let loadedNotifications = [];
+    let lastNotifTimestamp = null;
+    let isLoadingMoreNotifs = false;
+    let notifBatchSize = 20;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -2720,6 +2770,45 @@
       }
     }
 
+    // New function for "show more" toggle
+    function toggleShowMore(event) {
+      const postContent = event.target.closest('.status-post-content');
+      const fullText = postContent.querySelector('.full-text');
+      const truncatedText = postContent.querySelector('.truncated-text');
+      const showMore = postContent.querySelector('.show-more');
+      if (fullText && showMore) {
+        fullText.style.display = 'block';
+        truncatedText.style.display = 'none';
+        showMore.textContent = 'Show less';
+        showMore.onclick = toggleShowMore;
+      } else if (truncatedText && showMore) {
+        fullText.style.display = 'none';
+        truncatedText.style.display = 'block';
+        showMore.textContent = 'Show more';
+        showMore.onclick = toggleShowMore;
+      }
+    }
+
+    function highlightContent(content) {
+      let highlighted = content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      highlighted = highlighted.replace(urlRegex, '<a href="$1" target="_blank" style="color: #1d9bf0; text-decoration: underline; background-color: rgba(29, 155, 240, 0.1); padding: 2px 4px; border-radius: 4px; cursor: pointer;">$1</a>');
+      return highlighted;
+    }
+
+    function truncateContent(content, maxLength = 200) {
+      if (content.length <= maxLength) {
+        return `<span class="truncated-text">${highlightContent(content)}</span>`;
+      }
+      const truncated = content.substring(0, maxLength);
+      const fullHighlighted = highlightContent(content);
+      return `
+        <span class="truncated-text">${highlightContent(truncated)}...</span>
+        <span class="full-text" style="display: none;">${fullHighlighted}</span>
+        <span class="show-more" onclick="toggleShowMore(event)">Show more</span>
+      `;
+    }
+
     async function loadStatuses(containerId, mode = 'carousel', silent = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
@@ -2923,8 +3012,7 @@
                     `;
                     let origContentHtml = '';
                     if (original.content) {
-                      const highlightedOrigContent = highlightContent(original.content);
-                      origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
+                      origContentHtml = `<div class="status-post-content">${truncateContent(original.content)}</div>`;
                     }
                     let origMediaHtml = '';
                     let origProgressHtml = '';
@@ -2947,8 +3035,7 @@
                     `;
                     let repostCaptionHtml = '';
                     if (status.content) {
-                      const highlightedRepostContent = highlightContent(status.content);
-                      repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
+                      repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${truncateContent(status.content)}</div>`;
                     }
                     let reposts = status.reposts || 0;
                     let likes = 0;
@@ -3055,8 +3142,7 @@
                   }
                   let contentHtml = '';
                   if (status.content) {
-                    const highlightedContent = highlightContent(status.content);
-                    contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
+                    contentHtml = `<div class="status-post-content">${truncateContent(status.content)}</div>`;
                   }
                   innerHTML = `
                     <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
@@ -3152,13 +3238,6 @@
       }
     }
 
-    function highlightContent(content) {
-      let highlighted = content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
-      const urlRegex = /(https?:\/\/[^\s]+)/g;
-      highlighted = highlighted.replace(urlRegex, '<a href="$1" target="_blank" style="color: #1d9bf0; text-decoration: underline;">$1</a>');
-      return highlighted;
-    }
-
     async function loadAllUsersForMentions() {
       const usersRef = ref(db, 'users');
       const snapshot = await get(usersRef);
@@ -3251,329 +3330,43 @@
       loadFriendStatuses();
     };
 
-    async function updateChatsUI(snapshot) {
-      const chatList = document.getElementById('chat-list');
-      chatList.innerHTML = '';
-      totalUnread = 0;
-      let chats = [];
-      if (snapshot.exists()) {
-        chats = Object.entries(snapshot.val())
-          .map(([chatId, chat]) => ({ chatId, ...chat }))
-          .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
-      }
-      hasChats = chats.length > 0;
-      if (chats.length > 0) {
-        for (let i = 0; i < chats.length; i++) {
-          const chat = chats[i];
-          const otherUserId = chat.otherUserId;
-          const userRef = ref(db, `users/${otherUserId}`);
-          const userSnapshot = await get(userRef);
-          const user = userSnapshot.val();
-          if (!user) continue;
-          const unread = chat.unreadCount || 0;
-          let messagePreview = 'No messages yet';
-          if (chat.lastMessageType === 'image') {
-            messagePreview = 'Photo';
-          } else if (chat.lastMessageType === 'video') {
-            messagePreview = 'Video';
-          } else if (chat.lastMessage) {
-            try {
-              messagePreview = await decryptMessage(chat.lastMessage, chat.chatId);
-              messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
-            } catch (error) {
-              console.error('Failed to decrypt preview:', error);
-            }
-          }
-          if (prevUnread[otherUserId] !== undefined && unread > prevUnread[otherUserId]) {
-            playNotificationSound();
-            showAlert(`New message from ${user.displayName}: ${messagePreview}`);
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification(user.displayName, {
-                body: messagePreview,
-                icon: user.photoURL || ''
-              });
-            }
-          }
-          prevUnread[otherUserId] = unread;
-          totalUnread += unread;
-          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-          let avatarHtml;
-          if (user.photoURL) {
-            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">`;
-          } else {
-            avatarHtml = `<div class="chat-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-          }
-          let nameHtml = user.displayName;
-          if (user.verified) {
-            nameHtml += verifiedIcon;
-          }
-          const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
-          const chatItem = document.createElement('div');
-          chatItem.className = 'chat-item';
-          chatItem.setAttribute('data-chatid', chat.chatId);
-          chatItem.setAttribute('data-otheruid', otherUserId);
-          chatItem.onclick = () => openChat(chat.chatId, otherUserId);
-          chatItem.innerHTML = `
-            ${avatarHtml}
-            ${unreadBadge}
-            <div class="chat-info">
-              <div class="chat-name">${nameHtml}</div>
-              <div class="chat-preview">${messagePreview}</div>
-              <div id="typing-indicator-${otherUserId}" class="typing-indicator hidden">Typing...</div>
-            </div>
-            <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
-          `;
-          const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
-          if (swipeDeleteEnabled) {
-            let startX = 0;
-            let currentX = 0;
-            let startY = 0;
-            let currentY = 0;
-            chatItem.addEventListener('touchstart', (e) => {
-              startX = e.touches[0].clientX;
-              currentX = startX;
-              startY = e.touches[0].clientY;
-              currentY = startY;
-            });
-            chatItem.addEventListener('touchmove', (e) => {
-              currentX = e.touches[0].clientX;
-              currentY = e.touches[0].clientY;
-              const deltaX = startX - currentX;
-              const deltaY = Math.abs(startY - currentY);
-              if (Math.abs(deltaX) > deltaY && deltaX > 0) {
-                chatItem.style.transform = `translateX(${-deltaX}px)`;
-              }
-            });
-            chatItem.addEventListener('touchend', (e) => {
-              chatItem.style.transform = '';
-              const deltaX = startX - currentX;
-              const deltaY = Math.abs(startY - currentY);
-              if (deltaX > 50 && deltaX > deltaY) {
-                showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
-                  if (confirmed) {
-                    removeChat(chat.chatId, otherUserId);
-                  }
-                });
-              }
-            });
-          }
-          chatList.appendChild(chatItem);
-          setupTypingListener(otherUserId, chat.chatId);
-        }
-      } else {
-        chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No chats yet. Add friends to start!</p>';
-      }
-      updateNavUnread(totalUnread);
-    }
+    // New infinite scroll for notifications
+    async function loadMoreNotifications() {
+      if (isLoadingMoreNotifs || !lastNotifTimestamp) return;
+      isLoadingMoreNotifs = true;
+      const loadMoreEl = document.querySelector('.load-more-notifs');
+      if (loadMoreEl) loadMoreEl.classList.add('loading');
 
-    function setupTypingListener(otherUserId, chatId) {
-      if (typingListeners[otherUserId]) return;
-      const typingRef = ref(db, `chats/${chatId}/typing`);
-      typingListeners[otherUserId] = onValue(typingRef, (snapshot) => {
-        const typing = snapshot.val();
-        const indicator = document.getElementById(`typing-indicator-${otherUserId}`);
-        if (indicator) {
-          if (typing && typing[otherUserId] && !typing[currentUser.uid]) {
-            indicator.classList.remove('hidden');
-          } else {
-            indicator.classList.add('hidden');
-          }
-        }
-      });
-    }
-
-    function cleanupTypingListeners() {
-      Object.keys(typingListeners).forEach(uid => {
-        off(typingListeners[uid]);
-      });
-      typingListeners = {};
-    }
-
-    function setupChatsListener() {
-      prevUnread = {};
-      cleanupTypingListeners();
-      const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
-      chatsListener = onValue(userChatsRef, async (snapshot) => {
-        await updateChatsUI(snapshot);
-      }, (error) => {
-        console.error('Error listening to chats:', error);
-      });
-    }
-
-    function setupStatusesListener() {
-      const statusesRef = ref(db, 'statuses');
-      statusesListener = onValue(statusesRef, async (snapshot) => {
-        if (document.getElementById('status-tab').classList.contains('active')) {
-          await loadStatuses('statuses-list', 'list', true);
-        }
-      }, (error) => {
-        console.error('Error listening to statuses:', error);
-      });
-    }
-
-    function setupNotificationsListener() {
-      if (notificationsListener) return;
-      const notificationsRef = ref(db, `users/${currentUser.uid}/notifications`);
-      notificationsListener = onValue(notificationsRef, (snapshot) => {
-        const notifications = snapshot.val() || {};
-        const unread = Object.values(notifications).filter(n => !n.read).length;
-        updateNotifUnread(unread);
-        if (unread > prevNotifCount) {
-          playNotificationSound();
-          showAlert('New notification!');
-        }
-        prevNotifCount = unread;
-        if (document.getElementById('notifications-tab').classList.contains('active')) {
-          loadNotifications(true);
-        }
-      });
-    }
-
-    async function removeChat(chatId, otherUid) {
       try {
-        showSpinner();
-        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
-        await set(currentChatsRef, null);
-        const targetChatsRef = ref(db, `users/${otherUid}/chats/${currentUser.uid}`);
-        await set(targetChatsRef, null);
-        const messagesRef = ref(db, `chats/${chatId}`);
-        await set(messagesRef, null);
-        showAlert('Friend removed.');
+        const notifsRef = query(ref(db, `users/${currentUser.uid}/notifications`), orderByChild('timestamp'), endBefore(lastNotifTimestamp), limitToLast(notifBatchSize));
+        const snap = await get(notifsRef);
+        let newNotifs = [];
+        if (snap.exists()) {
+          newNotifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
+        }
+        if (newNotifs.length === 0) return;
+
+        loadedNotifications = [...newNotifs, ...loadedNotifications];
+        lastNotifTimestamp = newNotifs[newNotifs.length - 1].timestamp;
+        renderNotifications(loadedNotifications);
       } catch (error) {
-        console.error('Error removing chat:', error);
-        showAlert('Failed to remove friend.');
+        console.error('Error loading more notifications:', error);
       } finally {
-        hideSpinner();
+        isLoadingMoreNotifs = false;
+        if (loadMoreEl) loadMoreEl.classList.remove('loading');
       }
     }
 
-    function showConfirm(message, callback) {
-      document.getElementById('confirm-message').textContent = message;
-      document.getElementById('confirm-modal').classList.add('active');
-      const yesBtn = document.getElementById('confirm-yes');
-      const noBtn = document.getElementById('confirm-no');
-      const yesHandler = () => { callback(true); closeConfirm(); };
-      const noHandler = () => { callback(false); closeConfirm(); };
-      yesBtn.onclick = yesHandler;
-      noBtn.onclick = noHandler;
-    }
-
-    function closeConfirm() {
-      document.getElementById('confirm-modal').classList.remove('active');
-    }
-
-    window.closeConfirm = closeConfirm;
-
-    function openAddFriendsSheet() {
-      const sheet = document.createElement('div');
-      sheet.className = 'bottom-sheet active';
-      sheet.id = 'add-friends-sheet';
-      sheet.innerHTML = `
-        <div class="bottom-sheet-header">
-          <h2 style="margin: 0; font-size: 24px; font-weight: 800; color: var(--text-primary);">Add Friends</h2>
-          <button onclick="closeAddFriendsSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 8px;"><span class="material-icons">close</span></button>
-        </div>
-        <div id="users-list" style="padding: 0 28px 24px;"></div>
-      `;
-      document.body.appendChild(sheet);
-      loadAllUsers();
-    }
-
-    window.closeAddFriendsSheet = () => {
-      const sheet = document.getElementById('add-friends-sheet');
-      if (sheet) {
-        sheet.classList.remove('active');
-        setTimeout(() => sheet.remove(), 600);
-      }
-    };
-
-    async function loadAllUsers() {
-      showSpinner();
-      const usersList = document.getElementById('users-list');
-      usersList.innerHTML = '';
-      const usersRef = ref(db, 'users');
-      const snapshot = await get(usersRef);
-      if (snapshot.exists()) {
-        const users = Object.entries(snapshot.val())
-          .map(([uid, user]) => ({ uid, ...user }))
-          .filter(user => user.uid !== currentUser.uid);
-        if (users.length === 0) {
-          usersList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No other users yet.</p>';
-        } else {
-          for (let i = 0; i < users.length; i++) {
-            const user = users[i];
-            const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-            let avatarHtml;
-            if (user.photoURL) {
-              avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy">`;
-            } else {
-              avatarHtml = `<div class="user-avatar" style="font-size: 24px;">${initial}</div>`;
-            }
-            let nameHtml = user.displayName || 'User';
-            if (user.verified) {
-              nameHtml += verifiedIcon;
-            }
-            const userCard = document.createElement('div');
-            userCard.className = 'user-card';
-            userCard.onclick = () => startChat(user.uid);
-            userCard.innerHTML = `
-              ${avatarHtml}
-              <div class="user-info">
-                <div class="user-name">${nameHtml}</div>
-                <div class="user-bio">${user.bio || 'No bio yet'}</div>
-              </div>
-              <button class="start-chat-btn" onclick="event.stopPropagation(); startChat('${user.uid}')">Start Chat</button>
-            `;
-            usersList.appendChild(userCard);
+    function setupNotificationsScroll() {
+      const listEl = document.getElementById('notifications-list');
+      if (listEl) {
+        listEl.addEventListener('scroll', () => {
+          if (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 100) {
+            loadMoreNotifications();
           }
-        }
+        });
       }
-      hideSpinner();
     }
-
-    window.startChat = async (targetUid) => {
-      try {
-        const chatId = [currentUser.uid, targetUid].sort().join('_');
-        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${targetUid}`);
-        const targetChatsRef = ref(db, `users/${targetUid}/chats/${currentUser.uid}`);
-        const currentSnapshot = await get(currentChatsRef);
-        if (!currentSnapshot.exists()) {
-          const initialMessage = 'Say hi to start chatting!';
-          const encrypted = await encryptMessage(initialMessage, chatId);
-          await set(currentChatsRef, {
-            chatId,
-            otherUserId: targetUid,
-            lastMessage: encrypted,
-            lastMessageType: 'text',
-            lastMessageTime: Date.now(),
-            unreadCount: 0
-          });
-          await set(targetChatsRef, {
-            chatId,
-            otherUserId: currentUser.uid,
-            lastMessage: encrypted,
-            lastMessageType: 'text',
-            lastMessageTime: Date.now(),
-            unreadCount: 0
-          });
-          const messagesRef = ref(db, `chats/${chatId}/messages`);
-          const newMessageRef = push(messagesRef);
-          await set(newMessageRef, {
-            senderId: currentUser.uid,
-            message: encrypted,
-            type: 'text',
-            timestamp: Date.now()
-          });
-          hasChats = true;
-        }
-        closeAddFriendsSheet();
-        openChat(chatId, targetUid);
-        showAlert('Chat started!');
-      } catch (error) {
-        console.error('Error starting chat:', error);
-        showAlert('Failed to start chat.');
-      }
-    };
 
     async function loadNotifications(silent = false) {
       if (!silent) showSpinner();
@@ -3583,81 +3376,32 @@
           <span class="material-icons" style="font-size: 24px;">notifications</span>
           Notifications
         </div>
-        <div class="chat-list" id="notifications-list"></div>
+        <div class="notifications-list chat-list" id="notifications-list"></div>
+        <div class="load-more-notifs" id="load-more-notifs" style="display: none;">
+          <button onclick="loadMoreNotifications()">Load More</button>
+        </div>
       `;
       const list = document.getElementById('notifications-list');
       list.innerHTML = '';
       if (currentUser) {
-        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
+        loadedNotifications = [];
+        lastNotifTimestamp = null;
+        isLoadingMoreNotifs = false;
+        const notifsRef = query(ref(db, `users/${currentUser.uid}/notifications`), orderByChild('timestamp'), limitToLast(notifBatchSize));
         const snap = await get(notifsRef);
         let notifs = [];
         if (snap.exists()) {
           notifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
-        }
-        if (notifs.length === 0) {
-          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
-        } else {
-          for (let notif of notifs) {
-            const item = document.createElement('div');
-            item.className = 'notification-item';
-            item.onclick = async () => {
-              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-                try {
-                  const statusRef = ref(db, `statuses/${notif.statusId}`);
-                  const statusSnap = await get(statusRef);
-                  const status = statusSnap.val();
-                  if (status && status.userId) {
-                    window.currentStatusFilter = status.userId;
-                  }
-                } catch (e) {
-                  console.error('Failed to fetch status for notification:', e);
-                }
-                switchTab('status', null);
-              }
-            };
-            let icon = 'notifications';
-            let text = '';
-            let fromName = 'Someone';
-            if (notif.fromUserId) {
-              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-              const user = userSnap.val();
-              fromName = user ? user.displayName : 'Someone';
-            }
-            switch (notif.type) {
-              case 'like':
-                icon = 'favorite';
-                text = `${fromName} liked your status`;
-                break;
-              case 'comment':
-              case 'reply':
-                icon = 'chat_bubble';
-                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-                break;
-              case 'tag':
-                icon = 'tag';
-                text = `${fromName} tagged you in a status`;
-                break;
-              case 'verified':
-                icon = 'verified';
-                text = 'Congratulations! Your account is now verified';
-                break;
-              case 'username_change':
-                icon = 'edit';
-                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-                break;
-            }
-            item.innerHTML = `
-              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
-              <div class="notification-info">
-                <div class="notification-title">${text}</div>
-                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
-              </div>
-              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
-            `;
-            list.appendChild(item);
+          if (notifs.length > 0) {
+            lastNotifTimestamp = notifs[notifs.length - 1].timestamp;
           }
         }
+        loadedNotifications = notifs;
+        renderNotifications(loadedNotifications);
+        if (notifs.length >= notifBatchSize) {
+          document.getElementById('load-more-notifs').style.display = 'block';
+        }
+        setupNotificationsScroll();
       }
       const desktopList = document.getElementById('notifications-list-desktop');
       if (desktopList) {
@@ -3667,6 +3411,75 @@
         });
       }
       if (!silent) hideSpinner();
+    }
+
+    function renderNotifications(notifs) {
+      const list = document.getElementById('notifications-list');
+      list.innerHTML = '';
+      if (notifs.length === 0) {
+        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
+        return;
+      }
+      for (let notif of notifs) {
+        const item = document.createElement('div');
+        item.className = 'notification-item';
+        item.onclick = async () => {
+          await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+          if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
+            try {
+              const statusRef = ref(db, `statuses/${notif.statusId}`);
+              const statusSnap = await get(statusRef);
+              const status = statusSnap.val();
+              if (status && status.userId) {
+                window.currentStatusFilter = status.userId;
+              }
+            } catch (e) {
+              console.error('Failed to fetch status for notification:', e);
+            }
+            switchTab('status', null);
+          }
+        };
+        let icon = 'notifications';
+        let text = '';
+        let fromName = 'Someone';
+        if (notif.fromUserId) {
+          const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+          const user = userSnap.val();
+          fromName = user ? user.displayName : 'Someone';
+        }
+        switch (notif.type) {
+          case 'like':
+            icon = 'favorite';
+            text = `${fromName} liked your status`;
+            break;
+          case 'comment':
+          case 'reply':
+            icon = 'chat_bubble';
+            text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+            break;
+          case 'tag':
+            icon = 'tag';
+            text = `${fromName} tagged you in a status`;
+            break;
+          case 'verified':
+            icon = 'verified';
+            text = 'Congratulations! Your account is now verified';
+            break;
+          case 'username_change':
+            icon = 'edit';
+            text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+            break;
+        }
+        item.innerHTML = `
+          <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+          <div class="notification-info">
+            <div class="notification-title">${text}</div>
+            <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+          </div>
+          ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
+        `;
+        list.appendChild(item);
+      }
     }
 
     async function openUserStatuses(uid) {
@@ -3941,7 +3754,7 @@
         <div class="comment-avatar" style="font-size: 18px;">${initial}</div>
         <div class="comment-content">
           <div class="comment-user">${user.displayName}</div>
-          <div class="comment-text">${comment.text}</div>
+          <div class="comment-text">${truncateContent(comment.text)}</div>
           <div class="comment-time">${formatTimestamp(comment.timestamp)}</div>
           <div class="reply-option" onclick="setReplyTo('${comment.id}', '${user.displayName}')">
             <span class="material-icons">reply</span>
@@ -4947,6 +4760,330 @@
       }
       hideSpinner();
     }
+
+    async function updateChatsUI(snapshot) {
+      const chatList = document.getElementById('chat-list');
+      chatList.innerHTML = '';
+      totalUnread = 0;
+      let chats = [];
+      if (snapshot.exists()) {
+        chats = Object.entries(snapshot.val())
+          .map(([chatId, chat]) => ({ chatId, ...chat }))
+          .sort((a, b) => new Date(b.lastMessageTime || 0) - new Date(a.lastMessageTime || 0));
+      }
+      hasChats = chats.length > 0;
+      if (chats.length > 0) {
+        for (let i = 0; i < chats.length; i++) {
+          const chat = chats[i];
+          const otherUserId = chat.otherUserId;
+          const userRef = ref(db, `users/${otherUserId}`);
+          const userSnapshot = await get(userRef);
+          const user = userSnapshot.val();
+          if (!user) continue;
+          const unread = chat.unreadCount || 0;
+          let messagePreview = 'No messages yet';
+          if (chat.lastMessageType === 'image') {
+            messagePreview = 'Photo';
+          } else if (chat.lastMessageType === 'video') {
+            messagePreview = 'Video';
+          } else if (chat.lastMessage) {
+            try {
+              messagePreview = await decryptMessage(chat.lastMessage, chat.chatId);
+              messagePreview = messagePreview.substring(0, 50) + (messagePreview.length > 50 ? '...' : '');
+            } catch (error) {
+              console.error('Failed to decrypt preview:', error);
+            }
+          }
+          if (prevUnread[otherUserId] !== undefined && unread > prevUnread[otherUserId]) {
+            playNotificationSound();
+            showAlert(`New message from ${user.displayName}: ${messagePreview}`);
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification(user.displayName, {
+                body: messagePreview,
+                icon: user.photoURL || ''
+              });
+            }
+          }
+          prevUnread[otherUserId] = unread;
+          totalUnread += unread;
+          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+          let avatarHtml;
+          if (user.photoURL) {
+            avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="chat-avatar" loading="lazy">`;
+          } else {
+            avatarHtml = `<div class="chat-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+          }
+          let nameHtml = user.displayName;
+          if (user.verified) {
+            nameHtml += verifiedIcon;
+          }
+          const unreadBadge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>` : '';
+          const chatItem = document.createElement('div');
+          chatItem.className = 'chat-item';
+          chatItem.setAttribute('data-chatid', chat.chatId);
+          chatItem.setAttribute('data-otheruid', otherUserId);
+          chatItem.onclick = () => openChat(chat.chatId, otherUserId);
+          chatItem.innerHTML = `
+            ${avatarHtml}
+            ${unreadBadge}
+            <div class="chat-info">
+              <div class="chat-name">${nameHtml}</div>
+              <div class="chat-preview">${messagePreview}</div>
+              <div id="typing-indicator-${otherUserId}" class="typing-indicator hidden">Typing...</div>
+            </div>
+            <div class="chat-time">${formatTimestamp(chat.lastMessageTime || 0)}</div>
+          `;
+          const swipeDeleteEnabled = localStorage.getItem('swipeDeleteEnabled') !== 'false';
+          if (swipeDeleteEnabled) {
+            let startX = 0;
+            let currentX = 0;
+            let startY = 0;
+            let currentY = 0;
+            chatItem.addEventListener('touchstart', (e) => {
+              startX = e.touches[0].clientX;
+              currentX = startX;
+              startY = e.touches[0].clientY;
+              currentY = startY;
+            });
+            chatItem.addEventListener('touchmove', (e) => {
+              currentX = e.touches[0].clientX;
+              currentY = e.touches[0].clientY;
+              const deltaX = startX - currentX;
+              const deltaY = Math.abs(startY - currentY);
+              if (Math.abs(deltaX) > deltaY && deltaX > 0) {
+                chatItem.style.transform = `translateX(${-deltaX}px)`;
+              }
+            });
+            chatItem.addEventListener('touchend', (e) => {
+              chatItem.style.transform = '';
+              const deltaX = startX - currentX;
+              const deltaY = Math.abs(startY - currentY);
+              if (deltaX > 50 && deltaX > deltaY) {
+                showConfirm('Remove this friend? This will delete the chat.', (confirmed) => {
+                  if (confirmed) {
+                    removeChat(chat.chatId, otherUserId);
+                  }
+                });
+              }
+            });
+          }
+          chatList.appendChild(chatItem);
+          setupTypingListener(otherUserId, chat.chatId);
+        }
+      } else {
+        chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No chats yet. Add friends to start!</p>';
+      }
+      updateNavUnread(totalUnread);
+    }
+
+    function setupTypingListener(otherUserId, chatId) {
+      if (typingListeners[otherUserId]) return;
+      const typingRef = ref(db, `chats/${chatId}/typing`);
+      typingListeners[otherUserId] = onValue(typingRef, (snapshot) => {
+        const typing = snapshot.val();
+        const indicator = document.getElementById(`typing-indicator-${otherUserId}`);
+        if (indicator) {
+          if (typing && typing[otherUserId] && !typing[currentUser.uid]) {
+            indicator.classList.remove('hidden');
+          } else {
+            indicator.classList.add('hidden');
+          }
+        }
+      });
+    }
+
+    function cleanupTypingListeners() {
+      Object.keys(typingListeners).forEach(uid => {
+        off(typingListeners[uid]);
+      });
+      typingListeners = {};
+    }
+
+    function setupChatsListener() {
+      prevUnread = {};
+      cleanupTypingListeners();
+      const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
+      chatsListener = onValue(userChatsRef, async (snapshot) => {
+        await updateChatsUI(snapshot);
+      }, (error) => {
+        console.error('Error listening to chats:', error);
+      });
+    }
+
+    function setupStatusesListener() {
+      const statusesRef = ref(db, 'statuses');
+      statusesListener = onValue(statusesRef, async (snapshot) => {
+        if (document.getElementById('status-tab').classList.contains('active')) {
+          await loadStatuses('statuses-list', 'list', true);
+        }
+      }, (error) => {
+        console.error('Error listening to statuses:', error);
+      });
+    }
+
+    function setupNotificationsListener() {
+      if (notificationsListener) return;
+      const notificationsRef = ref(db, `users/${currentUser.uid}/notifications`);
+      notificationsListener = onValue(notificationsRef, (snapshot) => {
+        const notifications = snapshot.val() || {};
+        const unread = Object.values(notifications).filter(n => !n.read).length;
+        updateNotifUnread(unread);
+        if (unread > prevNotifCount) {
+          playNotificationSound();
+          showAlert('New notification!');
+        }
+        prevNotifCount = unread;
+        if (document.getElementById('notifications-tab').classList.contains('active')) {
+          loadNotifications(true);
+        }
+      });
+    }
+
+    async function removeChat(chatId, otherUid) {
+      try {
+        showSpinner();
+        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
+        await set(currentChatsRef, null);
+        const targetChatsRef = ref(db, `users/${otherUid}/chats/${currentUser.uid}`);
+        await set(targetChatsRef, null);
+        const messagesRef = ref(db, `chats/${chatId}`);
+        await set(messagesRef, null);
+        showAlert('Friend removed.');
+      } catch (error) {
+        console.error('Error removing chat:', error);
+        showAlert('Failed to remove friend.');
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    function showConfirm(message, callback) {
+      document.getElementById('confirm-message').textContent = message;
+      document.getElementById('confirm-modal').classList.add('active');
+      const yesBtn = document.getElementById('confirm-yes');
+      const noBtn = document.getElementById('confirm-no');
+      const yesHandler = () => { callback(true); closeConfirm(); };
+      const noHandler = () => { callback(false); closeConfirm(); };
+      yesBtn.onclick = yesHandler;
+      noBtn.onclick = noHandler;
+    }
+
+    function closeConfirm() {
+      document.getElementById('confirm-modal').classList.remove('active');
+    }
+
+    window.closeConfirm = closeConfirm;
+
+    function openAddFriendsSheet() {
+      const sheet = document.createElement('div');
+      sheet.className = 'bottom-sheet active';
+      sheet.id = 'add-friends-sheet';
+      sheet.innerHTML = `
+        <div class="bottom-sheet-header">
+          <h2 style="margin: 0; font-size: 24px; font-weight: 800; color: var(--text-primary);">Add Friends</h2>
+          <button onclick="closeAddFriendsSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 8px;"><span class="material-icons">close</span></button>
+        </div>
+        <div id="users-list" style="padding: 0 28px 24px;"></div>
+      `;
+      document.body.appendChild(sheet);
+      loadAllUsers();
+    }
+
+    window.closeAddFriendsSheet = () => {
+      const sheet = document.getElementById('add-friends-sheet');
+      if (sheet) {
+        sheet.classList.remove('active');
+        setTimeout(() => sheet.remove(), 600);
+      }
+    };
+
+    async function loadAllUsers() {
+      showSpinner();
+      const usersList = document.getElementById('users-list');
+      usersList.innerHTML = '';
+      const usersRef = ref(db, 'users');
+      const snapshot = await get(usersRef);
+      if (snapshot.exists()) {
+        const users = Object.entries(snapshot.val())
+          .map(([uid, user]) => ({ uid, ...user }))
+          .filter(user => user.uid !== currentUser.uid);
+        if (users.length === 0) {
+          usersList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No other users yet.</p>';
+        } else {
+          for (let i = 0; i < users.length; i++) {
+            const user = users[i];
+            const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
+            let avatarHtml;
+            if (user.photoURL) {
+              avatarHtml = `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="user-avatar" loading="lazy">`;
+            } else {
+              avatarHtml = `<div class="user-avatar" style="font-size: 24px;">${initial}</div>`;
+            }
+            let nameHtml = user.displayName || 'User';
+            if (user.verified) {
+              nameHtml += verifiedIcon;
+            }
+            const userCard = document.createElement('div');
+            userCard.className = 'user-card';
+            userCard.onclick = () => startChat(user.uid);
+            userCard.innerHTML = `
+              ${avatarHtml}
+              <div class="user-info">
+                <div class="user-name">${nameHtml}</div>
+                <div class="user-bio">${user.bio || 'No bio yet'}</div>
+              </div>
+              <button class="start-chat-btn" onclick="event.stopPropagation(); startChat('${user.uid}')">Start Chat</button>
+            `;
+            usersList.appendChild(userCard);
+          }
+        }
+      }
+      hideSpinner();
+    }
+
+    window.startChat = async (targetUid) => {
+      try {
+        const chatId = [currentUser.uid, targetUid].sort().join('_');
+        const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${targetUid}`);
+        const targetChatsRef = ref(db, `users/${targetUid}/chats/${currentUser.uid}`);
+        const currentSnapshot = await get(currentChatsRef);
+        if (!currentSnapshot.exists()) {
+          const initialMessage = 'Say hi to start chatting!';
+          const encrypted = await encryptMessage(initialMessage, chatId);
+          await set(currentChatsRef, {
+            chatId,
+            otherUserId: targetUid,
+            lastMessage: encrypted,
+            lastMessageType: 'text',
+            lastMessageTime: Date.now(),
+            unreadCount: 0
+          });
+          await set(targetChatsRef, {
+            chatId,
+            otherUserId: currentUser.uid,
+            lastMessage: encrypted,
+            lastMessageType: 'text',
+            lastMessageTime: Date.now(),
+            unreadCount: 0
+          });
+          const messagesRef = ref(db, `chats/${chatId}/messages`);
+          const newMessageRef = push(messagesRef);
+          await set(newMessageRef, {
+            senderId: currentUser.uid,
+            message: encrypted,
+            type: 'text',
+            timestamp: Date.now()
+          });
+          hasChats = true;
+        }
+        closeAddFriendsSheet();
+        openChat(chatId, targetUid);
+        showAlert('Chat started!');
+      } catch (error) {
+        console.error('Error starting chat:', error);
+        showAlert('Failed to start chat.');
+      }
+    };
 
     async function openChat(chatId, otherUserId) {
       if (otherUserId) {
