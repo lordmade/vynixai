@@ -94,14 +94,6 @@
       font-style: italic;
       opacity: 0.7;
     }
-    .message.limit {
-      background: var(--bbm-red);
-      color: white;
-      align-self: center;
-      max-width: 90%;
-      text-align: center;
-      font-style: normal;
-    }
     .message img {
       max-width: 100%;
       border-radius: 20px;
@@ -178,10 +170,6 @@
       color: var(--text-primary);
       font-size: 16px;
     }
-    .input-pill input:disabled {
-      background: #f0f0f0;
-      color: var(--text-secondary);
-    }
     .send-btn {
       background: var(--bbm-red);
       color: white;
@@ -198,15 +186,10 @@
       box-shadow: var(--shadow-sm);
       transition: all 0.3s ease;
     }
-    .send-btn:hover:not(:disabled) {
+    .send-btn:hover {
       background: #b30000;
       box-shadow: var(--glow);
       transform: scale(1.1);
-    }
-    .send-btn:disabled {
-      background: var(--text-secondary);
-      cursor: not-allowed;
-      transform: none;
     }
     .send-btn svg {
       font-size: 20px;
@@ -302,7 +285,7 @@
 <body class="light">
   <!-- Loading Overlay -->
   <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-text" id="loading-text">Initializing Vynix...</div>
+    <div class="loading-text" id="loading-text">Initializing AI...</div>
     <progress id="model-progress" value="0" max="100"></progress>
     <div class="typing-indicator" style="margin-top: 20px;">
       <span class="typing-dot"></span>
@@ -330,7 +313,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, set, push, onValue, get, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, set, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -346,23 +329,13 @@
     // TODO: Replace with your actual Gemini API key from https://aistudio.google.com/app/apikey
     const GEMINI_API_KEY = 'AIzaSyDnaG0JKAY3h49iiAT_NjxkXYch43XakhA';  // SECURITY: In production, use env vars or server proxy
 
-    // Rate limits
-    const RPM_LIMIT = 5;  // Requests per minute
-    const DAILY_TOKEN_LIMIT = 5000;  // Tokens per day
-    const MINUTE_MS = 60000;
-
     const state = {
       messages: [],  // Stores {role, content} for Gemini chat history
       hasChatted: false,
       conversationId: null,
-      statusesData: [],  // Enhanced: Full status objects
+      statusesData: [],
       newStatusesCount: 0,
-      usage: {  // Rate limiting state
-        dailyTokens: 0,
-        lastReset: new Date().toDateString(),
-        recentRequests: []  // Timestamps for RPM
-      },
-      systemPrompt: "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Reference recent friend statuses/updates *only* if the user explicitly asks about a specific user (e.g., 'What's up with @Alex?' or 'Tell me about Sarah's post'), or if their query relates to a status topic (e.g., 'beach trips' matching a beach status). In those cases, weave in details naturally—like the poster's caption, media type, or repost context—to continue the conversation. Otherwise, focus solely on the user's query without mentioning statuses."
+      systemPrompt: "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Draw from recent friend updates if relevant."
     };
 
     const elements = {
@@ -378,9 +351,9 @@
 
     let app, auth, db, currentUser;
 
-    function appendMessage(content, role, isTyping = false, isImage = false, isLimit = false) {
+    function appendMessage(content, role, isTyping = false, isImage = false) {
       const div = document.createElement('div');
-      div.className = `message ${role === 'user' ? 'user' : 'ai'}${isTyping ? ' processing' : ''}${isLimit ? ' limit' : ''}`;
+      div.className = `message ${role === 'user' ? 'user' : 'ai'}${isTyping ? ' processing' : ''}`;
       if (isTyping) {
         div.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
       } else if (isImage) {
@@ -391,10 +364,8 @@
       } else {
         div.textContent = content;
       }
-      if (!isTyping && !isImage && !isLimit) {
-        state.messages.push({ role, content, isImage, timestamp: Date.now() });
-      }
-      if (role === 'assistant' && !isTyping && !isLimit) {
+      state.messages.push({ role, content, isImage, timestamp: Date.now() });
+      if (role === 'assistant' && !isTyping) {
         if ('vibrate' in navigator) navigator.vibrate(50);
       }
       elements.chatMessages.appendChild(div);
@@ -415,61 +386,6 @@
       console.log('Saved AI convo pair:', { input, output });
     }
 
-    async function loadUserUsage() {
-      if (!currentUser || !db) return;
-      const usageRef = ref(db, `user_usage/${currentUser.uid}`);
-      const snapshot = await get(usageRef);
-      if (snapshot.exists()) {
-        const data = snapshot.val();
-        const today = new Date().toDateString();
-        if (data.lastReset !== today) {
-          state.usage = { dailyTokens: 0, lastReset: today, recentRequests: [] };
-        } else {
-          state.usage = {
-            dailyTokens: data.dailyTokens || 0,
-            lastReset: data.lastReset,
-            recentRequests: data.recentRequests || []
-          };
-        }
-      }
-      await saveUserUsage();  // Persist any resets
-    }
-
-    async function saveUserUsage() {
-      if (!currentUser || !db) return;
-      const usageRef = ref(db, `user_usage/${currentUser.uid}`);
-      await set(usageRef, state.usage);
-    }
-
-    function checkRPM() {
-      const now = Date.now();
-      state.usage.recentRequests = state.usage.recentRequests.filter(ts => now - ts < MINUTE_MS);
-      if (state.usage.recentRequests.length >= RPM_LIMIT) {
-        return { allowed: false, message: `Rate limit hit! Wait a minute before sending more (max ${RPM_LIMIT} per minute).` };
-      }
-      return { allowed: true };
-    }
-
-    function checkDailyTokens() {
-      if (state.usage.dailyTokens >= DAILY_TOKEN_LIMIT) {
-        return { allowed: false, message: `Daily token limit reached (${DAILY_TOKEN_LIMIT} tokens/day). Come back tomorrow for a fresh start!` };
-      }
-      return { allowed: true };
-    }
-
-    function updateTokensUsed(responseData) {
-      const usage = responseData.usageMetadata;
-      if (usage) {
-        state.usage.dailyTokens += (usage.promptTokenCount || 0) + (usage.candidatesTokenCount || 0);
-        const today = new Date().toDateString();
-        if (state.usage.lastReset !== today) {
-          state.usage.dailyTokens = (usage.promptTokenCount || 0) + (usage.candidatesTokenCount || 0);
-          state.usage.lastReset = today;
-        }
-      }
-    }
-
-    // Enhanced: Load recent statuses with structured details for targeted referencing
     async function loadStatusesContext() {
       if (!db) return;
       const statusesRef = ref(db, 'statuses');
@@ -477,41 +393,12 @@
       if (snapshot.exists()) {
         const rawData = snapshot.val() || {};
         const recentStatuses = Object.values(rawData)
-          .filter(status => status.content && (status.isClean !== false))  // Fallback if isClean missing
-          .sort((a, b) => b.timestamp - a.timestamp)  // Most recent first
-          .slice(-5);  // Last 5 for brevity
-
-        // Build structured context: Array of objects for easy Gemini parsing
-        const structuredStatuses = recentStatuses.map(status => ({
-          user: status.userName || 'User',
-          content: status.content || status.caption || 'status update',
-          topic: extractTopic(status.content.toLowerCase()),  // Helper: e.g., 'beach', 'food'
-          mediaType: status.mediaType || 'text',
-          isRepost: status.type === 'repost',
-          originalPoster: status.originalPoster,
-          timestamp: new Date(status.timestamp).toLocaleDateString()
-        }));
-
-        // JSON string for prompt (concise, parseable)
-        const contextJson = JSON.stringify(structuredStatuses);
-        state.statusesData = structuredStatuses;  // Store for potential deeper JS use
-
-        // Append to system prompt with usage rules
-        state.systemPrompt += ` Recent statuses for reference (match user/topic only): ${contextJson}`;
+          .filter(status => status.content && status.isClean)
+          .slice(-3)
+          .map(status => status.content.trim())
+          .join(' | ');
+        state.systemPrompt += ` Recent friend updates: ${recentStatuses}.`;
       }
-    }
-
-    // Helper function
-    function extractTopic(text) {
-      const topics = {
-        beach: ['beach', 'vacation', 'trip'],
-        food: ['food', 'dinner', 'recipe'],
-        // Add more as needed, e.g., work: ['job', 'meeting']
-      };
-      for (const [topic, keywords] of Object.entries(topics)) {
-        if (keywords.some(kw => text.includes(kw))) return topic;
-      }
-      return 'general';
     }
 
     async function generateResponse(userPrompt) {
@@ -534,51 +421,42 @@
 
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents,
-          generationConfig: {
-            maxOutputTokens: 300,
-            temperature: 0.7,
-            topP: 0.8,
-            topK: 40,
-            candidateCount: 1
-          }
-        })
-      });
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            generationConfig: {
+              maxOutputTokens: 300,
+              temperature: 0.7,
+              topP: 0.8,
+              topK: 40,
+              candidateCount: 1
+            }
+          })
+        });
 
-      if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
+        if (responseText && !responseText.endsWith('.')) responseText += '.';
+        return responseText.substring(0, 300);
+      } catch (error) {
+        console.error('Gemini Generation Error:', error);
+        // Fallback for greetings
+        if (userPrompt.toLowerCase().match(/^(hi|hello|hey)/)) {
+          return 'Hey! Great to hear from you—what\'s new in your world? 😊';
+        }
+        return 'Hey! Sorry, my connection to the AI hive mind is glitchy—try that again? 😊';
       }
-
-      const result = await response.json();
-      updateTokensUsed(result);  // Track tokens
-      state.usage.recentRequests.push(Date.now());  // Track RPM
-      await saveUserUsage();  // Persist usage
-
-      const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
-      if (responseText && !responseText.endsWith('.')) responseText += '.';
-      return responseText.substring(0, 300);
     }
 
     async function getAIResponse(userPrompt) {
-      // Check limits
-      const rpmCheck = checkRPM();
-      if (!rpmCheck.allowed) {
-        appendMessage(rpmCheck.message, 'ai', false, false, true);
-        return;
-      }
-      const tokenCheck = checkDailyTokens();
-      if (!tokenCheck.allowed) {
-        appendMessage(tokenCheck.message, 'ai', false, false, true);
-        elements.chatInput.disabled = true;
-        elements.sendButton.disabled = true;
-        return;
-      }
-
       if (!state.hasChatted) {
         state.hasChatted = true;
         elements.welcomeContainer.classList.add('hidden');
@@ -586,7 +464,7 @@
       appendMessage(userPrompt, 'user');
       const tempMsg = appendMessage('', 'assistant', true);
       try {
-        elements.loadingText.textContent = 'Querying Vynix...';
+        elements.loadingText.textContent = 'Querying Gemini...';
         elements.modelProgress.value = 80;
         const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
@@ -611,18 +489,16 @@
       elements.welcomeContainer.classList.remove('hidden');
       state.hasChatted = false;
       state.conversationId = null;
-      // Reset local RPM but keep tokens for day
-      state.usage.recentRequests = [];
     }
 
     async function initializeAIModel() {
       try {
-        elements.loadingText.textContent = 'Connecting to Vynix...';
+        elements.loadingText.textContent = 'Connecting to Gemini...';
         elements.modelProgress.value = 20;
-        await loadStatusesContext();  // Loads context but gated by prompt
-        elements.loadingText.textContent = 'Ready to chat with Vynix!';
+        await loadStatusesContext();
+        elements.loadingText.textContent = 'Ready to chat with Gemini!';
         elements.modelProgress.value = 100;
-        console.log('Vynix AI initialized—statuses context loaded (gated).');
+        console.log('Gemini AI initialized!');
       } catch (error) {
         elements.loadingText.textContent = 'Init hiccup—chat will load on demand.';
         elements.modelProgress.value = 100;
@@ -637,8 +513,8 @@
         if (snapshot.exists()) {
           state.newStatusesCount = Object.keys(snapshot.val() || {}).length;
           // Reset system prompt to re-append statuses
-          state.systemPrompt = "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Reference recent friend statuses/updates *only* if the user explicitly asks about a specific user (e.g., 'What's up with @Alex?' or 'Tell me about Sarah's post'), or if their query relates to a status topic (e.g., 'beach trips' matching a beach status). In those cases, weave in details naturally—like the poster's caption, media type, or repost context—to continue the conversation. Otherwise, focus solely on the user's query without mentioning statuses.";
-          await loadStatusesContext();  // Refresh with new details
+          state.systemPrompt = "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging. Draw from recent friend updates if relevant.";
+          await loadStatusesContext();
         }
       }, (error) => console.error('Statuses listener error:', error));
     }
@@ -651,20 +527,12 @@
       await initializeAIModel();
       setupRealtimeListener();
 
-      onAuthStateChanged(auth, async (user) => {
+      onAuthStateChanged(auth, (user) => {
         currentUser = user;
         if (user) {
-          await loadUserUsage();  // Load usage for rate limits
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Vynix AI ready for chat.`;
-          // Re-enable if previously disabled
-          if (state.usage.dailyTokens >= DAILY_TOKEN_LIMIT) {
-            elements.chatInput.disabled = true;
-            elements.sendButton.disabled = true;
-            appendMessage(`Daily token limit reached (${DAILY_TOKEN_LIMIT} tokens/day). Come back tomorrow!`, 'ai', false, false, true);
-          }
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Gemini AI ready for chat.`;
         } else {
           elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for more features.`;
-          // Guest: No usage tracking, but still RPM locally if desired
         }
         elements.chatInput.disabled = false;
         elements.sendButton.disabled = false;
