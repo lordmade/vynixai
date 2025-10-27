@@ -538,6 +538,77 @@
       border: 4px solid var(--bbm-red);
       box-shadow: var(--shadow-md);
     }
+    .video-container {
+      position: relative;
+      width: 100%;
+      height: 400px;
+      background: #000;
+      border-radius: 20px;
+      overflow: hidden;
+    }
+    .video-container video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .video-controls {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(transparent, rgba(0,0,0,0.7));
+      padding: 20px;
+      display: none;
+    }
+    .video-container:hover .video-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .play-pause-btn, .volume-btn {
+      background: rgba(0,0,0,0.5);
+      border: none;
+      color: white;
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 50%;
+    }
+    .progress-container {
+      flex: 1;
+      height: 4px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--bbm-red);
+      width: 0%;
+      transition: width 0.1s;
+    }
+    .video-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    .play-again-btn, .watch-more-btn {
+      background: var(--bbm-red);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 24px;
+      cursor: pointer;
+      margin: 10px;
+      font-weight: 600;
+    }
     @media (prefers-color-scheme: light) {
       :root {
         --bg: #f8f8f8;
@@ -593,7 +664,7 @@
       <!-- Profile header content loaded via JS -->
     </section>
     <!-- Owner's Status Feed Section -->
-    <section id="profile-statuses-section" style="display: none;">
+    <section id="profile-statuses-section">
       <div class="section-title">
         <span class="material-icons" style="font-size: 24px;">update</span>
         Statuses
@@ -711,7 +782,7 @@
       showSpinner();
       const statusesSection = document.getElementById('profile-statuses-section');
       const statusesList = document.getElementById('profile-statuses-list');
-      statusesList.innerHTML = '';
+      statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Loading statuses...</p>';
       try {
         const statusesRef = ref(db, 'statuses');
         const userStatusesQuery = query(statusesRef, orderByChild('userId'), limitToLast(50)); // Limit to recent 50 for perf
@@ -725,6 +796,7 @@
           });
           userStatuses.sort((a, b) => b.timestamp - a.timestamp);
         }
+        statusesList.innerHTML = '';
         if (userStatuses.length === 0) {
           statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
         } else {
@@ -753,15 +825,15 @@
               } else if (status.type === 'video') {
                 mediaHtml = `<div class="status-post-media-container">
                   <div class="video-container">
-                    <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                    <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext} muted loop onended="showVideoOverlay(this)"></video>
                     <div class="video-controls">
-                      <button class="play-pause-btn material-icons">play_arrow</button>
+                      <button class="play-pause-btn material-icons" onclick="toggleVideoPlay(this)">play_arrow</button>
                       <div class="progress-container">
                         <div class="progress-fill"></div>
                       </div>
-                      <button class="volume-btn material-icons">volume_up</button>
+                      <button class="volume-btn material-icons" onclick="toggleVideoVolume(this)">volume_up</button>
                     </div>
-                    <div class="video-overlay">
+                    <div class="video-overlay" style="display: none;">
                       <button class="play-again-btn" onclick="playVideoAgain(this)">
                         <span class="material-icons">replay</span>Play Again
                       </button>
@@ -826,6 +898,7 @@
       } catch (error) {
         console.error('Failed to load profile statuses:', error);
         statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Failed to load statuses. <button onclick="loadProfileStatuses()" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; font-weight: 600;">Retry</button></p>';
+        statusesSection.style.display = 'block';
       } finally {
         hideSpinner();
       }
@@ -855,11 +928,12 @@
             });
           }
         }
-        // Update UI
+        // Update UI with fresh count
         const post = document.querySelector(`[data-status-id="${statusId}"]`);
         if (post) {
           const likeSpan = post.querySelector('.status-actions span:first-child');
-          const newLikes = liked ? likes - 1 : likes + 1; // Approximate, refresh full if needed
+          const newLikesSnap = await get(ref(db, `statuses/${statusId}/likes`));
+          const newLikes = Object.keys(newLikesSnap.val() || {}).length;
           const newIcon = liked ? 'favorite_border' : 'favorite';
           if (likeSpan) {
             likeSpan.innerHTML = `<span class="material-icons">${newIcon}</span> ${newLikes}`;
@@ -898,10 +972,31 @@
     window.playVideoAgain = (btn) => {
       const overlay = btn.closest('.video-overlay');
       overlay.style.display = 'none';
-      const controls = overlay.previousElementSibling;
-      const video = controls.previousElementSibling;
+      const video = overlay.parentElement.querySelector('video');
       video.currentTime = 0;
       video.play().catch(console.error);
+    };
+
+    window.toggleVideoPlay = (btn) => {
+      const video = btn.closest('.video-container').querySelector('video');
+      if (video.paused) {
+        video.play().catch(console.error);
+        btn.textContent = 'pause';
+      } else {
+        video.pause();
+        btn.textContent = 'play_arrow';
+      }
+    };
+
+    window.toggleVideoVolume = (btn) => {
+      const video = btn.closest('.video-container').querySelector('video');
+      video.muted = !video.muted;
+      btn.textContent = video.muted ? 'volume_off' : 'volume_up';
+    };
+
+    window.showVideoOverlay = (video) => {
+      const overlay = video.parentElement.querySelector('.video-overlay');
+      overlay.style.display = 'flex';
     };
 
     async function signOutUser() {
@@ -1013,11 +1108,12 @@
         if (profileUserData) {
           isOwnProfile = currentUser && currentUser.uid === userId;
           renderProfileHeader();
-          loadProfileStatuses(); // Load statuses after profile data
+          // Always load statuses for the profile owner (viewed user)
+          loadProfileStatuses();
         } else {
           showAlert('User not found.');
+          hideSpinner();
         }
-        hideSpinner();
       }, { onlyOnce: true });
     }
 
@@ -1088,6 +1184,7 @@
           ${signOutBtn}
         </div>
       `;
+      hideSpinner();
     }
 
     async function toggleFollow() {
