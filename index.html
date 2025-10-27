@@ -2277,6 +2277,55 @@
     .volume-btn:hover {
       background: rgba(0,0,0,0.7);
     }
+    /* Floating Load More Button for Notifications */
+#load-more-notifs-floating {
+  position: fixed;
+  bottom: 90px; /* Above bottom-nav */
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bbm-red);
+  border: none;
+  color: #ffffff;
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 150;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-md), var(--glow);
+  transition: all 0.3s ease;
+}
+#load-more-notifs-floating:hover {
+  transform: scale(1.05);
+  box-shadow: var(--shadow-md), 0 0 30px rgba(212, 0, 0, 0.7);
+}
+#load-more-notifs-floating.show {
+  display: flex;
+}
+
+/* Swipe Delete for Notifications */
+.notification-item {
+  touch-action: pan-y;
+  overflow: hidden;
+}
+.notification-delete-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 80px;
+  background: #ff4444;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 24px;
+  transform: translateX(100%);
+  transition: transform 0.3s ease;
+  z-index: 5;
+}
   </style>
 </head>
 <body class="dark">
@@ -2385,6 +2434,11 @@
   <button class="fab" id="fab-btn" title="New Chat" aria-label="New Chat">
     <span class="material-icons" style="font-size: 24px;">person_add</span>
   </button>
+
+  <!-- Floating Load More for Notifications -->
+<button id="load-more-notifs-floating" class="fab" onclick="loadMoreNotifications()" title="Load More Notifications" style="display: none;">
+  <span class="material-icons">expand_more</span>
+</button>
 
   <!-- Status Modal -->
   <div id="status-modal" class="modal">
@@ -3735,10 +3789,11 @@
       }
     };
 
-   // Replace the entire loadNotifications function with this paginated version
+  // Replace the entire loadNotifications function with this paginated version
 let notificationsPage = 0;
 const notificationsPerPage = 5;
 let allNotifications = []; // Cache all loaded notifications
+let hasMoreNotifications = true;
 
 async function loadNotifications(silent = false, loadMore = false) {
   if (!silent) showSpinner();
@@ -3749,16 +3804,14 @@ async function loadNotifications(silent = false, loadMore = false) {
         <span class="material-icons" style="font-size: 24px;">notifications</span>
         Notifications
       </div>
-      <div class="chat-list" id="notifications-list"></div>
-      <div id="load-more-notifs" style="text-align: center; padding: 20px; display: none;">
-        <button class="start-chat-btn" onclick="loadMoreNotifications()">Load More</button>
-      </div>
+      <div class="chat-list" id="notifications-list" style="padding-bottom: 120px;"></div>
     `;
     notificationsPage = 0;
     allNotifications = [];
+    hasMoreNotifications = true;
+    document.getElementById('load-more-notifs-floating').classList.remove('show');
   }
   const list = document.getElementById('notifications-list');
-  const loadMoreBtn = document.getElementById('load-more-notifs');
   if (currentUser) {
     const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
     // Query for recent notifications, limit to per page
@@ -3772,11 +3825,16 @@ async function loadNotifications(silent = false, loadMore = false) {
       newNotifs = newNotifs.filter(n => !existingIds.has(n.id));
       allNotifications = [...allNotifications, ...newNotifs];
     }
+    // Check if more available
+    hasMoreNotifications = newNotifs.length === notificationsPerPage;
+    
     // Append new notifications
     for (let notif of newNotifs) {
       const item = document.createElement('div');
       item.className = 'notification-item';
-      item.onclick = async () => {
+      item.dataset.notifId = notif.id;
+      item.onclick = async (e) => {
+        if (e.target.closest('.notification-delete-overlay')) return; // Ignore if swiping
         await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
         if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
           try {
@@ -3792,49 +3850,25 @@ async function loadNotifications(silent = false, loadMore = false) {
           switchTab('status', null);
         }
       };
-      let icon = 'notifications';
-      let text = '';
-      let fromName = 'Someone';
-      if (notif.fromUserId) {
-        const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-        const user = userSnap.val();
-        fromName = user ? user.displayName : 'Someone';
-      }
-      switch (notif.type) {
-        case 'like':
-          icon = 'favorite';
-          text = `${fromName} liked your status`;
-          break;
-        case 'comment':
-        case 'reply':
-          icon = 'chat_bubble';
-          text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-          break;
-        case 'tag':
-          icon = 'tag';
-          text = `${fromName} tagged you in a status`;
-          break;
-        case 'verified':
-          icon = 'verified';
-          text = 'Congratulations! Your account is now verified';
-          break;
-        case 'username_change':
-          icon = 'edit';
-          text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-          break;
-      }
+      // Add swipe delete
       item.innerHTML = `
-        <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+        <div class="notification-delete-overlay" onclick="deleteNotification('${notif.id}')">
+          <span class="material-icons">delete</span>
+        </div>
+        <span class="notification-icon material-icons" style="font-size: 24px; color: var(--bbm-red);">notifications</span>
         <div class="notification-info">
-          <div class="notification-title">${text}</div>
-          <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+          <div class="notification-title">Sample text</div>
+          <div class="notification-time">1m ago</div>
         </div>
         ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
       `;
       list.appendChild(item);
     }
-    // Show load more if more available
-    loadMoreBtn.style.display = newNotifs.length > 0 ? 'block' : 'none';
+    // Update UI for each new notif (replace placeholders with real data)
+    for (let notif of newNotifs) {
+      await updateNotificationItem(notif);
+    }
+    
     notificationsPage++;
   }
   const desktopList = document.getElementById('notifications-list-desktop');
@@ -3845,8 +3879,133 @@ async function loadNotifications(silent = false, loadMore = false) {
       item.onclick = null; // Desktop doesn't navigate
     });
   }
+  if (!loadMore) {
+    // Setup scroll listener for floating button
+    const notificationsTab = document.getElementById('notifications-tab');
+    const scrollContainer = notificationsTab.querySelector('.chat-list') || notificationsTab;
+    scrollContainer.addEventListener('scroll', (e) => {
+      const { scrollTop, scrollHeight, clientHeight } = e.target;
+      if (scrollTop + clientHeight >= scrollHeight - 50 && hasMoreNotifications) {
+        document.getElementById('load-more-notifs-floating').classList.add('show');
+      } else {
+        document.getElementById('load-more-notifs-floating').classList.remove('show');
+      }
+    });
+  }
   if (!silent) hideSpinner();
+  if (loadMore) {
+    document.getElementById('load-more-notifs-floating').classList.remove('show');
+  }
 }
+
+async function updateNotificationItem(notif) {
+  let icon = 'notifications';
+  let text = '';
+  let fromName = 'Someone';
+  if (notif.fromUserId) {
+    const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+    const user = userSnap.val();
+    fromName = user ? user.displayName : 'Someone';
+  }
+  switch (notif.type) {
+    case 'like':
+      icon = 'favorite';
+      text = `${fromName} liked your status`;
+      break;
+    case 'comment':
+    case 'reply':
+      icon = 'chat_bubble';
+      text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+      break;
+    case 'tag':
+      icon = 'tag';
+      text = `${fromName} tagged you in a status`;
+      break;
+    case 'verified':
+      icon = 'verified';
+      text = 'Congratulations! Your account is now verified';
+      break;
+    case 'username_change':
+      icon = 'edit';
+      text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+      break;
+  }
+  const item = document.querySelector(`[data-notif-id="${notif.id}"]`);
+  if (item) {
+    const iconEl = item.querySelector('.notification-icon');
+    const titleEl = item.querySelector('.notification-title');
+    const timeEl = item.querySelector('.notification-time');
+    const unreadBadge = item.querySelector('.unread-badge');
+    if (iconEl) iconEl.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>`;
+    if (titleEl) titleEl.textContent = text;
+    if (timeEl) timeEl.textContent = formatTimestamp(notif.timestamp);
+    if (unreadBadge) unreadBadge.style.display = notif.read ? 'none' : 'flex';
+  }
+}
+
+window.loadMoreNotifications = async () => {
+  await loadNotifications(true, true);
+  // Hide floating button after loading
+  document.getElementById('load-more-notifs-floating').classList.remove('show');
+};
+
+window.deleteNotification = async (notifId) => {
+  showConfirm('Delete this notification?', async (confirmed) => {
+    if (confirmed) {
+      await set(ref(db, `users/${currentUser.uid}/notifications/${notifId}`), null);
+      const item = document.querySelector(`[data-notif-id="${notifId}"]`);
+      if (item) item.remove();
+      showAlert('Notification deleted.');
+    }
+  });
+};
+
+// Add swipe gesture to all notification items after loading
+function addSwipeToNotifications() {
+  const items = document.querySelectorAll('.notification-item');
+  items.forEach(item => {
+    let startX = 0;
+    let currentX = 0;
+    let startY = 0;
+    let currentY = 0;
+    const overlay = item.querySelector('.notification-delete-overlay');
+    
+    item.addEventListener('touchstart', (e) => {
+      startX = e.touches[0].clientX;
+      currentX = startX;
+      startY = e.touches[0].clientY;
+      currentY = startY;
+    });
+    
+    item.addEventListener('touchmove', (e) => {
+      currentX = e.touches[0].clientX;
+      currentY = e.touches[0].clientY;
+      const deltaX = startX - currentX;
+      const deltaY = Math.abs(startY - currentY);
+      if (Math.abs(deltaX) > deltaY && deltaX > 0) { // Swipe left
+        const translateX = Math.min(deltaX, 80); // Max swipe width
+        item.style.transform = `translateX(${-translateX}px)`;
+        overlay.style.transform = `translateX(${100 - (translateX / 80 * 100)}%)`;
+      }
+    });
+    
+    item.addEventListener('touchend', (e) => {
+      const deltaX = startX - currentX;
+      const deltaY = Math.abs(startY - currentY);
+      if (deltaX > 50 && deltaX > deltaY) {
+        // Confirm delete
+        deleteNotification(item.dataset.notifId);
+      }
+      // Reset
+      item.style.transform = '';
+      overlay.style.transform = 'translateX(100%)';
+    });
+  });
+}
+
+// Call addSwipeToNotifications after loading notifications in loadNotifications
+// Add this line at the end of loadNotifications function:
+addSwipeToNotifications();
 
 window.loadMoreNotifications = () => {
   loadNotifications(true, true);
@@ -5263,6 +5422,12 @@ window.loadMoreNotifications = () => {
         toggleAIFab(false);
       }
     }
+
+    // In switchTab function, after loadNotifications():
+if (tab === 'notifications') {
+  loadNotifications();
+  addSwipeToNotifications(); // Ensure swipe is set up
+}
 
     window.openRepostModal = (statusId) => {
       currentRepostStatusId = statusId;
