@@ -2208,6 +2208,12 @@
     .status-search-input::placeholder {
       color: var(--text-secondary);
     }
+
+    /* Infinite Scroll Sentinel for Notifications */
+    #load-more-notifs {
+      height: 20px;
+      visibility: hidden;
+    }
   </style>
 </head>
 <body class="dark">
@@ -2453,7 +2459,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off, orderByChild, limitToLast, endAt } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -2502,6 +2508,11 @@
     let replyingTo = null;
     let replyingToUser = null;
     let statusSearchTerm = '';
+    // New variables for notifications infinite scroll
+    let lastNotifTimestamp = Date.now();
+    let notifObserver = null;
+    let isLoadingMoreNotifs = false;
+    let allLoadedNotifs = false;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -2718,6 +2729,216 @@
         console.warn(`Failed to compute score for status ${statusId}:`, error);
         return { score: 0, likes: 0, comments: 0, reposts: 0 };
       }
+    }
+
+    // New function to setup infinite scroll observer for notifications
+    function setupNotifInfiniteScroll(listContainer) {
+      if (notifObserver) notifObserver.disconnect();
+      const sentinel = document.getElementById('load-more-notifs');
+      if (!sentinel) {
+        const newSentinel = document.createElement('div');
+        newSentinel.id = 'load-more-notifs';
+        listContainer.appendChild(newSentinel);
+      }
+      notifObserver = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && !isLoadingMoreNotifs && !allLoadedNotifs) {
+          loadMoreNotifications();
+        }
+      }, { threshold: 0.1 });
+      notifObserver.observe(document.getElementById('load-more-notifs'));
+    }
+
+    async function loadMoreNotifications() {
+      if (!currentUser || isLoadingMoreNotifs || allLoadedNotifs) return;
+      isLoadingMoreNotifs = true;
+      const list = document.getElementById('notifications-list');
+      const tempItem = document.createElement('div');
+      tempItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Loading more...</p>';
+      list.appendChild(tempItem);
+      try {
+        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
+        const queryRef = query(notifsRef, orderByChild('timestamp'), endAt(lastNotifTimestamp), limitToLast(20));
+        const snap = await get(queryRef);
+        let newNotifs = [];
+        if (snap.exists()) {
+          newNotifs = Object.entries(snap.val())
+            .map(([id, n]) => ({ id, ...n }))
+            .filter(n => n.timestamp < lastNotifTimestamp)
+            .sort((a, b) => b.timestamp - a.timestamp);
+        }
+        if (newNotifs.length === 0) {
+          allLoadedNotifs = true;
+          tempItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No more notifications</p>';
+        } else {
+          tempItem.remove();
+          const oldestTimestamp = Math.min(...newNotifs.map(n => n.timestamp));
+          lastNotifTimestamp = oldestTimestamp;
+          for (let notif of newNotifs) {
+            const item = document.createElement('div');
+            item.className = 'notification-item';
+            item.onclick = async () => {
+              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
+                try {
+                  const statusRef = ref(db, `statuses/${notif.statusId}`);
+                  const statusSnap = await get(statusRef);
+                  const status = statusSnap.val();
+                  if (status && status.userId) {
+                    window.currentStatusFilter = status.userId;
+                  }
+                } catch (e) {
+                  console.error('Failed to fetch status for notification:', e);
+                }
+                switchTab('status', null);
+              }
+            };
+            let icon = 'notifications';
+            let text = '';
+            let fromName = 'Someone';
+            if (notif.fromUserId) {
+              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+              const user = userSnap.val();
+              fromName = user ? user.displayName : 'Someone';
+            }
+            switch (notif.type) {
+              case 'like':
+                icon = 'favorite';
+                text = `${fromName} liked your status`;
+                break;
+              case 'comment':
+              case 'reply':
+                icon = 'chat_bubble';
+                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+                break;
+              case 'tag':
+                icon = 'tag';
+                text = `${fromName} tagged you in a status`;
+                break;
+              case 'verified':
+                icon = 'verified';
+                text = 'Congratulations! Your account is now verified';
+                break;
+              case 'username_change':
+                icon = 'edit';
+                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+                break;
+            }
+            item.innerHTML = `
+              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+              <div class="notification-info">
+                <div class="notification-title">${text}</div>
+                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+              </div>
+              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
+            `;
+            list.appendChild(item);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading more notifications:', error);
+        tempItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Failed to load more</p>';
+      } finally {
+        isLoadingMoreNotifs = false;
+      }
+    }
+
+    async function loadNotifications(silent = false) {
+      if (!silent) showSpinner();
+      const section = document.getElementById('notifications-section');
+      section.innerHTML = `
+        <div class="section-title">
+          <span class="material-icons" style="font-size: 24px;">notifications</span>
+          Notifications
+        </div>
+        <div class="chat-list" id="notifications-list"></div>
+      `;
+      const list = document.getElementById('notifications-list');
+      list.innerHTML = '';
+      if (currentUser) {
+        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
+        const queryRef = query(notifsRef, orderByChild('timestamp'), limitToLast(20));
+        const snap = await get(queryRef);
+        let notifs = [];
+        if (snap.exists()) {
+          notifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
+          if (notifs.length > 0) {
+            lastNotifTimestamp = Math.min(...notifs.map(n => n.timestamp));
+          }
+        }
+        if (notifs.length === 0) {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
+        } else {
+          for (let notif of notifs) {
+            const item = document.createElement('div');
+            item.className = 'notification-item';
+            item.onclick = async () => {
+              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
+                try {
+                  const statusRef = ref(db, `statuses/${notif.statusId}`);
+                  const statusSnap = await get(statusRef);
+                  const status = statusSnap.val();
+                  if (status && status.userId) {
+                    window.currentStatusFilter = status.userId;
+                  }
+                } catch (e) {
+                  console.error('Failed to fetch status for notification:', e);
+                }
+                switchTab('status', null);
+              }
+            };
+            let icon = 'notifications';
+            let text = '';
+            let fromName = 'Someone';
+            if (notif.fromUserId) {
+              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+              const user = userSnap.val();
+              fromName = user ? user.displayName : 'Someone';
+            }
+            switch (notif.type) {
+              case 'like':
+                icon = 'favorite';
+                text = `${fromName} liked your status`;
+                break;
+              case 'comment':
+              case 'reply':
+                icon = 'chat_bubble';
+                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+                break;
+              case 'tag':
+                icon = 'tag';
+                text = `${fromName} tagged you in a status`;
+                break;
+              case 'verified':
+                icon = 'verified';
+                text = 'Congratulations! Your account is now verified';
+                break;
+              case 'username_change':
+                icon = 'edit';
+                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+                break;
+            }
+            item.innerHTML = `
+              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+              <div class="notification-info">
+                <div class="notification-title">${text}</div>
+                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+              </div>
+              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
+            `;
+            list.appendChild(item);
+          }
+          setupNotifInfiniteScroll(list);
+        }
+      }
+      const desktopList = document.getElementById('notifications-list-desktop');
+      if (desktopList) {
+        desktopList.innerHTML = list.innerHTML;
+        desktopList.querySelectorAll('.notification-item').forEach(item => {
+          item.onclick = null;
+        });
+      }
+      if (!silent) hideSpinner();
     }
 
     async function loadStatuses(containerId, mode = 'carousel', silent = false) {
@@ -3084,8 +3305,20 @@
                 postItem.innerHTML = innerHTML;
                 const videoEl = postItem.querySelector('video');
                 if (videoEl) {
+                  videoEl.controls = true; // Enable controls
                   videoEl.playbackRate = 1;
                   videoEl.defaultPlaybackRate = 1;
+                  // Add event listeners for hiding controls after play
+                  const hideControls = () => {
+                    setTimeout(() => {
+                      if (!videoEl.paused) {
+                        videoEl.controls = false;
+                      }
+                    }, 3000);
+                  };
+                  videoEl.addEventListener('play', hideControls);
+                  videoEl.addEventListener('pause', () => { videoEl.controls = true; });
+                  videoEl.addEventListener('ended', () => { videoEl.controls = true; });
                   videoEl.addEventListener('ended', () => {
                     const overlay = videoEl.parentElement.querySelector('.video-overlay');
                     if (overlay) overlay.style.display = 'flex';
@@ -3575,100 +3808,6 @@
       }
     };
 
-    async function loadNotifications(silent = false) {
-      if (!silent) showSpinner();
-      const section = document.getElementById('notifications-section');
-      section.innerHTML = `
-        <div class="section-title">
-          <span class="material-icons" style="font-size: 24px;">notifications</span>
-          Notifications
-        </div>
-        <div class="chat-list" id="notifications-list"></div>
-      `;
-      const list = document.getElementById('notifications-list');
-      list.innerHTML = '';
-      if (currentUser) {
-        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
-        const snap = await get(notifsRef);
-        let notifs = [];
-        if (snap.exists()) {
-          notifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
-        }
-        if (notifs.length === 0) {
-          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
-        } else {
-          for (let notif of notifs) {
-            const item = document.createElement('div');
-            item.className = 'notification-item';
-            item.onclick = async () => {
-              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-                try {
-                  const statusRef = ref(db, `statuses/${notif.statusId}`);
-                  const statusSnap = await get(statusRef);
-                  const status = statusSnap.val();
-                  if (status && status.userId) {
-                    window.currentStatusFilter = status.userId;
-                  }
-                } catch (e) {
-                  console.error('Failed to fetch status for notification:', e);
-                }
-                switchTab('status', null);
-              }
-            };
-            let icon = 'notifications';
-            let text = '';
-            let fromName = 'Someone';
-            if (notif.fromUserId) {
-              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-              const user = userSnap.val();
-              fromName = user ? user.displayName : 'Someone';
-            }
-            switch (notif.type) {
-              case 'like':
-                icon = 'favorite';
-                text = `${fromName} liked your status`;
-                break;
-              case 'comment':
-              case 'reply':
-                icon = 'chat_bubble';
-                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-                break;
-              case 'tag':
-                icon = 'tag';
-                text = `${fromName} tagged you in a status`;
-                break;
-              case 'verified':
-                icon = 'verified';
-                text = 'Congratulations! Your account is now verified';
-                break;
-              case 'username_change':
-                icon = 'edit';
-                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-                break;
-            }
-            item.innerHTML = `
-              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
-              <div class="notification-info">
-                <div class="notification-title">${text}</div>
-                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
-              </div>
-              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
-            `;
-            list.appendChild(item);
-          }
-        }
-      }
-      const desktopList = document.getElementById('notifications-list-desktop');
-      if (desktopList) {
-        desktopList.innerHTML = list.innerHTML;
-        desktopList.querySelectorAll('.notification-item').forEach(item => {
-          item.onclick = null;
-        });
-      }
-      if (!silent) hideSpinner();
-    }
-
     async function openUserStatuses(uid) {
       window.currentStatusFilter = uid;
       switchTab('status', null);
@@ -4141,8 +4280,20 @@
       statusTime.textContent = formatTimestamp(status.timestamp);
       const currentVideoEl = document.getElementById('current-video');
       if (currentVideoEl) {
+        currentVideoEl.controls = true; // Enable controls
         currentVideoEl.playbackRate = 1;
         currentVideoEl.defaultPlaybackRate = 1;
+        // Add event listeners for hiding controls after play
+        const hideControls = () => {
+          setTimeout(() => {
+            if (!currentVideoEl.paused) {
+              currentVideoEl.controls = false;
+            }
+          }, 3000);
+        };
+        currentVideoEl.addEventListener('play', hideControls);
+        currentVideoEl.addEventListener('pause', () => { currentVideoEl.controls = true; });
+        currentVideoEl.addEventListener('ended', () => { currentVideoEl.controls = true; });
         currentVideo = currentVideoEl;
         const speakerBtn = document.getElementById('speaker-btn');
         speakerBtn.style.display = 'block';
@@ -4974,6 +5125,7 @@
       if (chatsListener) off(chatsListener);
       if (statusesListener) off(statusesListener);
       if (notificationsListener) off(notificationsListener);
+      if (notifObserver) notifObserver.disconnect();
       await auth.signOut();
       window.location.href = 'login.html';
     };
@@ -5078,6 +5230,13 @@
         toggleAIFab(true);
       } else {
         toggleAIFab(false);
+      }
+      // Re-setup infinite scroll for notifications if switching to tab
+      if (tab === 'notifications') {
+        const list = document.getElementById('notifications-list');
+        if (list) {
+          setupNotifInfiniteScroll(list);
+        }
       }
     }
 
