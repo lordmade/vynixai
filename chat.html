@@ -279,6 +279,11 @@
       color: var(--text-secondary);
       margin-top: 4px;
     }
+    .edited-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-left: 4px;
+    }
     .sent .message-timestamp {
       text-align: right;
     }
@@ -501,6 +506,33 @@
       background: rgba(212, 0, 0, 0.1);
       transform: scale(1.1);
     }
+    .context-menu {
+      display: none;
+      position: fixed;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 0;
+      z-index: 200;
+      box-shadow: var(--shadow-md);
+      min-width: 120px;
+    }
+    .context-menu button {
+      display: block;
+      width: 100%;
+      padding: 12px 16px;
+      border: none;
+      background: none;
+      text-align: left;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--text-primary);
+      transition: background-color 0.2s ease;
+    }
+    .context-menu button:hover {
+      background: rgba(212, 0, 0, 0.1);
+      color: var(--bbm-red);
+    }
     @media (min-width: 1024px) {
       .chat-input-container {
         margin: 0;
@@ -561,12 +593,15 @@
     <button class="reaction-emoji" data-emoji="😡" title="Angry">😡</button>
   </div>
 
+  <!-- Context Menu -->
+  <div id="context-menu" class="context-menu"></div>
+
   <input type="file" id="media-input" accept="image/*,video/*" style="display: none;" onchange="handleMediaUpload(event)">
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, set, push, onValue, get, update, serverTimestamp, onDisconnect, onChildAdded } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, set, push, onValue, get, update, serverTimestamp, onDisconnect, onChildAdded, onChildChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -594,6 +629,7 @@
       isRecording: false,
       messagesListener: null,
       currentSelectedMessageId: null,
+      currentSelectedMessageEl: null,
       statusListener: null,
       mediaRecorder: null,
       audioChunks: [],
@@ -618,7 +654,8 @@
       chatHeaderAvatar: document.getElementById('chat-header-avatar'),
       chatHeaderName: document.getElementById('chat-header-name'),
       chatHeaderStatus: document.getElementById('chat-header-status'),
-      reactionPicker: document.getElementById('reaction-picker')
+      reactionPicker: document.getElementById('reaction-picker'),
+      contextMenu: document.getElementById('context-menu')
     };
 
     let app, auth, db, currentUser;
@@ -767,9 +804,11 @@
       await set(readRef, serverTimestamp());
     }
 
-    function appendMessage(content, isSent, type = 'text', isTyping = false, reactions = {}, readStatus = false, timestamp = Date.now(), messageId = null, recordedDuration = null) {
+    function appendMessage(content, isSent, type = 'text', isTyping = false, reactions = {}, readStatus = false, timestamp = Date.now(), messageId = null, recordedDuration = null, edited = false) {
       const div = document.createElement('div');
       div.className = `message ${isSent ? 'sent' : 'received'}${isTyping ? ' processing' : ''}`;
+      div.dataset.isSent = isSent.toString();
+      div.dataset.type = type;
       if (messageId) {
         div.id = messageId;
         div.dataset.messageId = messageId;
@@ -899,6 +938,13 @@
         timestampDiv.textContent = formatRelativeTime(timestamp);
         div.appendChild(timestampDiv);
 
+        if (edited) {
+          const editedSpan = document.createElement('span');
+          editedSpan.className = 'edited-label';
+          editedSpan.textContent = ' • edited';
+          timestampDiv.appendChild(editedSpan);
+        }
+
         // Add read receipt status for sent messages
         if (isSent) {
           const statusDiv = document.createElement('div');
@@ -911,16 +957,16 @@
         }
       }
 
-      state.messages.push({ content, isSent, type, timestamp, reactions, id: messageId, recordedDuration });
+      state.messages.push({ content, isSent, type, timestamp, reactions, id: messageId, recordedDuration, edited });
       elements.chatMessages.appendChild(div);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
 
-      // Add long press/tap to show reactions
+      // Add long press/tap to show context menu
       let pressTimer;
       let startTime;
       div.addEventListener('touchstart', (e) => {
         startTime = Date.now();
-        pressTimer = setTimeout(() => showReactionPicker(div), 500);
+        pressTimer = setTimeout(() => showContextMenu(div), 500);
       });
       div.addEventListener('touchend', () => {
         clearTimeout(pressTimer);
@@ -930,7 +976,7 @@
       });
       div.addEventListener('mousedown', (e) => {
         startTime = Date.now();
-        pressTimer = setTimeout(() => showReactionPicker(div), 500);
+        pressTimer = setTimeout(() => showContextMenu(div), 500);
       });
       div.addEventListener('mouseup', () => clearTimeout(pressTimer));
 
@@ -949,6 +995,43 @@
         };
         container.appendChild(reactionSpan);
       });
+    }
+
+    function showContextMenu(messageEl) {
+      state.currentSelectedMessageEl = messageEl;
+      state.currentSelectedMessageId = messageEl.id || messageEl.dataset.messageId;
+      elements.contextMenu.innerHTML = '';
+
+      const reactBtn = document.createElement('button');
+      reactBtn.textContent = 'React';
+      reactBtn.onclick = (e) => {
+        e.stopPropagation();
+        hideContextMenu();
+        showReactionPicker(messageEl);
+      };
+      elements.contextMenu.appendChild(reactBtn);
+
+      const isSentMsg = messageEl.dataset.isSent === 'true';
+      const msgType = messageEl.dataset.type;
+      if (isSentMsg && msgType === 'text') {
+        const editBtn = document.createElement('button');
+        editBtn.textContent = 'Edit';
+        editBtn.onclick = (e) => {
+          e.stopPropagation();
+          hideContextMenu();
+          startEdit(messageEl);
+        };
+        elements.contextMenu.appendChild(editBtn);
+      }
+
+      const rect = messageEl.getBoundingClientRect();
+      elements.contextMenu.style.top = `${rect.bottom + window.scrollY}px`;
+      elements.contextMenu.style.left = `${rect.left + window.scrollX}px`;
+      elements.contextMenu.style.display = 'block';
+    }
+
+    function hideContextMenu() {
+      elements.contextMenu.style.display = 'none';
     }
 
     function showReactionPicker(messageEl) {
@@ -984,10 +1067,71 @@
       }
     }
 
-    // Close picker on outside click
+    async function startEdit(messageEl) {
+      const messageId = messageEl.id || messageEl.dataset.messageId;
+      const currentContentNode = messageEl.firstChild;
+      if (currentContentNode.nodeType !== Node.TEXT_NODE) return;
+      const currentContent = currentContentNode.textContent;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = currentContent;
+      input.style.width = '100%';
+      input.style.border = 'none';
+      input.style.outline = 'none';
+      input.style.background = 'transparent';
+      input.style.fontSize = 'inherit';
+      input.style.color = 'inherit';
+      messageEl.replaceChild(input, currentContentNode);
+      input.focus();
+      input.select();
+
+      const saveEdit = async () => {
+        const newContent = input.value.trim();
+        const textNode = document.createTextNode(newContent || currentContent);
+        messageEl.replaceChild(textNode, input);
+
+        if (newContent && newContent !== currentContent) {
+          try {
+            const encrypted = await encryptMessage(newContent, state.chatId);
+            const msgRef = ref(db, `chats/${state.chatId}/messages/${messageId}`);
+            await update(msgRef, {
+              message: encrypted,
+              edited: true,
+              editedTimestamp: serverTimestamp()
+            });
+
+            // Optimistic update for edited label
+            const timestampDiv = messageEl.querySelector('.message-timestamp');
+            let editedSpan = messageEl.querySelector('.edited-label');
+            if (!editedSpan) {
+              editedSpan = document.createElement('span');
+              editedSpan.className = 'edited-label';
+              editedSpan.textContent = ' • edited';
+              timestampDiv.appendChild(editedSpan);
+            }
+          } catch (error) {
+            console.error('Edit failed:', error);
+            // Revert on error
+            messageEl.replaceChild(document.createTextNode(currentContent), textNode);
+          }
+        }
+      };
+
+      input.onblur = saveEdit;
+      input.onkeypress = (e) => {
+        if (e.key === 'Enter') {
+          saveEdit();
+          e.preventDefault();
+        }
+      };
+    }
+
+    // Close pickers on outside click
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('.reaction-picker') && !e.target.closest('.message')) {
+      if (!e.target.closest('.reaction-picker') && !e.target.closest('.message') && !e.target.closest('.context-menu')) {
         hideReactionPicker();
+        hideContextMenu();
       }
     });
 
@@ -1011,7 +1155,8 @@
           timestamp: serverTimestamp(),
           reactions: {},
           readReceipts: {},
-          recordedDuration: type === 'audio' ? recordedDuration : null
+          recordedDuration: type === 'audio' ? recordedDuration : null,
+          edited: false
         });
         // Update last message for both users
         const currentUserChatsRef = ref(db, `users/${currentUser.uid}/chats/${state.otherUserId}`);
@@ -1199,12 +1344,12 @@
       });
     }
 
-    function setUserPresence(state) {
+    function setUserPresence(presenceState) {
       if (!currentUser) return;
       const userPresenceRef = ref(db, `users/${currentUser.uid}/presence`);
       set(userPresenceRef, {
-        state: state,
-        lastSeen: state === 'offline' ? serverTimestamp() : null
+        state: presenceState,
+        lastSeen: presenceState === 'offline' ? serverTimestamp() : null
       });
     }
 
@@ -1235,7 +1380,8 @@
           }
           const timestamp = msg.timestamp ? (msg.timestamp.toMillis ? msg.timestamp.toMillis() : msg.timestamp) : Date.now();
           const recordedDuration = msg.recordedDuration || null;
-          appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp, msg.id, recordedDuration);
+          const edited = msg.edited || false;
+          appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp, msg.id, recordedDuration, edited);
           state.loadedMessages.add(msg.id);
         }
       }
@@ -1256,7 +1402,7 @@
       }
 
       // Listen for new messages
-      state.messagesListener = onChildAdded(messagesRef, async (snapshot) => {
+      onChildAdded(messagesRef, async (snapshot) => {
         const msg = snapshot.val();
         const messageId = snapshot.key;
         if (state.loadedMessages.has(messageId)) return; // Already loaded
@@ -1270,11 +1416,61 @@
         }
         const timestamp = msg.timestamp ? (msg.timestamp.toMillis ? msg.timestamp.toMillis() : msg.timestamp) : Date.now();
         const recordedDuration = msg.recordedDuration || null;
-        appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp, messageId, recordedDuration);
+        const edited = msg.edited || false;
+        appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp, messageId, recordedDuration, edited);
         state.loadedMessages.add(messageId);
 
         if (!isSent) {
           await markAsRead(messageId);
+        }
+      });
+
+      // Listen for message changes (edits, reactions, etc.)
+      onChildChanged(messagesRef, async (snapshot) => {
+        const messageId = snapshot.key;
+        const msg = snapshot.val();
+        const el = document.getElementById(messageId);
+        if (!el) return;
+
+        let newContent = msg.type === 'text' ? await decryptMessage(msg.message, state.chatId) : msg.message;
+
+        // Update content if text
+        if (msg.type === 'text') {
+          const textNode = el.firstChild;
+          if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+            textNode.textContent = newContent;
+          }
+        }
+
+        // Update reactions
+        const reactionsDiv = el.querySelector('.message-reactions');
+        if (reactionsDiv) {
+          renderReactions(reactionsDiv, msg.reactions || {});
+        }
+
+        // Update edited label
+        const timestampDiv = el.querySelector('.message-timestamp');
+        let editedSpan = el.querySelector('.edited-label');
+        if (msg.edited && !editedSpan) {
+          editedSpan = document.createElement('span');
+          editedSpan.className = 'edited-label';
+          editedSpan.textContent = ' • edited';
+          timestampDiv.appendChild(editedSpan);
+        } else if (!msg.edited && editedSpan) {
+          editedSpan.remove();
+        }
+
+        // Update read status if sent
+        if (msg.senderId === currentUser.uid) {
+          const statusDiv = el.querySelector('.message-status');
+          if (statusDiv) {
+            const statusSpan = statusDiv.querySelector('span');
+            if (statusSpan) {
+              const isRead = msg.readReceipts && msg.readReceipts[state.otherUserId];
+              statusSpan.className = `status-${isRead ? 'read' : 'sent'}`;
+              statusSpan.textContent = isRead ? '✓✓' : '✓';
+            }
+          }
         }
       });
 
