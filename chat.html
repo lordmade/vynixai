@@ -228,10 +228,10 @@
       0%, 100% { height: 10px; opacity: 0.5; transform: scaleY(0.5); }
       50% { opacity: 1; transform: scaleY(1); }
     }
-    .audio-duration {
+    .audio-timer {
       font-size: 12px;
       color: var(--text-secondary);
-      min-width: 40px;
+      min-width: 60px;
       text-align: right;
       font-family: monospace;
     }
@@ -566,7 +566,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, set, push, onValue, get, update, serverTimestamp, onDisconnect } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, set, push, onValue, get, update, serverTimestamp, onDisconnect, onChildAdded } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -598,7 +598,8 @@
       mediaRecorder: null,
       audioChunks: [],
       recordingStartTime: null,
-      timerInterval: null
+      timerInterval: null,
+      loadedMessages: new Set()
     };
 
     const elements = {
@@ -648,12 +649,17 @@
       }
     }
 
-    function formatTimer(ms) {
+    function formatDuration(ms) {
+      if (!ms) return '0:00.0';
       const seconds = Math.floor(ms / 1000);
       const tenths = Math.floor((ms % 1000) / 100);
       const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
       const secs = (seconds % 60).toString().padStart(2, '0');
       return `${mins}:${secs}.${tenths}`;
+    }
+
+    function formatTimer(ms) {
+      return formatDuration(ms);
     }
 
     function startTimer() {
@@ -761,10 +767,15 @@
       await set(readRef, serverTimestamp());
     }
 
-    function appendMessage(content, isSent, type = 'text', isTyping = false, reactions = {}, readStatus = false, timestamp = Date.now()) {
+    function appendMessage(content, isSent, type = 'text', isTyping = false, reactions = {}, readStatus = false, timestamp = Date.now(), messageId = null, recordedDuration = null) {
       const div = document.createElement('div');
       div.className = `message ${isSent ? 'sent' : 'received'}${isTyping ? ' processing' : ''}`;
-      div.dataset.messageId = Date.now().toString(); // Temporary ID for new messages
+      if (messageId) {
+        div.id = messageId;
+        div.dataset.messageId = messageId;
+      } else {
+        div.dataset.messageId = Date.now().toString(); // Temporary ID for new messages
+      }
 
       if (isTyping) {
         div.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
@@ -802,13 +813,13 @@
           }
           waveform.style.display = 'none';
 
-          const durationSpan = document.createElement('span');
-          durationSpan.className = 'audio-duration';
-          durationSpan.textContent = '0:00';
+          const timerSpan = document.createElement('span');
+          timerSpan.className = 'audio-timer';
+          timerSpan.textContent = '0:00 / 0:00';
 
           audioContainer.appendChild(playBtn);
           audioContainer.appendChild(waveform);
-          audioContainer.appendChild(durationSpan);
+          audioContainer.appendChild(timerSpan);
 
           const audio = document.createElement('audio');
           audio.src = content;
@@ -816,13 +827,26 @@
           audio.style.display = 'none';
           div.appendChild(audio);
 
+          let isPlaying = false;
+          let totalDuration = recordedDuration || 0;
+
           audio.addEventListener('loadedmetadata', () => {
-            const mins = Math.floor(audio.duration / 60);
-            const secs = Math.floor(audio.duration % 60);
-            durationSpan.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+            totalDuration = audio.duration * 1000; // Convert to ms
+            updateTimer(0, totalDuration);
           });
 
-          let isPlaying = false;
+          function updateTimer(currentMs, totalMs) {
+            const currentFormatted = formatDuration(currentMs);
+            const totalFormatted = formatDuration(totalMs);
+            timerSpan.textContent = `${currentFormatted} / ${totalFormatted}`;
+          }
+
+          audio.addEventListener('timeupdate', () => {
+            if (isPlaying) {
+              updateTimer(audio.currentTime * 1000, totalDuration);
+            }
+          });
+
           playBtn.addEventListener('click', () => {
             if (isPlaying) {
               audio.pause();
@@ -830,6 +854,7 @@
               playBtn.title = 'Play';
               waveform.style.display = 'none';
               isPlaying = false;
+              updateTimer(audio.currentTime * 1000, totalDuration);
             } else {
               audio.play().catch(e => console.error('Playback failed:', e));
               playBtn.textContent = 'pause';
@@ -844,6 +869,7 @@
             playBtn.title = 'Play';
             waveform.style.display = 'none';
             isPlaying = false;
+            updateTimer(totalDuration, totalDuration);
           });
 
           audio.addEventListener('pause', () => {
@@ -852,6 +878,7 @@
               playBtn.title = 'Play';
               waveform.style.display = 'none';
               isPlaying = false;
+              updateTimer(audio.currentTime * 1000, totalDuration);
             }
           });
 
@@ -884,7 +911,7 @@
         }
       }
 
-      state.messages.push({ content, isSent, type, timestamp, reactions });
+      state.messages.push({ content, isSent, type, timestamp, reactions, id: messageId, recordedDuration });
       elements.chatMessages.appendChild(div);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
 
@@ -970,7 +997,7 @@
       }
     });
 
-    async function sendMessage(message, type = 'text') {
+    async function sendMessage(message, type = 'text', recordedDuration = null) {
       if (!state.chatId || !currentUser) return;
       try {
         const encrypted = await encryptMessage(message, state.chatId);
@@ -983,7 +1010,8 @@
           type: type,
           timestamp: serverTimestamp(),
           reactions: {},
-          readReceipts: {}
+          readReceipts: {},
+          recordedDuration: type === 'audio' ? recordedDuration : null
         });
         // Update last message for both users
         const currentUserChatsRef = ref(db, `users/${currentUser.uid}/chats/${state.otherUserId}`);
@@ -1048,7 +1076,8 @@
         };
         state.mediaRecorder.onstop = async () => {
           const audioBlob = new Blob(state.audioChunks, { type: 'audio/wav' });
-          await uploadAudio(audioBlob);
+          const recordedDuration = Date.now() - state.recordingStartTime;
+          await uploadAudio(audioBlob, recordedDuration);
           state.audioChunks = [];
           stream.getTracks().forEach(track => track.stop());
         };
@@ -1073,7 +1102,7 @@
       }
     }
 
-    async function uploadAudio(blob) {
+    async function uploadAudio(blob, recordedDuration) {
       try {
         showSpinner();
         const xhr = new XMLHttpRequest();
@@ -1093,8 +1122,8 @@
           xhr.onerror = reject;
           xhr.send(formData);
         });
-        appendMessage(url, true, 'audio', false, {}, false, Date.now());
-        await sendMessage(url, 'audio');
+        appendMessage(url, true, 'audio', false, {}, false, Date.now(), null, recordedDuration);
+        await sendMessage(url, 'audio', recordedDuration);
       } catch (error) {
         console.error('Audio upload failed:', error);
         showAlert('Failed to upload voice note.');
@@ -1182,50 +1211,73 @@
     async function loadChatHistory() {
       if (!state.chatId) return;
       const messagesRef = ref(db, `chats/${state.chatId}/messages`);
-      state.messagesListener = onValue(messagesRef, async (snapshot) => {
-        state.messages = [];
-        elements.chatMessages.innerHTML = '';
-        let messages = [];
-        if (snapshot.exists()) {
-          messages = Object.entries(snapshot.val())
-            .map(([id, msg]) => ({ id, ...msg }))
-            .sort((a, b) => {
-              const tsA = a.timestamp ? (a.timestamp.toMillis ? a.timestamp.toMillis() : a.timestamp) : 0;
-              const tsB = b.timestamp ? (b.timestamp.toMillis ? b.timestamp.toMillis() : b.timestamp) : 0;
-              return tsA - tsB;
-            });
-          for (let msg of messages) {
-            let content = msg.type === 'text' ? await decryptMessage(msg.message, state.chatId) : msg.message;
-            const reactions = msg.reactions || {};
-            const isSent = msg.senderId === currentUser.uid;
-            let readStatus = false;
-            if (isSent && msg.readReceipts && msg.readReceipts[state.otherUserId]) {
-              readStatus = true;
-            }
-            const timestamp = msg.timestamp ? (msg.timestamp.toMillis ? msg.timestamp.toMillis() : msg.timestamp) : Date.now();
-            appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp);
-            // Add ID for reactions
-            const messageEl = elements.chatMessages.lastElementChild;
-            messageEl.id = msg.id;
-            messageEl.dataset.messageId = msg.id;
-          }
-        }
-        if (messages.length === 0) {
-          elements.welcomeContainer.classList.remove('hidden');
-        } else {
-          elements.welcomeContainer.classList.add('hidden');
-          state.hasChatted = true;
-        }
-        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
 
-        // Mark unread received messages as read
-        const unreadMessageIds = messages
-          .filter(msg => msg.senderId !== currentUser.uid && (!msg.readReceipts || !msg.readReceipts[currentUser.uid]))
-          .map(msg => msg.id);
-        for (const id of unreadMessageIds) {
-          await markAsRead(id);
+      // Load initial messages
+      const snapshot = await get(messagesRef);
+      let messages = [];
+      if (snapshot.exists()) {
+        messages = Object.entries(snapshot.val())
+          .map(([id, msg]) => ({ id, ...msg }))
+          .sort((a, b) => {
+            const tsA = a.timestamp ? (a.timestamp.toMillis ? a.timestamp.toMillis() : a.timestamp) : 0;
+            const tsB = b.timestamp ? (b.timestamp.toMillis ? b.timestamp.toMillis() : b.timestamp) : 0;
+            return tsA - tsB;
+          });
+        elements.chatMessages.innerHTML = '';
+        state.loadedMessages.clear();
+        for (let msg of messages) {
+          let content = msg.type === 'text' ? await decryptMessage(msg.message, state.chatId) : msg.message;
+          const reactions = msg.reactions || {};
+          const isSent = msg.senderId === currentUser.uid;
+          let readStatus = false;
+          if (isSent && msg.readReceipts && msg.readReceipts[state.otherUserId]) {
+            readStatus = true;
+          }
+          const timestamp = msg.timestamp ? (msg.timestamp.toMillis ? msg.timestamp.toMillis() : msg.timestamp) : Date.now();
+          const recordedDuration = msg.recordedDuration || null;
+          appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp, msg.id, recordedDuration);
+          state.loadedMessages.add(msg.id);
+        }
+      }
+      if (messages.length === 0) {
+        elements.welcomeContainer.classList.remove('hidden');
+      } else {
+        elements.welcomeContainer.classList.add('hidden');
+        state.hasChatted = true;
+      }
+      elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+
+      // Mark unread received messages as read
+      const unreadMessageIds = messages
+        .filter(msg => msg.senderId !== currentUser.uid && (!msg.readReceipts || !msg.readReceipts[currentUser.uid]))
+        .map(msg => msg.id);
+      for (const id of unreadMessageIds) {
+        await markAsRead(id);
+      }
+
+      // Listen for new messages
+      state.messagesListener = onChildAdded(messagesRef, async (snapshot) => {
+        const msg = snapshot.val();
+        const messageId = snapshot.key;
+        if (state.loadedMessages.has(messageId)) return; // Already loaded
+
+        let content = msg.type === 'text' ? await decryptMessage(msg.message, state.chatId) : msg.message;
+        const reactions = msg.reactions || {};
+        const isSent = msg.senderId === currentUser.uid;
+        let readStatus = false;
+        if (isSent && msg.readReceipts && msg.readReceipts[state.otherUserId]) {
+          readStatus = true;
+        }
+        const timestamp = msg.timestamp ? (msg.timestamp.toMillis ? msg.timestamp.toMillis() : msg.timestamp) : Date.now();
+        const recordedDuration = msg.recordedDuration || null;
+        appendMessage(content, isSent, msg.type, false, reactions, readStatus, timestamp, messageId, recordedDuration);
+        state.loadedMessages.add(messageId);
+
+        if (!isSent) {
+          await markAsRead(messageId);
         }
       });
+
       setupTypingListener();
       setupPresenceListener();
     }
