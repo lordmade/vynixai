@@ -173,6 +173,10 @@
       margin-top: 10px;
       box-shadow: var(--shadow-md);
     }
+    .message audio {
+      width: 100%;
+      margin-top: 10px;
+    }
     .message-reactions {
       display: flex;
       gap: 4px;
@@ -323,7 +327,7 @@
     .send-btn .material-icons {
       font-size: 20px;
     }
-    .media-btn {
+    .media-btn, .voice-btn {
       background: var(--card-bg);
       border: 1px solid var(--border);
       color: var(--text-secondary);
@@ -336,10 +340,15 @@
       cursor: pointer;
       transition: all 0.3s ease;
     }
-    .media-btn:hover {
+    .media-btn:hover, .voice-btn:hover {
       color: var(--bbm-red);
       border-color: var(--bbm-red);
       box-shadow: var(--glow);
+    }
+    .voice-btn.recording {
+      background: var(--bbm-red);
+      color: white;
+      border-color: var(--bbm-red);
     }
     .hidden { display: none; }
     .loading-overlay {
@@ -462,6 +471,7 @@
     <div id="chat-messages"></div>
     <div class="chat-input-container">
       <button class="media-btn material-icons" id="media-button" title="Send media">photo_camera</button>
+      <button class="voice-btn material-icons" id="voice-button" title="Voice note">mic</button>
       <div class="input-pill">
         <input type="text" id="chat-input" placeholder="Type a message..." aria-label="Type your message">
       </div>
@@ -509,9 +519,12 @@
       otherUserId: null,
       otherUserData: null,
       typing: false,
+      isRecording: false,
       messagesListener: null,
       currentSelectedMessageId: null,
-      statusListener: null
+      statusListener: null,
+      mediaRecorder: null,
+      audioChunks: []
     };
 
     const elements = {
@@ -520,6 +533,7 @@
       sendButton: document.getElementById('send-button'),
       welcomeContainer: document.getElementById('welcome-container'),
       mediaButton: document.getElementById('media-button'),
+      voiceButton: document.getElementById('voice-button'),
       mediaInput: document.getElementById('media-input'),
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
@@ -660,6 +674,11 @@
           video.src = content;
           video.controls = true;
           div.appendChild(video);
+        } else if (type === 'audio') {
+          const audio = document.createElement('audio');
+          audio.src = content;
+          audio.controls = true;
+          div.appendChild(audio);
         } else {
           div.textContent = content;
         }
@@ -837,6 +856,69 @@
       } catch (error) {
         console.error('Media upload failed:', error);
         showAlert('Failed to upload media.');
+      } finally {
+        hideSpinner();
+      }
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        state.mediaRecorder = new MediaRecorder(stream);
+        state.audioChunks = [];
+        state.mediaRecorder.ondataavailable = (event) => {
+          state.audioChunks.push(event.data);
+        };
+        state.mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(state.audioChunks, { type: 'audio/wav' });
+          await uploadAudio(audioBlob);
+          state.audioChunks = [];
+          stream.getTracks().forEach(track => track.stop());
+        };
+        state.mediaRecorder.start();
+        state.isRecording = true;
+        elements.voiceButton.classList.add('recording');
+        elements.voiceButton.textContent = 'stop';
+      } catch (err) {
+        console.error('Error accessing microphone', err);
+        showAlert('Could not access microphone.');
+      }
+    }
+
+    function stopRecording() {
+      if (state.mediaRecorder && state.isRecording) {
+        state.mediaRecorder.stop();
+        state.isRecording = false;
+        elements.voiceButton.classList.remove('recording');
+        elements.voiceButton.textContent = 'mic';
+      }
+    }
+
+    async function uploadAudio(blob) {
+      try {
+        showSpinner();
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
+        const formData = new FormData();
+        formData.append('file', blob, 'voice-note.wav');
+        formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+        const url = await new Promise((resolve, reject) => {
+          xhr.onload = () => {
+            if (xhr.status === 200) {
+              const data = JSON.parse(xhr.responseText);
+              resolve(data.secure_url);
+            } else {
+              reject(new Error(`Upload failed: ${xhr.statusText}`));
+            }
+          };
+          xhr.onerror = reject;
+          xhr.send(formData);
+        });
+        appendMessage(url, true, 'audio', false, {}, false, Date.now());
+        await sendMessage(url, 'audio');
+      } catch (error) {
+        console.error('Audio upload failed:', error);
+        showAlert('Failed to upload voice note.');
       } finally {
         hideSpinner();
       }
@@ -1057,6 +1139,27 @@
       elements.mediaInput.click();
     });
 
+    // Voice recording events
+    elements.voiceButton.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      startRecording();
+    }, { passive: false });
+
+    elements.voiceButton.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      stopRecording();
+    }, { passive: false });
+
+    elements.voiceButton.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startRecording();
+    });
+
+    elements.voiceButton.addEventListener('mouseup', (e) => {
+      e.preventDefault();
+      stopRecording();
+    });
+
     window.addEventListener('beforeunload', () => {
       setUserPresence('offline');
       sendTypingEvent(false);
@@ -1065,6 +1168,9 @@
       }
       if (state.statusListener) {
         state.statusListener();
+      }
+      if (state.isRecording) {
+        stopRecording();
       }
     });
 
