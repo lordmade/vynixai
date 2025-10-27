@@ -2524,6 +2524,7 @@
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
+    import { query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -3734,99 +3735,122 @@
       }
     };
 
-    async function loadNotifications(silent = false) {
-      if (!silent) showSpinner();
-      const section = document.getElementById('notifications-section');
-      section.innerHTML = `
-        <div class="section-title">
-          <span class="material-icons" style="font-size: 24px;">notifications</span>
-          Notifications
-        </div>
-        <div class="chat-list" id="notifications-list"></div>
-      `;
-      const list = document.getElementById('notifications-list');
-      list.innerHTML = '';
-      if (currentUser) {
-        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
-        const snap = await get(notifsRef);
-        let notifs = [];
-        if (snap.exists()) {
-          notifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
-        }
-        if (notifs.length === 0) {
-          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
-        } else {
-          for (let notif of notifs) {
-            const item = document.createElement('div');
-            item.className = 'notification-item';
-            item.onclick = async () => {
-              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-                try {
-                  const statusRef = ref(db, `statuses/${notif.statusId}`);
-                  const statusSnap = await get(statusRef);
-                  const status = statusSnap.val();
-                  if (status && status.userId) {
-                    window.currentStatusFilter = status.userId;
-                  }
-                } catch (e) {
-                  console.error('Failed to fetch status for notification:', e);
-                }
-                switchTab('status', null);
-              }
-            };
-            let icon = 'notifications';
-            let text = '';
-            let fromName = 'Someone';
-            if (notif.fromUserId) {
-              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-              const user = userSnap.val();
-              fromName = user ? user.displayName : 'Someone';
-            }
-            switch (notif.type) {
-              case 'like':
-                icon = 'favorite';
-                text = `${fromName} liked your status`;
-                break;
-              case 'comment':
-              case 'reply':
-                icon = 'chat_bubble';
-                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-                break;
-              case 'tag':
-                icon = 'tag';
-                text = `${fromName} tagged you in a status`;
-                break;
-              case 'verified':
-                icon = 'verified';
-                text = 'Congratulations! Your account is now verified';
-                break;
-              case 'username_change':
-                icon = 'edit';
-                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-                break;
-            }
-            item.innerHTML = `
-              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
-              <div class="notification-info">
-                <div class="notification-title">${text}</div>
-                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
-              </div>
-              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
-            `;
-            list.appendChild(item);
-          }
-        }
-      }
-      const desktopList = document.getElementById('notifications-list-desktop');
-      if (desktopList) {
-        desktopList.innerHTML = list.innerHTML;
-        desktopList.querySelectorAll('.notification-item').forEach(item => {
-          item.onclick = null;
-        });
-      }
-      if (!silent) hideSpinner();
+   // Replace the entire loadNotifications function with this paginated version
+let notificationsPage = 0;
+const notificationsPerPage = 20;
+let allNotifications = []; // Cache all loaded notifications
+
+async function loadNotifications(silent = false, loadMore = false) {
+  if (!silent) showSpinner();
+  const section = document.getElementById('notifications-section');
+  if (!loadMore) {
+    section.innerHTML = `
+      <div class="section-title">
+        <span class="material-icons" style="font-size: 24px;">notifications</span>
+        Notifications
+      </div>
+      <div class="chat-list" id="notifications-list"></div>
+      <div id="load-more-notifs" style="text-align: center; padding: 20px; display: none;">
+        <button class="start-chat-btn" onclick="loadMoreNotifications()">Load More</button>
+      </div>
+    `;
+    notificationsPage = 0;
+    allNotifications = [];
+  }
+  const list = document.getElementById('notifications-list');
+  const loadMoreBtn = document.getElementById('load-more-notifs');
+  if (currentUser) {
+    const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
+    // Query for recent notifications, limit to per page
+    const queryRef = query(notifsRef, orderByChild('timestamp'), limitToLast(notificationsPerPage * (notificationsPage + 1)));
+    const snap = await get(queryRef);
+    let newNotifs = [];
+    if (snap.exists()) {
+      newNotifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
+      // Filter out already loaded ones
+      const existingIds = new Set(allNotifications.map(n => n.id));
+      newNotifs = newNotifs.filter(n => !existingIds.has(n.id));
+      allNotifications = [...allNotifications, ...newNotifs];
     }
+    // Append new notifications
+    for (let notif of newNotifs) {
+      const item = document.createElement('div');
+      item.className = 'notification-item';
+      item.onclick = async () => {
+        await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+        if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
+          try {
+            const statusRef = ref(db, `statuses/${notif.statusId}`);
+            const statusSnap = await get(statusRef);
+            const status = statusSnap.val();
+            if (status && status.userId) {
+              window.currentStatusFilter = status.userId;
+            }
+          } catch (e) {
+            console.error('Failed to fetch status for notification:', e);
+          }
+          switchTab('status', null);
+        }
+      };
+      let icon = 'notifications';
+      let text = '';
+      let fromName = 'Someone';
+      if (notif.fromUserId) {
+        const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+        const user = userSnap.val();
+        fromName = user ? user.displayName : 'Someone';
+      }
+      switch (notif.type) {
+        case 'like':
+          icon = 'favorite';
+          text = `${fromName} liked your status`;
+          break;
+        case 'comment':
+        case 'reply':
+          icon = 'chat_bubble';
+          text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+          break;
+        case 'tag':
+          icon = 'tag';
+          text = `${fromName} tagged you in a status`;
+          break;
+        case 'verified':
+          icon = 'verified';
+          text = 'Congratulations! Your account is now verified';
+          break;
+        case 'username_change':
+          icon = 'edit';
+          text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+          break;
+      }
+      item.innerHTML = `
+        <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+        <div class="notification-info">
+          <div class="notification-title">${text}</div>
+          <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+        </div>
+        ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
+      `;
+      list.appendChild(item);
+    }
+    // Show load more if more available
+    loadMoreBtn.style.display = newNotifs.length > 0 ? 'block' : 'none';
+    notificationsPage++;
+  }
+  const desktopList = document.getElementById('notifications-list-desktop');
+  if (desktopList) {
+    // For desktop, load all for simplicity or mirror the mobile list
+    desktopList.innerHTML = list.innerHTML;
+    desktopList.querySelectorAll('.notification-item').forEach(item => {
+      item.onclick = null; // Desktop doesn't navigate
+    });
+  }
+  if (!silent) hideSpinner();
+}
+
+window.loadMoreNotifications = () => {
+  loadNotifications(true, true);
+};
 
     async function openUserStatuses(uid) {
       window.currentStatusFilter = uid;
