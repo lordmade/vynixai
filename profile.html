@@ -609,6 +609,15 @@
       margin: 10px;
       font-weight: 600;
     }
+    .status-post-repost-badge {
+      background: rgba(29, 155, 240, 0.1);
+      color: #1d9bf0;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 12px;
+      margin-left: 8px;
+    }
     @media (prefers-color-scheme: light) {
       :root {
         --bg: #f8f8f8;
@@ -710,6 +719,7 @@
     let profileUserId = null;
     let profileUserData = null;
     let isOwnProfile = false;
+    let currentAllStatuses = []; // Cache for reposts
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -784,113 +794,38 @@
       const statusesList = document.getElementById('profile-statuses-list');
       statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Loading statuses...</p>';
       try {
+        // Fetch recent statuses overall, ordered by timestamp, limit to 100 to cover user's recent ones
         const statusesRef = ref(db, 'statuses');
-        const userStatusesQuery = query(statusesRef, orderByChild('userId'), limitToLast(50)); // Limit to recent 50 for perf
-        const snapshot = await get(userStatusesQuery);
-        let userStatuses = [];
+        const statusesQuery = query(statusesRef, orderByChild('timestamp'), limitToLast(100));
+        const snapshot = await get(statusesQuery);
+        let allStatuses = [];
         if (snapshot.exists()) {
           Object.entries(snapshot.val()).forEach(([id, s]) => {
-            if (s.userId === profileUserId) {
-              userStatuses.push({ statusId: id, ...s });
-            }
+            allStatuses.push({ statusId: id, ...s });
           });
-          userStatuses.sort((a, b) => b.timestamp - a.timestamp);
+          allStatuses.sort((a, b) => b.timestamp - a.timestamp);
         }
+        window.currentAllStatuses = allStatuses; // Cache for reposts
+
+        // Filter user's statuses
+        let userStatuses = allStatuses.filter(s => s.userId === profileUserId);
+        if (userStatuses.length === 0) {
+          // If none in recent 100, fetch more (up to 200) to ensure coverage
+          const extendedQuery = query(statusesRef, orderByChild('timestamp'), limitToLast(200));
+          const extendedSnapshot = await get(extendedQuery);
+          if (extendedSnapshot.exists()) {
+            const extendedAll = Object.entries(extendedSnapshot.val()).map(([id, s]) => ({ statusId: id, ...s }));
+            extendedAll.sort((a, b) => b.timestamp - a.timestamp);
+            userStatuses = extendedAll.filter(s => s.userId === profileUserId);
+          }
+        }
+
         statusesList.innerHTML = '';
         if (userStatuses.length === 0) {
           statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
         } else {
           for (let status of userStatuses) {
-            const postItem = document.createElement('div');
-            postItem.className = 'status-post';
-            postItem.setAttribute('data-status-id', status.statusId);
-            let innerHTML = '';
-            const initial = profileUserData?.displayName ? profileUserData.displayName[0].toUpperCase() : 'U';
-            let avatarHtml;
-            if (profileUserData?.photoURL) {
-              avatarHtml = `<img src="${profileUserData.photoURL}" alt="${profileUserData?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
-            } else {
-              avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-            }
-            let nameHtml = profileUserData?.displayName || 'User';
-            if (profileUserData?.verified) {
-              nameHtml += verifiedIcon;
-            }
-            let businessHtml = profileUserData?.businessMode ? '<div class="status-post-business">Business</div>' : '';
-            let mediaHtml = '';
-            if (status.mediaUrl) {
-              const oncontext = 'oncontextmenu="return false;"';
-              if (status.type === 'image') {
-                mediaHtml = `<div class="status-post-media-container"><img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
-              } else if (status.type === 'video') {
-                mediaHtml = `<div class="status-post-media-container">
-                  <div class="video-container">
-                    <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext} muted loop onended="showVideoOverlay(this)"></video>
-                    <div class="video-controls">
-                      <button class="play-pause-btn material-icons" onclick="toggleVideoPlay(this)">play_arrow</button>
-                      <div class="progress-container">
-                        <div class="progress-fill"></div>
-                      </div>
-                      <button class="volume-btn material-icons" onclick="toggleVideoVolume(this)">volume_up</button>
-                    </div>
-                    <div class="video-overlay" style="display: none;">
-                      <button class="play-again-btn" onclick="playVideoAgain(this)">
-                        <span class="material-icons">replay</span>Play Again
-                      </button>
-                      <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
-                    </div>
-                  </div>
-                </div>`;
-              }
-            }
-            let reposts = 0;
-            let likes = 0;
-            let comments = 0;
-            let isLiked = false;
-            let likeIcon = 'favorite_border';
-            try {
-              const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
-              reposts = repostsSnap.val() || 0;
-              const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
-              likes = Object.keys(likesSnap.val() || {}).length;
-              const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
-              comments = Object.keys(commentsSnap.val() || {}).length;
-              if (currentUser) {
-                const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
-                const likeSnap = await get(likeRef);
-                isLiked = likeSnap.exists();
-                likeIcon = isLiked ? 'favorite' : 'favorite_border';
-              }
-            } catch (e) {
-              console.warn(`Failed to load counts for status ${status.statusId}:`, e);
-            }
-            let contentHtml = '';
-            if (status.content) {
-              const highlightedContent = highlightContent(truncateContent(status.content));
-              contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
-            }
-            let deleteHtml = isOwnProfile ? `<span onclick="deleteStatus('${status.statusId}')" style="cursor: pointer; margin-left: auto;"><span class="material-icons" style="font-size: 18px;">delete</span></span>` : '';
-            innerHTML = `
-              <div class="status-post-header">
-                <div class="status-post-user-header" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
-                  ${avatarHtml}
-                  <div class="status-post-user">
-                    <div class="status-post-user-name">${nameHtml}</div>
-                    ${businessHtml}
-                    <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
-                  </div>
-                </div>
-                ${deleteHtml}
-              </div>
-              ${contentHtml}
-              ${mediaHtml}
-              <div class="status-actions">
-                <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
-                <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
-                <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
-              </div>
-            `;
-            postItem.innerHTML = innerHTML;
+            const postItem = await renderSingleStatus(status);
             statusesList.appendChild(postItem);
           }
         }
@@ -902,6 +837,237 @@
       } finally {
         hideSpinner();
       }
+    }
+
+    async function renderSingleStatus(status) {
+      const postItem = document.createElement('div');
+      postItem.className = 'status-post';
+      postItem.setAttribute('data-status-id', status.statusId);
+      let innerHTML = '';
+      const initial = profileUserData?.displayName ? profileUserData.displayName[0].toUpperCase() : 'U';
+      let avatarHtml;
+      if (profileUserData?.photoURL) {
+        avatarHtml = `<img src="${profileUserData.photoURL}" alt="${profileUserData?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+      } else {
+        avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+      }
+      let nameHtml = profileUserData?.displayName || 'User';
+      if (profileUserData?.verified) {
+        nameHtml += verifiedIcon;
+      }
+      let businessHtml = profileUserData?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+      let deleteHtml = isOwnProfile ? `<span onclick="deleteStatus('${status.statusId}')" style="cursor: pointer; margin-left: auto;"><span class="material-icons" style="font-size: 18px;">delete</span></span>` : '';
+
+      if (status.type === 'repost') {
+        const original = window.currentAllStatuses.find(s => s.statusId === status.originalId);
+        if (original) {
+          // Render repost with embedded original
+          let origAvatarHtml;
+          const origInitial = original.user?.displayName ? original.user.displayName[0].toUpperCase() : 'U';
+          if (original.user?.photoURL) {
+            origAvatarHtml = `<img src="${original.user.photoURL}" alt="${original.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+          } else {
+            origAvatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${origInitial}</div>`;
+          }
+          let origNameHtml = original.user?.displayName || 'User';
+          if (original.user?.verified) {
+            origNameHtml += verifiedIcon;
+          }
+          let origBusinessHtml = original.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+          const origTime = formatTimestamp(original.timestamp);
+          const origHeader = `
+            <div class="status-post-header" style="margin-top: 8px;">
+              <div class="status-post-user-header" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                ${origAvatarHtml}
+                <div class="status-post-user">
+                  <div class="status-post-user-name">${origNameHtml}</div>
+                  ${origBusinessHtml}
+                  <div class="status-post-time">${origTime}</div>
+                </div>
+              </div>
+            </div>
+          `;
+          let origContentHtml = '';
+          if (original.content) {
+            const highlightedOrigContent = highlightContent(truncateContent(original.content));
+            origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
+          }
+          let origMediaHtml = '';
+          if (original.mediaUrl) {
+            const oncontext = 'oncontextmenu="return false;"';
+            if (original.type === 'image') {
+              origMediaHtml = `<div class="status-post-media-container"><img src="${original.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
+            } else if (original.type === 'video') {
+              origMediaHtml = `<div class="status-post-media-container">
+                <div class="video-container">
+                  <video src="${original.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext} muted loop onended="showVideoOverlay(this)"></video>
+                  <div class="video-controls">
+                    <button class="play-pause-btn material-icons" onclick="toggleVideoPlay(this)">play_arrow</button>
+                    <div class="progress-container">
+                      <div class="progress-fill"></div>
+                    </div>
+                    <button class="volume-btn material-icons" onclick="toggleVideoVolume(this)">volume_up</button>
+                  </div>
+                  <div class="video-overlay" style="display: none;">
+                    <button class="play-again-btn" onclick="playVideoAgain(this)">
+                      <span class="material-icons">replay</span>Play Again
+                    </button>
+                    <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                  </div>
+                </div>
+              </div>`;
+            }
+          }
+          const embedded = `
+            <div style="margin: 12px 0; padding: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px;">
+              ${origHeader}
+              ${origContentHtml}
+              ${origMediaHtml}
+            </div>
+          `;
+          let repostCaptionHtml = '';
+          if (status.content) {
+            const highlightedRepostContent = highlightContent(truncateContent(status.content));
+            repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
+          }
+          let reposts = status.reposts || 0;
+          let likes = 0;
+          let comments = 0;
+          let isLiked = false;
+          let likeIcon = 'favorite_border';
+          try {
+            const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+            likes = Object.keys(likesSnap.val() || {}).length;
+            const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+            comments = Object.keys(commentsSnap.val() || {}).length;
+            if (currentUser) {
+              const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+              const likeSnap = await get(likeRef);
+              isLiked = likeSnap.exists();
+              likeIcon = isLiked ? 'favorite' : 'favorite_border';
+            }
+          } catch (e) {
+            console.warn(`Failed to load counts for repost ${status.statusId}:`, e);
+          }
+          innerHTML = `
+            <div class="status-post-header">
+              <div class="status-post-user-header" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                ${avatarHtml}
+                <div class="status-post-user">
+                  <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
+                  ${businessHtml}
+                  <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                </div>
+              </div>
+              ${deleteHtml}
+            </div>
+            ${embedded}
+            ${repostCaptionHtml}
+            <div class="status-actions">
+              <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+              <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+              <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+            </div>
+          `;
+        } else {
+          // Fallback if original not found
+          innerHTML = `
+            <div class="status-post-header">
+              <div class="status-post-user-header" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                ${avatarHtml}
+                <div class="status-post-user">
+                  <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
+                  ${businessHtml}
+                  <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                </div>
+              </div>
+              ${deleteHtml}
+            </div>
+            <div class="status-post-content">Original post not available</div>
+            <div class="status-actions">
+              <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">favorite_border</span> 0</span>
+              <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> 0</span>
+              <span onclick="openRepostModal('${status.originalId || status.statusId}')"><span class="material-icons">repeat</span> 0</span>
+            </div>
+          `;
+        }
+      } else {
+        // Normal status
+        let mediaHtml = '';
+        if (status.mediaUrl) {
+          const oncontext = 'oncontextmenu="return false;"';
+          if (status.type === 'image') {
+            mediaHtml = `<div class="status-post-media-container"><img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
+          } else if (status.type === 'video') {
+            mediaHtml = `<div class="status-post-media-container">
+              <div class="video-container">
+                <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext} muted loop onended="showVideoOverlay(this)"></video>
+                <div class="video-controls">
+                  <button class="play-pause-btn material-icons" onclick="toggleVideoPlay(this)">play_arrow</button>
+                  <div class="progress-container">
+                    <div class="progress-fill"></div>
+                  </div>
+                  <button class="volume-btn material-icons" onclick="toggleVideoVolume(this)">volume_up</button>
+                </div>
+                <div class="video-overlay" style="display: none;">
+                  <button class="play-again-btn" onclick="playVideoAgain(this)">
+                    <span class="material-icons">replay</span>Play Again
+                  </button>
+                  <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                </div>
+              </div>
+            </div>`;
+          }
+        }
+        let reposts = 0;
+        let likes = 0;
+        let comments = 0;
+        let isLiked = false;
+        let likeIcon = 'favorite_border';
+        try {
+          const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
+          reposts = repostsSnap.val() || 0;
+          const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+          likes = Object.keys(likesSnap.val() || {}).length;
+          const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+          comments = Object.keys(commentsSnap.val() || {}).length;
+          if (currentUser) {
+            const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+            const likeSnap = await get(likeRef);
+            isLiked = likeSnap.exists();
+            likeIcon = isLiked ? 'favorite' : 'favorite_border';
+          }
+        } catch (e) {
+          console.warn(`Failed to load counts for status ${status.statusId}:`, e);
+        }
+        let contentHtml = '';
+        if (status.content) {
+          const highlightedContent = highlightContent(truncateContent(status.content));
+          contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
+        }
+        innerHTML = `
+          <div class="status-post-header">
+            <div class="status-post-user-header" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+              ${avatarHtml}
+              <div class="status-post-user">
+                <div class="status-post-user-name">${nameHtml}</div>
+                ${businessHtml}
+                <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+              </div>
+            </div>
+            ${deleteHtml}
+          </div>
+          ${contentHtml}
+          ${mediaHtml}
+          <div class="status-actions">
+            <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+            <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+            <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+          </div>
+        `;
+      }
+      postItem.innerHTML = innerHTML;
+      return postItem;
     }
 
     // Reused functions from main app (likeStatus, deleteStatus, etc. - simplified for profile)
