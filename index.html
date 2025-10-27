@@ -2209,10 +2209,73 @@
       color: var(--text-secondary);
     }
 
-    /* Infinite Scroll Sentinel for Notifications */
-    #load-more-notifs {
-      height: 20px;
-      visibility: hidden;
+    /* Custom Video Controls */
+    .video-controls {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+      color: white;
+      padding: 20px 20px 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      opacity: 1;
+      transition: opacity 0.3s ease;
+      z-index: 2;
+    }
+    .video-controls.hidden {
+      opacity: 0;
+    }
+    .play-pause-btn {
+      background: rgba(0,0,0,0.5);
+      border: none;
+      color: white;
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 24px;
+      transition: background 0.2s ease;
+    }
+    .play-pause-btn:hover {
+      background: rgba(0,0,0,0.7);
+    }
+    .progress-container {
+      flex: 1;
+      height: 4px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 2px;
+      cursor: pointer;
+      position: relative;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--bbm-red);
+      width: 0%;
+      border-radius: 2px;
+      transition: width 0.1s ease;
+    }
+    .volume-btn {
+      background: rgba(0,0,0,0.5);
+      border: none;
+      color: white;
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 24px;
+      transition: background 0.2s ease;
+    }
+    .volume-btn:hover {
+      background: rgba(0,0,0,0.7);
     }
   </style>
 </head>
@@ -2459,7 +2522,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off, orderByChild, limitToLast, endAt } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
 
     const firebaseConfig = {
@@ -2508,11 +2571,6 @@
     let replyingTo = null;
     let replyingToUser = null;
     let statusSearchTerm = '';
-    // New variables for notifications infinite scroll
-    let lastNotifTimestamp = Date.now();
-    let notifObserver = null;
-    let isLoadingMoreNotifs = false;
-    let allLoadedNotifs = false;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -2731,216 +2789,6 @@
       }
     }
 
-    // New function to setup infinite scroll observer for notifications
-    function setupNotifInfiniteScroll(listContainer) {
-      if (notifObserver) notifObserver.disconnect();
-      const sentinel = document.getElementById('load-more-notifs');
-      if (!sentinel) {
-        const newSentinel = document.createElement('div');
-        newSentinel.id = 'load-more-notifs';
-        listContainer.appendChild(newSentinel);
-      }
-      notifObserver = new IntersectionObserver((entries) => {
-        if (entries[0].isIntersecting && !isLoadingMoreNotifs && !allLoadedNotifs) {
-          loadMoreNotifications();
-        }
-      }, { threshold: 0.1 });
-      notifObserver.observe(document.getElementById('load-more-notifs'));
-    }
-
-    async function loadMoreNotifications() {
-      if (!currentUser || isLoadingMoreNotifs || allLoadedNotifs) return;
-      isLoadingMoreNotifs = true;
-      const list = document.getElementById('notifications-list');
-      const tempItem = document.createElement('div');
-      tempItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Loading more...</p>';
-      list.appendChild(tempItem);
-      try {
-        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
-        const queryRef = query(notifsRef, orderByChild('timestamp'), endAt(lastNotifTimestamp), limitToLast(20));
-        const snap = await get(queryRef);
-        let newNotifs = [];
-        if (snap.exists()) {
-          newNotifs = Object.entries(snap.val())
-            .map(([id, n]) => ({ id, ...n }))
-            .filter(n => n.timestamp < lastNotifTimestamp)
-            .sort((a, b) => b.timestamp - a.timestamp);
-        }
-        if (newNotifs.length === 0) {
-          allLoadedNotifs = true;
-          tempItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No more notifications</p>';
-        } else {
-          tempItem.remove();
-          const oldestTimestamp = Math.min(...newNotifs.map(n => n.timestamp));
-          lastNotifTimestamp = oldestTimestamp;
-          for (let notif of newNotifs) {
-            const item = document.createElement('div');
-            item.className = 'notification-item';
-            item.onclick = async () => {
-              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-                try {
-                  const statusRef = ref(db, `statuses/${notif.statusId}`);
-                  const statusSnap = await get(statusRef);
-                  const status = statusSnap.val();
-                  if (status && status.userId) {
-                    window.currentStatusFilter = status.userId;
-                  }
-                } catch (e) {
-                  console.error('Failed to fetch status for notification:', e);
-                }
-                switchTab('status', null);
-              }
-            };
-            let icon = 'notifications';
-            let text = '';
-            let fromName = 'Someone';
-            if (notif.fromUserId) {
-              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-              const user = userSnap.val();
-              fromName = user ? user.displayName : 'Someone';
-            }
-            switch (notif.type) {
-              case 'like':
-                icon = 'favorite';
-                text = `${fromName} liked your status`;
-                break;
-              case 'comment':
-              case 'reply':
-                icon = 'chat_bubble';
-                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-                break;
-              case 'tag':
-                icon = 'tag';
-                text = `${fromName} tagged you in a status`;
-                break;
-              case 'verified':
-                icon = 'verified';
-                text = 'Congratulations! Your account is now verified';
-                break;
-              case 'username_change':
-                icon = 'edit';
-                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-                break;
-            }
-            item.innerHTML = `
-              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
-              <div class="notification-info">
-                <div class="notification-title">${text}</div>
-                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
-              </div>
-              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
-            `;
-            list.appendChild(item);
-          }
-        }
-      } catch (error) {
-        console.error('Error loading more notifications:', error);
-        tempItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Failed to load more</p>';
-      } finally {
-        isLoadingMoreNotifs = false;
-      }
-    }
-
-    async function loadNotifications(silent = false) {
-      if (!silent) showSpinner();
-      const section = document.getElementById('notifications-section');
-      section.innerHTML = `
-        <div class="section-title">
-          <span class="material-icons" style="font-size: 24px;">notifications</span>
-          Notifications
-        </div>
-        <div class="chat-list" id="notifications-list"></div>
-      `;
-      const list = document.getElementById('notifications-list');
-      list.innerHTML = '';
-      if (currentUser) {
-        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
-        const queryRef = query(notifsRef, orderByChild('timestamp'), limitToLast(20));
-        const snap = await get(queryRef);
-        let notifs = [];
-        if (snap.exists()) {
-          notifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
-          if (notifs.length > 0) {
-            lastNotifTimestamp = Math.min(...notifs.map(n => n.timestamp));
-          }
-        }
-        if (notifs.length === 0) {
-          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
-        } else {
-          for (let notif of notifs) {
-            const item = document.createElement('div');
-            item.className = 'notification-item';
-            item.onclick = async () => {
-              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-                try {
-                  const statusRef = ref(db, `statuses/${notif.statusId}`);
-                  const statusSnap = await get(statusRef);
-                  const status = statusSnap.val();
-                  if (status && status.userId) {
-                    window.currentStatusFilter = status.userId;
-                  }
-                } catch (e) {
-                  console.error('Failed to fetch status for notification:', e);
-                }
-                switchTab('status', null);
-              }
-            };
-            let icon = 'notifications';
-            let text = '';
-            let fromName = 'Someone';
-            if (notif.fromUserId) {
-              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-              const user = userSnap.val();
-              fromName = user ? user.displayName : 'Someone';
-            }
-            switch (notif.type) {
-              case 'like':
-                icon = 'favorite';
-                text = `${fromName} liked your status`;
-                break;
-              case 'comment':
-              case 'reply':
-                icon = 'chat_bubble';
-                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-                break;
-              case 'tag':
-                icon = 'tag';
-                text = `${fromName} tagged you in a status`;
-                break;
-              case 'verified':
-                icon = 'verified';
-                text = 'Congratulations! Your account is now verified';
-                break;
-              case 'username_change':
-                icon = 'edit';
-                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-                break;
-            }
-            item.innerHTML = `
-              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
-              <div class="notification-info">
-                <div class="notification-title">${text}</div>
-                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
-              </div>
-              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
-            `;
-            list.appendChild(item);
-          }
-          setupNotifInfiniteScroll(list);
-        }
-      }
-      const desktopList = document.getElementById('notifications-list-desktop');
-      if (desktopList) {
-        desktopList.innerHTML = list.innerHTML;
-        desktopList.querySelectorAll('.notification-item').forEach(item => {
-          item.onclick = null;
-        });
-      }
-      if (!silent) hideSpinner();
-    }
-
     async function loadStatuses(containerId, mode = 'carousel', silent = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
@@ -3148,14 +2996,29 @@
                       origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
                     }
                     let origMediaHtml = '';
-                    let origProgressHtml = '';
                     if (original.mediaUrl) {
                       const oncontext = 'oncontextmenu="return false;"';
                       if (original.type === 'image') {
                         origMediaHtml = `<div class="status-post-media-container"><img src="${original.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
                       } else if (original.type === 'video') {
-                        origMediaHtml = `<div class="status-post-media-container"><div class="video-container"><video src="${original.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video><div class="video-overlay"><button class="play-again-btn" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.play();"><span class="material-icons">replay</span>Play Again</button></div></div></div>`;
-                        origProgressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
+                        origMediaHtml = `<div class="status-post-media-container">
+                          <div class="video-container">
+                            <video src="${original.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                            <div class="video-controls">
+                              <button class="play-pause-btn material-icons">play_arrow</button>
+                              <div class="progress-container">
+                                <div class="progress-fill"></div>
+                              </div>
+                              <button class="volume-btn material-icons">volume_up</button>
+                            </div>
+                            <div class="video-overlay">
+                              <button class="play-again-btn" onclick="playVideoAgain(this)">
+                                <span class="material-icons">replay</span>Play Again
+                              </button>
+                              <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                            </div>
+                          </div>
+                        </div>`;
                       }
                     }
                     const embedded = `
@@ -3163,7 +3026,6 @@
                         ${origHeader}
                         ${origContentHtml}
                         ${origMediaHtml}
-                        ${origProgressHtml}
                       </div>
                     `;
                     let repostCaptionHtml = '';
@@ -3235,7 +3097,6 @@
                   }
                   let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
                   let mediaHtml = '';
-                  let progressHtml = '';
                   if (status.mediaUrl) {
                     const oncontext = 'oncontextmenu="return false;"';
                     if (status.type === 'image') {
@@ -3244,15 +3105,21 @@
                       mediaHtml = `<div class="status-post-media-container">
                         <div class="video-container">
                           <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                          <div class="video-controls">
+                            <button class="play-pause-btn material-icons">play_arrow</button>
+                            <div class="progress-container">
+                              <div class="progress-fill"></div>
+                            </div>
+                            <button class="volume-btn material-icons">volume_up</button>
+                          </div>
                           <div class="video-overlay">
-                            <button class="play-again-btn" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.play();">
+                            <button class="play-again-btn" onclick="playVideoAgain(this)">
                               <span class="material-icons">replay</span>Play Again
                             </button>
                             <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
                           </div>
                         </div>
                       </div>`;
-                      progressHtml = `<div class="video-progress"><div class="progress-fill"></div></div>`;
                     }
                   }
                   let reposts = 0;
@@ -3293,7 +3160,6 @@
                     </div>
                     ${contentHtml}
                     ${mediaHtml}
-                    ${progressHtml}
                     <div class="status-actions">
                       <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
                       <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
@@ -3305,42 +3171,93 @@
                 postItem.innerHTML = innerHTML;
                 const videoEl = postItem.querySelector('video');
                 if (videoEl) {
-                  videoEl.controls = true; // Enable controls
+                  const playPauseBtn = postItem.querySelector('.play-pause-btn');
+                  const volumeBtn = postItem.querySelector('.volume-btn');
+                  const progressContainer = postItem.querySelector('.progress-container');
+                  const progressFill = postItem.querySelector('.progress-fill');
+                  const overlay = postItem.querySelector('.video-overlay');
+                  const controls = postItem.querySelector('.video-controls');
                   videoEl.playbackRate = 1;
                   videoEl.defaultPlaybackRate = 1;
-                  // Add event listeners for hiding controls after play
-                  const hideControls = () => {
-                    setTimeout(() => {
-                      if (!videoEl.paused) {
-                        videoEl.controls = false;
-                      }
-                    }, 3000);
-                  };
-                  videoEl.addEventListener('play', hideControls);
-                  videoEl.addEventListener('pause', () => { videoEl.controls = true; });
-                  videoEl.addEventListener('ended', () => { videoEl.controls = true; });
-                  videoEl.addEventListener('ended', () => {
-                    const overlay = videoEl.parentElement.querySelector('.video-overlay');
-                    if (overlay) overlay.style.display = 'flex';
+
+                  // Event listeners for video state
+                  videoEl.addEventListener('play', () => {
+                    playPauseBtn.innerHTML = 'pause';
+                    controls.classList.add('hidden');
+                    overlay.style.display = 'none';
                   });
-                  videoEl.addEventListener('click', () => {
+
+                  videoEl.addEventListener('pause', () => {
+                    playPauseBtn.innerHTML = 'play_arrow';
+                    controls.classList.remove('hidden');
+                  });
+
+                  videoEl.addEventListener('ended', () => {
+                    playPauseBtn.innerHTML = 'replay';
+                    controls.classList.remove('hidden');
+                    overlay.style.display = 'flex';
+                  });
+
+                  // Play/Pause button
+                  playPauseBtn.addEventListener('click', () => {
                     if (videoEl.paused) {
-                      videoEl.play();
+                      videoEl.play().catch(console.error);
                     } else {
                       videoEl.pause();
                     }
                   });
-                  const progressEl = postItem.querySelector('.video-progress');
-                  if (progressEl) {
-                    videoEl.addEventListener('loadedmetadata', () => {
-                      videoEl.addEventListener('timeupdate', () => {
-                        const fill = progressEl.querySelector('.progress-fill');
-                        if (fill && videoEl.duration) {
-                          fill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
-                        }
-                      });
+
+                  // Progress update and seek
+                  videoEl.addEventListener('loadedmetadata', () => {
+                    videoEl.addEventListener('timeupdate', () => {
+                      if (progressFill && videoEl.duration) {
+                        progressFill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+                      }
                     });
-                  }
+                  });
+
+                  progressContainer.addEventListener('click', (e) => {
+                    const rect = progressContainer.getBoundingClientRect();
+                    const pos = (e.clientX - rect.left) / rect.width;
+                    videoEl.currentTime = pos * videoEl.duration;
+                  });
+
+                  // Volume toggle
+                  let videoMuted = false;
+                  volumeBtn.addEventListener('click', () => {
+                    videoMuted = !videoMuted;
+                    videoEl.muted = videoMuted;
+                    volumeBtn.innerHTML = videoMuted ? 'volume_off' : 'volume_up';
+                  });
+
+                  // Show/hide controls on interaction
+                  let hideTimeout;
+                  const showControls = () => {
+                    controls.classList.remove('hidden');
+                    if (hideTimeout) clearTimeout(hideTimeout);
+                    if (!videoEl.paused) {
+                      hideTimeout = setTimeout(() => {
+                        controls.classList.add('hidden');
+                      }, 3000);
+                    }
+                  };
+
+                  const videoContainer = postItem.querySelector('.video-container');
+                  videoContainer.addEventListener('click', (e) => {
+                    if (e.target === videoEl || e.target.closest('.video-controls')) return;
+                    showControls();
+                  });
+
+                  videoContainer.addEventListener('touchstart', showControls);
+                  videoContainer.addEventListener('mouseenter', showControls);
+                  videoContainer.addEventListener('mouseleave', () => {
+                    if (!videoEl.paused) {
+                      hideTimeout = setTimeout(() => {
+                        controls.classList.add('hidden');
+                      }, 1000);
+                    }
+                  });
+
                   if (videoObserver) {
                     videoObserver.observe(videoEl);
                   }
@@ -3384,6 +3301,15 @@
         if (!silent) hideSpinner();
       }
     }
+
+    window.playVideoAgain = (btn) => {
+      const overlay = btn.closest('.video-overlay');
+      overlay.style.display = 'none';
+      const controls = overlay.previousElementSibling;
+      const video = controls.previousElementSibling;
+      video.currentTime = 0;
+      video.play().catch(console.error);
+    };
 
     function highlightContent(content) {
       let highlighted = content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
@@ -3807,6 +3733,100 @@
         showAlert('Failed to start chat.');
       }
     };
+
+    async function loadNotifications(silent = false) {
+      if (!silent) showSpinner();
+      const section = document.getElementById('notifications-section');
+      section.innerHTML = `
+        <div class="section-title">
+          <span class="material-icons" style="font-size: 24px;">notifications</span>
+          Notifications
+        </div>
+        <div class="chat-list" id="notifications-list"></div>
+      `;
+      const list = document.getElementById('notifications-list');
+      list.innerHTML = '';
+      if (currentUser) {
+        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
+        const snap = await get(notifsRef);
+        let notifs = [];
+        if (snap.exists()) {
+          notifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
+        }
+        if (notifs.length === 0) {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No notifications yet.</p>';
+        } else {
+          for (let notif of notifs) {
+            const item = document.createElement('div');
+            item.className = 'notification-item';
+            item.onclick = async () => {
+              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
+                try {
+                  const statusRef = ref(db, `statuses/${notif.statusId}`);
+                  const statusSnap = await get(statusRef);
+                  const status = statusSnap.val();
+                  if (status && status.userId) {
+                    window.currentStatusFilter = status.userId;
+                  }
+                } catch (e) {
+                  console.error('Failed to fetch status for notification:', e);
+                }
+                switchTab('status', null);
+              }
+            };
+            let icon = 'notifications';
+            let text = '';
+            let fromName = 'Someone';
+            if (notif.fromUserId) {
+              const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+              const user = userSnap.val();
+              fromName = user ? user.displayName : 'Someone';
+            }
+            switch (notif.type) {
+              case 'like':
+                icon = 'favorite';
+                text = `${fromName} liked your status`;
+                break;
+              case 'comment':
+              case 'reply':
+                icon = 'chat_bubble';
+                text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+                break;
+              case 'tag':
+                icon = 'tag';
+                text = `${fromName} tagged you in a status`;
+                break;
+              case 'verified':
+                icon = 'verified';
+                text = 'Congratulations! Your account is now verified';
+                break;
+              case 'username_change':
+                icon = 'edit';
+                text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+                break;
+            }
+            item.innerHTML = `
+              <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+              <div class="notification-info">
+                <div class="notification-title">${text}</div>
+                <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+              </div>
+              ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
+            `;
+            list.appendChild(item);
+          }
+        }
+      }
+      const desktopList = document.getElementById('notifications-list-desktop');
+      if (desktopList) {
+        desktopList.innerHTML = list.innerHTML;
+        desktopList.querySelectorAll('.notification-item').forEach(item => {
+          item.onclick = null;
+        });
+      }
+      if (!silent) hideSpinner();
+    }
 
     async function openUserStatuses(uid) {
       window.currentStatusFilter = uid;
@@ -4280,20 +4300,8 @@
       statusTime.textContent = formatTimestamp(status.timestamp);
       const currentVideoEl = document.getElementById('current-video');
       if (currentVideoEl) {
-        currentVideoEl.controls = true; // Enable controls
         currentVideoEl.playbackRate = 1;
         currentVideoEl.defaultPlaybackRate = 1;
-        // Add event listeners for hiding controls after play
-        const hideControls = () => {
-          setTimeout(() => {
-            if (!currentVideoEl.paused) {
-              currentVideoEl.controls = false;
-            }
-          }, 3000);
-        };
-        currentVideoEl.addEventListener('play', hideControls);
-        currentVideoEl.addEventListener('pause', () => { currentVideoEl.controls = true; });
-        currentVideoEl.addEventListener('ended', () => { currentVideoEl.controls = true; });
         currentVideo = currentVideoEl;
         const speakerBtn = document.getElementById('speaker-btn');
         speakerBtn.style.display = 'block';
@@ -5125,7 +5133,6 @@
       if (chatsListener) off(chatsListener);
       if (statusesListener) off(statusesListener);
       if (notificationsListener) off(notificationsListener);
-      if (notifObserver) notifObserver.disconnect();
       await auth.signOut();
       window.location.href = 'login.html';
     };
@@ -5230,13 +5237,6 @@
         toggleAIFab(true);
       } else {
         toggleAIFab(false);
-      }
-      // Re-setup infinite scroll for notifications if switching to tab
-      if (tab === 'notifications') {
-        const list = document.getElementById('notifications-list');
-        if (list) {
-          setupNotifInfiniteScroll(list);
-        }
       }
     }
 
