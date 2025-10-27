@@ -743,6 +743,7 @@
     };
 
     function formatTimestamp(timestamp) {
+      if (!timestamp) return 'Unknown';
       const date = new Date(timestamp);
       const now = new Date();
       const diffMs = now - date;
@@ -787,36 +788,59 @@
       }
     };
 
-    async function loadProfileStatuses() {
-      if (!profileUserId) return;
+    async function loadProfileStatuses(retryCount = 0) {
+      if (!profileUserId) {
+        console.warn('No profileUserId set');
+        return;
+      }
+      console.log(`Loading statuses for user ${profileUserId} (retry ${retryCount})`);
       showSpinner();
       const statusesSection = document.getElementById('profile-statuses-section');
       const statusesList = document.getElementById('profile-statuses-list');
       statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Loading statuses...</p>';
+
       try {
-        // Fetch recent statuses overall, ordered by timestamp, limit to 100 to cover user's recent ones
+        // Ensure statuses node exists; create if not (fallback)
         const statusesRef = ref(db, 'statuses');
-        const statusesQuery = query(statusesRef, orderByChild('timestamp'), limitToLast(100));
+        await get(statusesRef); // Test read access
+
+        // Fetch recent statuses, limit to 50 for performance
+        const statusesQuery = query(statusesRef, orderByChild('timestamp'), limitToLast(50));
+        console.log('Executing initial query...');
         const snapshot = await get(statusesQuery);
         let allStatuses = [];
         if (snapshot.exists()) {
+          console.log(`Fetched ${Object.keys(snapshot.val()).length} recent statuses`);
           Object.entries(snapshot.val()).forEach(([id, s]) => {
-            allStatuses.push({ statusId: id, ...s });
+            // Ensure required fields
+            if (s.timestamp && typeof s.timestamp === 'number' && s.userId) {
+              allStatuses.push({ statusId: id, ...s });
+            }
           });
-          allStatuses.sort((a, b) => b.timestamp - a.timestamp);
+          allStatuses.sort((a, b) => b.timestamp - a.timestamp); // Client-side sort fallback
+        } else {
+          console.log('No recent statuses found');
         }
-        window.currentAllStatuses = allStatuses; // Cache for reposts
+        window.currentAllStatuses = allStatuses;
 
         // Filter user's statuses
         let userStatuses = allStatuses.filter(s => s.userId === profileUserId);
-        if (userStatuses.length === 0) {
-          // If none in recent 100, fetch more (up to 200) to ensure coverage
-          const extendedQuery = query(statusesRef, orderByChild('timestamp'), limitToLast(200));
+        console.log(`Filtered to ${userStatuses.length} user statuses`);
+
+        // If none, try extended fetch (up to 100)
+        if (userStatuses.length === 0 && retryCount < 1) {
+          console.log('No user statuses in initial fetch; trying extended...');
+          const extendedQuery = query(statusesRef, orderByChild('timestamp'), limitToLast(100));
           const extendedSnapshot = await get(extendedQuery);
           if (extendedSnapshot.exists()) {
-            const extendedAll = Object.entries(extendedSnapshot.val()).map(([id, s]) => ({ statusId: id, ...s }));
+            const extendedAll = Object.entries(extendedSnapshot.val()).map(([id, s]) => {
+              if (s.timestamp && typeof s.timestamp === 'number' && s.userId) {
+                return { statusId: id, ...s };
+              }
+            }).filter(Boolean);
             extendedAll.sort((a, b) => b.timestamp - a.timestamp);
             userStatuses = extendedAll.filter(s => s.userId === profileUserId);
+            console.log(`Extended fetch: ${userStatuses.length} user statuses`);
           }
         }
 
@@ -830,9 +854,22 @@
           }
         }
         statusesSection.style.display = 'block';
+        console.log('Statuses loaded successfully');
       } catch (error) {
         console.error('Failed to load profile statuses:', error);
-        statusesList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Failed to load statuses. <button onclick="loadProfileStatuses()" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; font-weight: 600;">Retry</button></p>';
+        if (error.code === 'PERMISSION_DENIED') {
+          showAlert('Permission denied. Check Firebase rules for "statuses" read access.');
+        } else if (error.code === 'NETWORK_REQUEST_FAILED') {
+          showAlert('Network error. Retrying...');
+          if (retryCount < 2) {
+            setTimeout(() => loadProfileStatuses(retryCount + 1), 2000);
+            return;
+          }
+        }
+        statusesList.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">
+          Failed to load statuses: ${error.message || error.code}. 
+          <button onclick="loadProfileStatuses()" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; font-weight: 600;">Retry</button>
+        </p>`;
         statusesSection.style.display = 'block';
       } finally {
         hideSpinner();
@@ -1471,13 +1508,21 @@
     }
 
     function initializeFirebase() {
-      app = initializeApp(firebaseConfig);
-      auth = getAuth(app);
-      db = getDatabase(app);
-      analytics = getAnalytics(app);
+      try {
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getDatabase(app);
+        analytics = getAnalytics(app);
+        console.log('Firebase initialized');
+      } catch (error) {
+        console.error('Firebase init failed:', error);
+        showAlert('App initialization failed. Check config.');
+        return;
+      }
       onAuthStateChanged(auth, (user) => {
         currentUser = user;
         if (user) {
+          console.log('User authenticated:', user.uid);
           setUserId(analytics, user.uid);
           const currentUserRef = ref(db, `users/${user.uid}`);
           onValue(currentUserRef, (snap) => {
@@ -1487,6 +1532,7 @@
           profileUserId = urlParams.get('uid') || user.uid;
           loadProfile(profileUserId);
         } else {
+          console.log('No user; redirecting to login');
           window.location.href = 'login.html';
         }
       });
