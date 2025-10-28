@@ -341,6 +341,33 @@
       padding: 16px 0;
       border-bottom: 1px solid var(--border);
     }
+    .reply-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 0;
+    }
+    .reply-item .comment-avatar {
+      width: 32px;
+      height: 32px;
+      font-size: 14px;
+    }
+    .reply-item .comment-author {
+      font-size: 14px;
+    }
+    .reply-item .comment-time {
+      font-size: 11px;
+    }
+    .reply-item .comment-text {
+      font-size: 14px;
+      margin: 0;
+      color: var(--text-primary);
+    }
+    .replies-container {
+      margin-left: 52px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
     .comment-avatar {
       width: 40px;
       height: 40px;
@@ -371,6 +398,20 @@
       color: var(--text-primary);
       display: flex;
       align-items: center;
+    }
+    .reply-btn {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      padding: 0 4px;
+      opacity: 0.8;
+      transition: opacity 0.2s;
+    }
+    .reply-btn:hover {
+      opacity: 1;
+      color: var(--bbm-red);
     }
     .comment-time {
       font-size: 12px;
@@ -561,6 +602,12 @@
       <!-- Comments loaded here -->
     </div>
     <div class="comment-input-container">
+      <div id="replying-indicator" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; color: var(--text-secondary);">
+          <span>Replying to <span id="reply-user" style="font-weight: 600; color: var(--text-primary);"></span></span>
+          <button onclick="cancelReply()" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; padding: 0;">Cancel</button>
+        </div>
+      </div>
       <div style="display: flex; gap: 12px; align-items: center;">
         <input type="text" id="new-comment-input" class="new-comment-input" placeholder="Add a comment...">
         <button class="post-comment-btn" onclick="postComment()">Post</button>
@@ -595,6 +642,8 @@
 
     let app, auth, db, currentUser, currentUserData;
     let currentStatusId = null;
+    let currentReplyTo = null;
+    let currentReplyUser = null;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -630,6 +679,32 @@
       if (diffHr < 24) return `${diffHr}h`;
       return `${diffDay}d`;
     }
+
+    function updateInputUI() {
+      const indicator = document.getElementById('replying-indicator');
+      const input = document.getElementById('new-comment-input');
+      if (currentReplyTo) {
+        indicator.style.display = 'block';
+        document.getElementById('reply-user').textContent = currentReplyUser;
+        input.placeholder = 'Write a reply...';
+      } else {
+        indicator.style.display = 'none';
+        input.placeholder = 'Add a comment...';
+      }
+    }
+
+    window.setReplyTo = (id, name) => {
+      currentReplyTo = id;
+      currentReplyUser = name;
+      updateInputUI();
+      document.getElementById('new-comment-input').focus();
+    };
+
+    window.cancelReply = () => {
+      currentReplyTo = null;
+      currentReplyUser = null;
+      updateInputUI();
+    };
 
     function setupCaptionToggle(descriptionEl) {
       const captionText = descriptionEl.querySelector('.caption-text');
@@ -859,6 +934,9 @@
       sheet.classList.remove('active');
       backdrop.classList.remove('active');
       document.getElementById('new-comment-input').value = '';
+      currentReplyTo = null;
+      currentReplyUser = null;
+      updateInputUI();
       currentStatusId = null;
     };
 
@@ -871,17 +949,29 @@
         const commentsList = document.getElementById('comments-list');
         commentsList.innerHTML = '';
         if (snapshot.exists()) {
-          let comments = Object.entries(snapshot.val()).map(([id, c]) => ({ id, ...c }));
-          if (comments.length > 0) {
-            const userIds = [...new Set(comments.map(c => c.userId))];
-            const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
-            const userResults = await Promise.all(userPromises);
-            const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.snap]));
-            comments.forEach(comment => {
-              comment.user = userMap[comment.userId];
+          let comments = Object.entries(snapshot.val()).map(([id, data]) => ({
+            id,
+            ...data,
+            replies: data.replies ? Object.entries(data.replies).map(([rid, rdata]) => ({
+              id: rid,
+              ...rdata
+            })).sort((a, b) => a.timestamp - b.timestamp) : []
+          }));
+          comments.sort((a, b) => a.timestamp - b.timestamp);
+          const allUserIds = new Set([
+            ...comments.map(c => c.userId),
+            ...comments.flatMap(c => c.replies.map(r => r.userId))
+          ]);
+          const userIdsArray = [...allUserIds];
+          const userPromises = userIdsArray.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
+          const userResults = await Promise.all(userPromises);
+          const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.snap]));
+          comments.forEach(comment => {
+            comment.user = userMap[comment.userId];
+            comment.replies.forEach(reply => {
+              reply.user = userMap[reply.userId];
             });
-          }
-          comments.sort((a, b) => a.timestamp - b.timestamp); // oldest first
+          });
           if (comments.length === 0) {
             commentsList.innerHTML = '<div class="no-comments">No comments yet. Be the first to comment!</div>';
           } else {
@@ -901,14 +991,50 @@
               if (comment.user?.verified) {
                 authorHtml += verifiedIcon;
               }
+              let repliesHtml = '';
+              if (comment.replies && comment.replies.length > 0) {
+                repliesHtml = `<div class="replies-container">
+                  ${comment.replies.map(reply => {
+                    const replyDisplayName = reply.user?.displayName || reply.userName || 'User';
+                    const replyInitial = replyDisplayName[0].toUpperCase();
+                    const replyTime = formatTimestamp(reply.timestamp);
+                    let replyAvatarHtml = '';
+                    if (reply.user?.photoURL) {
+                      replyAvatarHtml = `<img src="${reply.user.photoURL}" alt="${replyDisplayName}" class="comment-avatar" loading="lazy">`;
+                    } else {
+                      replyAvatarHtml = `<div class="comment-avatar" style="font-size: 14px;">${replyInitial}</div>`;
+                    }
+                    let replyAuthorHtml = replyDisplayName;
+                    if (reply.user?.verified) {
+                      replyAuthorHtml += verifiedIcon;
+                    }
+                    return `
+                      <div class="reply-item">
+                        ${replyAvatarHtml}
+                        <div class="comment-content">
+                          <div class="comment-header">
+                            <span class="comment-author">${replyAuthorHtml}</span>
+                            <span class="comment-time">${replyTime}</span>
+                          </div>
+                          <p class="comment-text">${reply.content}</p>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>`;
+              }
               commentDiv.innerHTML = `
                 ${avatarHtml}
                 <div class="comment-content">
                   <div class="comment-header">
-                    <span class="comment-author">${authorHtml}</span>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <span class="comment-author">${authorHtml}</span>
+                      <button class="reply-btn" onclick="setReplyTo('${comment.id}', '${displayName}')">Reply</button>
+                    </div>
                     <span class="comment-time">${time}</span>
                   </div>
                   <p class="comment-text">${comment.content}</p>
+                  ${repliesHtml}
                 </div>
               `;
               commentsList.appendChild(commentDiv);
@@ -933,11 +1059,18 @@
         showAlert('Please enter a comment.');
         return;
       }
+      const isReply = !!currentReplyTo;
       try {
         showSpinner();
-        const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
-        const newCommentRef = push(commentsRef);
-        await set(newCommentRef, {
+        let newRef;
+        if (isReply) {
+          const replyRef = ref(db, `statuses/${currentStatusId}/comments/${currentReplyTo}/replies`);
+          newRef = push(replyRef);
+        } else {
+          const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
+          newRef = push(commentsRef);
+        }
+        await set(newRef, {
           userId: currentUser.uid,
           userName: currentUserData.displayName,
           content,
@@ -945,8 +1078,10 @@
         });
         input.value = '';
         await loadComments(currentStatusId);
-        updateCommentsCount(currentStatusId);
-        showAlert('Comment posted!');
+        if (isReply) {
+          cancelReply();
+        }
+        showAlert(isReply ? 'Reply posted!' : 'Comment posted!');
       } catch (error) {
         console.error('Error posting comment:', error);
         showAlert('Failed to post comment.');
