@@ -8,8 +8,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.21/dist/brain-browser.min.js"></script>
-  <!-- No Transformers.js needed for Vynix -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -270,6 +268,15 @@
       background: var(--bbm-red);
       border-radius: 4px;
     }
+    .error {
+      background: #fee;
+      color: #c33;
+      padding: 12px;
+      border-radius: 6px;
+      margin: 20px 0;
+      border-left: 4px solid #c33;
+      text-align: center;
+    }
     .retrain-notification {
       position: fixed;
       top: 20px;
@@ -308,7 +315,7 @@
 <body class="light">
   <!-- Loading Overlay -->
   <div id="loading-overlay" class="loading-overlay">
-    <div class="loading-text" id="loading-text">Initializing Vynix AI...</div>
+    <div class="loading-text" id="loading-text">Connecting to Vynix...</div>
     <progress id="model-progress" value="0" max="100"></progress>
     <div class="typing-indicator" style="margin-top: 20px;">
       <span class="typing-dot"></span>
@@ -322,29 +329,32 @@
     Vynix just got smarter! 🧠
   </div>
 
+  <!-- Error Message -->
+  <div id="error-message" class="error hidden"></div>
+
   <main class="main-content">
-    <button id="export-button" class="export-fab" title="Export Conversation">
+    <button id="export-button" class="export-fab hidden" title="Export Conversation">
       <span class="material-icons">download</span>
     </button>
-    <button id="new-conversation-button" class="new-chat-fab" title="New Conversation">
+    <button id="new-conversation-button" class="new-chat-fab hidden" title="New Conversation">
       <span class="material-icons">add</span>
     </button>
     <div class="welcome-container" id="welcome-container">
       <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>
-      Hey there, friend! Ready for a chat.
+      Hey there, friend! Ready for a chat with Vynix.
     </div>
     <div id="chat-messages"></div>
-    <div class="chat-input-container">
+    <div class="chat-input-container hidden" id="input-container">
       <div class="input-pill">
-        <input type="text" id="chat-input" placeholder="What's on your mind?" aria-label="Type your prompt">
+        <input type="text" id="user-input" placeholder="Type your message... (e.g., 'hello')" required>
       </div>
       <button id="send-button" class="send-btn material-icons">send</button>
     </div>
   </main>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-    import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, set, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -357,307 +367,178 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    const state = {
-      messages: [],  // Stores {role, content} for Vynix chat history
-      hasChatted: false,
-      conversationId: null,
-      systemPrompt: "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging.",
-      trainingData: []  // Local cache of training pairs from Firebase
-    };
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
 
     const elements = {
-      chatMessages: document.getElementById('chat-messages'),
-      chatInput: document.getElementById('chat-input'),
-      sendButton: document.getElementById('send-button'),
-      welcomeContainer: document.getElementById('welcome-container'),
-      newConversationButton: document.getElementById('new-conversation-button'),
-      exportButton: document.getElementById('export-button'),
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
       modelProgress: document.getElementById('model-progress'),
+      errorMessage: document.getElementById('error-message'),
+      welcomeContainer: document.getElementById('welcome-container'),
+      chatMessages: document.getElementById('chat-messages'),
+      userInput: document.getElementById('user-input'),
+      inputContainer: document.getElementById('input-container'),
+      sendButton: document.getElementById('send-button'),
+      newConversationButton: document.getElementById('new-conversation-button'),
+      exportButton: document.getElementById('export-button'),
       retrainNotification: document.getElementById('retrain-notification')
     };
 
-    let app, auth, db, currentUser;
-    let net;  // Brain.js neural network
-    let prevTrainingDataStr = '[]';  // For change detection
+    let currentUser;
+    let trainingData = {};
+    let hasChatted = false;
+    let messages = [];
 
-    function appendMessage(content, role, isTyping = false, isImage = false) {
-      const div = document.createElement('div');
-      div.className = `message ${role === 'user' ? 'user' : 'ai'}${isTyping ? ' processing' : ''}`;
+    function showError(msg) {
+      elements.errorMessage.textContent = msg;
+      elements.errorMessage.classList.remove('hidden');
+      setTimeout(() => elements.errorMessage.classList.add('hidden'), 5000);
+    }
+
+    function hideError() {
+      elements.errorMessage.classList.add('hidden');
+    }
+
+    function addMessage(content, isUser = false, isTyping = false) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `message ${isUser ? 'user' : 'ai'}${isTyping ? ' processing' : ''}`;
       if (isTyping) {
-        div.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
-      } else if (isImage) {
-        const img = document.createElement('img');
-        img.src = content;
-        img.alt = 'Uploaded image';
-        div.appendChild(img);
+        messageDiv.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
       } else {
-        div.textContent = content;
+        messageDiv.textContent = content;
       }
-      state.messages.push({ role, content: isTyping ? '' : content, isImage, timestamp: Date.now() });
-      if (role === 'assistant' && !isTyping) {
-        if ('vibrate' in navigator) navigator.vibrate(50);
-      }
-      elements.chatMessages.appendChild(div);
+      messages.push({ content, isUser });
+      elements.chatMessages.appendChild(messageDiv);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
-      return div;
+      return messageDiv;
+    }
+
+    function generateReply(userQuery) {
+      const loweredQuery = userQuery.toLowerCase().trim();
+
+      // Exact match search
+      for (const key in trainingData) {
+        const pair = trainingData[key];
+        if (pair && pair.q === loweredQuery) {
+          return pair.a;
+        }
+      }
+
+      // Simple fuzzy match
+      for (const key in trainingData) {
+        const pair = trainingData[key];
+        if (pair && (loweredQuery.includes(pair.q) || pair.q.includes(loweredQuery))) {
+          return pair.a + " (partial match)";
+        }
+      }
+
+      // Fallback
+      return "I'm not sure how to respond to that yet. Try something like 'hello'!";
+    }
+
+    async function sendMessage() {
+      const userQuery = elements.userInput.value.trim();
+      if (!userQuery) return;
+
+      addMessage(userQuery, true);
+      elements.userInput.value = '';
+      hasChatted = true;
+      elements.welcomeContainer.classList.add('hidden');
+      elements.exportButton.classList.remove('hidden');
+      elements.newConversationButton.classList.remove('hidden');
+
+      const tempMsg = addMessage('', false, true);
+      setTimeout(() => {
+        const reply = generateReply(userQuery);
+        tempMsg.textContent = reply;
+        tempMsg.classList.remove('processing');
+      }, 500 + Math.random() * 500);
+    }
+
+    function loadTrainingData() {
+      const trainingRef = ref(db, 'training_data');
+      onValue(trainingRef, (snapshot) => {
+        const data = snapshot.val();
+        trainingData = data || {};
+        console.log('Training data loaded:', Object.keys(trainingData).length + ' pairs');
+        elements.retrainNotification.classList.remove('hidden');
+        setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
+      }, (error) => {
+        showError('Failed to load training data: ' + error.message);
+        console.error('Load data error:', error);
+      });
+    }
+
+    function startNewConversation() {
+      messages = [];
+      elements.chatMessages.innerHTML = '';
+      elements.welcomeContainer.classList.remove('hidden');
+      hasChatted = false;
+      elements.exportButton.classList.add('hidden');
+      elements.newConversationButton.classList.add('hidden');
     }
 
     function exportConversation() {
-      if (state.messages.length === 0) {
-        alert('No conversation to export yet!');
-        return;
-      }
-      const exportData = {
-        exportTimestamp: new Date().toISOString(),
-        messages: state.messages.map(msg => ({
-          role: msg.role,
-          content: msg.content,
-          timestamp: new Date(msg.timestamp).toISOString(),
-          isImage: msg.isImage
-        }))
-      };
+      if (messages.length === 0) return;
+      const exportData = { messages };
       const jsonStr = JSON.stringify(exportData, null, 2);
       const blob = new Blob([jsonStr], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `vynix-conversation-${new Date().toISOString().split('T')[0]}.json`;
-      document.body.appendChild(a);
+      a.download = `vynix-chat-${Date.now()}.json`;
       a.click();
-      document.body.removeChild(a);
       URL.revokeObjectURL(url);
     }
 
-    async function saveConvoPair(input, output) {
-      if (!currentUser) return;
-      const convosRef = ref(db, 'ai_conversations');
-      const newPairRef = push(convosRef);
-      await set(newPairRef, {
-        userId: currentUser.uid,
-        input,
-        output,
-        timestamp: Date.now()
-      });
-      console.log('Saved Vynix AI convo pair:', { input, output });
-    }
+    elements.sendButton.addEventListener('click', sendMessage);
 
-    async function generateResponse(userPrompt) {
-      if (!net) {
-        return 'Hey! My brain is still booting up—give me a sec and try again! 😊';
-      }
-
-      // Use the trained LSTM to generate a response continuation
-      const seed = userPrompt.toLowerCase() + ' | ';
-      let generated = net.run(seed, 150);  // Generate up to 150 characters
-
-      // Simple cleanup: trim after next '|' if present, ensure it's a response
-      generated = generated.split('|')[0].trim().replace(/^\|/, '');
-      if (generated.length < 10 || generated === seed) {
-        generated = "That's cool! What's next on your mind?";
-      }
-      if (!generated.endsWith('.')) generated += '.';
-      return generated.substring(0, 300);
-    }
-
-    async function getAIResponse(userPrompt) {
-      if (!state.hasChatted) {
-        state.hasChatted = true;
-        elements.welcomeContainer.classList.add('hidden');
-      }
-      appendMessage(userPrompt, 'user');
-      const tempMsg = appendMessage('', 'assistant', true);
-      try {
-        const response = await generateResponse(userPrompt);
-        tempMsg.textContent = response;
-        tempMsg.classList.remove('processing');
-        // Update the last message in state
-        const lastMsg = state.messages[state.messages.length - 1];
-        lastMsg.content = response;
-        lastMsg.role = 'assistant';
-        
-        await saveConvoPair(userPrompt, response);
-      } catch (error) {
-        const fallback = 'Oops, let\'s try something else!';
-        tempMsg.textContent = fallback;
-        tempMsg.classList.remove('processing');
-        const lastMsg = state.messages[state.messages.length - 1];
-        lastMsg.content = fallback;
-        lastMsg.role = 'assistant';
-        console.error('Vynix AI Response Error:', error);
-      }
-    }
-
-    function startNewConversation() {
-      state.messages = [];
-      elements.chatMessages.innerHTML = '';
-      elements.welcomeContainer.classList.remove('hidden');
-      state.hasChatted = false;
-      state.conversationId = null;
-    }
-
-    function showRetrainNotification() {
-      elements.retrainNotification.classList.remove('hidden');
-      setTimeout(() => {
-        elements.retrainNotification.classList.add('hidden');
-      }, 3000);
-    }
-
-    async function retrainModel(trainingData) {
-      const trainingText = trainingData.map(pair => `${pair.q} | ${pair.a}`).join(' || ');
-
-      // Show loading overlay briefly for retraining
-      elements.loadingOverlay.classList.remove('hidden');
-      elements.loadingText.textContent = 'Retraining Vynix brain in real-time...';
-      elements.modelProgress.value = 30;
-
-      try {
-        // Retrain the LSTM recurrent network from scratch (for small datasets)
-        net = new brain.recurrent.LSTM();
-        const trainingOptions = {
-          iterations: 200,
-          log: false,
-          logPeriod: 50,
-          learningRate: 0.8
-        };
-        net.train([trainingText], trainingOptions);
-
-        elements.modelProgress.value = 100;
-        elements.loadingText.textContent = 'Retraining complete!';
-        console.log('Vynix AI retrained successfully!');
-        showRetrainNotification();
-      } catch (error) {
-        console.error('Retraining failed:', error);
-        elements.loadingText.textContent = 'Retraining hiccup—try again soon.';
-      }
-
-      // Hide overlay after a short delay
-      setTimeout(() => {
-        elements.loadingOverlay.classList.add('hidden');
-      }, 1500);
-    }
-
-    function setupRealTimeTrainingListener() {
-      if (!db) return;
-      const trainingRef = ref(db, 'training_data');
-      onValue(trainingRef, (snapshot) => {
-        const prevStr = prevTrainingDataStr;
-        const data = snapshot.val();
-        let newData = [];
-        if (data) {
-          newData = Object.values(data).filter(pair => pair && pair.q && pair.a);
-        }
-        state.trainingData = newData;
-        const currStr = JSON.stringify(state.trainingData);
-
-        if (currStr !== prevStr) {
-          prevTrainingDataStr = currStr;
-          console.log('Training data updated (' + newData.length + ' pairs), triggering real-time retrain...');
-
-          if (newData.length > 0) {
-            retrainModel(newData);
-          } else {
-            // Fallback training if no data
-            const fallbackData = [
-              {q: "hello", a: "Hi! What's up?"},
-              {q: "how are you", a: "I'm buzzing with energy! You?"},
-              {q: "what's your name", a: "I'm Vynix, your BBM buddy!"},
-              {q: "bye", a: "Catch you later! Stay awesome."},
-              {q: "tell me a joke", a: "Why did the smartphone go to therapy? It had too many app-issues!"},
-              {q: "what is ai", a: "AI is like a super smart friend who learns from everything. Cool, right?"},
-              {q: "thanks", a: "No prob! Anytime."},
-              {q: "help", a: "Just chat away! I'm here for fun convos."},
-              {q: "weather", a: "Can't check outside, but hope it's sunny for you!"},
-              {q: "music", a: "Love tunes! What's your jam?"},
-              {q: "good morning", a: "Morning! Rise and shine, buddy."},
-              {q: "what's new", a: "Just chilling in the digital world. Spill yours!"},
-              {q: "i'm bored", a: "Let's fix that—tell me a story or ask for a riddle!"},
-              {q: "love you", a: "Aww, right back at ya! You're awesome."},
-              {q: "stop", a: "Got it, pausing the vibes. Hit me up anytime."}
-            ];
-            retrainModel(fallbackData);
-          }
-        }
-      });
-    }
-
-    async function initializeAIModel() {
-      try {
-        elements.loadingText.textContent = 'Setting up real-time training listener...';
-        elements.modelProgress.value = 20;
-
-        // Setup the real-time listener, which will trigger initial training
-        setupRealTimeTrainingListener();
-
-        // Wait for initial data load and training
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        elements.loadingText.textContent = 'Vynix AI ready to chat!';
-        elements.modelProgress.value = 100;
-        console.log('Vynix AI initialized with real-time retraining enabled!');
-      } catch (error) {
-        elements.loadingText.textContent = 'Init hiccup—chat will load on demand.';
-        elements.modelProgress.value = 100;
-        net = null;
-        console.error('Vynix AI init failed:', error);
-      }
-    }
-
-    async function initializeFirebase() {
-      app = initializeApp(firebaseConfig);
-      auth = getAuth(app);
-      db = getDatabase(app);
-
-      // Sign in anonymously for read/write access
-      try {
-        await signInAnonymously(auth);
-        console.log('Signed in anonymously');
-      } catch (error) {
-        console.error('Anonymous sign-in failed:', error);
-      }
-
-      await initializeAIModel();
-
-      onAuthStateChanged(auth, (user) => {
-        currentUser = user;
-        if (user) {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Vynix AI ready for chat.`;
-        } else {
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for more features.`;
-        }
-        elements.chatInput.disabled = false;
-        elements.sendButton.disabled = false;
-        setTimeout(() => {
-          elements.loadingOverlay.classList.add('hidden');
-        }, 500);
-      });
-    }
-
-    elements.exportButton.addEventListener('click', exportConversation);
-
-    elements.sendButton.addEventListener('click', async () => {
-      const prompt = elements.chatInput.value.trim();
-      if (!prompt) return;
-      elements.chatInput.value = '';
-      elements.chatInput.focus();
-      await getAIResponse(prompt);
-    });
-
-    elements.chatInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        elements.sendButton.click();
-      }
+    elements.userInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') sendMessage();
     });
 
     elements.newConversationButton.addEventListener('click', startNewConversation);
 
-    window.addEventListener('beforeunload', () => {});
+    elements.exportButton.addEventListener('click', exportConversation);
 
-    document.addEventListener('DOMContentLoaded', () => {
-      elements.loadingOverlay.classList.remove('hidden');
-      initializeFirebase();
+    onAuthStateChanged(auth, (user) => {
+      currentUser = user;
+      if (user) {
+        elements.loadingText.textContent = 'Connected! Loading Vynix...';
+        elements.modelProgress.value = 50;
+        loadTrainingData();
+        setTimeout(() => {
+          elements.loadingOverlay.classList.add('hidden');
+          elements.inputContainer.classList.remove('hidden');
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hi! I'm Vynix, your trained companion. Ask me something!`;
+        }, 1500);
+      } else {
+        elements.loadingText.textContent = 'Not connected. <button class="btn" onclick="signInAnonymously()">Connect Anonymously</button>';
+      }
     });
+
+    window.signInAnonymously = async function() {
+      try {
+        await signInAnonymously(auth);
+      } catch (error) {
+        showError('Connection failed: ' + error.message);
+      }
+    };
+
+    window.signOutUser = async function() {
+      try {
+        await signOut(auth);
+      } catch (error) {
+        showError('Disconnect failed: ' + error.message);
+      }
+    };
+
+    // Initial load
+    elements.loadingOverlay.classList.remove('hidden');
+    elements.loadingText.textContent = 'Initializing...';
+    elements.modelProgress.value = 0;
   </script>
 </body>
 </html>
