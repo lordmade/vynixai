@@ -270,6 +270,20 @@
       background: var(--bbm-red);
       border-radius: 4px;
     }
+    .retrain-notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: var(--bbm-red);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 20px;
+      box-shadow: var(--shadow-md);
+      z-index: 100;
+      animation: slideIn 0.3s ease-out;
+      font-family: 'Orbitron', monospace;
+      font-weight: 700;
+    }
     @media (min-width: 1024px) {
       .chat-input-container {
         margin: 0;
@@ -301,6 +315,11 @@
       <span class="typing-dot"></span>
       <span class="typing-dot"></span>
     </div>
+  </div>
+
+  <!-- Retrain Notification -->
+  <div id="retrain-notification" class="retrain-notification hidden">
+    Vynix just got smarter! 🧠
   </div>
 
   <main class="main-content">
@@ -355,11 +374,13 @@
       exportButton: document.getElementById('export-button'),
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
-      modelProgress: document.getElementById('model-progress')
+      modelProgress: document.getElementById('model-progress'),
+      retrainNotification: document.getElementById('retrain-notification')
     };
 
     let app, auth, db, currentUser;
     let net;  // Brain.js neural network
+    let prevTrainingDataStr = '[]';  // For change detection
 
     function appendMessage(content, role, isTyping = false, isImage = false) {
       const div = document.createElement('div');
@@ -448,8 +469,6 @@
       appendMessage(userPrompt, 'user');
       const tempMsg = appendMessage('', 'ai', true);
       try {
-        elements.loadingText.textContent = 'Thinking with Vynix brain...';
-        elements.modelProgress.value = 80;
         const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
@@ -458,7 +477,6 @@
         state.messages[state.messages.length - 1].role = 'ai';
         
         await saveConvoPair(userPrompt, response);
-        elements.modelProgress.value = 100;
       } catch (error) {
         const fallback = 'Oops, let\'s try something else!';
         tempMsg.textContent = fallback;
@@ -477,63 +495,23 @@
       state.conversationId = null;
     }
 
-    async function loadTrainingData() {
-      if (!db) return;
-      const trainingRef = ref(db, 'training_data');
-      onValue(trainingRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          state.trainingData = Object.values(data).filter(pair => pair && pair.q && pair.a);
-        } else {
-          state.trainingData = [];
-        }
-        console.log('Loaded training data:', state.trainingData.length, 'pairs');
-      }, { onlyOnce: true });
+    function showRetrainNotification() {
+      elements.retrainNotification.classList.remove('hidden');
+      setTimeout(() => {
+        elements.retrainNotification.classList.add('hidden');
+      }, 3000);
     }
 
-    async function initializeAIModel() {
+    async function retrainModel(trainingData) {
+      const trainingText = trainingData.map(pair => `${pair.q} | ${pair.a}`).join(' || ');
+
+      // Show loading overlay briefly for retraining
+      elements.loadingOverlay.classList.remove('hidden');
+      elements.loadingText.textContent = 'Retraining Vynix brain in real-time...';
+      elements.modelProgress.value = 30;
+
       try {
-        elements.loadingText.textContent = 'Connecting to Vynix...';
-        elements.modelProgress.value = 20;
-
-        // Load training data from Firebase
-        await loadTrainingData();
-
-        // Wait a bit for data to load
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        let trainingText = '';
-        if (state.trainingData.length === 0) {
-          // Fallback to initial hardcoded data (not saved to DB, as training is external)
-          const fallbackData = [
-            {q: "hello", a: "Hi! What's up?"},
-            {q: "how are you", a: "I'm buzzing with energy! You?"},
-            {q: "what's your name", a: "I'm Vynix, your BBM buddy!"},
-            {q: "bye", a: "Catch you later! Stay awesome."},
-            {q: "tell me a joke", a: "Why did the smartphone go to therapy? It had too many app-issues!"},
-            {q: "what is ai", a: "AI is like a super smart friend who learns from everything. Cool, right?"},
-            {q: "thanks", a: "No prob! Anytime."},
-            {q: "help", a: "Just chat away! I'm here for fun convos."},
-            {q: "weather", a: "Can't check outside, but hope it's sunny for you!"},
-            {q: "music", a: "Love tunes! What's your jam?"},
-            {q: "good morning", a: "Morning! Rise and shine, buddy."},
-            {q: "what's new", a: "Just chilling in the digital world. Spill yours!"},
-            {q: "i'm bored", a: "Let's fix that—tell me a story or ask for a riddle!"},
-            {q: "love you", a: "Aww, right back at ya! You're awesome."},
-            {q: "stop", a: "Got it, pausing the vibes. Hit me up anytime."}
-          ];
-          state.trainingData = fallbackData;
-          trainingText = fallbackData.map(pair => `${pair.q.toLowerCase()} | ${pair.a}`).join(' || ');
-          console.log('Using fallback training data');
-        } else {
-          trainingText = state.trainingData.map(pair => `${pair.q} | ${pair.a}`).join(' || ');
-          console.log('Using Firebase training data');
-        }
-
-        elements.loadingText.textContent = 'Training Vynix brain from Firebase data...';
-        elements.modelProgress.value = 50;
-
-        // Train the LSTM recurrent network
+        // Retrain the LSTM recurrent network from scratch (for small datasets)
         net = new brain.recurrent.LSTM();
         const trainingOptions = {
           iterations: 200,
@@ -543,9 +521,79 @@
         };
         net.train([trainingText], trainingOptions);
 
+        elements.modelProgress.value = 100;
+        elements.loadingText.textContent = 'Retraining complete!';
+        console.log('Vynix AI retrained successfully!');
+        showRetrainNotification();
+      } catch (error) {
+        console.error('Retraining failed:', error);
+        elements.loadingText.textContent = 'Retraining hiccup—try again soon.';
+      }
+
+      // Hide overlay after a short delay
+      setTimeout(() => {
+        elements.loadingOverlay.classList.add('hidden');
+      }, 1500);
+    }
+
+    function setupRealTimeTrainingListener() {
+      if (!db) return;
+      const trainingRef = ref(db, 'training_data');
+      onValue(trainingRef, (snapshot) => {
+        const prevStr = prevTrainingDataStr;
+        const data = snapshot.val();
+        let newData = [];
+        if (data) {
+          newData = Object.values(data).filter(pair => pair && pair.q && pair.a);
+        }
+        state.trainingData = newData;
+        const currStr = JSON.stringify(state.trainingData);
+
+        if (currStr !== prevStr) {
+          prevTrainingDataStr = currStr;
+          console.log('Training data updated (' + newData.length + ' pairs), triggering real-time retrain...');
+
+          if (newData.length > 0) {
+            retrainModel(newData);
+          } else {
+            // Fallback training if no data
+            const fallbackData = [
+              {q: "hello", a: "Hi! What's up?"},
+              {q: "how are you", a: "I'm buzzing with energy! You?"},
+              {q: "what's your name", a: "I'm Vynix, your BBM buddy!"},
+              {q: "bye", a: "Catch you later! Stay awesome."},
+              {q: "tell me a joke", a: "Why did the smartphone go to therapy? It had too many app-issues!"},
+              {q: "what is ai", a: "AI is like a super smart friend who learns from everything. Cool, right?"},
+              {q: "thanks", a: "No prob! Anytime."},
+              {q: "help", a: "Just chat away! I'm here for fun convos."},
+              {q: "weather", a: "Can't check outside, but hope it's sunny for you!"},
+              {q: "music", a: "Love tunes! What's your jam?"},
+              {q: "good morning", a: "Morning! Rise and shine, buddy."},
+              {q: "what's new", a: "Just chilling in the digital world. Spill yours!"},
+              {q: "i'm bored", a: "Let's fix that—tell me a story or ask for a riddle!"},
+              {q: "love you", a: "Aww, right back at ya! You're awesome."},
+              {q: "stop", a: "Got it, pausing the vibes. Hit me up anytime."}
+            ];
+            retrainModel(fallbackData);
+          }
+        }
+      });
+    }
+
+    async function initializeAIModel() {
+      try {
+        elements.loadingText.textContent = 'Setting up real-time training listener...';
+        elements.modelProgress.value = 20;
+
+        // Setup the real-time listener, which will trigger initial training
+        setupRealTimeTrainingListener();
+
+        // Wait for initial data load and training
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
         elements.loadingText.textContent = 'Vynix AI ready to chat!';
         elements.modelProgress.value = 100;
-        console.log('Vynix AI initialized and trained from Firebase data!');
+        console.log('Vynix AI initialized with real-time retraining enabled!');
       } catch (error) {
         elements.loadingText.textContent = 'Init hiccup—chat will load on demand.';
         elements.modelProgress.value = 100;
