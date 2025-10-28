@@ -8,6 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.23/dist/brain-browser.min.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -390,6 +391,8 @@
     let trainingData = {};
     let hasChatted = false;
     let messages = [];
+    let net;  // The trained network
+    let vocab = [];  // Vocabulary for vectorization
 
     function showError(msg) {
       elements.errorMessage.textContent = msg;
@@ -415,7 +418,19 @@
       return messageDiv;
     }
 
-    function generateReply(userQuery) {
+    // Simple vectorizer function (bag-of-words style)
+    function vectorize(text, vocab) {
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+      const vec = new Array(vocab.length).fill(0);
+      words.forEach(word => {
+        const idx = vocab.indexOf(word);
+        if (idx > -1) vec[idx] = 1;  // One-hot like for presence
+      });
+      return vec;
+    }
+
+    // Fallback rule-based reply
+    function generateFallbackReply(userQuery) {
       const loweredQuery = userQuery.toLowerCase().trim();
 
       // Exact match search
@@ -436,6 +451,18 @@
 
       // Fallback
       return "I'm not sure how to respond to that yet. Try something like 'hello'!";
+    }
+
+    function generateReply(userQuery) {
+      if (!net) return generateFallbackReply(userQuery);
+      
+      const queryVec = vectorize(userQuery, vocab);
+      const output = net.run(queryVec);  // Returns { "0": 0.95, "1": 0.02, ... } probabilities
+      
+      // Find highest prob response
+      const bestId = Object.keys(output).reduce((a, b) => output[a] > output[b] ? a : b);
+      const bestPair = trainingData[bestId];
+      return bestPair ? bestPair.a : generateFallbackReply(userQuery);
     }
 
     async function sendMessage() {
@@ -459,9 +486,33 @@
     function loadTrainingData() {
       const trainingRef = ref(db, 'training_data');
       onValue(trainingRef, (snapshot) => {
-        const data = snapshot.val();
-        trainingData = data || {};
-        console.log('Training data loaded:', Object.keys(trainingData).length + ' pairs');
+        const data = snapshot.val() || {};
+        trainingData = data;
+        
+        // Build vocab from all queries
+        vocab = [...new Set(Object.values(data).flatMap(pair => pair ? pair.q.toLowerCase().split(/\s+/) : []))];
+        
+        // Prepare training examples: {input: queryVec, output: {responseId: 1}} where responseId indexes answers
+        const trainingExamples = Object.entries(data).map(([id, pair]) => {
+          if (!pair || !pair.q) return null;
+          return {
+            input: vectorize(pair.q, vocab),
+            output: { [id]: 1 }  // One-hot output for multi-class (each Q&A pair is a "class")
+          };
+        }).filter(Boolean);
+        
+        if (trainingExamples.length > 0) {
+          // Train the net
+          net = new brain.NeuralNetwork({ hiddenLayers: [3] });  // Simple architecture; tune as needed
+          net.train(trainingExamples, { iterations: 20000, log: true, logPeriod: 1000 });
+          
+          console.log(`Trained on ${trainingExamples.length} examples with vocab size ${vocab.length}`);
+          elements.retrainNotification.textContent = `Vynix retrained on ${trainingExamples.length} patterns! 🧠`;
+        } else {
+          console.log('No training data available.');
+          elements.retrainNotification.textContent = 'Vynix is ready, but needs training data! 📚';
+        }
+        
         elements.retrainNotification.classList.remove('hidden');
         setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
       }, (error) => {
