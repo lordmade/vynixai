@@ -111,34 +111,6 @@
       margin-top: 10px;
       box-shadow: var(--shadow-md);
     }
-    .message-content {
-      margin-bottom: 8px;
-    }
-    .reactions {
-      display: flex;
-      gap: 8px;
-      opacity: 0;
-      transition: opacity 0.3s ease;
-    }
-    .message.ai:hover .reactions,
-    .message.ai .reaction-active {
-      opacity: 1;
-    }
-    .reaction-btn {
-      background: none;
-      border: none;
-      font-size: 18px;
-      cursor: pointer;
-      padding: 4px;
-      border-radius: 50%;
-      transition: background 0.2s ease;
-      color: var(--text-secondary);
-    }
-    .reaction-btn:hover,
-    .reaction-btn.reaction-active {
-      background: rgba(212, 0, 0, 0.1);
-      color: var(--bbm-red);
-    }
     .typing-indicator {
       color: var(--bbm-red);
       font-style: italic;
@@ -233,7 +205,7 @@
     .send-btn svg {
       font-size: 20px;
     }
-    .new-chat-fab {
+    .new-chat-fab, .export-fab {
       position: fixed;
       bottom: 90px;
       background: var(--bbm-red);
@@ -250,9 +222,14 @@
       z-index: 100;
       transition: all 0.3s ease;
       font-size: 28px;
+    }
+    .new-chat-fab {
       right: 20px;
     }
-    .new-chat-fab:hover {
+    .export-fab {
+      left: 20px;
+    }
+    .new-chat-fab:hover, .export-fab:hover {
       background: #b30000;
       box-shadow: var(--glow);
       transform: scale(1.1);
@@ -341,6 +318,10 @@
         bottom: 90px;
         right: 20px;
       }
+      .export-fab {
+        bottom: 90px;
+        left: 20px;
+      }
     }
   </style>
 </head>
@@ -365,6 +346,9 @@
   <div id="error-message" class="error hidden"></div>
 
   <main class="main-content">
+    <button id="export-button" class="export-fab hidden" title="Export Conversation">
+      <span class="material-icons">download</span>
+    </button>
     <button id="new-conversation-button" class="new-chat-fab hidden" title="New Conversation">
       <span class="material-icons">add</span>
     </button>
@@ -383,7 +367,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, set, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -411,6 +395,7 @@
       inputContainer: document.getElementById('input-container'),
       sendButton: document.getElementById('send-button'),
       newConversationButton: document.getElementById('new-conversation-button'),
+      exportButton: document.getElementById('export-button'),
       retrainNotification: document.getElementById('retrain-notification')
     };
 
@@ -429,67 +414,18 @@
       elements.errorMessage.classList.add('hidden');
     }
 
-    function addMessage(content, isUser = false, isTyping = false, messageId = null) {
+    function addMessage(content, isUser = false, isTyping = false) {
       const messageDiv = document.createElement('div');
       messageDiv.className = `message ${isUser ? 'user' : 'ai'}${isTyping ? ' processing' : ''}`;
-      messageDiv.dataset.messageId = messageId || Date.now().toString();
       if (isTyping) {
         messageDiv.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
       } else {
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-        contentDiv.textContent = content;
-        messageDiv.appendChild(contentDiv);
-
-        if (!isUser) {
-          const reactionsDiv = document.createElement('div');
-          reactionsDiv.className = 'reactions';
-          const thumbsUpBtn = document.createElement('button');
-          thumbsUpBtn.className = 'reaction-btn';
-          thumbsUpBtn.innerHTML = '👍';
-          thumbsUpBtn.onclick = () => handleReaction(messageDiv.dataset.messageId, 'thumbs_up');
-          const thumbsDownBtn = document.createElement('button');
-          thumbsDownBtn.className = 'reaction-btn';
-          thumbsDownBtn.innerHTML = '👎';
-          thumbsDownBtn.onclick = () => handleReaction(messageDiv.dataset.messageId, 'thumbs_down');
-          reactionsDiv.appendChild(thumbsUpBtn);
-          reactionsDiv.appendChild(thumbsDownBtn);
-          messageDiv.appendChild(reactionsDiv);
-        }
+        messageDiv.textContent = content;
       }
-      messages.push({ content, isUser, id: messageDiv.dataset.messageId });
+      messages.push({ content, isUser });
       elements.chatMessages.appendChild(messageDiv);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
       return messageDiv;
-    }
-
-    async function handleReaction(messageId, reaction) {
-      if (!currentUser) return;
-      const messageDiv = document.querySelector(`[data-message-id="${messageId}"]`);
-      if (!messageDiv) return;
-
-      // Update UI
-      const reactionBtns = messageDiv.querySelectorAll('.reaction-btn');
-      reactionBtns.forEach(btn => btn.classList.remove('reaction-active'));
-      const selectedBtn = Array.from(reactionBtns).find(btn => 
-        (reaction === 'thumbs_up' && btn.innerHTML === '👍') ||
-        (reaction === 'thumbs_down' && btn.innerHTML === '👎')
-      );
-      if (selectedBtn) {
-        selectedBtn.classList.add('reaction-active');
-      }
-
-      // Save to Firebase
-      try {
-        const feedbackRef = ref(db, `feedback/${currentUser.uid}/${messageId}`);
-        await set(feedbackRef, {
-          reaction,
-          timestamp: Date.now()
-        });
-        console.log('Feedback saved:', { messageId, reaction });
-      } catch (error) {
-        console.error('Failed to save feedback:', error);
-      }
     }
 
     function generateReply(userQuery) {
@@ -523,12 +459,13 @@
       elements.userInput.value = '';
       hasChatted = true;
       elements.welcomeContainer.classList.add('hidden');
+      elements.exportButton.classList.remove('hidden');
       elements.newConversationButton.classList.remove('hidden');
 
       const tempMsg = addMessage('', false, true);
       setTimeout(() => {
         const reply = generateReply(userQuery);
-        tempMsg.querySelector('.message-content').textContent = reply;
+        tempMsg.textContent = reply;
         tempMsg.classList.remove('processing');
       }, 500 + Math.random() * 500);
     }
@@ -552,7 +489,21 @@
       elements.chatMessages.innerHTML = '';
       elements.welcomeContainer.classList.remove('hidden');
       hasChatted = false;
+      elements.exportButton.classList.add('hidden');
       elements.newConversationButton.classList.add('hidden');
+    }
+
+    function exportConversation() {
+      if (messages.length === 0) return;
+      const exportData = { messages };
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `vynix-chat-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
     }
 
     elements.sendButton.addEventListener('click', sendMessage);
@@ -562,6 +513,8 @@
     });
 
     elements.newConversationButton.addEventListener('click', startNewConversation);
+
+    elements.exportButton.addEventListener('click', exportConversation);
 
     onAuthStateChanged(auth, (user) => {
       currentUser = user;
@@ -575,7 +528,7 @@
           elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hi! I'm Vynix, your trained companion. Ask me something!`;
         }, 1500);
       } else {
-        elements.loadingText.innerHTML = 'Not connected. <button class="btn" onclick="signInAnonymously()" style="background: var(--bbm-red); color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Connect Anonymously</button>';
+        elements.loadingText.textContent = 'Not connected. <button class="btn" onclick="signInAnonymously()">Connect Anonymously</button>';
       }
     });
 
