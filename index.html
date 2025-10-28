@@ -1569,6 +1569,7 @@
       height: auto;
       box-shadow: var(--shadow-md);
       transition: all 0.3s ease;
+      position: relative;
     }
     .status-post:hover {
       box-shadow: var(--glow);
@@ -2741,18 +2742,27 @@
       document.getElementById('emoji-picker').style.display = 'none';
     };
 
-    // Status Search Feature
+    // Enhanced Status Search Feature
     document.getElementById('status-search-input')?.addEventListener('input', (e) => {
       statusSearchTerm = e.target.value.toLowerCase();
       loadFriendStatuses(true); // Silent reload with filter
     });
 
+    function extractHashtags(content) {
+      return (content || '').match(/#(\w+)/g) || [];
+    }
+
     function filterStatuses(statuses) {
       if (!statusSearchTerm) return statuses;
-      return statuses.filter(s => 
-        s.content?.toLowerCase().includes(statusSearchTerm) ||
-        s.user?.displayName?.toLowerCase().includes(statusSearchTerm)
-      );
+      return statuses.filter(s => {
+        const contentLower = s.content?.toLowerCase() || '';
+        const displayNameLower = s.user?.displayName?.toLowerCase() || '';
+        const hashtags = extractHashtags(s.content);
+        const hashtagLower = hashtags.map(h => h.toLowerCase()).join(' ');
+        return contentLower.includes(statusSearchTerm) ||
+               displayNameLower.includes(statusSearchTerm) ||
+               hashtagLower.includes(statusSearchTerm);
+      });
     }
 
     function playNotificationSound() {
@@ -2939,6 +2949,60 @@
       }
     };
 
+    // Long press detection for edit
+    function setupLongPress(postItem, statusId) {
+      let pressTimer;
+      let startX, startY;
+      const LONG_PRESS_TIME = 500; // ms
+
+      const handleLongPress = () => {
+        editStatus(statusId);
+      };
+
+      const clearPressTimer = () => {
+        if (pressTimer) {
+          clearTimeout(pressTimer);
+          pressTimer = null;
+        }
+      };
+
+      // Touch events for mobile
+      postItem.addEventListener('touchstart', (e) => {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        pressTimer = setTimeout(handleLongPress, LONG_PRESS_TIME);
+      });
+
+      postItem.addEventListener('touchmove', (e) => {
+        const deltaX = Math.abs(e.touches[0].clientX - startX);
+        const deltaY = Math.abs(e.touches[0].clientY - startY);
+        if (deltaX > 10 || deltaY > 10) {
+          clearPressTimer();
+        }
+      });
+
+      postItem.addEventListener('touchend', clearPressTimer);
+      postItem.addEventListener('touchcancel', clearPressTimer);
+
+      // Mouse events for desktop
+      postItem.addEventListener('mousedown', (e) => {
+        startX = e.clientX;
+        startY = e.clientY;
+        pressTimer = setTimeout(handleLongPress, LONG_PRESS_TIME);
+      });
+
+      postItem.addEventListener('mousemove', (e) => {
+        const deltaX = Math.abs(e.clientX - startX);
+        const deltaY = Math.abs(e.clientY - startY);
+        if (deltaX > 10 || deltaY > 10) {
+          clearPressTimer();
+        }
+      });
+
+      postItem.addEventListener('mouseup', clearPressTimer);
+      postItem.addEventListener('mouseleave', clearPressTimer);
+    }
+
     async function loadStatuses(containerId, mode = 'carousel', silent = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
@@ -3084,10 +3148,9 @@
                 let innerHTML = '';
                 let aiTargetId = status.statusId;
                 let deleteHtml = '';
-                let editHtml = '';
+                // Removed editHtml - now using long press
                 if (status.userId === currentUser.uid) {
                   deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
-                  editHtml = `<span onclick="editStatus('${status.statusId}')"><span class="material-icons">edit</span></span>`;
                 }
                 if (status.type === 'repost') {
                   const original = window.currentAllStatuses.find(s => s.statusId === status.originalId);
@@ -3213,7 +3276,6 @@
                         <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
                         <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> ${reposts}</span>
                         ${deleteHtml}
-                        ${editHtml}
                       </div>
                     `;
                   } else {
@@ -3233,7 +3295,6 @@
                         <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> 0</span>
                         <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> 0</span>
                         ${deleteHtml}
-                        ${editHtml}
                       </div>
                     `;
                   }
@@ -3319,11 +3380,14 @@
                       <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
                       <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
                       ${deleteHtml}
-                      ${editHtml}
                     </div>
                   `;
                 }
                 postItem.innerHTML = innerHTML;
+                // Setup long press for edit if it's the user's status
+                if (status.userId === currentUser.uid && status.type !== 'repost') {
+                  setupLongPress(postItem, status.statusId);
+                }
                 const videoEl = postItem.querySelector('video');
                 if (videoEl) {
                   const playPauseBtn = postItem.querySelector('.play-pause-btn');
