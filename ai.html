@@ -337,11 +337,6 @@
       measurementId: "G-V4W97VMSKL"
     };
 
-    // TODO: Securely load your Grok API key (e.g., fetch from a backend proxy endpoint like '/api/grok-key' 
-    // to avoid client-side exposure. For local dev, you can temporarily hardcode but NEVER commit it!
-    // Get your key from https://console.x.ai/ and follow best practices from earlier discussion.
-    const GROK_API_KEY = 'your-grok-api-key-here';  // SECURITY: Replace with actual key; use proxy in production
-
     const state = {
       messages: [],  // Stores {role, content} for Vynix chat history
       hasChatted: false,
@@ -425,55 +420,42 @@
     }
 
     async function generateResponse(userPrompt) {
-      if (!GROK_API_KEY || GROK_API_KEY === 'your-grok-api-key-here') {
-        throw new Error('Grok API key not set! Get one from https://console.x.ai/');
-      }
-
-      const historyLimit = 8;  // Limit history turns
+      // Build messages for Grok
+      const historyLimit = 8;
       const recentHistory = state.messages
-        .filter(msg => !msg.isImage && msg.role !== 'system')  // Exclude system, images
+        .filter(msg => !msg.isImage && msg.role !== 'system')
         .slice(-historyLimit)
         .map(msg => ({
-          role: msg.role === 'ai' ? 'assistant' : msg.role,  // Map 'ai' to 'assistant' for Grok
+          role: msg.role === 'ai' ? 'assistant' : msg.role,
           content: msg.content
         }));
 
-      // Build messages for Grok: System first, then history, then user
       const messages = [
         { role: 'system', content: state.systemPrompt },
         ...recentHistory,
         { role: 'user', content: userPrompt }
       ];
 
-      const url = 'https://api.x.ai/v1/chat/completions';
+      // Call Vercel proxy (update URL after deploy, e.g., https://your-project.vercel.app/api/chat)
+      const functionUrl = '/api/chat';  // Relative path—works on same domain after deploy
 
       try {
-        const response = await fetch(url, {
+        const response = await fetch(functionUrl, {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${GROK_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: 'grok-3',  // Use 'grok-3' or 'grok-3-mini-beta' for faster/cheaper
-            messages,
-            max_tokens: 300,
-            temperature: 0.7,
-            top_p: 0.8
-          })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages })
         });
 
         if (!response.ok) {
-          throw new Error(`Grok API error: ${response.status} ${response.statusText}`);
+          throw new Error(`Proxy error: ${response.status} ${response.statusText}`);
         }
 
         const result = await response.json();
-        const generatedText = result.choices?.[0]?.message?.content || '';
-        let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
+        let responseText = result.content;
         if (responseText && !responseText.endsWith('.')) responseText += '.';
         return responseText.substring(0, 300);
       } catch (error) {
-        console.error('Grok Generation Error:', error);
+        console.error('Proxy Generation Error:', error);
         return 'Hey! Sorry, my connection to the AI hive mind is glitchy—try that again? 😊';
       }
     }
@@ -491,7 +473,7 @@
         const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
-        // Update the last message in state (map back to 'ai' for consistency)
+        // Update the last message in state
         state.messages[state.messages.length - 1].content = response;
         state.messages[state.messages.length - 1].role = 'ai';
         
