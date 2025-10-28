@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Vynix AI - BBM Edition</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- No Firebase needed -->
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <!-- No Transformers.js needed for Vynix -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -318,14 +321,31 @@
       <button id="send-button" class="send-btn material-icons">send</button>
     </div>
   </main>
-  <script>
-    // TODO: Replace with your actual Gemini API key from https://aistudio.google.com/app/apikey
-    // SECURITY: In production, use env vars or server proxy
-    const GEMINI_API_KEY = 'AIzaSyBwyXsC5O54CpxNRiEFCSOJj0tXC768rhM';
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+    import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+    import { getDatabase, ref, set, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
+      authDomain: "fire-b-a8878.firebaseapp.com",
+      databaseURL: "https://fire-b-a8878.firebaseio.com",
+      projectId: "fire-b-a8878",
+      storageBucket: "fire-b-a8878.firebasestorage.app",
+      messagingSenderId: "658673187627",
+      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
+      measurementId: "G-V4W97VMSKL"
+    };
+
+    // TODO: Securely load your Grok API key (e.g., fetch from a backend proxy endpoint like '/api/grok-key' 
+    // to avoid client-side exposure. For local dev, you can temporarily hardcode but NEVER commit it!
+    // Get your key from https://console.x.ai/ and follow best practices from earlier discussion.
+    const GROK_API_KEY = 'your-grok-api-key-here';  // SECURITY: Replace with actual key; use proxy in production
 
     const state = {
-      messages: [],  // Stores {role, content} for Gemini chat history
+      messages: [],  // Stores {role, content} for Vynix chat history
       hasChatted: false,
+      conversationId: null,
       systemPrompt: "You are Vynix AI, a friendly BBM-inspired companion. Keep responses fun, concise, and engaging."
     };
 
@@ -340,6 +360,8 @@
       loadingText: document.getElementById('loading-text'),
       modelProgress: document.getElementById('model-progress')
     };
+
+    let app, auth, db, currentUser;
 
     function appendMessage(content, role, isTyping = false, isImage = false) {
       const div = document.createElement('div');
@@ -389,53 +411,69 @@
       URL.revokeObjectURL(url);
     }
 
+    async function saveConvoPair(input, output) {
+      if (!currentUser) return;
+      const convosRef = ref(db, 'ai_conversations');
+      const newPairRef = push(convosRef);
+      await set(newPairRef, {
+        userId: currentUser.uid,
+        input,
+        output,
+        timestamp: Date.now()
+      });
+      console.log('Saved Vynix AI convo pair:', { input, output });
+    }
+
     async function generateResponse(userPrompt) {
-      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY_HERE') {
-        throw new Error('Gemini API key not set! Get one from https://aistudio.google.com/app/apikey');
+      if (!GROK_API_KEY || GROK_API_KEY === 'your-grok-api-key-here') {
+        throw new Error('Grok API key not set! Get one from https://console.x.ai/');
       }
 
       const historyLimit = 8;  // Limit history turns
       const recentHistory = state.messages
         .filter(msg => !msg.isImage && msg.role !== 'system')  // Exclude system, images
         .slice(-historyLimit)
-        .map(msg => ({ role: msg.role, parts: [{ text: msg.content }] }));
+        .map(msg => ({
+          role: msg.role === 'ai' ? 'assistant' : msg.role,  // Map 'ai' to 'assistant' for Grok
+          content: msg.content
+        }));
 
-      // Build contents for Gemini: Start with system as first user message
-      const contents = [
-        { role: 'user', parts: [{ text: state.systemPrompt }] },  // System as initial user
+      // Build messages for Grok: System first, then history, then user
+      const messages = [
+        { role: 'system', content: state.systemPrompt },
         ...recentHistory,
-        { role: 'user', parts: [{ text: userPrompt }] }
+        { role: 'user', content: userPrompt }
       ];
 
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`;
+      const url = 'https://api.x.ai/v1/chat/completions';
 
       try {
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${GROK_API_KEY}`
+          },
           body: JSON.stringify({
-            contents,
-            generationConfig: {
-              maxOutputTokens: 300,
-              temperature: 0.7,
-              topP: 0.8,
-              topK: 40,
-              candidateCount: 1
-            }
+            model: 'grok-3',  // Use 'grok-3' or 'grok-3-mini-beta' for faster/cheaper
+            messages,
+            max_tokens: 300,
+            temperature: 0.7,
+            top_p: 0.8
           })
         });
 
         if (!response.ok) {
-          throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+          throw new Error(`Grok API error: ${response.status} ${response.statusText}`);
         }
 
         const result = await response.json();
-        const generatedText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const generatedText = result.choices?.[0]?.message?.content || '';
         let responseText = generatedText.trim().replace(/<[^>]*>/g, '');  // Strip any HTML if present
         if (responseText && !responseText.endsWith('.')) responseText += '.';
         return responseText.substring(0, 300);
       } catch (error) {
-        console.error('Gemini Generation Error:', error);
+        console.error('Grok Generation Error:', error);
         return 'Hey! Sorry, my connection to the AI hive mind is glitchy—try that again? 😊';
       }
     }
@@ -446,23 +484,26 @@
         elements.welcomeContainer.classList.add('hidden');
       }
       appendMessage(userPrompt, 'user');
-      const tempMsg = appendMessage('', 'assistant', true);
+      const tempMsg = appendMessage('', 'ai', true);
       try {
         elements.loadingText.textContent = 'Querying Vynix...';
         elements.modelProgress.value = 80;
         const response = await generateResponse(userPrompt);
         tempMsg.textContent = response;
         tempMsg.classList.remove('processing');
-        // Update the last message in state
+        // Update the last message in state (map back to 'ai' for consistency)
         state.messages[state.messages.length - 1].content = response;
+        state.messages[state.messages.length - 1].role = 'ai';
         
+        await saveConvoPair(userPrompt, response);
         elements.modelProgress.value = 100;
       } catch (error) {
         const fallback = 'Oops, let\'s try something else!';
         tempMsg.textContent = fallback;
         tempMsg.classList.remove('processing');
         state.messages[state.messages.length - 1].content = fallback;
-        console.error('Gemini AI Response Error:', error);
+        state.messages[state.messages.length - 1].role = 'ai';
+        console.error('Vynix AI Response Error:', error);
       }
     }
 
@@ -471,6 +512,7 @@
       elements.chatMessages.innerHTML = '';
       elements.welcomeContainer.classList.remove('hidden');
       state.hasChatted = false;
+      state.conversationId = null;
     }
 
     async function initializeAIModel() {
@@ -487,14 +529,26 @@
       }
     }
 
-    // Simplified initialization without Firebase
-    async function initializeApp() {
+    async function initializeFirebase() {
+      app = initializeApp(firebaseConfig);
+      auth = getAuth(app);
+      db = getDatabase(app);
+
       await initializeAIModel();
-      elements.chatInput.disabled = false;
-      elements.sendButton.disabled = false;
-      setTimeout(() => {
-        elements.loadingOverlay.classList.add('hidden');
-      }, 500);
+
+      onAuthStateChanged(auth, (user) => {
+        currentUser = user;
+        if (user) {
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey ${user.displayName || 'friend'}! Vynix AI ready for chat.`;
+        } else {
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hey guest! Log in for more features.`;
+        }
+        elements.chatInput.disabled = false;
+        elements.sendButton.disabled = false;
+        setTimeout(() => {
+          elements.loadingOverlay.classList.add('hidden');
+        }, 500);
+      });
     }
 
     elements.exportButton.addEventListener('click', exportConversation);
@@ -519,7 +573,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       elements.loadingOverlay.classList.remove('hidden');
-      initializeApp();
+      initializeFirebase();
     });
   </script>
 </body>
