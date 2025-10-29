@@ -112,6 +112,46 @@
       margin-top: 10px;
       box-shadow: var(--shadow-md);
     }
+    .message-content {
+      margin-bottom: 8px;
+    }
+    .feedback-buttons {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-start;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .message:hover .feedback-buttons,
+    .feedback-buttons.visible {
+      opacity: 1;
+    }
+    .feedback-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 50%;
+      transition: all 0.2s ease;
+      color: var(--text-secondary);
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+    }
+    .feedback-btn:hover {
+      background: var(--border);
+      color: var(--bbm-red);
+      transform: scale(1.1);
+    }
+    .feedback-btn.liked {
+      color: #4caf50;
+    }
+    .feedback-btn.disliked {
+      color: #f44336;
+    }
     .typing-indicator {
       color: var(--bbm-red);
       font-style: italic;
@@ -356,7 +396,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -404,17 +444,65 @@
       elements.errorMessage.classList.add('hidden');
     }
 
-    function addMessage(content, isUser = false, isTyping = false) {
+    function logFeedback(messageId, feedback) {
+      if (!currentUser) return;
+      const feedbackRef = ref(db, `feedback/${currentUser.uid}/${messageId}`);
+      set(feedbackRef, { feedback, timestamp: Date.now(), reply: messages[messageId].content });
+      console.log(`Feedback logged: ${feedback} for message ${messageId}`);
+    }
+
+    function addMessage(content, isUser = false, isTyping = false, messageId = null) {
       const messageDiv = document.createElement('div');
       messageDiv.className = `message ${isUser ? 'user' : 'ai'}${isTyping ? ' processing' : ''}`;
+      messageDiv.dataset.messageId = messageId || Date.now().toString();
+
+      let innerHTML = '';
       if (isTyping) {
-        messageDiv.innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
+        innerHTML = '<div class="typing-indicator"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
       } else {
-        messageDiv.textContent = content;
+        innerHTML = `<div class="message-content">${content}</div>`;
+        if (!isUser) {
+          innerHTML += `
+            <div class="feedback-buttons">
+              <button class="feedback-btn" data-feedback="up" title="Thumbs Up">
+                <span class="material-icons">thumb_up</span>
+              </button>
+              <button class="feedback-btn" data-feedback="down" title="Thumbs Down">
+                <span class="material-icons">thumb_down</span>
+              </button>
+            </div>
+          `;
+        }
       }
+      messageDiv.innerHTML = innerHTML;
+
       messages.push({ content, isUser });
       elements.chatMessages.appendChild(messageDiv);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+
+      // Add event listeners for feedback buttons
+      if (!isUser && !isTyping) {
+        const upBtn = messageDiv.querySelector('[data-feedback="up"]');
+        const downBtn = messageDiv.querySelector('[data-feedback="down"]');
+        const msgId = messageDiv.dataset.messageId;
+
+        upBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          upBtn.classList.add('liked');
+          downBtn.classList.remove('disliked');
+          logFeedback(msgId, 'up');
+          setTimeout(() => upBtn.classList.add('visible'), 100); // Force visibility
+        });
+
+        downBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          downBtn.classList.add('disliked');
+          upBtn.classList.remove('liked');
+          logFeedback(msgId, 'down');
+          setTimeout(() => downBtn.classList.add('visible'), 100); // Force visibility
+        });
+      }
+
       return messageDiv;
     }
 
@@ -469,17 +557,21 @@
       const userQuery = elements.userInput.value.trim();
       if (!userQuery) return;
 
-      addMessage(userQuery, true);
+      const userMsgId = Date.now().toString() + '_user';
+      addMessage(userQuery, true, false, userMsgId);
       elements.userInput.value = '';
       hasChatted = true;
       elements.welcomeContainer.classList.add('hidden');
       elements.newConversationButton.classList.remove('hidden');
 
-      const tempMsg = addMessage('', false, true);
+      const aiMsgId = Date.now().toString() + '_ai';
+      const tempMsg = addMessage('', false, true, aiMsgId);
       setTimeout(() => {
         const reply = generateReply(userQuery);
-        tempMsg.textContent = reply;
+        tempMsg.querySelector('.message-content').textContent = reply;
         tempMsg.classList.remove('processing');
+        // Feedback buttons now visible after reply
+        tempMsg.querySelector('.feedback-buttons').classList.add('visible');
       }, 500 + Math.random() * 500);
     }
 
