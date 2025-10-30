@@ -242,6 +242,13 @@
       gap: 8px;
       text-shadow: 0 0 10px rgba(212, 0, 0, 0.3);
     }
+    #status-subtitle {
+      padding: 0 20px 10px;
+      color: var(--text-secondary);
+      font-size: 15px;
+      font-weight: 600;
+      display: none;
+    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
@@ -2421,19 +2428,43 @@
       </div>
     </div>
     <div class="tab-content active" id="status-tab" role="tabpanel">
-      <div class="section-title" id="status-section-title">
-        <span class="material-icons" style="font-size: 24px;">update</span>
-        Statuses
+      <div id="statuses-carousel" class="statuses-carousel"></div>
+      <div class="sub-tab-switcher">
+        <button class="sub-tab-item active" data-subtab="all" role="tab" aria-selected="true" aria-label="All Statuses">
+          <span class="material-icons" style="font-size: 18px;">all_inclusive</span>
+          All
+        </button>
+        <button class="sub-tab-item" data-subtab="images" role="tab" aria-selected="false" aria-label="Image Statuses">
+          <span class="material-icons" style="font-size: 18px;">image</span>
+          Images
+        </button>
+        <button class="sub-tab-item" data-subtab="text" role="tab" aria-selected="false" aria-label="Text Statuses">
+          <span class="material-icons" style="font-size: 18px;">text_fields</span>
+          Text
+        </button>
       </div>
+      <div id="status-subtitle"></div>
       <!-- New Feature: Status Search -->
       <div class="status-search-container" id="status-search-container" style="display: none;">
         <span class="material-icons" style="color: var(--text-secondary);">search</span>
         <input type="text" id="status-search-input" class="status-search-input" placeholder="Search statuses..." aria-label="Search statuses">
       </div>
-      <div id="statuses-list" class="status-list">
-        <button id="ai-fab" class="fab ai-fab" style="display: none;" onclick="redirectToAI()">AI</button>
-        <!-- Statuses loaded here as full cards -->
+      <div class="sub-tab-content active" id="sub-all-content">
+        <div id="statuses-list" class="status-list">
+          <!-- Statuses loaded here as full cards -->
+        </div>
       </div>
+      <div class="sub-tab-content" id="sub-images-content">
+        <div id="images-list" class="status-list">
+          <!-- Image statuses loaded here -->
+        </div>
+      </div>
+      <div class="sub-tab-content" id="sub-text-content">
+        <div id="text-list" class="status-list">
+          <!-- Text statuses loaded here -->
+        </div>
+      </div>
+      <button id="ai-fab" class="fab ai-fab" style="display: none;" onclick="redirectToAI()">AI</button>
     </div>
     <div class="tab-content" id="notifications-tab" role="tabpanel">
       <div class="notifications-section" id="notifications-section">
@@ -2693,6 +2724,7 @@
     let videoObserver = null;
     let viewedStatuses = new Set();
     let currentStatusFilter = null;
+    let currentStatusSubTab = 'all';
     let typingListeners = {};
     let prevNotifCount = 0;
     let allUsers = {};
@@ -2768,7 +2800,7 @@
     // Enhanced Status Search Feature
     document.getElementById('status-search-input')?.addEventListener('input', (e) => {
       statusSearchTerm = e.target.value.toLowerCase();
-      loadFriendStatuses(true); // Silent reload with filter
+      loadFilteredStatuses(currentStatusSubTab, true);
     });
 
     function extractHashtags(content) {
@@ -3026,7 +3058,7 @@
       postItem.addEventListener('mouseleave', clearPressTimer);
     }
 
-    async function loadStatuses(containerId, mode = 'carousel', silent = false) {
+    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
       if (statusesLoaded[loadKey] && silent) return;
@@ -3078,11 +3110,23 @@
           allStatuses.forEach(status => {
             status.user = recentStatusesByUser[status.userId]?.user;
           });
-          let sortedStatuses = allStatuses;
+          let userFiltered = allStatuses;
+          if (mode === 'list' && currentStatusFilter) {
+            userFiltered = allStatuses.filter(s => s.userId === currentStatusFilter);
+          }
+          let mediaFiltered = userFiltered;
+          if (mode === 'list' && filter) {
+            mediaFiltered = userFiltered.filter(s => {
+              if (filter === 'images') return s.mediaUrl && s.type === 'image';
+              if (filter === 'text') return !s.mediaUrl;
+              return true;
+            });
+          }
+          let sortedStatuses = mediaFiltered;
           if (mode === 'list') {
-            if (allStatuses.length > 0) {
-              const mostRecent = allStatuses.reduce((prev, current) => (prev.timestamp > current.timestamp ? prev : current));
-              const others = allStatuses.filter(s => s.statusId !== mostRecent.statusId);
+            if (mediaFiltered.length > 0) {
+              const mostRecent = mediaFiltered.reduce((prev, current) => (prev.timestamp > current.timestamp ? prev : current));
+              const others = mediaFiltered.filter(s => s.statusId !== mostRecent.statusId);
               others.sort(() => 0.5 - Math.random());
               sortedStatuses = [mostRecent, ...others];
             }
@@ -3090,6 +3134,17 @@
             sortedStatuses = filterStatuses(sortedStatuses);
           }
           window.currentAllStatuses = sortedStatuses;
+
+          const subtitle = document.getElementById('status-subtitle');
+          if (mode === 'list') {
+            if (currentStatusFilter && sortedStatuses.length > 0) {
+              const user = sortedStatuses[0].user;
+              subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
+              subtitle.style.display = 'block';
+            } else {
+              subtitle.style.display = 'none';
+            }
+          }
 
           const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
             .sort((a, b) => {
@@ -3110,7 +3165,7 @@
                 statusItem.className = 'status-item';
                 statusItem.onclick = () => {
                   window.currentStatusFilter = uid;
-                  switchTab('status', null);
+                  loadFilteredStatuses(currentStatusSubTab);
                 };
                 const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
                 let avatarHtml;
@@ -3134,28 +3189,13 @@
               }
             }
           } else if (mode === 'list') {
-            const titleEl = document.querySelector('#status-tab .section-title');
-            const searchContainer = document.getElementById('status-search-container');
-            let titleHtml = 'Statuses';
-            if (currentStatusFilter) {
-              const filteredStatuses = allStatuses.filter(s => s.userId === currentStatusFilter).sort((a, b) => b.timestamp - a.timestamp);
-              sortedStatuses = filteredStatuses;
-              if (sortedStatuses.length > 0) {
-                const user = sortedStatuses[0].user;
-                titleHtml = `${user?.displayName || 'Unknown'}'s Statuses <button onclick="clearStatusFilter()" style="background: none; border: none; color: var(--bbm-red); font-size: 15px; cursor: pointer; padding: 0 10px; margin-left: 12px; border-radius: 12px;">← All</button>`;
-              } else {
-                titleHtml = 'No statuses from this user';
-              }
-            }
-            if (statusSearchTerm) {
-              searchContainer.style.display = 'flex';
-              titleHtml += ` <span style="color: var(--text-secondary); font-size: 14px;">Searching for "${statusSearchTerm}"</span>`;
-            } else {
-              searchContainer.style.display = 'none';
-            }
-            titleEl.innerHTML = `<span class="material-icons" style="font-size: 24px;">update</span>${titleHtml}`;
             if (sortedStatuses.length === 0) {
-              container.innerHTML = statusSearchTerm ? '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses match your search.</p>' : '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
+              let msg = 'No statuses yet.';
+              if (filter === 'images') msg = 'No image statuses yet.';
+              else if (filter === 'text') msg = 'No text statuses yet.';
+              if (statusSearchTerm) msg = 'No statuses match your search.';
+              if (currentStatusFilter) msg = `No ${filter || 'statuses'} from this user.`;
+              container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">${msg}</p>`;
               if (!silent) hideSpinner();
               return;
             }
@@ -3530,7 +3570,7 @@
                 console.warn(`Failed to render status ${status.statusId}:`, statusError);
                 const postItem = document.createElement('div');
                 postItem.className = 'status-post';
-                postItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Error loading this status. <button onclick="loadFriendStatuses()" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; font-weight: 600;">Retry</button></p>';
+                postItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Error loading this status. <button onclick="loadFilteredStatuses(currentStatusSubTab)" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; font-weight: 600;">Retry</button></p>';
                 container.appendChild(postItem);
               }
             }
@@ -3545,6 +3585,29 @@
         if (!silent) hideSpinner();
       }
     }
+
+    async function loadFilteredStatuses(filter, silent = false) {
+      currentStatusSubTab = filter;
+      const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
+      await loadStatuses(containerId, 'list', silent, filter);
+    }
+
+    window.loadTopStatuses = async (silent = false) => {
+      await loadStatuses('statuses-carousel', 'carousel', silent);
+    };
+
+    window.loadFriendStatuses = async (silent = false) => {
+      await loadFilteredStatuses('all', silent);
+    };
+
+    window.clearStatusFilter = async () => {
+      currentStatusFilter = null;
+      statusSearchTerm = '';
+      document.getElementById('status-search-input').value = '';
+      document.getElementById('status-search-container').style.display = 'none';
+      document.getElementById('status-subtitle').style.display = 'none';
+      await loadFilteredStatuses(currentStatusSubTab);
+    };
 
     window.playVideoAgain = (btn) => {
       const overlay = btn.closest('.video-overlay');
@@ -3639,22 +3702,6 @@
         // Observer handles
       });
     }
-
-    async function loadTopStatuses(silent = false) {
-      loadStatuses('statuses-carousel', 'carousel', silent);
-    }
-
-    async function loadFriendStatuses(silent = false) {
-      loadStatuses('statuses-list', 'list', silent);
-    }
-
-    window.clearStatusFilter = () => {
-      currentStatusFilter = null;
-      statusSearchTerm = '';
-      document.getElementById('status-search-input').value = '';
-      document.getElementById('status-search-container').style.display = 'none';
-      loadFriendStatuses();
-    };
 
     async function updateChatsUI(snapshot) {
       const chatList = document.getElementById('chat-list');
@@ -3809,7 +3856,7 @@
       const statusesRef = ref(db, 'statuses');
       statusesListener = onValue(statusesRef, async (snapshot) => {
         if (document.getElementById('status-tab').classList.contains('active')) {
-          await loadStatuses('statuses-list', 'list', true);
+          await loadFilteredStatuses(currentStatusSubTab, true);
         }
       }, (error) => {
         console.error('Error listening to statuses:', error);
@@ -4127,7 +4174,7 @@
 
     async function openUserStatuses(uid) {
       window.currentStatusFilter = uid;
-      switchTab('status', null);
+      await loadFilteredStatuses(currentStatusSubTab);
     }
 
     function showAllStatuses() {
@@ -4315,7 +4362,7 @@
             }
           }
           showAlert('Status reposted!');
-          loadFriendStatuses();
+          loadFilteredStatuses(currentStatusSubTab);
         }
       } catch (error) {
         console.error('Error reposting status:', error);
@@ -4328,7 +4375,7 @@
         if (confirmed) {
           await set(ref(db, `statuses/${statusId}`), null);
           showAlert('Status deleted.');
-          loadFriendStatuses();
+          loadFilteredStatuses(currentStatusSubTab);
         }
       });
     };
@@ -4478,7 +4525,7 @@
           }
         }
         closeEditSheet();
-        loadFriendStatuses();
+        loadFilteredStatuses(currentStatusSubTab);
         showAlert('Status updated!');
       } catch (error) {
         console.error('Edit failed:', error);
@@ -4982,7 +5029,7 @@
           }
         }
         closeUploadSheet();
-        loadFriendStatuses();
+        loadFilteredStatuses(currentStatusSubTab);
         showAlert('Status uploaded!');
       } catch (error) {
         console.error('Upload failed:', error);
@@ -5659,7 +5706,8 @@
           if (tab === 'chats') {
             switchSubTab('chats', null);
           } else if (tab === 'status') {
-            loadFriendStatuses();
+            loadTopStatuses();
+            loadFilteredStatuses(currentStatusSubTab);
           }
         }
         const fab = document.getElementById('fab-btn');
@@ -5687,7 +5735,8 @@
           } else if (tab === 'status') {
             fab.innerHTML = `<span class="material-icons" style="font-size: 24px;">add</span>`;
             fab.onclick = openUploadSheet;
-            loadFriendStatuses();
+            loadTopStatuses();
+            loadFilteredStatuses(currentStatusSubTab);
           } else if (tab === 'notifications') {
             fab.style.display = 'none';
             loadNotifications();
@@ -5712,6 +5761,22 @@
         }
       }
     }
+
+    // Status sub-tab switcher
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('#status-tab .sub-tab-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          const subTab = e.currentTarget.dataset.subtab;
+          document.querySelectorAll('#status-tab .sub-tab-item').forEach(i => {
+            i.classList.toggle('active', i.dataset.subtab === subTab);
+            i.setAttribute('aria-selected', i.dataset.subtab === subTab);
+          });
+          document.querySelectorAll('#status-tab .sub-tab-content').forEach(c => c.classList.remove('active'));
+          document.getElementById(`sub-${subTab}-content`).classList.add('active');
+          loadFilteredStatuses(subTab);
+        });
+      });
+    });
 
     window.openRepostModal = (statusId) => {
       currentRepostStatusId = statusId;
@@ -5749,7 +5814,7 @@
           await set(repostCountRef, curr + 1);
           closeRepostSheet();
           showAlert(caption ? 'Reposted with caption!' : 'Reposted!');
-          loadFriendStatuses();
+          loadFilteredStatuses(currentStatusSubTab);
         }
       } catch (error) {
         console.error('Error reposting status:', error);
