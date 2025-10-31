@@ -2691,8 +2691,9 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off, query, orderByChild, limitToLast, endAt } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
+    import { query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -2750,12 +2751,6 @@
     let loadingMore = false;
     let currentEditStatusId = null;
     let currentEditMediaUrl = null;
-    let loadedAllStatuses = [];
-    let statusLastTimestamp = null;
-    let hasMoreAllStatuses = true;
-    const allStatusesPerPage = 10;
-    let renderedStatusIds = new Set();
-    let statusSentinelObserver = null;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -2815,15 +2810,9 @@
     };
 
     // Enhanced Status Search Feature
-    document.addEventListener('DOMContentLoaded', () => {
-      const searchInput = document.getElementById('status-search-input');
-      if (searchInput) {
-        searchInput.addEventListener('input', async (e) => {
-          statusSearchTerm = e.target.value.toLowerCase();
-          document.getElementById('status-search-container').style.display = statusSearchTerm ? 'flex' : 'none';
-          await loadFilteredStatuses(currentStatusSubTab, true);
-        });
-      }
+    document.getElementById('status-search-input')?.addEventListener('input', (e) => {
+      statusSearchTerm = e.target.value.toLowerCase();
+      loadFilteredStatuses(currentStatusSubTab, true);
     });
 
     function extractHashtags(content) {
@@ -3081,372 +3070,6 @@
       postItem.addEventListener('mouseleave', clearPressTimer);
     }
 
-    async function createStatusPost(status) {
-      if (!status.user) {
-        const userSnap = await get(ref(db, `users/${status.userId}`));
-        status.user = userSnap.val();
-      }
-      const postItem = document.createElement('div');
-      postItem.className = 'status-post';
-      postItem.setAttribute('data-status-id', status.statusId);
-      const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
-      let innerHTML = '';
-      let aiTargetId = status.statusId;
-      let deleteHtml = '';
-      if (status.userId === currentUser.uid) {
-        deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
-      }
-      if (status.type === 'repost') {
-        const original = window.currentAllStatuses.find(s => s.statusId === status.originalId);
-        if (original && original.user) {
-          const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
-          let avatarHtml;
-          if (status.user?.photoURL) {
-            avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
-          } else {
-            avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-          }
-          let nameHtml = status.user?.displayName || 'User';
-          if (status.user?.verified) {
-            nameHtml += verifiedIcon;
-          }
-          let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
-          const repostTime = formatTimestamp(status.timestamp);
-          const reposterHeader = `
-            <div class="status-post-header">
-              <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
-                ${avatarHtml}
-                <div class="status-post-user">
-                  <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
-                  ${businessHtml}
-                  <div class="status-post-time">${repostTime}</div>
-                </div>
-              </div>
-            </div>
-          `;
-          const origInitial = original.user?.displayName ? original.user.displayName[0].toUpperCase() : 'U';
-          let origAvatarHtml;
-          if (original.user?.photoURL) {
-            origAvatarHtml = `<img src="${original.user.photoURL}" alt="${original.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
-          } else {
-            origAvatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${origInitial}</div>`;
-          }
-          let origNameHtml = original.user?.displayName || 'User';
-          if (original.user?.verified) {
-            origNameHtml += verifiedIcon;
-          }
-          let origBusinessHtml = original.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
-          const origTime = formatTimestamp(original.timestamp);
-          const origHeader = `
-            <div class="status-post-header" style="margin-top: 8px;">
-              <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${original.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
-                ${origAvatarHtml}
-                <div class="status-post-user">
-                  <div class="status-post-user-name">${origNameHtml}</div>
-                  ${origBusinessHtml}
-                  <div class="status-post-time">${origTime}</div>
-                </div>
-              </div>
-            </div>
-          `;
-          let origContentHtml = '';
-          if (original.content) {
-            const highlightedOrigContent = highlightContent(original.content);
-            origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
-          }
-          let origMediaHtml = '';
-          if (original.mediaUrl) {
-            const oncontext = 'oncontextmenu="return false;"';
-            if (original.type === 'image') {
-              origMediaHtml = `<div class="status-post-media-container"><img src="${original.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
-            } else if (original.type === 'video') {
-              origMediaHtml = `<div class="status-post-media-container">
-                <div class="video-container">
-                  <video src="${original.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
-                  <div class="video-controls">
-                    <button class="play-pause-btn material-icons">play_arrow</button>
-                    <div class="progress-container">
-                      <div class="progress-fill"></div>
-                    </div>
-                    <button class="volume-btn material-icons">volume_up</button>
-                  </div>
-                  <div class="video-overlay">
-                    <button class="play-again-btn" onclick="playVideoAgain(this)">
-                      <span class="material-icons">replay</span>Play Again
-                    </button>
-                    <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
-                  </div>
-                </div>
-              </div>`;
-            }
-          }
-          const embedded = `
-            <div style="margin: 12px 0; padding: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px;">
-              ${origHeader}
-              ${origContentHtml}
-              ${origMediaHtml}
-            </div>
-          `;
-          let repostCaptionHtml = '';
-          if (status.content) {
-            const highlightedRepostContent = highlightContent(status.content);
-            repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
-          }
-          let reposts = status.reposts || 0;
-          let likes = 0;
-          let comments = 0;
-          let isLiked = false;
-          let likeIcon = 'favorite_border';
-          try {
-            const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
-            likes = Object.keys(likesSnap.val() || {}).length;
-            const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
-            comments = Object.keys(commentsSnap.val() || {}).length;
-            const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
-            const likeSnap = await get(likeRef);
-            isLiked = likeSnap.exists();
-            likeIcon = isLiked ? 'favorite' : 'favorite_border';
-          } catch (e) {
-            console.warn(`Failed to load counts for repost ${status.statusId}:`, e);
-          }
-          aiTargetId = original.statusId;
-          innerHTML = `
-            <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
-            ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
-            ${reposterHeader}
-            ${embedded}
-            ${repostCaptionHtml}
-            <div class="status-actions">
-              <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
-              <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
-              <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> ${reposts}</span>
-              ${deleteHtml}
-            </div>
-          `;
-        } else {
-          innerHTML = `
-            <button class="status-ai-btn" onclick="analyzeStatus('${status.statusId}')">AI</button>
-            ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
-            <div class="status-post-header">
-              ${avatarHtml}
-              <div class="status-post-user">
-                <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
-                ${businessHtml}
-                <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
-              </div>
-            </div>
-            <div class="status-post-content">Original post not available</div>
-            <div class="status-actions">
-              <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">favorite_border</span> 0</span>
-              <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> 0</span>
-              <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> 0</span>
-              ${deleteHtml}
-            </div>
-          `;
-        }
-      } else {
-        const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
-        let avatarHtml;
-        if (status.user?.photoURL) {
-          avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
-        } else {
-          avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-        }
-        let nameHtml = status.user?.displayName || 'User';
-        if (status.user?.verified) {
-          nameHtml += verifiedIcon;
-        }
-        let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
-        let mediaHtml = '';
-        if (status.mediaUrl) {
-          const oncontext = 'oncontextmenu="return false;"';
-          if (status.type === 'image') {
-            mediaHtml = `<div class="status-post-media-container"><img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
-          } else if (status.type === 'video') {
-            mediaHtml = `<div class="status-post-media-container">
-              <div class="video-container">
-                <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
-                <div class="video-controls">
-                  <button class="play-pause-btn material-icons">play_arrow</button>
-                  <div class="progress-container">
-                    <div class="progress-fill"></div>
-                  </div>
-                  <button class="volume-btn material-icons">volume_up</button>
-                </div>
-                <div class="video-overlay">
-                  <button class="play-again-btn" onclick="playVideoAgain(this)">
-                    <span class="material-icons">replay</span>Play Again
-                  </button>
-                  <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
-                </div>
-              </div>
-            </div>`;
-          }
-        }
-        let reposts = 0;
-        let likes = 0;
-        let comments = 0;
-        let isLiked = false;
-        let likeIcon = 'favorite_border';
-        try {
-          const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
-          reposts = repostsSnap.val() || 0;
-          const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
-          likes = Object.keys(likesSnap.val() || {}).length;
-          const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
-          comments = Object.keys(commentsSnap.val() || {}).length;
-          const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
-          const likeSnap = await get(likeRef);
-          isLiked = likeSnap.exists();
-          likeIcon = isLiked ? 'favorite' : 'favorite_border';
-        } catch (e) {
-          console.warn(`Failed to load counts for status ${status.statusId}:`, e);
-        }
-        let contentHtml = '';
-        if (status.content) {
-          const highlightedContent = highlightContent(status.content);
-          contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
-        }
-        innerHTML = `
-          <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
-          ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
-          <div class="status-post-header">
-            <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
-              ${avatarHtml}
-              <div class="status-post-user">
-                <div class="status-post-user-name">${nameHtml}</div>
-                ${businessHtml}
-                <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
-              </div>
-            </div>
-          </div>
-          ${contentHtml}
-          ${mediaHtml}
-          <div class="status-actions">
-            <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
-            <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
-            <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
-            ${deleteHtml}
-          </div>
-        `;
-      }
-      postItem.innerHTML = innerHTML;
-      // Setup long press for edit if it's the user's status
-      if (status.userId === currentUser.uid && status.type !== 'repost') {
-        setupLongPress(postItem, status.statusId);
-      }
-      const videoEl = postItem.querySelector('video');
-      if (videoEl) {
-        const playPauseBtn = postItem.querySelector('.play-pause-btn');
-        const volumeBtn = postItem.querySelector('.volume-btn');
-        const progressContainer = postItem.querySelector('.progress-container');
-        const progressFill = postItem.querySelector('.progress-fill');
-        const overlay = postItem.querySelector('.video-overlay');
-        const controls = postItem.querySelector('.video-controls');
-        videoEl.playbackRate = 1;
-        videoEl.defaultPlaybackRate = 1;
-
-        // Event listeners for video state
-        videoEl.addEventListener('play', () => {
-          playPauseBtn.innerHTML = 'pause';
-          controls.classList.add('hidden');
-          overlay.style.display = 'none';
-        });
-
-        videoEl.addEventListener('pause', () => {
-          playPauseBtn.innerHTML = 'play_arrow';
-          controls.classList.remove('hidden');
-        });
-
-        videoEl.addEventListener('ended', () => {
-          playPauseBtn.innerHTML = 'replay';
-          controls.classList.remove('hidden');
-          overlay.style.display = 'flex';
-        });
-
-        // Play/Pause button
-        playPauseBtn.addEventListener('click', () => {
-          if (videoEl.paused) {
-            videoEl.play().catch(console.error);
-          } else {
-            videoEl.pause();
-          }
-        });
-
-        // Progress update and seek
-        videoEl.addEventListener('loadedmetadata', () => {
-          videoEl.addEventListener('timeupdate', () => {
-            if (progressFill && videoEl.duration) {
-              progressFill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
-            }
-          });
-        });
-
-        progressContainer.addEventListener('click', (e) => {
-          const rect = progressContainer.getBoundingClientRect();
-          const pos = (e.clientX - rect.left) / rect.width;
-          videoEl.currentTime = pos * videoEl.duration;
-        });
-
-        // Volume toggle
-        let videoMuted = false;
-        volumeBtn.addEventListener('click', () => {
-          videoMuted = !videoMuted;
-          videoEl.muted = videoMuted;
-          volumeBtn.innerHTML = videoMuted ? 'volume_off' : 'volume_up';
-        });
-
-        // Show/hide controls on interaction
-        let hideTimeout;
-        const showControls = () => {
-          controls.classList.remove('hidden');
-          if (hideTimeout) clearTimeout(hideTimeout);
-          if (!videoEl.paused) {
-            hideTimeout = setTimeout(() => {
-              controls.classList.add('hidden');
-            }, 3000);
-          }
-        };
-
-        const videoContainer = postItem.querySelector('.video-container');
-        videoContainer.addEventListener('click', (e) => {
-          if (e.target === videoEl || e.target.closest('.video-controls')) return;
-          showControls();
-        });
-
-        videoContainer.addEventListener('touchstart', showControls);
-        videoContainer.addEventListener('mouseenter', showControls);
-        videoContainer.addEventListener('mouseleave', () => {
-          if (!videoEl.paused) {
-            hideTimeout = setTimeout(() => {
-              controls.classList.add('hidden');
-            }, 1000);
-          }
-        });
-
-        if (videoObserver) {
-          videoObserver.observe(videoEl);
-        }
-      }
-      if (!viewedStatuses.has(status.statusId)) {
-        const viewObserver = new IntersectionObserver((entries) => {
-          entries.forEach(entry => {
-            if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
-              const impRef = ref(db, `statuses/${status.statusId}/impressions`);
-              get(impRef).then(snap => {
-                const curr = snap.val() || 0;
-                set(impRef, curr + 1);
-              });
-              viewedStatuses.add(status.statusId);
-              viewObserver.unobserve(postItem);
-            }
-          });
-        }, { threshold: 0.5 });
-        viewObserver.observe(postItem);
-      }
-      return postItem;
-    }
-
     async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
@@ -3591,8 +3214,368 @@
             viewedStatuses.clear();
             for (let i = 0; i < sortedStatuses.length; i++) {
               const status = sortedStatuses[i];
+              const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
               try {
-                const postItem = await createStatusPost(status);
+                const postItem = document.createElement('div');
+                postItem.className = 'status-post';
+                postItem.setAttribute('data-status-id', status.statusId);
+                let innerHTML = '';
+                let aiTargetId = status.statusId;
+                let deleteHtml = '';
+                // Removed editHtml - now using long press
+                if (status.userId === currentUser.uid) {
+                  deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
+                }
+                if (status.type === 'repost') {
+                  const original = window.currentAllStatuses.find(s => s.statusId === status.originalId);
+                  if (original && original.user) {
+                    const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
+                    let avatarHtml;
+                    if (status.user?.photoURL) {
+                      avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                    } else {
+                      avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                    }
+                    let nameHtml = status.user?.displayName || 'User';
+                    if (status.user?.verified) {
+                      nameHtml += verifiedIcon;
+                    }
+                    let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+                    const repostTime = formatTimestamp(status.timestamp);
+                    const reposterHeader = `
+                      <div class="status-post-header">
+                        <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                          ${avatarHtml}
+                          <div class="status-post-user">
+                            <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
+                            ${businessHtml}
+                            <div class="status-post-time">${repostTime}</div>
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                    const origInitial = original.user?.displayName ? original.user.displayName[0].toUpperCase() : 'U';
+                    let origAvatarHtml;
+                    if (original.user?.photoURL) {
+                      origAvatarHtml = `<img src="${original.user.photoURL}" alt="${original.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                    } else {
+                      origAvatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${origInitial}</div>`;
+                    }
+                    let origNameHtml = original.user?.displayName || 'User';
+                    if (original.user?.verified) {
+                      origNameHtml += verifiedIcon;
+                    }
+                    let origBusinessHtml = original.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+                    const origTime = formatTimestamp(original.timestamp);
+                    const origHeader = `
+                      <div class="status-post-header" style="margin-top: 8px;">
+                        <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${original.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                          ${origAvatarHtml}
+                          <div class="status-post-user">
+                            <div class="status-post-user-name">${origNameHtml}</div>
+                            ${origBusinessHtml}
+                            <div class="status-post-time">${origTime}</div>
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                    let origContentHtml = '';
+                    if (original.content) {
+                      const highlightedOrigContent = highlightContent(original.content);
+                      origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
+                    }
+                    let origMediaHtml = '';
+                    if (original.mediaUrl) {
+                      const oncontext = 'oncontextmenu="return false;"';
+                      if (original.type === 'image') {
+                        origMediaHtml = `<div class="status-post-media-container"><img src="${original.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
+                      } else if (original.type === 'video') {
+                        origMediaHtml = `<div class="status-post-media-container">
+                          <div class="video-container">
+                            <video src="${original.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                            <div class="video-controls">
+                              <button class="play-pause-btn material-icons">play_arrow</button>
+                              <div class="progress-container">
+                                <div class="progress-fill"></div>
+                              </div>
+                              <button class="volume-btn material-icons">volume_up</button>
+                            </div>
+                            <div class="video-overlay">
+                              <button class="play-again-btn" onclick="playVideoAgain(this)">
+                                <span class="material-icons">replay</span>Play Again
+                              </button>
+                              <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                            </div>
+                          </div>
+                        </div>`;
+                      }
+                    }
+                    const embedded = `
+                      <div style="margin: 12px 0; padding: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px;">
+                        ${origHeader}
+                        ${origContentHtml}
+                        ${origMediaHtml}
+                      </div>
+                    `;
+                    let repostCaptionHtml = '';
+                    if (status.content) {
+                      const highlightedRepostContent = highlightContent(status.content);
+                      repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
+                    }
+                    let reposts = status.reposts || 0;
+                    let likes = 0;
+                    let comments = 0;
+                    let isLiked = false;
+                    let likeIcon = 'favorite_border';
+                    try {
+                      const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+                      likes = Object.keys(likesSnap.val() || {}).length;
+                      const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+                      comments = Object.keys(commentsSnap.val() || {}).length;
+                      const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+                      const likeSnap = await get(likeRef);
+                      isLiked = likeSnap.exists();
+                      likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                    } catch (e) {
+                      console.warn(`Failed to load counts for repost ${status.statusId}:`, e);
+                    }
+                    aiTargetId = original.statusId;
+                    innerHTML = `
+                      <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
+                      ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
+                      ${reposterHeader}
+                      ${embedded}
+                      ${repostCaptionHtml}
+                      <div class="status-actions">
+                        <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+                        <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+                        <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+                        ${deleteHtml}
+                      </div>
+                    `;
+                  } else {
+                    innerHTML = `
+                      <button class="status-ai-btn" onclick="analyzeStatus('${status.statusId}')">AI</button>
+                      ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
+                      <div class="status-post-header">
+                        ${avatarHtml}
+                        <div class="status-post-user">
+                          <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
+                          ${businessHtml}
+                          <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                        </div>
+                      </div>
+                      <div class="status-post-content">Original post not available</div>
+                      <div class="status-actions">
+                        <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">favorite_border</span> 0</span>
+                        <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> 0</span>
+                        <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> 0</span>
+                        ${deleteHtml}
+                      </div>
+                    `;
+                  }
+                } else {
+                  const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
+                  let avatarHtml;
+                  if (status.user?.photoURL) {
+                    avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                  } else {
+                    avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                  }
+                  let nameHtml = status.user?.displayName || 'User';
+                  if (status.user?.verified) {
+                    nameHtml += verifiedIcon;
+                  }
+                  let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+                  let mediaHtml = '';
+                  if (status.mediaUrl) {
+                    const oncontext = 'oncontextmenu="return false;"';
+                    if (status.type === 'image') {
+                      mediaHtml = `<div class="status-post-media-container"><img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
+                    } else if (status.type === 'video') {
+                      mediaHtml = `<div class="status-post-media-container">
+                        <div class="video-container">
+                          <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                          <div class="video-controls">
+                            <button class="play-pause-btn material-icons">play_arrow</button>
+                            <div class="progress-container">
+                              <div class="progress-fill"></div>
+                            </div>
+                            <button class="volume-btn material-icons">volume_up</button>
+                          </div>
+                          <div class="video-overlay">
+                            <button class="play-again-btn" onclick="playVideoAgain(this)">
+                              <span class="material-icons">replay</span>Play Again
+                            </button>
+                            <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                          </div>
+                        </div>
+                      </div>`;
+                    }
+                  }
+                  let reposts = 0;
+                  let likes = 0;
+                  let comments = 0;
+                  let isLiked = false;
+                  let likeIcon = 'favorite_border';
+                  try {
+                    const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
+                    reposts = repostsSnap.val() || 0;
+                    const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+                    likes = Object.keys(likesSnap.val() || {}).length;
+                    const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+                    comments = Object.keys(commentsSnap.val() || {}).length;
+                    const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+                    const likeSnap = await get(likeRef);
+                    isLiked = likeSnap.exists();
+                    likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                  } catch (e) {
+                    console.warn(`Failed to load counts for status ${status.statusId}:`, e);
+                  }
+                  let contentHtml = '';
+                  if (status.content) {
+                    const highlightedContent = highlightContent(status.content);
+                    contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
+                  }
+                  innerHTML = `
+                    <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
+                    ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
+                    <div class="status-post-header">
+                      <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                        ${avatarHtml}
+                        <div class="status-post-user">
+                          <div class="status-post-user-name">${nameHtml}</div>
+                          ${businessHtml}
+                          <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                        </div>
+                      </div>
+                    </div>
+                    ${contentHtml}
+                    ${mediaHtml}
+                    <div class="status-actions">
+                      <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+                      <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+                      <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+                      ${deleteHtml}
+                    </div>
+                  `;
+                }
+                postItem.innerHTML = innerHTML;
+                // Setup long press for edit if it's the user's status
+                if (status.userId === currentUser.uid && status.type !== 'repost') {
+                  setupLongPress(postItem, status.statusId);
+                }
+                const videoEl = postItem.querySelector('video');
+                if (videoEl) {
+                  const playPauseBtn = postItem.querySelector('.play-pause-btn');
+                  const volumeBtn = postItem.querySelector('.volume-btn');
+                  const progressContainer = postItem.querySelector('.progress-container');
+                  const progressFill = postItem.querySelector('.progress-fill');
+                  const overlay = postItem.querySelector('.video-overlay');
+                  const controls = postItem.querySelector('.video-controls');
+                  videoEl.playbackRate = 1;
+                  videoEl.defaultPlaybackRate = 1;
+
+                  // Event listeners for video state
+                  videoEl.addEventListener('play', () => {
+                    playPauseBtn.innerHTML = 'pause';
+                    controls.classList.add('hidden');
+                    overlay.style.display = 'none';
+                  });
+
+                  videoEl.addEventListener('pause', () => {
+                    playPauseBtn.innerHTML = 'play_arrow';
+                    controls.classList.remove('hidden');
+                  });
+
+                  videoEl.addEventListener('ended', () => {
+                    playPauseBtn.innerHTML = 'replay';
+                    controls.classList.remove('hidden');
+                    overlay.style.display = 'flex';
+                  });
+
+                  // Play/Pause button
+                  playPauseBtn.addEventListener('click', () => {
+                    if (videoEl.paused) {
+                      videoEl.play().catch(console.error);
+                    } else {
+                      videoEl.pause();
+                    }
+                  });
+
+                  // Progress update and seek
+                  videoEl.addEventListener('loadedmetadata', () => {
+                    videoEl.addEventListener('timeupdate', () => {
+                      if (progressFill && videoEl.duration) {
+                        progressFill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+                      }
+                    });
+                  });
+
+                  progressContainer.addEventListener('click', (e) => {
+                    const rect = progressContainer.getBoundingClientRect();
+                    const pos = (e.clientX - rect.left) / rect.width;
+                    videoEl.currentTime = pos * videoEl.duration;
+                  });
+
+                  // Volume toggle
+                  let videoMuted = false;
+                  volumeBtn.addEventListener('click', () => {
+                    videoMuted = !videoMuted;
+                    videoEl.muted = videoMuted;
+                    volumeBtn.innerHTML = videoMuted ? 'volume_off' : 'volume_up';
+                  });
+
+                  // Show/hide controls on interaction
+                  let hideTimeout;
+                  const showControls = () => {
+                    controls.classList.remove('hidden');
+                    if (hideTimeout) clearTimeout(hideTimeout);
+                    if (!videoEl.paused) {
+                      hideTimeout = setTimeout(() => {
+                        controls.classList.add('hidden');
+                      }, 3000);
+                    }
+                  };
+
+                  const videoContainer = postItem.querySelector('.video-container');
+                  videoContainer.addEventListener('click', (e) => {
+                    if (e.target === videoEl || e.target.closest('.video-controls')) return;
+                    showControls();
+                  });
+
+                  videoContainer.addEventListener('touchstart', showControls);
+                  videoContainer.addEventListener('mouseenter', showControls);
+                  videoContainer.addEventListener('mouseleave', () => {
+                    if (!videoEl.paused) {
+                      hideTimeout = setTimeout(() => {
+                        controls.classList.add('hidden');
+                      }, 1000);
+                    }
+                  });
+
+                  if (videoObserver) {
+                    videoObserver.observe(videoEl);
+                  }
+                }
+                if (mode === 'list') {
+                  if (!viewedStatuses.has(status.statusId)) {
+                    const viewObserver = new IntersectionObserver((entries) => {
+                      entries.forEach(entry => {
+                        if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+                          const impRef = ref(db, `statuses/${status.statusId}/impressions`);
+                          get(impRef).then(snap => {
+                            const curr = snap.val() || 0;
+                            set(impRef, curr + 1);
+                          });
+                          viewedStatuses.add(status.statusId);
+                          viewObserver.unobserve(postItem);
+                        }
+                      });
+                    }, { threshold: 0.5 });
+                    viewObserver.observe(postItem);
+                  }
+                }
                 container.appendChild(postItem);
                 loadedAny = true;
               } catch (statusError) {
@@ -3618,99 +3601,7 @@
     async function loadFilteredStatuses(filter, silent = false) {
       currentStatusSubTab = filter;
       const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
-      const container = document.getElementById(containerId);
-      const subtitle = document.getElementById('status-subtitle');
-      if (currentStatusFilter) {
-        const userSnap = await get(ref(db, `users/${currentStatusFilter}`));
-        const user = userSnap.val();
-        subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
-        subtitle.style.display = 'block';
-        await loadStatuses(containerId, 'list', silent, filter);
-      } else if (statusSearchTerm || filter !== 'all') {
-        subtitle.style.display = 'none';
-        await loadStatuses(containerId, 'list', silent, filter);
-      } else {
-        subtitle.style.display = 'none';
-        if (statusSentinelObserver) {
-          statusSentinelObserver.disconnect();
-          statusSentinelObserver = null;
-        }
-        loadedAllStatuses = [];
-        statusLastTimestamp = null;
-        hasMoreAllStatuses = true;
-        renderedStatusIds.clear();
-        container.innerHTML = '';
-        await loadBatchAllStatuses(container, silent);
-        setupStatusScrollListener(container);
-      }
-    }
-
-    async function loadBatchAllStatuses(container, silent = false) {
-      if (!hasMoreAllStatuses) return;
-      if (!silent) showSpinner();
-      let loadedAny = false;
-      try {
-        const statusesRef = ref(db, 'statuses');
-        let q = query(statusesRef, orderByChild('timestamp'), limitToLast(allStatusesPerPage));
-        if (statusLastTimestamp !== null) {
-          q = query(q, endAt(statusLastTimestamp - 1));
-        }
-        const snapshot = await get(q);
-        let newStatuses = [];
-        if (snapshot.exists()) {
-          Object.entries(snapshot.val()).forEach(([id, s]) => {
-            const status = { statusId: id, ...s };
-            newStatuses.push(status);
-          });
-          newStatuses.sort((a, b) => b.timestamp - a.timestamp);
-        }
-        const newUserIds = [...new Set(newStatuses.map(s => s.userId))];
-        let usersMap = {};
-        if (newUserIds.length > 0) {
-          const userPromises = newUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-          const userResults = await Promise.allSettled(userPromises);
-          usersMap = Object.fromEntries(userResults.filter(r => r.status === 'fulfilled').map(r => [r.value.uid, r.value.user]));
-        }
-        newStatuses.forEach(s => s.user = usersMap[s.userId] || null);
-        window.currentAllStatuses = [...loadedAllStatuses, ...newStatuses];
-        loadedAllStatuses = window.currentAllStatuses;
-        for (let status of newStatuses) {
-          if (!renderedStatusIds.has(status.statusId)) {
-            const postItem = await createStatusPost(status);
-            container.appendChild(postItem);
-            renderedStatusIds.add(status.statusId);
-            loadedAny = true;
-          }
-        }
-        if (newStatuses.length < allStatusesPerPage) {
-          hasMoreAllStatuses = false;
-        } else {
-          statusLastTimestamp = newStatuses[newStatuses.length - 1].timestamp;
-        }
-      } catch (error) {
-        console.error('loadBatchAllStatuses failed:', error);
-        if (!loadedAny) {
-          showAlert('Failed to load statuses. Please try refreshing.');
-        }
-      } finally {
-        if (!silent) hideSpinner();
-      }
-    }
-
-    function setupStatusScrollListener(container) {
-      const sentinel = document.createElement('div');
-      sentinel.id = 'status-sentinel';
-      sentinel.style.height = '1px';
-      container.appendChild(sentinel);
-      let loading = false;
-      statusSentinelObserver = new IntersectionObserver(async (entries) => {
-        if (entries[0].isIntersecting && hasMoreAllStatuses && !loading) {
-          loading = true;
-          await loadBatchAllStatuses(container, true);
-          loading = false;
-        }
-      }, { threshold: 0 });
-      statusSentinelObserver.observe(sentinel);
+      await loadStatuses(containerId, 'list', silent, filter);
     }
 
     window.loadTopStatuses = async (silent = false) => {
@@ -5763,7 +5654,6 @@
       if (statusesListener) off(statusesListener);
       if (notificationsListener) off(notificationsListener);
       if (followsListener) off(followsListener);
-      if (statusSentinelObserver) statusSentinelObserver.disconnect();
       await auth.signOut();
       window.location.href = 'login.html';
     };
@@ -5887,7 +5777,7 @@
     // Status sub-tab switcher
     document.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('#status-tab .sub-tab-item').forEach(item => {
-        item.addEventListener('click', async (e) => {
+        item.addEventListener('click', (e) => {
           const subTab = e.currentTarget.dataset.subtab;
           document.querySelectorAll('#status-tab .sub-tab-item').forEach(i => {
             i.classList.toggle('active', i.dataset.subtab === subTab);
@@ -5895,7 +5785,7 @@
           });
           document.querySelectorAll('#status-tab .sub-tab-content').forEach(c => c.classList.remove('active'));
           document.getElementById(`sub-${subTab}-content`).classList.add('active');
-          await loadFilteredStatuses(subTab);
+          loadFilteredStatuses(subTab);
         });
       });
     });
