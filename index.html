@@ -3697,6 +3697,46 @@
       }
     }
 
+    async function updateStatusesWithNew(silent = false) {
+  if (!currentUser) return;
+  const container = document.getElementById('statuses-list');
+  if (container.children.length === 0) return;
+  const maxTimestamp = loadedAllStatuses.length > 0 ? loadedAllStatuses[0].timestamp : Date.now();
+  const statusesRef = ref(db, 'statuses');
+  let q = query(statusesRef, orderByChild('timestamp'), startAfter(maxTimestamp));
+  const snapshot = await get(q);
+  let newStatusesRaw = [];
+  if (snapshot.exists()) {
+    Object.entries(snapshot.val()).forEach(([id, s]) => {
+      newStatusesRaw.push({ statusId: id, ...s });
+    });
+    newStatusesRaw.sort((a, b) => b.timestamp - a.timestamp); // Ensure descending order
+  }
+  const newStatuses = newStatusesRaw;
+  if (newStatuses.length === 0) return;
+  const newUserIds = [...new Set(newStatuses.map(s => s.userId))];
+  let usersMap = {};
+  if (newUserIds.length > 0) {
+    const userPromises = newUserIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+    const userResults = await Promise.allSettled(userPromises);
+    usersMap = Object.fromEntries(userResults.filter(r => r.status === 'fulfilled').map(r => [r.value.uid, r.value.user]));
+  }
+  newStatuses.forEach(s => s.user = usersMap[s.userId] || null);
+  // Update globals
+  loadedAllStatuses = [...newStatuses, ...loadedAllStatuses];
+  window.currentAllStatuses = loadedAllStatuses;
+  // Prepend new statuses
+  for (let status of newStatuses) {
+    try {
+      const postItem = await createStatusPost(status);
+      container.insertBefore(postItem, container.firstChild);
+      renderedStatusIds.add(status.statusId);
+    } catch (statusError) {
+      console.warn(`Failed to render new status ${status.statusId}:`, statusError);
+    }
+  }
+}
+
     function setupStatusScrollListener(container) {
       const sentinel = document.createElement('div');
       sentinel.id = 'status-sentinel';
