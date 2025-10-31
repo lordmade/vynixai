@@ -355,7 +355,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
     import brain from 'https://cdn.skypack.dev/brain.js@2.0.0-beta.23';
 
     const firebaseConfig = {
@@ -396,6 +396,7 @@
     let idxToWord = {};
     let vocabSize = 0;
     let isSeq2Seq = false;  // Flag for model type: true for dashboard LSTM, false for classification
+    let vocab = [];  // For classification fallback
 
     function showError(msg) {
       elements.errorMessage.textContent = msg;
@@ -421,34 +422,37 @@
       return messageDiv;
     }
 
-    // Load pre-trained model from localStorage (from dashboard)
-    function loadPretrainedModel() {
-      const modelJson = localStorage.getItem('vynix-brain-model');
-      const vocabData = localStorage.getItem('vynix-vocab');
-      if (!modelJson || !vocabData) {
-        console.log('No pre-trained model found. Will train on-the-fly.');
-        return false;
-      }
-
+    // Load pre-trained model from Firebase
+    async function loadPretrainedModel() {
       try {
-        // Assume dashboard exported LSTMTimeStep for seq2seq
+        const modelsRef = ref(db, 'models/current-model');
+        const snapshot = await get(modelsRef);
+        if (!snapshot.exists()) {
+          console.log('No Firebase model found. Will train on-the-fly.');
+          return false;
+        }
+
+        const modelData = snapshot.val();
+        const { modelJson, vocab: vocabData } = modelData;
+
+        // Load LSTM
         const LSTMTimeStep = brain.recurrent.LSTMTimeStep;
         net = new LSTMTimeStep();
-        net.fromJSON(JSON.parse(modelJson));
+        net.fromJSON(modelJson);
 
-        const vocabObj = JSON.parse(vocabData);
-        wordToIdx = vocabObj.wordToIdx;
-        idxToWord = vocabObj.idxToWord;
+        wordToIdx = vocabData.wordToIdx;
+        idxToWord = vocabData.idxToWord;
         vocabSize = Object.keys(wordToIdx).length;
         isSeq2Seq = true;
 
-        console.log(`Loaded seq2seq model with vocab size ${vocabSize}`);
-        elements.retrainNotification.textContent = `Loaded advanced AI model! 🧠 (Seq2Seq, ${vocabSize} words)`;
+        console.log(`Loaded Firebase seq2seq model (trained on ${modelData.numPairs} pairs, ${vocabSize} words)`);
+        elements.retrainNotification.textContent = `Loaded shared AI model from cloud! 🧠 (${modelData.numPairs} patterns)`;
+        elements.retrainNotification.classList.remove('hidden');
+        setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
         return true;
       } catch (error) {
-        console.error('Failed to load pre-trained model:', error);
-        localStorage.removeItem('vynix-brain-model');
-        localStorage.removeItem('vynix-vocab');
+        console.error('Failed to load Firebase model:', error);
+        showError('Model fetch failed—using fallback training.');
         return false;
       }
     }
@@ -549,10 +553,8 @@
 
     // On-the-fly training (fallback if no pre-trained model)
     function trainOnTheFly(trainingData) {
-      if (loadPretrainedModel()) return;  // Skip if pre-trained loaded
-
       // Build vocab from all queries
-      const vocab = [...new Set(Object.values(trainingData).flatMap(pair => pair ? pair.q.toLowerCase().split(/\s+/) : []))];
+      vocab = [...new Set(Object.values(trainingData).flatMap(pair => pair ? pair.q.toLowerCase().split(/\s+/) : []))];
 
       // Prepare training examples
       const trainingExamples = Object.entries(trainingData).map(([id, pair]) => {
@@ -567,9 +569,6 @@
         net = new brain.NeuralNetwork({ hiddenLayers: [3] });
         net.train(trainingExamples, { iterations: 20000, log: true, logPeriod: 1000 });
 
-        // Store vocab globally for prediction
-        window.vocab = vocab;  // Temp global for classification predict
-
         console.log(`Trained on-the-fly on ${trainingExamples.length} examples with vocab size ${vocab.length}`);
         elements.retrainNotification.textContent = `Vynix trained on ${trainingExamples.length} patterns! 🧠`;
       } else {
@@ -583,12 +582,17 @@
 
     function loadTrainingData() {
       const trainingRef = ref(db, 'training_data');
-      onValue(trainingRef, (snapshot) => {
+      onValue(trainingRef, async (snapshot) => {
         const data = snapshot.val() || {};
         trainingData = data;
 
-        // Trigger on-the-fly training if no pre-trained
-        trainOnTheFly(data);
+        // Load pre-trained first
+        const hasModel = await loadPretrainedModel();
+        
+        // Only on-the-fly if no model
+        if (!hasModel) {
+          trainOnTheFly(data);
+        }
       }, (error) => {
         showError('Failed to load training data: ' + error.message);
         console.error('Load data error:', error);
