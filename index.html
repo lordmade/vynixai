@@ -2679,9 +2679,8 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off, query, orderByChild, limitToLast, endBefore } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
-    import { query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -2732,11 +2731,15 @@
     let replyingTo = null;
     let replyingToUser = null;
     let statusSearchTerm = '';
-    let notificationsPage = 0;
-    const notificationsPerPage = 5;
-    let allNotifications = [];
-    let hasMoreNotifs = false;
     let loadingMore = false;
+    let allNotifications = [];
+    let lastNotifTimestamp = null;
+    const notificationsPerPage = 5;
+    let hasMoreNotifs = true;
+    let allLoadedStatuses = [];
+    let lastStatusTimestamp = null;
+    const statusesPerPage = 20;
+    let hasMoreStatuses = true;
     let currentEditStatusId = null;
     let currentEditMediaUrl = null;
 
@@ -3058,102 +3061,100 @@
       postItem.addEventListener('mouseleave', clearPressTimer);
     }
 
-    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null) {
+    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null, loadMore = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
-      if (statusesLoaded[loadKey] && silent) return;
+      if (statusesLoaded[loadKey] && silent && !loadMore) return;
       if (!silent) showSpinner();
       let loadedAny = false;
       try {
-        container.innerHTML = '';
-        statusesLoaded[loadKey] = true;
-        if (currentUser) {
-          let friendIds = [];
-          if (mode === 'carousel') {
-            friendIds = Object.keys(currentUserFollows || {});
-          }
-          const statusesRef = ref(db, 'statuses');
-          const snapshot = await get(statusesRef);
-          
-          let recentStatusesByUser = {};
-          let allStatuses = [];
-          if (snapshot.exists()) {
-            Object.entries(snapshot.val()).forEach(([id, s]) => {
-              const status = { statusId: id, ...s };
-              const shouldInclude = mode === 'carousel' ? (friendIds.includes(status.userId) || status.userId === currentUser.uid) : true;
-              if (shouldInclude) {
-                const uid = status.userId;
-                if (!recentStatusesByUser[uid]) {
-                  recentStatusesByUser[uid] = { user: null, statuses: [] };
-                }
-                recentStatusesByUser[uid].statuses.push(status);
-                allStatuses.push(status);
-              }
-            });
-            Object.keys(recentStatusesByUser).forEach(uid => {
-              recentStatusesByUser[uid].statuses.sort((a, b) => b.timestamp - a.timestamp);
-            });
-            const userIdsWithStatuses = Object.keys(recentStatusesByUser);
-            if (userIdsWithStatuses.length > 0) {
-              const userPromises = userIdsWithStatuses.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-              const userResults = await Promise.allSettled(userPromises);
-              const successfulResults = userResults.filter(r => r.status === 'fulfilled').map(r => r.value);
-              userResults.filter(r => r.status === 'rejected').forEach(r => console.warn('Failed to fetch user data:', r.reason));
-              successfulResults.forEach(ur => {
-                if (recentStatusesByUser[ur.uid]) {
-                  recentStatusesByUser[ur.uid].user = ur.user;
+        if (mode === 'carousel') {
+          // Carousel loads all recent users, no pagination
+          container.innerHTML = '';
+          statusesLoaded[loadKey] = true;
+          if (currentUser) {
+            let friendIds = Object.keys(currentUserFollows || {});
+            const statusesRef = ref(db, 'statuses');
+            const snapshot = await get(statusesRef);
+            
+            let recentStatusesByUser = {};
+            let allStatuses = [];
+            if (snapshot.exists()) {
+              Object.entries(snapshot.val()).forEach(([id, s]) => {
+                const status = { statusId: id, ...s };
+                const shouldInclude = friendIds.includes(status.userId) || status.userId === currentUser.uid;
+                if (shouldInclude) {
+                  const uid = status.userId;
+                  if (!recentStatusesByUser[uid]) {
+                    recentStatusesByUser[uid] = { user: null, statuses: [] };
+                  }
+                  recentStatusesByUser[uid].statuses.push(status);
+                  allStatuses.push(status);
                 }
               });
+              Object.keys(recentStatusesByUser).forEach(uid => {
+                recentStatusesByUser[uid].statuses.sort((a, b) => b.timestamp - a.timestamp);
+              });
+              const userIdsWithStatuses = Object.keys(recentStatusesByUser);
+              if (userIdsWithStatuses.length > 0) {
+                const userPromises = userIdsWithStatuses.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+                const userResults = await Promise.allSettled(userPromises);
+                const successfulResults = userResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+                userResults.filter(r => r.status === 'rejected').forEach(r => console.warn('Failed to fetch user data:', r.reason));
+                successfulResults.forEach(ur => {
+                  if (recentStatusesByUser[ur.uid]) {
+                    recentStatusesByUser[ur.uid].user = ur.user;
+                  }
+                });
+              }
             }
-          }
-          window.currentStatusesByUser = recentStatusesByUser;
-          allStatuses.forEach(status => {
-            status.user = recentStatusesByUser[status.userId]?.user;
-          });
-          let userFiltered = allStatuses;
-          if (mode === 'list' && currentStatusFilter) {
-            userFiltered = allStatuses.filter(s => s.userId === currentStatusFilter);
-          }
-          let mediaFiltered = userFiltered;
-          if (mode === 'list' && filter) {
-            mediaFiltered = userFiltered.filter(s => {
-              if (filter === 'images') return s.mediaUrl && s.type === 'image';
-              if (filter === 'text') return !s.mediaUrl;
-              return true;
+            window.currentStatusesByUser = recentStatusesByUser;
+            allStatuses.forEach(status => {
+              status.user = recentStatusesByUser[status.userId]?.user;
             });
-          }
-          let sortedStatuses = mediaFiltered;
-          if (mode === 'list') {
-            if (mediaFiltered.length > 0) {
-              const mostRecent = mediaFiltered.reduce((prev, current) => (prev.timestamp > current.timestamp ? prev : current));
-              const others = mediaFiltered.filter(s => s.statusId !== mostRecent.statusId);
-              others.sort(() => 0.5 - Math.random());
-              sortedStatuses = [mostRecent, ...others];
+            let userFiltered = allStatuses;
+            if (mode === 'list' && currentStatusFilter) {
+              userFiltered = allStatuses.filter(s => s.userId === currentStatusFilter);
             }
-            // New Feature: Filter by search term
-            sortedStatuses = filterStatuses(sortedStatuses);
-          }
-          window.currentAllStatuses = sortedStatuses;
-
-          const subtitle = document.getElementById('status-subtitle');
-          if (mode === 'list') {
-            if (currentStatusFilter && sortedStatuses.length > 0) {
-              const user = sortedStatuses[0].user;
-              subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
-              subtitle.style.display = 'block';
-            } else {
-              subtitle.style.display = 'none';
+            let mediaFiltered = userFiltered;
+            if (mode === 'list' && filter) {
+              mediaFiltered = userFiltered.filter(s => {
+                if (filter === 'images') return s.mediaUrl && s.type === 'image';
+                if (filter === 'text') return !s.mediaUrl;
+                return true;
+              });
             }
-          }
+            let sortedStatuses = mediaFiltered;
+            if (mode === 'list') {
+              if (mediaFiltered.length > 0) {
+                const mostRecent = mediaFiltered.reduce((prev, current) => (prev.timestamp > current.timestamp ? prev : current));
+                const others = mediaFiltered.filter(s => s.statusId !== mostRecent.statusId);
+                others.sort(() => 0.5 - Math.random());
+                sortedStatuses = [mostRecent, ...others];
+              }
+              // New Feature: Filter by search term
+              sortedStatuses = filterStatuses(sortedStatuses);
+            }
+            window.currentAllStatuses = sortedStatuses;
 
-          const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
-            .sort((a, b) => {
-              if (a === currentUser.uid) return -1;
-              if (b === currentUser.uid) return 1;
-              return recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp;
-            });
+            const subtitle = document.getElementById('status-subtitle');
+            if (mode === 'list') {
+              if (currentStatusFilter && sortedStatuses.length > 0) {
+                const user = sortedStatuses[0].user;
+                subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
+                subtitle.style.display = 'block';
+              } else {
+                subtitle.style.display = 'none';
+              }
+            }
 
-          if (mode === 'carousel') {
+            const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
+              .sort((a, b) => {
+                if (a === currentUser.uid) return -1;
+                if (b === currentUser.uid) return 1;
+                return recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp;
+              });
+
             if (uids.length === 0) {
               container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
             } else {
@@ -3188,20 +3189,60 @@
                 loadedAny = true;
               }
             }
-          } else if (mode === 'list') {
-            if (sortedStatuses.length === 0) {
-              let msg = 'No statuses yet.';
-              if (filter === 'images') msg = 'No image statuses yet.';
-              else if (filter === 'text') msg = 'No text statuses yet.';
-              if (statusSearchTerm) msg = 'No statuses match your search.';
-              if (currentStatusFilter) msg = `No ${filter || 'statuses'} from this user.`;
-              container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">${msg}</p>`;
-              if (!silent) hideSpinner();
-              return;
+          }
+        } else {
+          // List mode with pagination for 'all', limited load for filtered
+          if (!loadMore) {
+            allLoadedStatuses = [];
+            lastStatusTimestamp = null;
+            hasMoreStatuses = true;
+            container.innerHTML = '';
+          }
+          if (loadingMore || !hasMoreStatuses) {
+            if (!silent) hideSpinner();
+            return;
+          }
+          loadingMore = true;
+          let q;
+          if (filter === 'all') {
+            q = query(ref(db, 'statuses'), orderByChild('timestamp'));
+            if (loadMore) {
+              if (!lastStatusTimestamp) {
+                loadingMore = false;
+                return;
+              }
+              q = query(q, endBefore(lastStatusTimestamp), limitToLast(statusesPerPage));
+            } else {
+              q = query(q, limitToLast(statusesPerPage));
             }
-            viewedStatuses.clear();
-            for (let i = 0; i < sortedStatuses.length; i++) {
-              const status = sortedStatuses[i];
+          } else {
+            // For images/text, load limited batch
+            q = query(ref(db, 'statuses'), orderByChild('timestamp'), limitToLast(100));
+            lastStatusTimestamp = null;
+            hasMoreStatuses = false; // No pagination for filtered
+          }
+          const snapshot = await get(q);
+          let newStatuses = [];
+          if (snapshot.exists()) {
+            newStatuses = Object.entries(snapshot.val()).map(([id, s]) => ({ statusId: id, ...s })).sort((a, b) => b.timestamp - a.timestamp);
+            newStatuses = newStatuses.filter(s => !allLoadedStatuses.some(existing => existing.statusId === s.statusId));
+            if (filter && filter !== 'all') {
+              newStatuses = newStatuses.filter(s => {
+                if (filter === 'images') return s.mediaUrl && s.type === 'image';
+                if (filter === 'text') return !s.mediaUrl;
+                return true;
+              });
+            }
+          }
+          if (newStatuses.length > 0) {
+            const userIds = [...new Set(newStatuses.map(s => s.userId))];
+            const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+            const userResults = await Promise.allSettled(userPromises);
+            const userMap = Object.fromEntries(userResults.filter(r => r.status === 'fulfilled').map(r => [r.value.uid, r.value.user]));
+            newStatuses.forEach(s => s.user = userMap[s.userId] || null);
+            allLoadedStatuses.push(...newStatuses);
+            for (let i = 0; i < newStatuses.length; i++) {
+              const status = newStatuses[i];
               const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
               try {
                 const postItem = document.createElement('div');
@@ -3210,7 +3251,6 @@
                 let innerHTML = '';
                 let aiTargetId = status.statusId;
                 let deleteHtml = '';
-                // Removed editHtml - now using long press
                 if (status.userId === currentUser.uid) {
                   deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
                 }
@@ -3574,6 +3614,20 @@
                 container.appendChild(postItem);
               }
             }
+            if (filter === 'all' && newStatuses.length > 0) {
+              lastStatusTimestamp = newStatuses[newStatuses.length - 1].timestamp;
+            }
+            hasMoreStatuses = newStatuses.length === statusesPerPage;
+          } else {
+            hasMoreStatuses = false;
+          }
+          if (allLoadedStatuses.length === 0) {
+            let msg = 'No statuses yet.';
+            if (filter === 'images') msg = 'No image statuses yet.';
+            else if (filter === 'text') msg = 'No text statuses yet.';
+            if (statusSearchTerm) msg = 'No statuses match your search.';
+            if (currentStatusFilter) msg = `No ${filter || 'statuses'} from this user.`;
+            container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">${msg}</p>`;
           }
         }
       } catch (globalError) {
@@ -3582,14 +3636,34 @@
           showAlert('Failed to load statuses. Please try refreshing.');
         }
       } finally {
+        loadingMore = false;
         if (!silent) hideSpinner();
       }
     }
 
-    async function loadFilteredStatuses(filter, silent = false) {
+    async function loadFilteredStatuses(filter, silent = false, loadMore = false) {
       currentStatusSubTab = filter;
       const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
-      await loadStatuses(containerId, 'list', silent, filter);
+      const subContent = document.getElementById(`sub-${filter}-content`);
+      const list = subContent.querySelector('.status-list');
+      if (!loadMore) {
+        list.innerHTML = '';
+      }
+      await loadStatuses(containerId, 'list', silent, filter, loadMore);
+      if (filter === 'all') {
+        setupStatusScrollListener();
+      }
+    }
+
+    function setupStatusScrollListener() {
+      const list = document.getElementById('statuses-list');
+      list.addEventListener('scroll', throttle(() => {
+        if (loadingMore || !hasMoreStatuses) return;
+        const { scrollTop, scrollHeight, clientHeight } = list;
+        if (scrollTop + clientHeight >= scrollHeight - 100) {
+          loadFilteredStatuses(currentStatusSubTab, true, true);
+        }
+      }, 200));
     }
 
     window.loadTopStatuses = async (silent = false) => {
@@ -3889,6 +3963,145 @@
       });
     }
 
+    async function loadNotifications(silent = false, loadMore = false) {
+      if (!silent) showSpinner();
+      const section = document.getElementById('notifications-section');
+      const list = document.getElementById('notifications-list');
+      if (!loadMore) {
+        section.innerHTML = `
+          <div class="section-title">
+            <span class="material-icons" style="font-size: 24px;">notifications</span>
+            Notifications
+          </div>
+          <div class="chat-list" id="notifications-list"></div>
+        `;
+        allNotifications = [];
+        lastNotifTimestamp = null;
+        hasMoreNotifs = true;
+      }
+      if (loadingMore || !hasMoreNotifs) {
+        if (!silent) hideSpinner();
+        return;
+      }
+      loadingMore = true;
+      try {
+        if (currentUser) {
+          const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
+          let q = query(notifsRef, orderByChild('timestamp'));
+          if (loadMore) {
+            if (!lastNotifTimestamp) {
+              loadingMore = false;
+              return;
+            }
+            q = query(q, endBefore(lastNotifTimestamp), limitToLast(notificationsPerPage));
+          } else {
+            q = query(q, limitToLast(notificationsPerPage));
+          }
+          const snap = await get(q);
+          let newNotifs = [];
+          if (snap.exists()) {
+            newNotifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
+            newNotifs = newNotifs.filter(n => !allNotifications.some(existing => existing.id === n.id));
+          }
+          if (newNotifs.length > 0) {
+            allNotifications.push(...newNotifs);
+            for (let notif of newNotifs) {
+              const item = document.createElement('div');
+              item.className = 'notification-item';
+              item.onclick = async () => {
+                await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+                if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
+                  try {
+                    const statusRef = ref(db, `statuses/${notif.statusId}`);
+                    const statusSnap = await get(statusRef);
+                    const status = statusSnap.val();
+                    if (status && status.userId) {
+                      window.currentStatusFilter = status.userId;
+                    }
+                  } catch (e) {
+                    console.error('Failed to fetch status for notification:', e);
+                  }
+                  switchTab('status', null);
+                }
+                const unreadBadge = item.querySelector('.unread-badge');
+                if (unreadBadge) unreadBadge.remove();
+              };
+              let icon = 'notifications';
+              let text = '';
+              let fromName = 'Someone';
+              if (notif.fromUserId) {
+                const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
+                const user = userSnap.val();
+                fromName = user ? user.displayName : 'Someone';
+              }
+              switch (notif.type) {
+                case 'like':
+                  icon = 'favorite';
+                  text = `${fromName} liked your status`;
+                  break;
+                case 'comment':
+                case 'reply':
+                  icon = 'chat_bubble';
+                  text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
+                  break;
+                case 'tag':
+                  icon = 'tag';
+                  text = `${fromName} tagged you in a status`;
+                  break;
+                case 'verified':
+                  icon = 'verified';
+                  text = 'Congratulations! Your account is now verified';
+                  break;
+                case 'username_change':
+                  icon = 'edit';
+                  text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
+                  break;
+              }
+              const unreadBadge = !notif.read ? '<span class="unread-badge">•</span>' : '';
+              item.innerHTML = `
+                <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
+                <div class="notification-info">
+                  <div class="notification-title">${text}</div>
+                  <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
+                </div>
+                ${unreadBadge}
+              `;
+              list.appendChild(item);
+            }
+            lastNotifTimestamp = newNotifs[newNotifs.length - 1].timestamp;
+          }
+          hasMoreNotifs = newNotifs.length === notificationsPerPage;
+          const floatingLoadMore = document.getElementById('floating-load-more');
+          if (floatingLoadMore && document.getElementById('notifications-tab').classList.contains('active')) {
+            floatingLoadMore.style.display = hasMoreNotifs ? 'block' : 'none';
+          }
+          if (!loadMore) {
+            setupNotificationsScrollListener();
+          }
+        }
+      } catch (error) {
+        console.error('Error loading notifications:', error);
+      } finally {
+        loadingMore = false;
+        if (!silent) hideSpinner();
+      }
+    }
+
+    function setupNotificationsScrollListener() {
+      const notificationsSection = document.getElementById('notifications-section');
+      notificationsSection.addEventListener('scroll', throttle(() => {
+        if (loadingMore || !hasMoreNotifs) return;
+        const { scrollTop, scrollHeight, clientHeight } = notificationsSection;
+        if (scrollTop + clientHeight >= scrollHeight - 100) {
+          loadNotifications(true, true);
+        }
+      }, 200));
+    }
+
+    window.loadMoreNotifications = async () => {
+      await loadNotifications(true, true);
+    };
+
     async function removeChat(chatId, otherUid) {
       try {
         showSpinner();
@@ -4041,135 +4254,6 @@
         console.error('Error starting chat:', error);
         showAlert('Failed to start chat.');
       }
-    };
-
-    // Full complete code for loadNotifications function
-    async function loadNotifications(silent = false, loadMore = false) {
-      if (!silent) showSpinner();
-      const section = document.getElementById('notifications-section');
-      if (!loadMore) {
-        section.innerHTML = `
-          <div class="section-title">
-            <span class="material-icons" style="font-size: 24px;">notifications</span>
-            Notifications
-          </div>
-          <div class="chat-list" id="notifications-list"></div>
-        `;
-        notificationsPage = 0;
-        allNotifications = [];
-      }
-      const list = document.getElementById('notifications-list');
-      if (currentUser) {
-        const notifsRef = ref(db, `users/${currentUser.uid}/notifications`);
-        // Query for recent notifications, limit to per page
-        const queryRef = query(notifsRef, orderByChild('timestamp'), limitToLast(notificationsPerPage * (notificationsPage + 1)));
-        const snap = await get(queryRef);
-        let newNotifs = [];
-        if (snap.exists()) {
-          newNotifs = Object.entries(snap.val()).map(([id, n]) => ({ id, ...n })).sort((a, b) => b.timestamp - a.timestamp);
-          // Filter out already loaded ones
-          const existingIds = new Set(allNotifications.map(n => n.id));
-          newNotifs = newNotifs.filter(n => !existingIds.has(n.id));
-          allNotifications = [...allNotifications, ...newNotifs];
-        }
-        // Append new notifications
-        for (let notif of newNotifs) {
-          const item = document.createElement('div');
-          item.className = 'notification-item';
-          item.onclick = async () => {
-            await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-            if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-              try {
-                const statusRef = ref(db, `statuses/${notif.statusId}`);
-                const statusSnap = await get(statusRef);
-                const status = statusSnap.val();
-                if (status && status.userId) {
-                  window.currentStatusFilter = status.userId;
-                }
-              } catch (e) {
-                console.error('Failed to fetch status for notification:', e);
-              }
-              switchTab('status', null);
-            }
-          };
-          let icon = 'notifications';
-          let text = '';
-          let fromName = 'Someone';
-          if (notif.fromUserId) {
-            const userSnap = await get(ref(db, `users/${notif.fromUserId}`));
-            const user = userSnap.val();
-            fromName = user ? user.displayName : 'Someone';
-          }
-          switch (notif.type) {
-            case 'like':
-              icon = 'favorite';
-              text = `${fromName} liked your status`;
-              break;
-            case 'comment':
-            case 'reply':
-              icon = 'chat_bubble';
-              text = `${fromName} ${notif.type === 'reply' ? 'replied to' : 'commented on'} your status`;
-              break;
-            case 'tag':
-              icon = 'tag';
-              text = `${fromName} tagged you in a status`;
-              break;
-            case 'verified':
-              icon = 'verified';
-              text = 'Congratulations! Your account is now verified';
-              break;
-            case 'username_change':
-              icon = 'edit';
-              text = `Your username changed from ${notif.oldName} to ${notif.newName}`;
-              break;
-          }
-          item.innerHTML = `
-            <span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">${icon}</span>
-            <div class="notification-info">
-              <div class="notification-title">${text}</div>
-              <div class="notification-time">${formatTimestamp(notif.timestamp)}</div>
-            </div>
-            ${!notif.read ? '<span class="unread-badge">•</span>' : ''}
-          `;
-          list.appendChild(item);
-        }
-        // Update hasMoreNotifs
-        hasMoreNotifs = newNotifs.length === notificationsPerPage;
-        const floatingLoadMore = document.getElementById('floating-load-more');
-        if (floatingLoadMore && document.getElementById('notifications-tab').classList.contains('active')) {
-          floatingLoadMore.style.display = hasMoreNotifs ? 'block' : 'none';
-        }
-        if (!loadMore) {
-          setupNotificationsScrollListener();
-        }
-        notificationsPage++;
-      }
-      const desktopList = document.getElementById('notifications-list-desktop');
-      if (desktopList) {
-        // For desktop, load all for simplicity or mirror the mobile list
-        desktopList.innerHTML = list.innerHTML;
-        desktopList.querySelectorAll('.notification-item').forEach(item => {
-          item.onclick = null; // Desktop doesn't navigate
-        });
-      }
-      if (!silent) hideSpinner();
-    }
-
-    function setupNotificationsScrollListener() {
-      const notificationsSection = document.getElementById('notifications-section');
-      notificationsSection.addEventListener('scroll', throttle(() => {
-        if (loadingMore || !hasMoreNotifs) return;
-        const { scrollTop, scrollHeight, clientHeight } = notificationsSection;
-        if (scrollTop + clientHeight >= scrollHeight - 100) {
-          loadMoreNotifications();
-        }
-      }, 200));
-    }
-
-    window.loadMoreNotifications = async () => {
-      loadingMore = true;
-      await loadNotifications(true, true);
-      loadingMore = false;
     };
 
     async function openUserStatuses(uid) {
@@ -4657,7 +4741,7 @@
       let comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
 
       const userIds = [...new Set(comments.map(c => c.userId))];
-      const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+      const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
       const userResults = await Promise.all(userPromises);
       const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.user]));
 
@@ -5706,7 +5790,6 @@
           if (tab === 'chats') {
             switchSubTab('chats', null);
           } else if (tab === 'status') {
-            //loadTopStatuses();
             loadFilteredStatuses(currentStatusSubTab);
           }
         }
@@ -5753,10 +5836,8 @@
       const floatingLoadMore = document.getElementById('floating-load-more');
       if (floatingLoadMore) {
         if (tab === 'notifications') {
-          // Show if there are more notifs, else hide
           floatingLoadMore.style.display = hasMoreNotifs ? 'block' : 'none';
         } else {
-          // Hide on other tabs
           floatingLoadMore.style.display = 'none';
         }
       }
