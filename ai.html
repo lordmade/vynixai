@@ -8,6 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.23/dist/brain-browser.min.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -355,8 +356,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-    import brain from 'https://cdn.skypack.dev/brain.js@2.0.0-beta.23';
+    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -392,11 +392,7 @@
     let hasChatted = false;
     let messages = [];
     let net;  // The trained network
-    let wordToIdx = {};
-    let idxToWord = {};
-    let vocabSize = 0;
-    let isSeq2Seq = false;  // Flag for model type: true for dashboard LSTM, false for classification
-    let vocab = [];  // For classification fallback
+    let vocab = [];  // Vocabulary for vectorization
 
     function showError(msg) {
       elements.errorMessage.textContent = msg;
@@ -422,76 +418,15 @@
       return messageDiv;
     }
 
-    // Load pre-trained model from Firebase
-    async function loadPretrainedModel() {
-      try {
-        const modelsRef = ref(db, 'models/current-model');
-        const snapshot = await get(modelsRef);
-        if (!snapshot.exists()) {
-          console.log('No Firebase model found. Will train on-the-fly.');
-          return false;
-        }
-
-        const modelData = snapshot.val();
-        const { modelJson, vocab: vocabData } = modelData;
-
-        // Load LSTM
-        const LSTMTimeStep = brain.recurrent.LSTMTimeStep;
-        net = new LSTMTimeStep();
-        net.fromJSON(modelJson);
-
-        wordToIdx = vocabData.wordToIdx;
-        idxToWord = vocabData.idxToWord;
-        vocabSize = Object.keys(wordToIdx).length;
-        isSeq2Seq = true;
-
-        console.log(`Loaded Firebase seq2seq model (trained on ${modelData.numPairs} pairs, ${vocabSize} words)`);
-        elements.retrainNotification.textContent = `Loaded shared AI model from cloud! 🧠 (${modelData.numPairs} patterns)`;
-        elements.retrainNotification.classList.remove('hidden');
-        setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
-        return true;
-      } catch (error) {
-        console.error('Failed to load Firebase model:', error);
-        showError('Model fetch failed—using fallback training.');
-        return false;
-      }
-    }
-
-    // Predict with seq2seq (dashboard style)
-    function predictWithSeq2Seq(question) {
-      if (!net || !isSeq2Seq) return null;
-
-      const inputSeq = question.toLowerCase().split(' ').slice(0, 10)
-        .map(word => [(wordToIdx[word] || 0) / vocabSize]);
-      const outputSeq = net.run(inputSeq);
-      const words = outputSeq
-        .map(val => idxToWord[Math.round(val * vocabSize)] || '')
-        .filter(Boolean)
-        .slice(0, 20)  // Limit response length
-        .join(' ');
-      return words.charAt(0).toUpperCase() + words.slice(1) + '.';
-    }
-
-    // Fallback: Classification-based prediction (original on-the-fly)
+    // Simple vectorizer function (bag-of-words style)
     function vectorize(text, vocab) {
       const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
       const vec = new Array(vocab.length).fill(0);
       words.forEach(word => {
         const idx = vocab.indexOf(word);
-        if (idx > -1) vec[idx] = 1;
+        if (idx > -1) vec[idx] = 1;  // One-hot like for presence
       });
       return vec;
-    }
-
-    function generateClassificationReply(userQuery, trainingData, vocab) {
-      if (!net) return null;
-
-      const queryVec = vectorize(userQuery, vocab);
-      const output = net.run(queryVec);
-
-      const bestId = Object.keys(output).reduce((a, b) => output[a] > output[b] ? a : b);
-      const bestPair = trainingData[bestId];
-      return bestPair ? bestPair.a : null;
     }
 
     // Fallback rule-based reply
@@ -519,18 +454,15 @@
     }
 
     function generateReply(userQuery) {
-      // Try seq2seq first if loaded
-      let reply = predictWithSeq2Seq(userQuery);
-      if (reply) return reply;
-
-      // Fallback to classification if net is classification type
-      if (net && !isSeq2Seq) {
-        reply = generateClassificationReply(userQuery, trainingData, vocab);
-        if (reply) return reply;
-      }
-
-      // Ultimate fallback
-      return generateFallbackReply(userQuery);
+      if (!net) return generateFallbackReply(userQuery);
+      
+      const queryVec = vectorize(userQuery, vocab);
+      const output = net.run(queryVec);  // Returns { "0": 0.95, "1": 0.02, ... } probabilities
+      
+      // Find highest prob response
+      const bestId = Object.keys(output).reduce((a, b) => output[a] > output[b] ? a : b);
+      const bestPair = trainingData[bestId];
+      return bestPair ? bestPair.a : generateFallbackReply(userQuery);
     }
 
     async function sendMessage() {
@@ -551,48 +483,38 @@
       }, 500 + Math.random() * 500);
     }
 
-    // On-the-fly training (fallback if no pre-trained model)
-    function trainOnTheFly(trainingData) {
-      // Build vocab from all queries
-      vocab = [...new Set(Object.values(trainingData).flatMap(pair => pair ? pair.q.toLowerCase().split(/\s+/) : []))];
-
-      // Prepare training examples
-      const trainingExamples = Object.entries(trainingData).map(([id, pair]) => {
-        if (!pair || !pair.q) return null;
-        return {
-          input: vectorize(pair.q, vocab),
-          output: { [id]: 1 }  // One-hot for classification
-        };
-      }).filter(Boolean);
-
-      if (trainingExamples.length > 0) {
-        net = new brain.NeuralNetwork({ hiddenLayers: [3] });
-        net.train(trainingExamples, { iterations: 20000, log: true, logPeriod: 1000 });
-
-        console.log(`Trained on-the-fly on ${trainingExamples.length} examples with vocab size ${vocab.length}`);
-        elements.retrainNotification.textContent = `Vynix trained on ${trainingExamples.length} patterns! 🧠`;
-      } else {
-        console.log('No training data for on-the-fly training.');
-        elements.retrainNotification.textContent = 'Vynix is ready, but needs training data! 📚';
-      }
-
-      elements.retrainNotification.classList.remove('hidden');
-      setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
-    }
-
     function loadTrainingData() {
       const trainingRef = ref(db, 'training_data');
-      onValue(trainingRef, async (snapshot) => {
+      onValue(trainingRef, (snapshot) => {
         const data = snapshot.val() || {};
         trainingData = data;
-
-        // Load pre-trained first
-        const hasModel = await loadPretrainedModel();
         
-        // Only on-the-fly if no model
-        if (!hasModel) {
-          trainOnTheFly(data);
+        // Build vocab from all queries
+        vocab = [...new Set(Object.values(data).flatMap(pair => pair ? pair.q.toLowerCase().split(/\s+/) : []))];
+        
+        // Prepare training examples: {input: queryVec, output: {responseId: 1}} where responseId indexes answers
+        const trainingExamples = Object.entries(data).map(([id, pair]) => {
+          if (!pair || !pair.q) return null;
+          return {
+            input: vectorize(pair.q, vocab),
+            output: { [id]: 1 }  // One-hot output for multi-class (each Q&A pair is a "class")
+          };
+        }).filter(Boolean);
+        
+        if (trainingExamples.length > 0) {
+          // Train the net
+          net = new brain.NeuralNetwork({ hiddenLayers: [3] });  // Simple architecture; tune as needed
+          net.train(trainingExamples, { iterations: 20000, log: true, logPeriod: 1000 });
+          
+          console.log(`Trained on ${trainingExamples.length} examples with vocab size ${vocab.length}`);
+          elements.retrainNotification.textContent = `Vynix retrained on ${trainingExamples.length} patterns! 🧠`;
+        } else {
+          console.log('No training data available.');
+          elements.retrainNotification.textContent = 'Vynix is ready, but needs training data! 📚';
         }
+        
+        elements.retrainNotification.classList.remove('hidden');
+        setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
       }, (error) => {
         showError('Failed to load training data: ' + error.message);
         console.error('Load data error:', error);
