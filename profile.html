@@ -397,6 +397,97 @@
     .verified-icon {
       filter: drop-shadow(0 0 2px #1d9bf0);
     }
+    /* Status Post Styles */
+    .status-post {
+      background: var(--card-bg);
+      padding: 20px;
+      border-radius: 24px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+      width: 100%;
+      height: auto;
+      box-shadow: var(--shadow-md);
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    .status-post:hover {
+      box-shadow: var(--glow);
+      transform: translateY(-2px);
+    }
+    .status-post-header {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .status-post-header .status-avatar {
+      width: 56px;
+      height: 56px;
+      margin: 0;
+    }
+    .status-post-user {
+      flex: 1;
+    }
+    .status-post-user-name {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      font-size: 16px;
+    }
+    .status-post-business {
+      color: var(--bbm-red);
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+    .status-post-time {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .status-post-content {
+      margin-bottom: 16px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+      font-size: 16px;
+      overflow: hidden;
+    }
+    .status-post-content a {
+      color: #1d9bf0;
+      text-decoration: underline;
+    }
+    .status-post-content .more-toggle {
+      color: var(--bbm-red);
+      cursor: pointer;
+      font-weight: 600;
+      text-decoration: underline;
+    }
+    .status-actions {
+      display: flex;
+      gap: 24px;
+      font-size: 15px;
+      color: var(--text-secondary);
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      justify-content: center;
+    }
+    .status-actions span {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      transition: all 0.3s ease;
+    }
+    .status-actions span:hover {
+      color: var(--bbm-red);
+      background: rgba(212, 0, 0, 0.1);
+      transform: translateY(-1px);
+    }
+    .status-actions .material-icons {
+      font-size: 20px;
+    }
     @media (prefers-color-scheme: light) {
       :root {
         --bg: #f8f8f8;
@@ -451,6 +542,9 @@
     <section class="profile-hero" id="profile-header">
       <!-- Profile header content loaded via JS -->
     </section>
+    <div class="status-list" id="profile-statuses" style="display: none;">
+      <!-- Text statuses loaded here -->
+    </div>
   </main>
 
   <div id="spinner-overlay" class="spinner-overlay" aria-label="Loading spinner">
@@ -524,27 +618,151 @@
       return `${diffDay}d`;
     }
 
-    async function loadProfilePostCount() {
+    // New function to load and render text-only statuses
+    async function loadProfileStatuses() {
       if (!profileUserId) return;
       showSpinner();
+      const container = document.getElementById('profile-statuses');
+      container.innerHTML = '';
       try {
         const statusesRef = ref(db, 'statuses');
         const snapshot = await get(statusesRef);
         let userStatuses = [];
         if (snapshot.exists()) {
           Object.entries(snapshot.val()).forEach(([id, s]) => {
-            if (s.userId === profileUserId) {
+            if (s.userId === profileUserId && !s.mediaUrl && s.type !== 'repost') { // Text only, exclude reposts
               userStatuses.push({ statusId: id, ...s });
             }
           });
         }
+        userStatuses.sort((a, b) => b.timestamp - a.timestamp); // Most recent first
+        if (userStatuses.length === 0) {
+          container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No text statuses yet.</p>';
+        } else {
+          for (let status of userStatuses) {
+            // Fetch user data for header (should be profileUserData)
+            const postItem = document.createElement('div');
+            postItem.className = 'status-post';
+            postItem.setAttribute('data-status-id', status.statusId);
+            let innerHTML = '';
+            const isOwn = isOwnProfile;
+            let deleteHtml = '';
+            if (isOwn) {
+              deleteHtml = `<span onclick="deleteStatus('${status.statusId}')" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: var(--text-secondary); cursor: pointer;"><span class="material-icons">delete</span></span>`;
+            }
+            let nameHtml = profileUserData?.displayName || 'User';
+            if (profileUserData?.verified) {
+              nameHtml += verifiedIcon;
+            }
+            let businessHtml = profileUserData?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+            let contentHtml = '';
+            if (status.content) {
+              const highlightedContent = highlightContent(status.content);
+              contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
+            }
+            let reposts = 0;
+            let likes = 0;
+            let comments = 0;
+            let isLiked = false;
+            let likeIcon = 'favorite_border';
+            try {
+              const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
+              reposts = repostsSnap.val() || 0;
+              const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+              likes = Object.keys(likesSnap.val() || {}).length;
+              const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+              comments = Object.keys(commentsSnap.val() || {}).length;
+              if (currentUser) {
+                const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+                const likeSnap = await get(likeRef);
+                isLiked = likeSnap.exists();
+                likeIcon = isLiked ? 'favorite' : 'favorite_border';
+              }
+            } catch (e) {
+              console.warn(`Failed to load counts for status ${status.statusId}:`, e);
+            }
+            innerHTML = `
+              ${deleteHtml}
+              <div class="status-post-header">
+                <div class="status-post-user">
+                  <div class="status-post-user-name">${nameHtml}</div>
+                  ${businessHtml}
+                  <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                </div>
+              </div>
+              ${contentHtml}
+              <div class="status-actions">
+                <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+                <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+                <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+              </div>
+            `;
+            postItem.innerHTML = innerHTML;
+            // Setup long press for edit if own
+            if (isOwn) {
+              setupLongPress(postItem, status.statusId);
+            }
+            container.appendChild(postItem);
+          }
+        }
+        container.style.display = 'block';
+        // Update post count to text only
         const postStat = document.querySelector('.stat-number:first-child');
         if (postStat) postStat.textContent = formatNumber(userStatuses.length);
       } catch (error) {
-        console.error('Failed to load profile post count:', error);
+        console.error('Failed to load profile statuses:', error);
+        container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Failed to load statuses.</p>';
+        container.style.display = 'block';
       } finally {
         hideSpinner();
       }
+    }
+
+    // Helper for highlighting content
+    function highlightContent(content) {
+      let highlighted = content.replace(/@(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">@$1</span>');
+      highlighted = highlighted.replace(/#(\w+)/g, '<span style="color: #1d9bf0; font-weight: 600;">#$1</span>');
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      highlighted = highlighted.replace(urlRegex, '<a href="$1" target="_blank" style="color: #1d9bf0; text-decoration: underline;">$1</a>');
+      return highlighted;
+    }
+
+    // Long press for edit (copied from main app)
+    function setupLongPress(postItem, statusId) {
+      let pressTimer;
+      const LONG_PRESS_TIME = 500;
+      const handleLongPress = () => {
+        editStatus(statusId);
+      };
+      const clearPressTimer = () => {
+        if (pressTimer) clearTimeout(pressTimer);
+        pressTimer = null;
+      };
+      // Touch events
+      postItem.addEventListener('touchstart', (e) => {
+        pressTimer = setTimeout(handleLongPress, LONG_PRESS_TIME);
+      });
+      postItem.addEventListener('touchmove', clearPressTimer);
+      postItem.addEventListener('touchend', clearPressTimer);
+      postItem.addEventListener('touchcancel', clearPressTimer);
+      // Mouse events
+      postItem.addEventListener('mousedown', (e) => {
+        pressTimer = setTimeout(handleLongPress, LONG_PRESS_TIME);
+      });
+      postItem.addEventListener('mousemove', clearPressTimer);
+      postItem.addEventListener('mouseup', clearPressTimer);
+      postItem.addEventListener('mouseleave', clearPressTimer);
+    }
+
+    // Stub functions for interactions (implement as needed, or link to main app modals)
+    window.likeStatus = async (statusId) => { /* Implement like logic */ };
+    window.openComments = (statusId) => { /* Implement comment modal */ };
+    window.openRepostModal = (statusId) => { /* Implement repost sheet */ };
+    window.deleteStatus = async (statusId) => { /* Implement delete */ };
+    window.editStatus = async (statusId) => { /* Implement edit */ };
+
+    async function loadProfilePostCount() {
+      // Now counts only text statuses via loadProfileStatuses
     }
 
     async function signOutUser() {
@@ -656,7 +874,7 @@
         if (profileUserData) {
           isOwnProfile = currentUser && currentUser.uid === userId;
           renderProfileHeader();
-          loadProfilePostCount(); // Load post count only
+          loadProfileStatuses(); // Load text statuses
         } else {
           showAlert('User not found.');
         }
@@ -668,7 +886,7 @@
       const header = document.getElementById('profile-header');
       const followerCount = Object.keys(profileUserData.followers || {}).length;
       const followingCount = Object.keys(profileUserData.following || {}).length;
-      const postCount = Object.keys(profileUserData.posts || {}).length;
+      const postCount = 0; // Will be updated by loadProfileStatuses
       const isVerified = profileUserData.verified || false;
       const isLive = profileUserData?.isLive || false;
       const isFollowing = currentUser && profileUserId !== currentUser.uid && profileUserData?.followers && profileUserData.followers[currentUser.uid];
