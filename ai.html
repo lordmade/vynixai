@@ -513,6 +513,35 @@
       });
     }
 
+    // Custom loader for the simplified model format
+    async function loadModelFromSaved(saved) {
+      if (!saved.vocab || !saved.uniqueAnswers || !saved.inputDim || !saved.numClasses || !saved.weights) {
+        throw new Error('Missing model components (vocab, answers, inputDim, numClasses, or weights). Retrain in dashboard.');
+      }
+
+      // Recreate the fixed architecture
+      const model = tf.sequential({
+        layers: [
+          tf.layers.dense({ inputShape: [saved.inputDim], units: 64, activation: 'relu' }),
+          tf.layers.dropout({ rate: 0.2 }),
+          tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
+        ]
+      });
+
+      model.compile({
+        optimizer: 'adam',
+        loss: 'categoricalCrossentropy',
+        metrics: ['accuracy']
+      });
+
+      // Set the trained weights
+      const weightTensors = saved.weights.map(arr => tf.tensor(arr));
+      model.setWeights(weightTensors);
+      weightTensors.forEach(t => t.dispose());
+
+      return model;
+    }
+
     // Load the pre-trained TF model
     async function loadModel() {
       elements.modelProgress.value = 60;
@@ -521,7 +550,7 @@
       onValue(modelRef, async (snapshot) => {
         const data = snapshot.val();
         console.log('Raw model data from RTDB:', data);  // Debug log
-        if (!data || !data.model) {
+        if (!data || !data.vocab) {
           updateModelStatus('No trained model found. Using basic responses.');
           elements.modelProgress.value = 100;
           vynixModel = null;
@@ -536,47 +565,16 @@
           updateModelStatus('Preparing model...');
           elements.modelProgress.value = 80;
 
-          const { vocab, uniqueAnswers, model: savedData } = data;
-          if (!vocab || !uniqueAnswers || !savedData.modelTopology) {
-            throw new Error('Missing model components (vocab, answers, or topology). Retrain in dashboard.');
-          }
-
-          // Rebuild model from topology config
-          const modelConfig = savedData.modelTopology;
-          const model = tf.sequential({
-            layers: modelConfig.layers.map(layerConfig => {
-              if (layerConfig.className === 'Dense') {
-                return tf.layers.dense({
-                  units: layerConfig.config.units,
-                  activation: layerConfig.config.activation,
-                  inputShape: layerConfig.config.inputShape ? [layerConfig.config.inputShape[1]] : undefined  // Handle inputShape
-                });
-              } else if (layerConfig.className === 'Dropout') {
-                return tf.layers.dropout({ rate: layerConfig.config.rate });
-              }
-              throw new Error(`Unsupported layer: ${layerConfig.className}`);
-            })
-          });
-
-          model.compile({
-            optimizer: savedData.trainingConfig ? savedData.trainingConfig.optimizer_config.optimizer : 'adam',
-            loss: savedData.trainingConfig ? savedData.trainingConfig.loss : 'categoricalCrossentropy',
-            metrics: savedData.trainingConfig ? savedData.trainingConfig.metrics : ['accuracy']
-          });
-
-          // Load weights if present (as arrays from RTDB)
-          if (savedData.weights && Array.isArray(savedData.weights) && savedData.weights.length > 0) {
-            const weightTensors = savedData.weights.map(weightArray => tf.tensor(weightArray));
-            model.setWeights(weightTensors);
-            weightTensors.forEach(t => t.dispose());  // Cleanup
-          } else {
-            console.warn('No weights found in model data. Model untrained.');
-          }
-
-          vynixModel = { model, vocab, uniqueAnswers };
+          // Load using custom function
+          const loadedModel = await loadModelFromSaved(data);
+          vynixModel = { 
+            model: loadedModel, 
+            vocab: data.vocab, 
+            uniqueAnswers: data.uniqueAnswers 
+          };
 
           elements.modelProgress.value = 100;
-          updateModelStatus(`Model loaded! (${vocab.length} words, ${uniqueAnswers.length} responses, ${savedData.weights ? 'weights OK' : 'no weights'})`);
+          updateModelStatus(`Model loaded! (${data.vocab.length} words, ${data.uniqueAnswers.length} responses)`);
 
           // Notification
           elements.retrainNotification.textContent = `Vynix updated! 🧠`;
