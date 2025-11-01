@@ -398,7 +398,7 @@
 
     let currentUser;
     let trainingData = {};  // For fallback
-    let vynixModel = null;  // { model, vocab, uniqueAnswers }
+    let vynixModel = null;  // { model, vocab, uniqueAnswers, modelType, ... }
     let lastModelTimestamp = 0;
     let hasChatted = false;
     let messages = [];
@@ -431,7 +431,7 @@
       return messageDiv;
     }
 
-    // Vectorizer matching dashboard (textToVector)
+    // Vectorizer matching dashboard (textToVector for classifier)
     function textToVector(text, vocab) {
       const vec = new Array(vocab.length).fill(0);
       const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1);
@@ -471,12 +471,25 @@
       if (!vynixModel) return generateFallbackReply(userQuery);
 
       try {
-        const { model, vocab, uniqueAnswers } = vynixModel;
-        const inputVec = textToVector(userQuery, vocab);
-        const pred = model.predict(tf.tensor2d([inputVec]));
-        const predIdx = (await pred.argMax(-1).data())[0];
+        const { model, vocab, uniqueAnswers, modelType } = vynixModel;
+        let inputTensor;
+        if (modelType === 'classifier') {
+          const inputVec = textToVector(userQuery, vocab);
+          inputTensor = tf.tensor2d([inputVec]);
+        } else { // lstm
+          const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1]]);
+          vocab.forEach((word, i) => wordToIdx.set(word, i + 2));
+          const words = userQuery.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+          let seq = words.map(w => wordToIdx.get(w) || 1);
+          seq = seq.concat(Array(vynixModel.maxLen - seq.length).fill(0));
+          seq = seq.slice(0, vynixModel.maxLen);
+          inputTensor = tf.tensor2d([seq]);
+        }
+        const pred = model.predict(inputTensor);
+        const predIdx = pred.argMax(-1).dataSync()[0];
         const response = uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
         pred.dispose();
+        inputTensor.dispose();
         return response;
       } catch (error) {
         console.error('Prediction error:', error);
@@ -515,19 +528,41 @@
 
     // Custom loader for the simplified model format
     async function loadModelFromSaved(saved) {
-      if (!saved.vocab || !saved.uniqueAnswers || !saved.inputDim || !saved.numClasses || !saved.weights) {
-        throw new Error('Missing model components (vocab, answers, inputDim, numClasses, or weights). Retrain in dashboard.');
+      if (!saved.vocab || !saved.uniqueAnswers || !saved.weights) {
+        throw new Error('Missing model components (vocab, answers, or weights). Retrain in dashboard.');
       }
 
-      // Recreate the fixed architecture
-      const model = tf.sequential({
-        layers: [
-          tf.layers.dense({ inputShape: [saved.inputDim], units: 64, activation: 'relu' }),
-          tf.layers.dropout({ rate: 0.2 }),
-          tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
-        ]
-      });
-
+      let model;
+      if (saved.modelType === 'classifier') {
+        if (!saved.inputDim || !saved.numClasses) {
+          throw new Error('Missing classifier params (inputDim, numClasses).');
+        }
+        model = tf.sequential({
+          layers: [
+            tf.layers.dense({ inputShape: [saved.inputDim], units: 64, activation: 'relu' }),
+            tf.layers.dropout({ rate: 0.2 }),
+            tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
+          ]
+        });
+      } else { // lstm
+        if (!saved.vocabSize || !saved.maxLen || !saved.numClasses) {
+          throw new Error('Missing LSTM params (vocabSize, maxLen, numClasses).');
+        }
+        model = tf.sequential({
+          layers: [
+            tf.layers.embedding({
+              inputDim: saved.vocabSize,
+              outputDim: saved.embedDim || 32,
+              inputLength: saved.maxLen
+            }),
+            tf.layers.lstm({
+              units: saved.lstmUnits || 64,
+              dropout: 0.2
+            }),
+            tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
+          ]
+        });
+      }
       model.compile({
         optimizer: 'adam',
         loss: 'categoricalCrossentropy',
@@ -545,7 +580,7 @@
     // Load the pre-trained TF model
     async function loadModel() {
       elements.modelProgress.value = 60;
-      updateModelStatus('Loading AI model...');
+      updateModelStatus('Loading Vynix AI model...');
       const modelRef = ref(db, 'models/current-model');
       onValue(modelRef, async (snapshot) => {
         const data = snapshot.val();
@@ -570,14 +605,17 @@
           vynixModel = { 
             model: loadedModel, 
             vocab: data.vocab, 
-            uniqueAnswers: data.uniqueAnswers 
+            uniqueAnswers: data.uniqueAnswers,
+            modelType: data.modelType,
+            ...(data.modelType === 'lstm' ? { maxLen: data.maxLen } : {})
           };
 
           elements.modelProgress.value = 100;
-          updateModelStatus(`Model loaded! (${data.vocab.length} words, ${data.uniqueAnswers.length} responses)`);
+          const version = data.version || '1.0';
+          updateModelStatus(`Vynix-Quantum-1 loaded!`);
 
           // Notification
-          elements.retrainNotification.textContent = `Vynix updated! 🧠`;
+          elements.retrainNotification.textContent = `Vynix-Quantum-1 updated! 🧠`;
           elements.retrainNotification.classList.remove('hidden');
           setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
 
