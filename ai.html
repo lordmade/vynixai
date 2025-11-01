@@ -470,13 +470,18 @@
     async function generateModelReply(userQuery) {
       if (!vynixModel) return generateFallbackReply(userQuery);
 
-      const { model, vocab, uniqueAnswers } = vynixModel;
-      const inputVec = textToVector(userQuery, vocab);
-      const pred = model.predict(tf.tensor2d([inputVec]));
-      const predIdx = (await pred.argMax(-1).data())[0];
-      const response = uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
-      pred.dispose();
-      return response;
+      try {
+        const { model, vocab, uniqueAnswers } = vynixModel;
+        const inputVec = textToVector(userQuery, vocab);
+        const pred = model.predict(tf.tensor2d([inputVec]));
+        const predIdx = (await pred.argMax(-1).data())[0];
+        const response = uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
+        pred.dispose();
+        return response;
+      } catch (error) {
+        console.error('Prediction error:', error);
+        return generateFallbackReply(userQuery);
+      }
     }
 
     async function sendMessage() {
@@ -515,9 +520,11 @@
       const modelRef = ref(db, 'models/current-model');
       onValue(modelRef, async (snapshot) => {
         const data = snapshot.val();
+        console.log('Raw model data from RTDB:', data);  // Debug log
         if (!data || !data.model) {
           updateModelStatus('No trained model found. Using basic responses.');
           elements.modelProgress.value = 100;
+          vynixModel = null;
           return;
         }
 
@@ -529,27 +536,59 @@
           updateModelStatus('Preparing model...');
           elements.modelProgress.value = 80;
 
-          const { vocab, uniqueAnswers, model: modelJson } = data;
-          vynixModel = {
-            model: await tf.loadLayersModel(tf.Model.jsonFromJSON(modelJson)),
-            vocab,
-            uniqueAnswers
-          };
+          const { vocab, uniqueAnswers, model: savedData } = data;
+          if (!vocab || !uniqueAnswers || !savedData.modelTopology) {
+            throw new Error('Missing model components (vocab, answers, or topology). Retrain in dashboard.');
+          }
+
+          // Rebuild model from topology config
+          const modelConfig = savedData.modelTopology;
+          const model = tf.sequential({
+            layers: modelConfig.layers.map(layerConfig => {
+              if (layerConfig.className === 'Dense') {
+                return tf.layers.dense({
+                  units: layerConfig.config.units,
+                  activation: layerConfig.config.activation,
+                  inputShape: layerConfig.config.inputShape ? [layerConfig.config.inputShape[1]] : undefined  // Handle inputShape
+                });
+              } else if (layerConfig.className === 'Dropout') {
+                return tf.layers.dropout({ rate: layerConfig.config.rate });
+              }
+              throw new Error(`Unsupported layer: ${layerConfig.className}`);
+            })
+          });
+
+          model.compile({
+            optimizer: savedData.trainingConfig ? savedData.trainingConfig.optimizer_config.optimizer : 'adam',
+            loss: savedData.trainingConfig ? savedData.trainingConfig.loss : 'categoricalCrossentropy',
+            metrics: savedData.trainingConfig ? savedData.trainingConfig.metrics : ['accuracy']
+          });
+
+          // Load weights if present (as arrays from RTDB)
+          if (savedData.weights && Array.isArray(savedData.weights) && savedData.weights.length > 0) {
+            const weightTensors = savedData.weights.map(weightArray => tf.tensor(weightArray));
+            model.setWeights(weightTensors);
+            weightTensors.forEach(t => t.dispose());  // Cleanup
+          } else {
+            console.warn('No weights found in model data. Model untrained.');
+          }
+
+          vynixModel = { model, vocab, uniqueAnswers };
 
           elements.modelProgress.value = 100;
-          updateModelStatus(`Model loaded! (${vocab.length} words, ${uniqueAnswers.length} responses)`);
+          updateModelStatus(`Model loaded! (${vocab.length} words, ${uniqueAnswers.length} responses, ${savedData.weights ? 'weights OK' : 'no weights'})`);
 
-          // Show notification
-          elements.retrainNotification.textContent = `Vynix updated with new training! 🧠`;
+          // Notification
+          elements.retrainNotification.textContent = `Vynix updated! 🧠`;
           elements.retrainNotification.classList.remove('hidden');
           setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
 
           console.log('Model loaded successfully');
         } catch (error) {
-          console.error('Model load error:', error);
-          updateModelStatus('Model load failed. Using basic mode.');
+          console.error('Detailed model load error:', error);
+          updateModelStatus('Model load failed. Check console.');
           vynixModel = null;
-          showError('AI model failed to load. Continuing with basic responses.');
+          showError(`AI model failed: ${error.message}. Basic mode active.`);
         }
       }, (error) => {
         console.error('Model fetch error:', error);
@@ -573,11 +612,12 @@
 
     elements.newConversationButton.addEventListener('click', startNewConversation);
 
-    onAuthStateChanged(auth, (user) => {
+    onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
         elements.loadingText.textContent = 'Connected! Initializing Vynix...';
         elements.modelProgress.value = 20;
+        await tf.ready();  // Ensure TF.js ready
         loadTrainingData();  // Fallback
         loadModel();  // Main model
         setTimeout(() => {
