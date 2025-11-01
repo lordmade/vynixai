@@ -8,7 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.23/dist/brain-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -300,6 +300,13 @@
       font-family: 'Orbitron', monospace;
       font-weight: 700;
     }
+    .model-status {
+      text-align: center;
+      padding: 10px;
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-top: 10px;
+    }
     @media (min-width: 1024px) {
       .chat-input-container {
         margin: 0;
@@ -327,6 +334,7 @@
       <span class="typing-dot"></span>
       <span class="typing-dot"></span>
     </div>
+    <div id="model-status" class="model-status"></div>
   </div>
 
   <!-- Retrain Notification -->
@@ -377,6 +385,7 @@
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
       modelProgress: document.getElementById('model-progress'),
+      modelStatus: document.getElementById('model-status'),
       errorMessage: document.getElementById('error-message'),
       welcomeContainer: document.getElementById('welcome-container'),
       chatMessages: document.getElementById('chat-messages'),
@@ -388,11 +397,11 @@
     };
 
     let currentUser;
-    let trainingData = {};
+    let trainingData = {};  // For fallback
+    let vynixModel = null;  // { model, vocab, uniqueAnswers }
+    let lastModelTimestamp = 0;
     let hasChatted = false;
     let messages = [];
-    let net;  // The trained network
-    let vocab = [];  // Vocabulary for vectorization
 
     function showError(msg) {
       elements.errorMessage.textContent = msg;
@@ -402,6 +411,10 @@
 
     function hideError() {
       elements.errorMessage.classList.add('hidden');
+    }
+
+    function updateModelStatus(status) {
+      elements.modelStatus.textContent = status;
     }
 
     function addMessage(content, isUser = false, isTyping = false) {
@@ -418,18 +431,18 @@
       return messageDiv;
     }
 
-    // Simple vectorizer function (bag-of-words style)
-    function vectorize(text, vocab) {
-      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+    // Vectorizer matching dashboard (textToVector)
+    function textToVector(text, vocab) {
       const vec = new Array(vocab.length).fill(0);
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1);
       words.forEach(word => {
         const idx = vocab.indexOf(word);
-        if (idx > -1) vec[idx] = 1;  // One-hot like for presence
+        if (idx > -1) vec[idx] = 1;
       });
       return vec;
     }
 
-    // Fallback rule-based reply
+    // Fallback rule-based reply using training_data
     function generateFallbackReply(userQuery) {
       const loweredQuery = userQuery.toLowerCase().trim();
 
@@ -453,16 +466,17 @@
       return "I'm not sure how to respond to that yet. Am currently still learning 🤓!";
     }
 
-    function generateReply(userQuery) {
-      if (!net) return generateFallbackReply(userQuery);
-      
-      const queryVec = vectorize(userQuery, vocab);
-      const output = net.run(queryVec);  // Returns { "0": 0.95, "1": 0.02, ... } probabilities
-      
-      // Find highest prob response
-      const bestId = Object.keys(output).reduce((a, b) => output[a] > output[b] ? a : b);
-      const bestPair = trainingData[bestId];
-      return bestPair ? bestPair.a : generateFallbackReply(userQuery);
+    // Generate reply using loaded TF model
+    async function generateModelReply(userQuery) {
+      if (!vynixModel) return generateFallbackReply(userQuery);
+
+      const { model, vocab, uniqueAnswers } = vynixModel;
+      const inputVec = textToVector(userQuery, vocab);
+      const pred = model.predict(tf.tensor2d([inputVec]));
+      const predIdx = (await pred.argMax(-1).data())[0];
+      const response = uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
+      pred.dispose();
+      return response;
     }
 
     async function sendMessage() {
@@ -476,48 +490,70 @@
       elements.newConversationButton.classList.remove('hidden');
 
       const tempMsg = addMessage('', false, true);
-      setTimeout(() => {
-        const reply = generateReply(userQuery);
+      setTimeout(async () => {
+        const reply = await generateModelReply(userQuery);
         tempMsg.textContent = reply;
         tempMsg.classList.remove('processing');
       }, 500 + Math.random() * 500);
     }
 
+    // Load fallback training data
     function loadTrainingData() {
       const trainingRef = ref(db, 'training_data');
       onValue(trainingRef, (snapshot) => {
-        const data = snapshot.val() || {};
-        trainingData = data;
-        
-        // Build vocab from all queries
-        vocab = [...new Set(Object.values(data).flatMap(pair => pair ? pair.q.toLowerCase().split(/\s+/) : []))];
-        
-        // Prepare training examples: {input: queryVec, output: {responseId: 1}} where responseId indexes answers
-        const trainingExamples = Object.entries(data).map(([id, pair]) => {
-          if (!pair || !pair.q) return null;
-          return {
-            input: vectorize(pair.q, vocab),
-            output: { [id]: 1 }  // One-hot output for multi-class (each Q&A pair is a "class")
-          };
-        }).filter(Boolean);
-        
-        if (trainingExamples.length > 0) {
-          // Train the net
-          net = new brain.NeuralNetwork({ hiddenLayers: [3] });  // Simple architecture; tune as needed
-          net.train(trainingExamples, { iterations: 20000, log: true, logPeriod: 1000 });
-          
-          console.log(`Trained on ${trainingExamples.length} examples with vocab size ${vocab.length}`);
-          elements.retrainNotification.textContent = `Vynix retrained on ${trainingExamples.length} patterns! 🧠`;
-        } else {
-          console.log('No training data available.');
-          elements.retrainNotification.textContent = 'Vynix is ready, but needs training data! 📚';
-        }
-        
-        elements.retrainNotification.classList.remove('hidden');
-        setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
+        trainingData = snapshot.val() || {};
+        console.log(`Fallback data loaded: ${Object.keys(trainingData).length} pairs`);
       }, (error) => {
-        showError('Failed to load training data: ' + error.message);
-        console.error('Load data error:', error);
+        console.error('Fallback data error:', error);
+      });
+    }
+
+    // Load the pre-trained TF model
+    async function loadModel() {
+      elements.modelProgress.value = 60;
+      updateModelStatus('Loading AI model...');
+      const modelRef = ref(db, 'models/current-model');
+      onValue(modelRef, async (snapshot) => {
+        const data = snapshot.val();
+        if (!data || !data.model) {
+          updateModelStatus('No trained model found. Using basic responses.');
+          elements.modelProgress.value = 100;
+          return;
+        }
+
+        // Check for updates
+        if (data.timestamp <= lastModelTimestamp) return;
+        lastModelTimestamp = data.timestamp;
+
+        try {
+          updateModelStatus('Preparing model...');
+          elements.modelProgress.value = 80;
+
+          const { vocab, uniqueAnswers, model: modelJson } = data;
+          vynixModel = {
+            model: await tf.loadLayersModel(tf.Model.jsonFromJSON(modelJson)),
+            vocab,
+            uniqueAnswers
+          };
+
+          elements.modelProgress.value = 100;
+          updateModelStatus(`Model loaded! (${vocab.length} words, ${uniqueAnswers.length} responses)`);
+
+          // Show notification
+          elements.retrainNotification.textContent = `Vynix updated with new training! 🧠`;
+          elements.retrainNotification.classList.remove('hidden');
+          setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
+
+          console.log('Model loaded successfully');
+        } catch (error) {
+          console.error('Model load error:', error);
+          updateModelStatus('Model load failed. Using basic mode.');
+          vynixModel = null;
+          showError('AI model failed to load. Continuing with basic responses.');
+        }
+      }, (error) => {
+        console.error('Model fetch error:', error);
+        updateModelStatus('Failed to fetch model.');
       });
     }
 
@@ -540,16 +576,17 @@
     onAuthStateChanged(auth, (user) => {
       currentUser = user;
       if (user) {
-        elements.loadingText.textContent = 'Connected! Loading Vynix...';
-        elements.modelProgress.value = 50;
-        loadTrainingData();
+        elements.loadingText.textContent = 'Connected! Initializing Vynix...';
+        elements.modelProgress.value = 20;
+        loadTrainingData();  // Fallback
+        loadModel();  // Main model
         setTimeout(() => {
           elements.loadingOverlay.classList.add('hidden');
           elements.inputContainer.classList.remove('hidden');
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hi! I'm Vynix, your trained companion. Ask me something!`;
-        }, 1500);
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hi! I'm Vynix, your AI companion. Ask me anything!`;
+        }, 2500);
       } else {
-        elements.loadingText.textContent = 'Not connected. <button class="btn" onclick="signInAnonymously()">Connect Anonymously</button>';
+        elements.loadingText.innerHTML = 'Not connected. <button class="btn" onclick="signInAnonymously()" style="background: var(--bbm-red); color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Connect Anonymously</button>';
       }
     });
 
