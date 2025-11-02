@@ -52,7 +52,7 @@
       padding: 0.5rem 1rem;
       border-radius: 9999px;
       cursor: pointer;
-      transition: background 0.3s;
+      transition: background 0.3s ease;
       display: flex;
       align-items: center;
       gap: 0.5rem;
@@ -427,7 +427,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, push, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-    import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
+    import { getRemoteConfig, fetchAndActivate, getString, setConfigSettingsAsync } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -462,6 +462,46 @@
 
     let app, auth, db, remoteConfig, xaiApiKey = null;
 
+    // LocalStorage caching helpers
+    const CACHE_KEY = 'vynix_xai_api_key';
+    const CACHE_EXPIRATION = 24 * 60 * 60 * 1000; // 24 hours in ms
+
+    function getCachedApiKey() {
+      try {
+        const cached = localStorage.getItem(CACHE_KEY);
+        if (cached) {
+          const { value, timestamp } = JSON.parse(cached);
+          if (Date.now() - timestamp < CACHE_EXPIRATION) {
+            return value;
+          } else {
+            localStorage.removeItem(CACHE_KEY); // Expired, remove it
+          }
+        }
+      } catch (error) {
+        console.error('Failed to read cached API key:', error);
+      }
+      return null;
+    }
+
+    function setCachedApiKey(key) {
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          value: key,
+          timestamp: Date.now()
+        }));
+      } catch (error) {
+        console.error('Failed to cache API key:', error);
+      }
+    }
+
+    function clearCachedApiKey() {
+      try {
+        localStorage.removeItem(CACHE_KEY);
+      } catch (error) {
+        console.error('Failed to clear cached API key:', error);
+      }
+    }
+
     async function initializeFirebase() {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
@@ -473,28 +513,50 @@
         xai_api_key: ''
       };
 
+      // Configure cache settings for more control (e.g., minimum fetch interval)
+      await setConfigSettingsAsync(remoteConfig, {
+        minimumFetchIntervalMillis: 3600000 // 1 hour - adjust as needed
+      });
+
+      // Load from cache first as immediate fallback
+      xaiApiKey = getCachedApiKey();
+
       // Fetch and activate remote config
       try {
         const fetchResult = await fetchAndActivate(remoteConfig);
         if (fetchResult) {
-          xaiApiKey = getString(remoteConfig, 'xai_api_key');
-          console.log('Remote Config fetched and activated:', !!xaiApiKey);
+          const remoteKey = getString(remoteConfig, 'xai_api_key');
+          if (remoteKey && remoteKey !== '') {
+            xaiApiKey = remoteKey;
+            setCachedApiKey(xaiApiKey); // Update cache on successful fetch
+            console.log('Remote Config fetched and activated:', !!xaiApiKey);
+          }
         }
       } catch (error) {
         console.error('Remote Config fetch failed:', error);
-        xaiApiKey = getString(remoteConfig, 'xai_api_key'); // Use default
+        // Fall back to cached value if fetch fails
+        if (!xaiApiKey) {
+          xaiApiKey = getString(remoteConfig, 'xai_api_key'); // Use default (empty)
+        }
       }
 
-      // Optionally, set up periodic fetching (e.g., every 12 hours)
+      // Optionally, set up periodic fetching (e.g., every 1 hour to align with min interval)
       setInterval(async () => {
         try {
-          await fetchAndActivate(remoteConfig);
-          xaiApiKey = getString(remoteConfig, 'xai_api_key');
-          console.log('Remote Config refreshed');
+          const fetchResult = await fetchAndActivate(remoteConfig);
+          if (fetchResult) {
+            const remoteKey = getString(remoteConfig, 'xai_api_key');
+            if (remoteKey && remoteKey !== '') {
+              xaiApiKey = remoteKey;
+              setCachedApiKey(xaiApiKey);
+              console.log('Remote Config refreshed from cache/server');
+            }
+          }
         } catch (error) {
           console.error('Remote Config refresh failed:', error);
+          // On repeated failures, could clear cache if needed: clearCachedApiKey();
         }
-      }, 12 * 60 * 60 * 1000); // 12 hours
+      }, 3600000); // 1 hour
 
       onAuthStateChanged(auth, (user) => {
         if (user) {
