@@ -403,6 +403,10 @@
     let hasChatted = false;
     let messages = [];
 
+    // Seq2Seq tokens
+    const SPECIAL_TOKENS = { PAD: '<PAD>', SOS: '<SOS>', EOS: '<EOS>', UNK: '<UNK>' };
+    const STOPWORDS = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','is','are','was','were','i','you','he','she','it','we','they','this','that','what','how','why','when','where','my','your','his','her','its','our','their','me','him','us','them','be','have','do','does','did','will','would','can','could','should','may','might','must']);
+
     function showError(msg) {
       elements.errorMessage.textContent = msg;
       elements.errorMessage.classList.remove('hidden');
@@ -431,15 +435,25 @@
       return messageDiv;
     }
 
-    // Vectorizer matching dashboard (textToVector for classifier)
+    // TF.js Helpers for all models
+    function tokenize(text) {
+      return text.toLowerCase().split(/\s+/).filter(w => w.length > 1 && !STOPWORDS.has(w));
+    }
+
     function textToVector(text, vocab) {
       const vec = new Array(vocab.length).fill(0);
-      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1);
-      words.forEach(word => {
+      tokenize(text).forEach(word => {
         const idx = vocab.indexOf(word);
         if (idx > -1) vec[idx] = 1;
       });
       return vec;
+    }
+
+    function encoderSequence(text, wordToIdx, maxLen) {
+      const words = tokenize(text);
+      let seq = words.map(w => wordToIdx.get(w) || wordToIdx.get(SPECIAL_TOKENS.UNK));
+      seq = seq.concat(Array(maxLen - seq.length).fill(wordToIdx.get(SPECIAL_TOKENS.PAD)));
+      return seq.slice(0, maxLen);
     }
 
     // Fallback rule-based reply using training_data
@@ -471,30 +485,82 @@
       if (!vynixModel) return generateFallbackReply(userQuery);
 
       try {
-        const { model, vocab, uniqueAnswers, modelType } = vynixModel;
-        let inputTensor;
+        const { model, modelType } = vynixModel;
         if (modelType === 'classifier') {
-          const inputVec = textToVector(userQuery, vocab);
-          inputTensor = tf.tensor2d([inputVec]);
-        } else { // lstm
-          const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1]]);
-          vocab.forEach((word, i) => wordToIdx.set(word, i + 2));
-          const words = userQuery.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+          const inputVec = textToVector(userQuery, vynixModel.vocab);
+          const inputTensor = tf.tensor2d([inputVec]);
+          const pred = model.predict(inputTensor);
+          const predIdx = pred.argMax(-1).dataSync()[0];
+          const response = vynixModel.uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
+          pred.dispose();
+          inputTensor.dispose();
+          return response;
+        } else if (modelType === 'lstm') {
+          const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1], ...vynixModel.vocab.map((w, i) => [w, i + 2])]);
+          const words = tokenize(userQuery);
           let seq = words.map(w => wordToIdx.get(w) || 1);
           seq = seq.concat(Array(vynixModel.maxLen - seq.length).fill(0));
           seq = seq.slice(0, vynixModel.maxLen);
-          inputTensor = tf.tensor2d([seq]);
+          const inputTensor = tf.tensor2d([seq]);
+          const pred = model.predict(inputTensor);
+          const predIdx = pred.argMax(-1).dataSync()[0];
+          const response = vynixModel.uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
+          pred.dispose();
+          inputTensor.dispose();
+          return response;
+        } else if (modelType === 'seq2seq') {
+          const generated = await generateSeq2Seq(model, vynixModel.wordToIdx, vynixModel.idxToWord, userQuery, vynixModel.maxLen, vynixModel.vocabSize);
+          return generated || generateFallbackReply(userQuery);
         }
-        const pred = model.predict(inputTensor);
-        const predIdx = pred.argMax(-1).dataSync()[0];
-        const response = uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
-        pred.dispose();
-        inputTensor.dispose();
-        return response;
       } catch (error) {
         console.error('Prediction error:', error);
         return generateFallbackReply(userQuery);
       }
+    }
+
+    // Seq2Seq Generation
+    async function generateSeq2Seq(model, wordToIdx, idxToWord, question, maxLen, vocabSize) {
+      const inputSeq = tf.tensor2d([encoderSequence(question, wordToIdx, maxLen)]);
+      // Extract encoder states (manual forward pass since functional model)
+      const encoderEmbeddingLayer = model.layers.find(l => l.name === 'encoder_embedding'); // Assume named layers
+      if (!encoderEmbeddingLayer) throw new Error('Model layers not found');
+      const encoderEmbedding = encoderEmbeddingLayer.apply(inputSeq);
+      const encoderLSTM = model.layers.find(l => l.name === 'encoder_lstm');
+      const encoderStates = encoderLSTM.apply(encoderEmbedding);
+      const [h, c] = encoderStates; // Assuming returnState gives [h, c]
+
+      let generated = [];
+      let inputToken = tf.tensor2d([[wordToIdx.get(SPECIAL_TOKENS.SOS)]]);
+      let stop = false;
+      for (let t = 0; t < maxLen; t++) {
+        const decEmbeddingLayer = model.layers.find(l => l.name === 'decoder_embedding');
+        const decEmbedding = decEmbeddingLayer.apply(inputToken);
+        const decoderLSTM = model.layers.find(l => l.name === 'decoder_lstm');
+        const decOutput = decoderLSTM.apply(decEmbedding, { initialState: [h, c] });
+        const denseLayer = model.layers.find(l => l.name === 'dense');
+        const prediction = denseLayer.apply(decOutput);
+        const predictedId = prediction.argMax(-1).dataSync()[0][0];
+        const word = idxToWord.get(predictedId);
+        if (word && word !== SPECIAL_TOKENS.PAD) {
+          generated.push(word);
+        }
+        if (predictedId === wordToIdx.get(SPECIAL_TOKENS.EOS)) {
+          stop = true;
+          break;
+        }
+        inputToken.dispose();
+        inputToken = tf.tensor2d([[predictedId]]);
+        prediction.dispose();
+        decOutput.dispose();
+        decEmbedding.dispose();
+      }
+      inputSeq.dispose();
+      encoderEmbedding.dispose();
+      encoderStates.dispose();
+      h.dispose();
+      c.dispose();
+      inputToken.dispose();
+      return generated.join(' ');
     }
 
     async function sendMessage() {
@@ -526,10 +592,77 @@
       });
     }
 
-    // Custom loader for the simplified model format
+    // Seq2Seq Model Creator (for loading)
+    function createSeq2SeqModel(vocabSize, embedDim = 64, hiddenDim = 128, maxLen, layerNames = true) {
+      const encoderInputs = tf.input({shape: [maxLen], name: 'encoder_input'});
+      let encoderEmbedding = tf.layers.embedding({
+        inputDim: vocabSize,
+        outputDim: embedDim,
+        inputLength: maxLen,
+        name: 'encoder_embedding'
+      }).apply(encoderInputs);
+      const encoderLSTM = tf.layers.lstm({
+        units: hiddenDim,
+        returnSequences: false,
+        dropout: 0.2,
+        name: 'encoder_lstm'
+      });
+      const encoderOutputs = encoderLSTM.apply(encoderEmbedding);
+      const [encoderStatesH, encoderStatesC] = encoderOutputs; // Since returnState not used, adjust if needed
+
+      // For simplicity, use last hidden as states (full rnn returnState in TF.js functional is tricky; approximate)
+      const h = encoderOutputs; // Approximate h, c as single output for basic
+
+      const decoderInputs = tf.input({shape: [maxLen], name: 'decoder_input'});
+      let decoderEmbedding = tf.layers.embedding({
+        inputDim: vocabSize,
+        outputDim: embedDim,
+        inputLength: maxLen,
+        name: 'decoder_embedding'
+      }).apply(decoderInputs);
+      const decoderLSTM = tf.layers.lstm({
+        units: hiddenDim,
+        returnSequences: true,
+        dropout: 0.2,
+        name: 'decoder_lstm'
+      });
+      const decoderOutputs = decoderLSTM.apply(decoderEmbedding); // Initial state approx from encoder h
+      const dense = tf.layers.dense({
+        units: vocabSize,
+        activation: 'softmax',
+        name: 'dense'
+      });
+      const outputs = dense.apply(decoderOutputs);
+
+      const model = tf.model({
+        inputs: [encoderInputs, decoderInputs],
+        outputs
+      });
+      model.compile({
+        optimizer: 'adam',
+        loss: 'categoricalCrossentropy',
+        metrics: ['accuracy']
+      });
+      return model;
+    }
+
+    // Load Seq2Seq from saved
+    async function loadSeq2SeqModel(saved) {
+      const model = createSeq2SeqModel(saved.vocabSize, saved.embedDim, saved.lstmUnits, saved.maxLen);
+      const weightTensors = saved.weights.map(arr => tf.tensor(arr));
+      model.setWeights(weightTensors);
+      weightTensors.forEach(t => t.dispose());
+
+      const wordToIdx = new Map();
+      saved.vocab.forEach((word, idx) => wordToIdx.set(word, idx));
+      const idxToWord = new Map([...wordToIdx.entries()].map(([k, v]) => [v, k]));
+      return { model, wordToIdx, idxToWord };
+    }
+
+    // Custom loader for all model types
     async function loadModelFromSaved(saved) {
-      if (!saved.vocab || !saved.uniqueAnswers || !saved.weights) {
-        throw new Error('Missing model components (vocab, answers, or weights). Retrain in dashboard.');
+      if (!saved.vocab || !saved.weights) {
+        throw new Error('Missing model components (vocab or weights). Retrain in dashboard.');
       }
 
       let model;
@@ -544,7 +677,7 @@
             tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
           ]
         });
-      } else { // lstm
+      } else if (saved.modelType === 'lstm') {
         if (!saved.vocabSize || !saved.maxLen || !saved.numClasses) {
           throw new Error('Missing LSTM params (vocabSize, maxLen, numClasses).');
         }
@@ -562,6 +695,12 @@
             tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
           ]
         });
+      } else if (saved.modelType === 'seq2seq') {
+        if (!saved.vocabSize || !saved.maxLen) {
+          throw new Error('Missing Seq2Seq params (vocabSize, maxLen).');
+        }
+        const seqStuff = await loadSeq2SeqModel(saved);
+        return { model: seqStuff.model, ...seqStuff, vocabSize: saved.vocabSize, maxLen: saved.maxLen };
       }
       model.compile({
         optimizer: 'adam',
@@ -605,17 +744,23 @@
           vynixModel = { 
             model: loadedModel, 
             vocab: data.vocab, 
-            uniqueAnswers: data.uniqueAnswers,
+            ...(data.uniqueAnswers ? { uniqueAnswers: data.uniqueAnswers } : {}),
             modelType: data.modelType,
-            ...(data.modelType === 'lstm' ? { maxLen: data.maxLen } : {})
+            ...(data.modelType === 'lstm' ? { maxLen: data.maxLen, vocabSize: data.vocabSize } : {}),
+            ...(data.modelType === 'seq2seq' ? { 
+              wordToIdx: loadedModel.wordToIdx, 
+              idxToWord: loadedModel.idxToWord,
+              maxLen: data.maxLen, 
+              vocabSize: data.vocabSize 
+            } : {})
           };
 
           elements.modelProgress.value = 100;
           const version = data.version || '1.0';
-          updateModelStatus(`Vynix-Quantum-1 loaded!`);
+          updateModelStatus(`Vynix ${data.modelType.toUpperCase()} loaded! v${version}`);
 
           // Notification
-          elements.retrainNotification.textContent = `Vynix-Quantum-1 updated! 🧠`;
+          elements.retrainNotification.textContent = `Vynix ${data.modelType.toUpperCase()} updated! 🧠`;
           elements.retrainNotification.classList.remove('hidden');
           setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
 
