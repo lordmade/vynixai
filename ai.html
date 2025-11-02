@@ -104,14 +104,52 @@
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     }
 
-    #chat-input {
+    .input-wrapper {
       flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin: 0 0.5rem;
+    }
+
+    #chat-input {
       background: transparent;
       color: var(--text-primary);
       border: none;
-      padding: 0.75rem 0.5rem;
+      padding: 0.75rem 0;
       outline: none;
       font-size: 1rem;
+    }
+
+    #model-selector {
+      display: flex;
+      gap: 0.25rem;
+      overflow-x: auto;
+      padding: 0.25rem 0;
+      margin-top: 0.25rem;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    #model-selector::-webkit-scrollbar {
+      display: none;
+    }
+
+    .model-pill {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 9999px;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.2s;
+    }
+
+    .model-pill:hover,
+    .model-pill.active {
+      background: var(--highlight);
+      border-color: var(--highlight);
     }
 
     #send-button, #image-upload-button {
@@ -417,7 +455,10 @@
         </svg>
       </button>
       <input type="file" id="image-input" accept="image/*" style="display:none;">
-      <input type="text" id="chat-input" placeholder="What's on your mind?" aria-label="Type your prompt">
+      <div class="input-wrapper">
+        <input type="text" id="chat-input" placeholder="What's on your mind?" aria-label="Type your prompt">
+        <div id="model-selector"></div>
+      </div>
       <button id="send-button">
         <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M5 12l6-6m-6 6l6 6"/>
@@ -428,7 +469,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, get, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, get, push, set, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -462,10 +503,13 @@
       closeSidebar: document.getElementById('close-sidebar'),
       conversationList: document.getElementById('conversation-list'),
       imageUploadButton: document.getElementById('image-upload-button'),
-      imageInput: document.getElementById('image-input')
+      imageInput: document.getElementById('image-input'),
+      modelSelector: document.getElementById('model-selector')
     };
 
     let app, auth, db;
+    let currentModelId = null;
+    let models = {};
 
     // TF.js Helpers
     const STOPWORDS = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','is','are','was','were','i','you','he','she','it','we','they','this','that','what','how','why','when','where','my','your','his','her','its','our','their','me','him','us','them','be','have','do','does','did','will','would','can','could','should','may','might','must']);
@@ -512,7 +556,7 @@
         model.setWeights(weightTensors);
         weightTensors.forEach(t => t.dispose());
         return { model, vocab, uniqueAnswers, modelType: 'classifier' };
-      } else if (saved.modelType === 'lstm') {
+      } else if (saved.modelType === 'gru') {
         const vocab = saved.vocab;
         const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1]]);
         vocab.forEach((word, i) => wordToIdx.set(word, i + 2));
@@ -538,9 +582,48 @@
         const weightTensors = saved.weights.map(arr => tf.tensor(arr));
         model.setWeights(weightTensors);
         weightTensors.forEach(t => t.dispose());
-        return { model, wordToIdx, maxLen: saved.maxLen, uniqueAnswers, modelType: 'lstm' };
+        return { model, wordToIdx, maxLen: saved.maxLen, uniqueAnswers, modelType: 'gru' };
       }
       return null;
+    }
+
+    function renderModelPills() {
+      elements.modelSelector.innerHTML = '';
+      if (Object.keys(models).length === 0) {
+        const pill = document.createElement('div');
+        pill.className = 'model-pill';
+        pill.textContent = 'No models available';
+        pill.style.cursor = 'default';
+        elements.modelSelector.appendChild(pill);
+        return;
+      }
+      Object.entries(models).forEach(([key, m]) => {
+        const pill = document.createElement('button');
+        pill.className = 'model-pill';
+        pill.textContent = m.modelName || `vinaq v${m.version}`;
+        pill.dataset.modelKey = key;
+        if (key === currentModelId) pill.classList.add('active');
+        pill.addEventListener('click', async () => {
+          const selectedModel = models[key];
+          const loaded = await loadModelFromSaved(selectedModel);
+          if (loaded) {
+            if (state.loadedModel) {
+              state.loadedModel.dispose();
+            }
+            state.loadedModel = loaded.model;
+            state.modelType = loaded.modelType;
+            state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
+            if (loaded.vocab) state.loadedModel.vocab = loaded.vocab;
+            if (loaded.wordToIdx) state.loadedModel.wordToIdx = loaded.wordToIdx;
+            if (loaded.maxLen) state.loadedModel.maxLen = loaded.maxLen;
+            await set(ref(db, 'currentModelId'), key);
+            elements.modelSelector.queryElementsByClassName('model-pill').forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            console.log('Switched to model:', m.modelName);
+          }
+        });
+        elements.modelSelector.appendChild(pill);
+      });
     }
 
     async function getAIResponse(prompt, imageFile = null) {
@@ -554,7 +637,7 @@
           let inputData;
           if (state.modelType === 'classifier') {
             inputData = textToVector(prompt, state.loadedModel.vocab);
-          } else {  // lstm
+          } else {  // gru
             inputData = questionToSequence(prompt, state.loadedModel.wordToIdx, state.loadedModel.maxLen);
           }
           const inputTensor = tf.tensor2d([inputData]);
@@ -586,22 +669,38 @@
         if (user) {
           elements.chatInput.disabled = false;
           elements.sendButton.disabled = false;
-          // Load model from Firebase
-          const modelRef = ref(db, 'models/current-model');
-          const snap = await get(modelRef);
-          if (snap.exists()) {
-            const saved = snap.val();
-            const loaded = await loadModelFromSaved(saved);
-            if (loaded) {
-              state.loadedModel = loaded.model;
-              state.modelType = loaded.modelType;
-              if (loaded.vocab) state.loadedModel.vocab = loaded.vocab;
-              if (loaded.wordToIdx) state.loadedModel.wordToIdx = loaded.wordToIdx;
-              if (loaded.maxLen) state.loadedModel.maxLen = loaded.maxLen;
-              state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
-              console.log('Vynix model loaded:', saved.modelType);
+          // Load current model
+          const currentRef = ref(db, 'currentModelId');
+          onValue(currentRef, async (snap) => {
+            currentModelId = snap.val();
+            if (currentModelId) {
+              const modelRef = ref(db, `models/${currentModelId}`);
+              const modelSnap = await get(modelRef);
+              if (modelSnap.exists()) {
+                const saved = modelSnap.val();
+                const loaded = await loadModelFromSaved(saved);
+                if (loaded) {
+                  if (state.loadedModel) {
+                    state.loadedModel.dispose();
+                  }
+                  state.loadedModel = loaded.model;
+                  state.modelType = loaded.modelType;
+                  state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
+                  if (loaded.vocab) state.loadedModel.vocab = loaded.vocab;
+                  if (loaded.wordToIdx) state.loadedModel.wordToIdx = loaded.wordToIdx;
+                  if (loaded.maxLen) state.loadedModel.maxLen = loaded.maxLen;
+                  console.log('Current model loaded:', saved.modelType);
+                }
+              }
             }
-          }
+            renderModelPills();
+          });
+          // Listen for all models
+          const modelsRef = ref(db, 'models');
+          onValue(modelsRef, (snap) => {
+            models = snap.val() || {};
+            renderModelPills();
+          });
           loadConversations();
           elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}!`;
         } else {
