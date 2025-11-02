@@ -428,9 +428,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, get } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-
-    // Note: Removed GEMINI_API_KEY as we're using local model; fallback commented
+    import { getDatabase, ref, get, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -449,11 +447,7 @@
       conversationId: null,
       currentImage: null,
       loadedModel: null,
-      wordToIdx: null,
-      idxToWord: null,
-      maxLen: 25,
-      vocabSize: 0,
-      modelType: 'generative'  // Default to generative
+      modelType: null
     };
 
     const elements = {
@@ -473,11 +467,21 @@
 
     let app, auth, db;
 
-    // TF.js Helpers (from dashboard)
+    // TF.js Helpers
     const STOPWORDS = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','is','are','was','were','i','you','he','she','it','we','they','this','that','what','how','why','when','where','my','your','his','her','its','our','their','me','him','us','them','be','have','do','does','did','will','would','can','could','should','may','might','must']);
 
+    function textToVector(text, vocab) {
+      const vec = new Array(vocab.length).fill(0);
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+      words.forEach(word => {
+        const idx = vocab.indexOf(word);
+        if (idx > -1) vec[idx] = 1;
+      });
+      return vec;
+    }
+
     function questionToSequence(text, wordToIdx, maxLen) {
-      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1 && !STOPWORDS.has(w));
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 1);
       let seq = words.map(w => wordToIdx.get(w) || 1);
       seq = seq.concat(Array(maxLen - seq.length).fill(0));
       return seq.slice(0, maxLen);
@@ -487,131 +491,56 @@
       await tf.setBackend('webgl');
       await tf.ready();
       let model;
-      if (saved.modelType === 'generative') {
-        const embedLayer = tf.layers.embedding({ inputDim: saved.vocabSize, outputDim: 32, inputLength: saved.maxLen });
-        const encoderLSTM = tf.layers.lstm({ units: 64, returnState: true, dropout: 0.2 });
-        const decoderLSTM = tf.layers.lstm({ units: 64, returnSequences: true, dropout: 0.2 });
-        const dense = tf.layers.dense({ units: saved.vocabSize, activation: 'softmax' });
+      const uniqueAnswers = saved.uniqueAnswers;
+      const numClasses = saved.numClasses;
 
-        const wordToIdx = new Map(saved.wordToIdx);
-        const idxToWord = new Map(saved.idxToWord);
-
-        // Build models
-        const encoderInput = tf.input({shape: [saved.maxLen]});
-        const embedded = embedLayer.apply(encoderInput);
-        const encoderOutput = encoderLSTM.apply(embedded);
-        model = {
-          encoder: tf.model({ inputs: encoderInput, outputs: encoderOutput }),
-          embedLayer, encoderLSTM, decoderLSTM, dense, wordToIdx, idxToWord, vocabSize: saved.vocabSize, maxLen: saved.maxLen
-        };
-
-        // Decoder build (simplified for inference)
-        model.decoderInput = tf.input({shape: [saved.maxLen]});
-        model.stateInputH = tf.input({shape: [64]});
-        model.stateInputC = tf.input({shape: [64]});
-        const decEmbedded = embedLayer.apply(model.decoderInput);
-        const decLstmOut = decoderLSTM.apply(decEmbedded, { initialState: [model.stateInputH, model.stateInputC] });
-        const decOutput = dense.apply(decLstmOut);
-        model.decoder = tf.model({ inputs: [model.decoderInput, model.stateInputH, model.stateInputC], outputs: decOutput });
-
-        // Set weights (simplified; adjust based on exact layer counts)
-        const weights = saved.weights;
-        let wIdx = 0;
-        const setWeights = (layer, numKernels, numBiases) => {
-          if (layer.setWeights) {
-            const layerWeights = [
-              tf.tensor(weights[wIdx++]),  // Kernel
-              tf.tensor(weights[wIdx++])   // Bias
-            ];
-            layer.setWeights(layerWeights);
-            layerWeights.forEach(t => t.dispose());
-          }
-        };
-        // Embedding: 1 kernel, 1 bias? Adjust per layer
-        // For LSTM, more weights - this is approximate; test and refine
-        [embedLayer, encoderLSTM, decoderLSTM, dense].forEach(layer => setWeights(layer, 1, 1));  // Placeholder
-
-        model.encoder.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy' });
-        model.decoder.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy' });
-      } else {
-        // Fallback for other types (classifier/LSTM)
+      if (saved.modelType === 'classifier') {
+        const vocab = saved.vocab;
         model = tf.sequential({
           layers: [
-            tf.layers.embedding({ inputDim: saved.vocabSize || saved.inputDim, outputDim: 32, inputLength: saved.maxLen || 1 }),
-            tf.layers.lstm({ units: 64, dropout: 0.2 }),
-            tf.layers.dense({ units: saved.numClasses || saved.uniqueAnswers.length, activation: 'softmax' })
+            tf.layers.dense({ inputShape: [saved.inputDim], units: 16, activation: 'relu' }),
+            tf.layers.dropout({ rate: 0.3 }),
+            tf.layers.dense({ units: numClasses, activation: 'softmax' })
           ]
         });
-        model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
+        model.compile({
+          optimizer: tf.train.adam(0.001),
+          loss: 'categoricalCrossentropy',
+          metrics: ['accuracy']
+        });
         const weightTensors = saved.weights.map(arr => tf.tensor(arr));
         model.setWeights(weightTensors);
         weightTensors.forEach(t => t.dispose());
+        return { model, vocab, uniqueAnswers, modelType: 'classifier' };
+      } else if (saved.modelType === 'lstm') {
+        const vocab = saved.vocab;
+        const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1]]);
+        vocab.forEach((word, i) => wordToIdx.set(word, i + 2));
+        model = tf.sequential({
+          layers: [
+            tf.layers.embedding({
+              inputDim: saved.vocabSize,
+              outputDim: saved.embedDim || 8,
+              inputLength: saved.maxLen
+            }),
+            tf.layers.gru({
+              units: saved.gruUnits || 16,
+              dropout: 0.3
+            }),
+            tf.layers.dense({ units: numClasses, activation: 'softmax' })
+          ]
+        });
+        model.compile({
+          optimizer: tf.train.adam(0.001),
+          loss: 'categoricalCrossentropy',
+          metrics: ['accuracy']
+        });
+        const weightTensors = saved.weights.map(arr => tf.tensor(arr));
+        model.setWeights(weightTensors);
+        weightTensors.forEach(t => t.dispose());
+        return { model, wordToIdx, maxLen: saved.maxLen, uniqueAnswers, modelType: 'lstm' };
       }
-      return { model, wordToIdx: saved.wordToIdx ? new Map(saved.wordToIdx) : null, idxToWord: saved.idxToWord ? new Map(saved.idxToWord) : null, modelType: saved.modelType };
-    }
-
-    async function generateResponse(modelObj, inputText, temperature = 0.7, topP = 0.9, repetitionPenalty = 1.1) {
-      if (!modelObj.wordToIdx || modelObj.modelType !== 'generative') {
-        return 'Model not ready for generation. Train a generative model in dashboard.';
-      }
-      const { model, wordToIdx, idxToWord, maxLen } = modelObj;
-      const inputSeq = questionToSequence(inputText, wordToIdx, maxLen);
-      let inputTensor = tf.tensor2d([inputSeq]);
-      let [h, c] = await model.encoder.predict(inputTensor);
-      inputTensor.dispose();
-
-      let outputSeq = [2];  // <START>
-      let generated = [];
-      const recentWords = new Set();
-
-      for (let i = 0; i < maxLen; i++) {
-        let decInput = tf.tensor2d([outputSeq.slice(-10).concat(Array(maxLen - 10).fill(0))]);
-        let [nextProbs] = await model.decoder.predict([decInput, h, c]);
-        decInput.dispose();
-
-        let probsData = nextProbs.dataSync()[0];
-        nextProbs.dispose();
-
-        // Repetition penalty
-        for (let j = 0; j < probsData.length; j++) {
-          const word = idxToWord.get(j);
-          if (recentWords.has(word) && word !== '<END>') probsData[j] /= repetitionPenalty;
-        }
-        const sum = probsData.reduce((a, b) => a + b, 0);
-        probsData = probsData.map(p => p / sum);
-
-        // Top-p sampling
-        let sortedProbs = [...probsData].sort((a, b) => b - a);
-        let sortedIdx = probsData.map((_, i) => i).sort((a, b) => probsData[b] - probsData[a]);
-        let cumProb = 0, cutoff = 0;
-        for (let j = 0; j < sortedProbs.length; j++) {
-          cumProb += sortedProbs[j];
-          if (cumProb > topP) { cutoff = j + 1; break; }
-        }
-        let candidates = sortedIdx.slice(0, cutoff);
-        let candidateProbs = candidates.map(idx => probsData[idx] ** (1 / temperature));
-        let candSum = candidateProbs.reduce((a, b) => a + b, 0);
-        let rand = Math.random() * candSum;
-        let cumulative = 0, nextIdx = candidates[0];
-        for (let j = 0; j < candidateProbs.length; j++) {
-          cumulative += candidateProbs[j];
-          if (rand <= cumulative) { nextIdx = candidates[j]; break; }
-        }
-
-        const word = idxToWord.get(nextIdx) || '<UNK>';
-        generated.push(word);
-        recentWords.add(word);
-        if (recentWords.size > 10) recentWords.delete([...recentWords][0]);
-
-        if (word === '<END>' || word === '<UNK>' || generated.length > 15) break;
-        outputSeq.push(nextIdx);
-        outputSeq = outputSeq.slice(-maxLen);
-
-        // Update states (simplified; in full, predict new h/c)
-        // For brevity, reuse last states - improve if needed
-      }
-      h.dispose(); c.dispose();
-      return generated.join(' ').replace(/\b(?:the|a|an|and|or|but)\s+/gi, ' ').trim() || 'I\'m not sure how to respond to that yet.';
+      return null;
     }
 
     async function getAIResponse(prompt, imageFile = null) {
@@ -621,27 +550,23 @@
       }
       const tempMsg = appendMessage('', 'ai', true);
       try {
-        // Use local model if loaded
-        if (state.loadedModel) {
-          let responseText;
-          if (state.modelType === 'generative') {
-            responseText = await generateResponse(state.loadedModel, prompt);
-          } else {
-            // Fallback for classifier/LSTM: predict class and map to answer
-            const inputSeq = questionToSequence(prompt, new Map([['<PAD>', 0], ['<UNK>', 1]]), state.maxLen);  // Simplified
-            const inputTensor = tf.tensor2d([inputSeq]);
-            const pred = state.loadedModel.predict(inputTensor);
-            const predIdx = pred.argMax(-1).dataSync()[0];
-            responseText = state.loadedModel.uniqueAnswers ? state.loadedModel.uniqueAnswers[predIdx] : 'Response from classifier.';
-            pred.dispose(); inputTensor.dispose();
+        if (state.loadedModel && state.modelType) {
+          let inputData;
+          if (state.modelType === 'classifier') {
+            inputData = textToVector(prompt, state.loadedModel.vocab);
+          } else {  // lstm
+            inputData = questionToSequence(prompt, state.loadedModel.wordToIdx, state.loadedModel.maxLen);
           }
+          const inputTensor = tf.tensor2d([inputData]);
+          const pred = state.loadedModel.predict(inputTensor);
+          const predIdx = pred.argMax(-1).dataSync()[0];
+          const responseText = state.loadedModel.uniqueAnswers[predIdx];
+          pred.dispose();
+          inputTensor.dispose();
           tempMsg.textContent = responseText;
           tempMsg.classList.remove('processing');
         } else {
-          // Fallback to Gemini (uncomment if needed)
-          // const GEMINI_API_KEY = '...';
-          // ... Gemini fetch code ...
-          tempMsg.textContent = 'Model loading... Using fallback response.';
+          tempMsg.textContent = 'Model not loaded yet. Please train a model in the dashboard.';
           tempMsg.classList.remove('processing');
         }
         if ('vibrate' in navigator) navigator.vibrate(100);
@@ -667,14 +592,15 @@
           if (snap.exists()) {
             const saved = snap.val();
             const loaded = await loadModelFromSaved(saved);
-            state.loadedModel = loaded.model;
-            state.wordToIdx = loaded.wordToIdx;
-            state.idxToWord = loaded.idxToWord;
-            state.modelType = saved.modelType;
-            state.maxLen = saved.maxLen || 25;
-            state.vocabSize = saved.vocabSize || saved.inputDim || 0;
-            if (saved.uniqueAnswers) state.loadedModel.uniqueAnswers = saved.uniqueAnswers;
-            console.log('Vynix model loaded:', saved.modelType);
+            if (loaded) {
+              state.loadedModel = loaded.model;
+              state.modelType = loaded.modelType;
+              if (loaded.vocab) state.loadedModel.vocab = loaded.vocab;
+              if (loaded.wordToIdx) state.loadedModel.wordToIdx = loaded.wordToIdx;
+              if (loaded.maxLen) state.loadedModel.maxLen = loaded.maxLen;
+              state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
+              console.log('Vynix model loaded:', saved.modelType);
+            }
           }
           loadConversations();
           elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}!`;
