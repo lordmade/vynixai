@@ -8,6 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -337,6 +338,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, push, onValue, set, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -352,6 +354,12 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
+    const remoteConfig = getRemoteConfig(app);
+
+    // Set default values for Remote Config
+    remoteConfig.defaultConfig = {
+      openrouter_api_key: 'sk-or-v1-default-placeholder-key' // Fallback default
+    };
 
     const elements = {
       loadingOverlay: document.getElementById('loading-overlay'),
@@ -365,8 +373,8 @@
       newConversationButton: document.getElementById('new-conversation-button')
     };
 
-    // OpenRouter Configuration - Replace with your actual API key
-    const OPENROUTER_API_KEY = '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'; // Get from https://openrouter.ai/keys
+    // OpenRouter Configuration
+    let OPENROUTER_API_KEY = null;
     const OPENROUTER_MODEL = 'openai/gpt-4o'; // GPT-4o
 
     let currentUser = null;
@@ -421,8 +429,8 @@
 
     // Generate reply using OpenRouter API
     async function generateOpenRouterReply(userInput) {
-      if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'sk-or-v1-your-api-key-here') {
-        throw new Error('Please set your OpenRouter API key in the script.');
+      if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY.includes('default-placeholder')) {
+        throw new Error('OpenRouter API key not configured. Please check Firebase Remote Config.');
       }
 
       const chatMessages = messages.map(m => ({
@@ -506,7 +514,19 @@
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
-        elements.loadingText.textContent = 'Connected! Initializing Vynix...';
+        elements.loadingText.textContent = 'Connected! Fetching config...';
+        
+        // Fetch and activate Remote Config
+        try {
+          await fetchAndActivate(remoteConfig);
+          OPENROUTER_API_KEY = getString(remoteConfig, 'openrouter_api_key');
+          console.log('Remote Config loaded:', { model: OPENROUTER_MODEL, apiKey: OPENROUTER_API_KEY ? '***' : 'MISSING' });
+        } catch (error) {
+          console.error('Remote Config fetch error:', error);
+          OPENROUTER_API_KEY = getString(remoteConfig, 'openrouter_api_key'); // Use default
+          showError('Failed to load config. Using defaults.');
+        }
+
         chatRef = ref(db, `chats/${user.uid}`);
         loadChatHistory();
         setTimeout(() => {
