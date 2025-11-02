@@ -361,6 +361,9 @@
       openrouter_api_key: 'sk-or-v1-default-placeholder-key' // Fallback default
     };
 
+    // Set Remote Config settings early for dev
+    remoteConfig.settings.minimumFetchIntervalMillis = 0; // No throttling in dev
+
     const elements = {
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
@@ -516,16 +519,25 @@
       if (user) {
         elements.loadingText.textContent = 'Connected! Fetching config...';
         
-        // Fetch and activate Remote Config
-        try {
-          await fetchAndActivate(remoteConfig);
+        // Fetch config with timeout
+        const configPromise = fetchAndActivate(remoteConfig).then(() => {
           OPENROUTER_API_KEY = getString(remoteConfig, 'openrouter_api_key');
-          console.log('Remote Config loaded:', { model: OPENROUTER_MODEL, apiKey: OPENROUTER_API_KEY ? '***' : 'MISSING' });
-        } catch (error) {
-          console.error('Remote Config fetch error:', error);
-          OPENROUTER_API_KEY = getString(remoteConfig, 'openrouter_api_key'); // Use default
-          showError('Failed to load config. Using defaults.');
-        }
+          console.log('Config loaded:', { model: OPENROUTER_MODEL, apiKey: OPENROUTER_API_KEY ? '***' : 'MISSING' });
+        }).catch((error) => {
+          console.error('Remote Config error:', error);
+          OPENROUTER_API_KEY = getString(remoteConfig, 'openrouter_api_key'); // Default
+          showError(`Config fetch failed: ${error.message}. Using defaults—check key setup.`);
+        });
+
+        // Timeout after 5s to unblock UI
+        setTimeout(() => {
+          if (elements.loadingOverlay.classList.contains('loading-overlay')) { // Still visible
+            console.warn('Config timeout—proceeding anyway.');
+            configPromise.catch(() => {}); // Swallow late errors
+          }
+        }, 5000);
+
+        await Promise.race([configPromise, new Promise(resolve => setTimeout(resolve, 5000))]); // Wait max 5s
 
         chatRef = ref(db, `chats/${user.uid}`);
         loadChatHistory();
