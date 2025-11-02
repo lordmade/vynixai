@@ -8,7 +8,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
@@ -258,24 +257,25 @@
       margin-bottom: 20px;
       text-shadow: 0 0 10px rgba(212, 0, 0, 0.3);
     }
-    #model-progress {
-      width: 200px;
-      height: 8px;
-      border-radius: 4px;
-      background: #e0e0e0;
-      overflow: hidden;
+    .typing-indicator {
+      color: var(--bbm-red);
+      font-style: italic;
+      display: inline-flex;
+      gap: 0.25rem;
+      align-items: center;
     }
-    #model-progress::-webkit-progress-bar {
-      background: #e0e0e0;
-      border-radius: 4px;
-    }
-    #model-progress::-webkit-progress-value {
+    .typing-dot {
+      width: 0.5rem;
+      height: 0.5rem;
       background: var(--bbm-red);
-      border-radius: 4px;
+      border-radius: 50%;
+      animation: typing 1.2s infinite;
     }
-    #model-progress::-moz-progress-bar {
-      background: var(--bbm-red);
-      border-radius: 4px;
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typing {
+      0%, 100% { opacity: 0.3; transform: translateY(0); }
+      50% { opacity: 1; transform: translateY(-3px); }
     }
     .error {
       background: #fee;
@@ -285,27 +285,6 @@
       margin: 20px 0;
       border-left: 4px solid #c33;
       text-align: center;
-    }
-    .retrain-notification {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: var(--bbm-red);
-      color: white;
-      padding: 12px 20px;
-      border-radius: 20px;
-      box-shadow: var(--shadow-md);
-      z-index: 100;
-      animation: slideIn 0.3s ease-out;
-      font-family: 'Orbitron', monospace;
-      font-weight: 700;
-    }
-    .model-status {
-      text-align: center;
-      padding: 10px;
-      font-size: 14px;
-      color: var(--text-secondary);
-      margin-top: 10px;
     }
     @media (min-width: 1024px) {
       .chat-input-container {
@@ -328,18 +307,11 @@
   <!-- Loading Overlay -->
   <div id="loading-overlay" class="loading-overlay">
     <div class="loading-text" id="loading-text">Connecting to Vynix...</div>
-    <progress id="model-progress" value="0" max="100"></progress>
     <div class="typing-indicator" style="margin-top: 20px;">
       <span class="typing-dot"></span>
       <span class="typing-dot"></span>
       <span class="typing-dot"></span>
     </div>
-    <div id="model-status" class="model-status"></div>
-  </div>
-
-  <!-- Retrain Notification -->
-  <div id="retrain-notification" class="retrain-notification hidden">
-    Vynix just got smarter! 🧠
   </div>
 
   <!-- Error Message -->
@@ -364,7 +336,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, push, onValue, set, remove } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -384,41 +356,28 @@
     const elements = {
       loadingOverlay: document.getElementById('loading-overlay'),
       loadingText: document.getElementById('loading-text'),
-      modelProgress: document.getElementById('model-progress'),
-      modelStatus: document.getElementById('model-status'),
       errorMessage: document.getElementById('error-message'),
       welcomeContainer: document.getElementById('welcome-container'),
       chatMessages: document.getElementById('chat-messages'),
       userInput: document.getElementById('user-input'),
       inputContainer: document.getElementById('input-container'),
       sendButton: document.getElementById('send-button'),
-      newConversationButton: document.getElementById('new-conversation-button'),
-      retrainNotification: document.getElementById('retrain-notification')
+      newConversationButton: document.getElementById('new-conversation-button')
     };
 
-    let currentUser;
-    let trainingData = {};  // For fallback
-    let vynixModel = null;  // { model, vocab, uniqueAnswers, modelType, ... }
-    let lastModelTimestamp = 0;
-    let hasChatted = false;
-    let messages = [];
+    // OpenRouter Configuration - Replace with your actual API key
+    const OPENROUTER_API_KEY = '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'; // Get from https://openrouter.ai/keys
+    const OPENROUTER_MODEL = 'openai/gpt-4o'; // GPT-4o
 
-    // Seq2Seq tokens
-    const SPECIAL_TOKENS = { PAD: '<PAD>', SOS: '<SOS>', EOS: '<EOS>', UNK: '<UNK>' };
-    const STOPWORDS = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','is','are','was','were','i','you','he','she','it','we','they','this','that','what','how','why','when','where','my','your','his','her','its','our','their','me','him','us','them','be','have','do','does','did','will','would','can','could','should','may','might','must']);
+    let currentUser = null;
+    let chatRef = null;
+    let messages = [];
+    let hasChatted = false;
 
     function showError(msg) {
       elements.errorMessage.textContent = msg;
       elements.errorMessage.classList.remove('hidden');
       setTimeout(() => elements.errorMessage.classList.add('hidden'), 5000);
-    }
-
-    function hideError() {
-      elements.errorMessage.classList.add('hidden');
-    }
-
-    function updateModelStatus(status) {
-      elements.modelStatus.textContent = status;
     }
 
     function addMessage(content, isUser = false, isTyping = false) {
@@ -429,138 +388,71 @@
       } else {
         messageDiv.textContent = content;
       }
-      messages.push({ content, isUser });
+      messages.push({ content, isUser, timestamp: Date.now() });
       elements.chatMessages.appendChild(messageDiv);
       elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+
+      // Save to Firebase
+      if (chatRef && currentUser) {
+        push(chatRef, { content, isUser, timestamp: Date.now() });
+      }
+
       return messageDiv;
     }
 
-    // TF.js Helpers for all models
-    function tokenize(text) {
-      return text.toLowerCase().split(/\s+/).filter(w => w.length > 1 && !STOPWORDS.has(w));
-    }
-
-    function textToVector(text, vocab) {
-      const vec = new Array(vocab.length).fill(0);
-      tokenize(text).forEach(word => {
-        const idx = vocab.indexOf(word);
-        if (idx > -1) vec[idx] = 1;
+    // Load chat history from Firebase
+    function loadChatHistory() {
+      if (!chatRef) return;
+      onValue(chatRef, (snapshot) => {
+        const data = snapshot.val();
+        if (!data) return;
+        messages = [];
+        elements.chatMessages.innerHTML = '';
+        Object.values(data).sort((a, b) => a.timestamp - b.timestamp).forEach(msg => {
+          addMessage(msg.content, msg.isUser, false);
+        });
+        if (messages.length > 0) {
+          hasChatted = true;
+          elements.welcomeContainer.classList.add('hidden');
+          elements.newConversationButton.classList.remove('hidden');
+        }
       });
-      return vec;
     }
 
-    function encoderSequence(text, wordToIdx, maxLen) {
-      const words = tokenize(text);
-      let seq = words.map(w => wordToIdx.get(w) || wordToIdx.get(SPECIAL_TOKENS.UNK));
-      seq = seq.concat(Array(maxLen - seq.length).fill(wordToIdx.get(SPECIAL_TOKENS.PAD)));
-      return seq.slice(0, maxLen);
-    }
-
-    // Fallback rule-based reply using training_data
-    function generateFallbackReply(userQuery) {
-      const loweredQuery = userQuery.toLowerCase().trim();
-
-      // Exact match search
-      for (const key in trainingData) {
-        const pair = trainingData[key];
-        if (pair && pair.q === loweredQuery) {
-          return pair.a;
-        }
+    // Generate reply using OpenRouter API
+    async function generateOpenRouterReply(userInput) {
+      if (!OPENROUTER_API_KEY || OPENROUTER_API_KEY === 'sk-or-v1-your-api-key-here') {
+        throw new Error('Please set your OpenRouter API key in the script.');
       }
 
-      // Simple fuzzy match
-      for (const key in trainingData) {
-        const pair = trainingData[key];
-        if (pair && (loweredQuery.includes(pair.q) || pair.q.includes(loweredQuery))) {
-          return pair.a;
-        }
+      const chatMessages = messages.map(m => ({
+        role: m.isUser ? 'user' : 'assistant',
+        content: m.content
+      })).concat({ role: 'user', content: userInput });
+
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': window.location.origin,
+          'X-Title': 'Vynix AI - BBM Edition'
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          messages: chatMessages,
+          temperature: 0.7,
+          max_tokens: 500
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`API Error: ${response.status} - ${errorData.message || 'Unknown error'}`);
       }
 
-      // Fallback
-      return "I'm not sure how to respond to that yet. Am currently still learning 🤓!";
-    }
-
-    // Generate reply using loaded TF model
-    async function generateModelReply(userQuery) {
-      if (!vynixModel) return generateFallbackReply(userQuery);
-
-      try {
-        const { model, modelType } = vynixModel;
-        if (modelType === 'classifier') {
-          const inputVec = textToVector(userQuery, vynixModel.vocab);
-          const inputTensor = tf.tensor2d([inputVec]);
-          const pred = model.predict(inputTensor);
-          const predIdx = pred.argMax(-1).dataSync()[0];
-          const response = vynixModel.uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
-          pred.dispose();
-          inputTensor.dispose();
-          return response;
-        } else if (modelType === 'lstm') {
-          const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1], ...vynixModel.vocab.map((w, i) => [w, i + 2])]);
-          const words = tokenize(userQuery);
-          let seq = words.map(w => wordToIdx.get(w) || 1);
-          seq = seq.concat(Array(vynixModel.maxLen - seq.length).fill(0));
-          seq = seq.slice(0, vynixModel.maxLen);
-          const inputTensor = tf.tensor2d([seq]);
-          const pred = model.predict(inputTensor);
-          const predIdx = pred.argMax(-1).dataSync()[0];
-          const response = vynixModel.uniqueAnswers[predIdx] || generateFallbackReply(userQuery);
-          pred.dispose();
-          inputTensor.dispose();
-          return response;
-        } else if (modelType === 'seq2seq') {
-          const generated = await generateSeq2Seq(model, vynixModel.wordToIdx, vynixModel.idxToWord, userQuery, vynixModel.maxLen, vynixModel.vocabSize);
-          return generated || generateFallbackReply(userQuery);
-        }
-      } catch (error) {
-        console.error('Prediction error:', error);
-        return generateFallbackReply(userQuery);
-      }
-    }
-
-    // Seq2Seq Generation
-    async function generateSeq2Seq(model, wordToIdx, idxToWord, question, maxLen, vocabSize) {
-      const inputSeq = tf.tensor2d([encoderSequence(question, wordToIdx, maxLen)]);
-      // Extract encoder states (manual forward pass since functional model)
-      const encoderEmbeddingLayer = model.layers.find(l => l.name === 'encoder_embedding'); // Assume named layers
-      if (!encoderEmbeddingLayer) throw new Error('Model layers not found');
-      const encoderEmbedding = encoderEmbeddingLayer.apply(inputSeq);
-      const encoderLSTM = model.layers.find(l => l.name === 'encoder_lstm');
-      const encoderStates = encoderLSTM.apply(encoderEmbedding);
-      const [h, c] = encoderStates; // Assuming returnState gives [h, c]
-
-      let generated = [];
-      let inputToken = tf.tensor2d([[wordToIdx.get(SPECIAL_TOKENS.SOS)]]);
-      let stop = false;
-      for (let t = 0; t < maxLen; t++) {
-        const decEmbeddingLayer = model.layers.find(l => l.name === 'decoder_embedding');
-        const decEmbedding = decEmbeddingLayer.apply(inputToken);
-        const decoderLSTM = model.layers.find(l => l.name === 'decoder_lstm');
-        const decOutput = decoderLSTM.apply(decEmbedding, { initialState: [h, c] });
-        const denseLayer = model.layers.find(l => l.name === 'dense');
-        const prediction = denseLayer.apply(decOutput);
-        const predictedId = prediction.argMax(-1).dataSync()[0][0];
-        const word = idxToWord.get(predictedId);
-        if (word && word !== SPECIAL_TOKENS.PAD) {
-          generated.push(word);
-        }
-        if (predictedId === wordToIdx.get(SPECIAL_TOKENS.EOS)) {
-          stop = true;
-          break;
-        }
-        inputToken.dispose();
-        inputToken = tf.tensor2d([[predictedId]]);
-        prediction.dispose();
-        decOutput.dispose();
-        decEmbedding.dispose();
-      }
-      inputSeq.dispose();
-      encoderEmbedding.dispose();
-      encoderStates.dispose();
-      h.dispose();
-      c.dispose();
-      inputToken.dispose();
-      return generated.join(' ');
+      const data = await response.json();
+      return data.choices[0].message.content.trim();
     }
 
     async function sendMessage() {
@@ -575,209 +467,26 @@
 
       const tempMsg = addMessage('', false, true);
       setTimeout(async () => {
-        const reply = await generateModelReply(userQuery);
-        tempMsg.textContent = reply;
+        try {
+          const reply = await generateOpenRouterReply(userQuery);
+          tempMsg.textContent = reply;
+          messages.push({ content: reply, isUser: false, timestamp: Date.now() });
+          if (chatRef && currentUser) {
+            push(chatRef, { content: reply, isUser: false, timestamp: Date.now() });
+          }
+        } catch (error) {
+          console.error('API Error:', error);
+          tempMsg.textContent = `Oops! Something went wrong: ${error.message}. Please try again.`;
+          showError(`Connection issue: ${error.message}`);
+        }
         tempMsg.classList.remove('processing');
       }, 500 + Math.random() * 500);
     }
 
-    // Load fallback training data
-    function loadTrainingData() {
-      const trainingRef = ref(db, 'training_data');
-      onValue(trainingRef, (snapshot) => {
-        trainingData = snapshot.val() || {};
-        console.log(`Fallback data loaded: ${Object.keys(trainingData).length} pairs`);
-      }, (error) => {
-        console.error('Fallback data error:', error);
-      });
-    }
-
-    // Seq2Seq Model Creator (for loading)
-    function createSeq2SeqModel(vocabSize, embedDim = 64, hiddenDim = 128, maxLen, layerNames = true) {
-      const encoderInputs = tf.input({shape: [maxLen], name: 'encoder_input'});
-      let encoderEmbedding = tf.layers.embedding({
-        inputDim: vocabSize,
-        outputDim: embedDim,
-        inputLength: maxLen,
-        name: 'encoder_embedding'
-      }).apply(encoderInputs);
-      const encoderLSTM = tf.layers.lstm({
-        units: hiddenDim,
-        returnSequences: false,
-        dropout: 0.2,
-        name: 'encoder_lstm'
-      });
-      const encoderOutputs = encoderLSTM.apply(encoderEmbedding);
-      const [encoderStatesH, encoderStatesC] = encoderOutputs; // Since returnState not used, adjust if needed
-
-      // For simplicity, use last hidden as states (full rnn returnState in TF.js functional is tricky; approximate)
-      const h = encoderOutputs; // Approximate h, c as single output for basic
-
-      const decoderInputs = tf.input({shape: [maxLen], name: 'decoder_input'});
-      let decoderEmbedding = tf.layers.embedding({
-        inputDim: vocabSize,
-        outputDim: embedDim,
-        inputLength: maxLen,
-        name: 'decoder_embedding'
-      }).apply(decoderInputs);
-      const decoderLSTM = tf.layers.lstm({
-        units: hiddenDim,
-        returnSequences: true,
-        dropout: 0.2,
-        name: 'decoder_lstm'
-      });
-      const decoderOutputs = decoderLSTM.apply(decoderEmbedding); // Initial state approx from encoder h
-      const dense = tf.layers.dense({
-        units: vocabSize,
-        activation: 'softmax',
-        name: 'dense'
-      });
-      const outputs = dense.apply(decoderOutputs);
-
-      const model = tf.model({
-        inputs: [encoderInputs, decoderInputs],
-        outputs
-      });
-      model.compile({
-        optimizer: 'adam',
-        loss: 'categoricalCrossentropy',
-        metrics: ['accuracy']
-      });
-      return model;
-    }
-
-    // Load Seq2Seq from saved
-    async function loadSeq2SeqModel(saved) {
-      const model = createSeq2SeqModel(saved.vocabSize, saved.embedDim, saved.lstmUnits, saved.maxLen);
-      const weightTensors = saved.weights.map(arr => tf.tensor(arr));
-      model.setWeights(weightTensors);
-      weightTensors.forEach(t => t.dispose());
-
-      const wordToIdx = new Map();
-      saved.vocab.forEach((word, idx) => wordToIdx.set(word, idx));
-      const idxToWord = new Map([...wordToIdx.entries()].map(([k, v]) => [v, k]));
-      return { model, wordToIdx, idxToWord };
-    }
-
-    // Custom loader for all model types
-    async function loadModelFromSaved(saved) {
-      if (!saved.vocab || !saved.weights) {
-        throw new Error('Missing model components (vocab or weights). Retrain in dashboard.');
-      }
-
-      let model;
-      if (saved.modelType === 'classifier') {
-        if (!saved.inputDim || !saved.numClasses) {
-          throw new Error('Missing classifier params (inputDim, numClasses).');
-        }
-        model = tf.sequential({
-          layers: [
-            tf.layers.dense({ inputShape: [saved.inputDim], units: 64, activation: 'relu' }),
-            tf.layers.dropout({ rate: 0.2 }),
-            tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
-          ]
-        });
-      } else if (saved.modelType === 'lstm') {
-        if (!saved.vocabSize || !saved.maxLen || !saved.numClasses) {
-          throw new Error('Missing LSTM params (vocabSize, maxLen, numClasses).');
-        }
-        model = tf.sequential({
-          layers: [
-            tf.layers.embedding({
-              inputDim: saved.vocabSize,
-              outputDim: saved.embedDim || 32,
-              inputLength: saved.maxLen
-            }),
-            tf.layers.lstm({
-              units: saved.lstmUnits || 64,
-              dropout: 0.2
-            }),
-            tf.layers.dense({ units: saved.numClasses, activation: 'softmax' })
-          ]
-        });
-      } else if (saved.modelType === 'seq2seq') {
-        if (!saved.vocabSize || !saved.maxLen) {
-          throw new Error('Missing Seq2Seq params (vocabSize, maxLen).');
-        }
-        const seqStuff = await loadSeq2SeqModel(saved);
-        return { model: seqStuff.model, ...seqStuff, vocabSize: saved.vocabSize, maxLen: saved.maxLen };
-      }
-      model.compile({
-        optimizer: 'adam',
-        loss: 'categoricalCrossentropy',
-        metrics: ['accuracy']
-      });
-
-      // Set the trained weights
-      const weightTensors = saved.weights.map(arr => tf.tensor(arr));
-      model.setWeights(weightTensors);
-      weightTensors.forEach(t => t.dispose());
-
-      return model;
-    }
-
-    // Load the pre-trained TF model
-    async function loadModel() {
-      elements.modelProgress.value = 60;
-      updateModelStatus('Loading Vynix AI model...');
-      const modelRef = ref(db, 'models/current-model');
-      onValue(modelRef, async (snapshot) => {
-        const data = snapshot.val();
-        console.log('Raw model data from RTDB:', data);  // Debug log
-        if (!data || !data.vocab) {
-          updateModelStatus('No trained model found. Using basic responses.');
-          elements.modelProgress.value = 100;
-          vynixModel = null;
-          return;
-        }
-
-        // Check for updates
-        if (data.timestamp <= lastModelTimestamp) return;
-        lastModelTimestamp = data.timestamp;
-
-        try {
-          updateModelStatus('Preparing model...');
-          elements.modelProgress.value = 80;
-
-          // Load using custom function
-          const loadedModel = await loadModelFromSaved(data);
-          vynixModel = { 
-            model: loadedModel, 
-            vocab: data.vocab, 
-            ...(data.uniqueAnswers ? { uniqueAnswers: data.uniqueAnswers } : {}),
-            modelType: data.modelType,
-            ...(data.modelType === 'lstm' ? { maxLen: data.maxLen, vocabSize: data.vocabSize } : {}),
-            ...(data.modelType === 'seq2seq' ? { 
-              wordToIdx: loadedModel.wordToIdx, 
-              idxToWord: loadedModel.idxToWord,
-              maxLen: data.maxLen, 
-              vocabSize: data.vocabSize 
-            } : {})
-          };
-
-          elements.modelProgress.value = 100;
-          const version = data.version || '1.0';
-          updateModelStatus(`Vynix ${data.modelType.toUpperCase()} loaded! v${version}`);
-
-          // Notification
-          elements.retrainNotification.textContent = `Vynix ${data.modelType.toUpperCase()} updated! 🧠`;
-          elements.retrainNotification.classList.remove('hidden');
-          setTimeout(() => elements.retrainNotification.classList.add('hidden'), 3000);
-
-          console.log('Model loaded successfully');
-        } catch (error) {
-          console.error('Detailed model load error:', error);
-          updateModelStatus('Model load failed. Check console.');
-          vynixModel = null;
-          showError(`AI model failed: ${error.message}. Basic mode active.`);
-        }
-      }, (error) => {
-        console.error('Model fetch error:', error);
-        updateModelStatus('Failed to fetch model.');
-      });
-    }
-
     function startNewConversation() {
+      if (chatRef && currentUser) {
+        set(chatRef, null); // Clear current chat
+      }
       messages = [];
       elements.chatMessages.innerHTML = '';
       elements.welcomeContainer.classList.remove('hidden');
@@ -785,6 +494,7 @@
       elements.newConversationButton.classList.add('hidden');
     }
 
+    // Event Listeners
     elements.sendButton.addEventListener('click', sendMessage);
 
     elements.userInput.addEventListener('keypress', (e) => {
@@ -797,15 +507,13 @@
       currentUser = user;
       if (user) {
         elements.loadingText.textContent = 'Connected! Initializing Vynix...';
-        elements.modelProgress.value = 20;
-        await tf.ready();  // Ensure TF.js ready
-        loadTrainingData();  // Fallback
-        loadModel();  // Main model
+        chatRef = ref(db, `chats/${user.uid}`);
+        loadChatHistory();
         setTimeout(() => {
           elements.loadingOverlay.classList.add('hidden');
           elements.inputContainer.classList.remove('hidden');
-          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hi! I'm Vynix, your AI companion. Ask me anything!`;
-        }, 2500);
+          elements.welcomeContainer.innerHTML = `<span class="material-icons" style="font-size: 24px; color: var(--bbm-red);">smart_toy</span>Hi! I'm Vynix, your AI companion powered by OpenRouter. Ask me anything!`;
+        }, 1500);
       } else {
         elements.loadingText.innerHTML = 'Not connected. <button class="btn" onclick="signInAnonymously()" style="background: var(--bbm-red); color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Connect Anonymously</button>';
       }
@@ -827,10 +535,9 @@
       }
     };
 
-    // Initial load
+    // Initial Load
     elements.loadingOverlay.classList.remove('hidden');
     elements.loadingText.textContent = 'Initializing...';
-    elements.modelProgress.value = 0;
   </script>
 </body>
 </html>
