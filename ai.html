@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Vynix AI</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@4.0.0/marked.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -428,6 +427,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, push, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -460,108 +460,54 @@
       imageUploadButton: document.getElementById('image-upload-button')
     };
 
-    let app, auth, db, net = new brain.recurrent.LSTM(), lastTrainingSnapshot = null;
-
-    const defaultTrainingData = [
-      { input: "hello", output: "Hey there!" },
-      { input: "how are you", output: "I'm doing great, thanks for asking!" },
-      { input: "what's up", output: "Just chilling in the cloud, you?" },
-      { input: "tell me a joke", output: "Why did the computer go to art school? It wanted to learn how to draw a better 'byte'!" },
-      { input: "goodbye", output: "Catch you later, pal!" },
-      { input: "what's your name", output: "I'm Vynix AI, your friendly chat buddy!" },
-      { input: "how's the weather", output: "No clue, I'm in the cloud! What's it like where you are?" },
-      { input: "who made you", output: "Katlego from Mokopane, South Africa, brought me to life!" },
-      { input: "help me", output: "Sure thing! What's on your mind?" }
-    ];
-
-    function normalizeText(text) {
-      text = text.toLowerCase().trim();
-      const synonyms = {
-        "hi": "hello",
-        "hey": "hello",
-        "whats up": "what's up",
-        "joke": "tell me a joke"
-      };
-      return synonyms[text] || text;
-    }
-
-    function getClosestMatch(prompt, trainingData) {
-      const words = prompt.split(' ');
-      let bestMatch = null;
-      let maxOverlap = 0;
-
-      trainingData.forEach(({ input }) => {
-        const inputWords = input.split(' ');
-        const overlap = words.filter(word => inputWords.includes(word)).length;
-        if (overlap > maxOverlap) {
-          maxOverlap = overlap;
-          bestMatch = input;
-        }
-      });
-
-      return bestMatch;
-    }
-
-    function addTrainingData(input, output) {
-      if (!input || !output || input.length > 100 || output.length > 200) {
-        console.error('Invalid input/output: must be non-empty and within length limits');
-        return;
-      }
-      const patternsRef = ref(db, 'chatPatterns');
-      push(patternsRef, [{ input: normalizeText(input), output }]);
-      console.log('Added new training data:', { input, output });
-    }
-
-    async function initializeBrainJS() {
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        const trainingData = [];
-        snapshot.forEach((child) => {
-          trainingData.push(...child.val());
-        });
-        const cappedData = trainingData.slice(-100); // Limit to last 100 entries
-        const newData = lastTrainingSnapshot
-          ? cappedData.filter(item => !lastTrainingSnapshot.some(prev => prev.input === item.input && prev.output === item.output))
-          : cappedData;
-
-        if (newData.length > 0) {
-          net.train(newData, {
-            iterations: 50,
-            errorThresh: 0.015,
-            log: true,
-            logPeriod: 10
-          });
-          console.log('Brain.js trained with', newData.length, 'new patterns');
-        }
-        lastTrainingSnapshot = cappedData;
-      });
-
-      onValue(patternsRef, () => {
-        setTimeout(() => {
-          initializeBrainJS();
-        }, 300000);
-      });
-    }
+    let app, auth, db, remoteConfig, xaiApiKey = null;
 
     async function initializeFirebase() {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
       db = getDatabase(app);
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        if (!snapshot.exists()) {
-          push(ref(db, 'chatPatterns'), defaultTrainingData);
-          console.log('Initialized chatPatterns with default data');
+      remoteConfig = getRemoteConfig(app);
+
+      // Set default config values (fallback)
+      remoteConfig.defaultConfig = {
+        xai_api_key: ''
+      };
+
+      // Fetch and activate remote config
+      try {
+        const fetchResult = await fetchAndActivate(remoteConfig);
+        if (fetchResult) {
+          xaiApiKey = getString(remoteConfig, 'xai_api_key');
+          console.log('Remote Config fetched and activated:', !!xaiApiKey);
         }
-      }, { onlyOnce: true });
+      } catch (error) {
+        console.error('Remote Config fetch failed:', error);
+        xaiApiKey = getString(remoteConfig, 'xai_api_key'); // Use default
+      }
+
+      // Optionally, set up periodic fetching (e.g., every 12 hours)
+      setInterval(async () => {
+        try {
+          await fetchAndActivate(remoteConfig);
+          xaiApiKey = getString(remoteConfig, 'xai_api_key');
+          console.log('Remote Config refreshed');
+        } catch (error) {
+          console.error('Remote Config refresh failed:', error);
+        }
+      }, 12 * 60 * 60 * 1000); // 12 hours
 
       onAuthStateChanged(auth, (user) => {
         if (user) {
           elements.chatInput.disabled = false;
-          elements.sendButton.disabled = false;
+          elements.sendButton.disabled = !xaiApiKey; // Enable only if key is available
+          if (!xaiApiKey) {
+            elements.chatInput.placeholder = 'xAI API key not configured in Remote Config.';
+            elements.sendButton.disabled = true;
+          } else {
+            elements.chatInput.placeholder = "What's on your mind?";
+          }
           loadConversations();
           elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}!`;
-          initializeBrainJS();
         } else {
           window.location.href = 'signup.html';
         }
@@ -600,36 +546,39 @@
         state.hasChatted = true;
         elements.welcomeContainer.classList.add('hidden');
       }
+      if (!xaiApiKey) {
+        appendMessage('xAI API key not available from Remote Config. Check your Firebase console.', 'ai');
+        return;
+      }
       const tempMsg = appendMessage('', 'ai', true);
       try {
-        const normalizedPrompt = normalizeText(prompt);
-        let trainingData = [];
-        await new Promise(resolve => {
-          onValue(ref(db, 'chatPatterns'), (snapshot) => {
-            snapshot.forEach((child) => {
-              trainingData.push(...child.val());
-            });
-            resolve();
-          }, { onlyOnce: true });
+        const response = await fetch('https://api.x.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${xaiApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'grok-beta',
+            messages: [{ role: 'user', content: prompt }],
+            stream: false
+          }),
         });
 
-        const response = net.run(normalizedPrompt);
-        if (!response || response === 'undefined') {
-          const closestInput = getClosestMatch(normalizedPrompt, trainingData);
-          const fallback = closestInput
-            ? trainingData.find(item => item.input === closestInput).output
-            : 'Hmm, not sure what to say—teach me more!';
-          tempMsg.textContent = fallback;
-        } else {
-          tempMsg.textContent = response;
+        if (!response.ok) {
+          throw new Error(`API Error: ${response.status} ${response.statusText}`);
         }
+
+        const data = await response.json();
+        const aiReply = data.choices[0]?.message?.content || 'Hmm, something went wrong with the response.';
+        tempMsg.textContent = aiReply;
         tempMsg.classList.remove('processing');
-        state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
+        state.messages.push({ content: aiReply, sender: 'ai', timestamp: Date.now() });
       } catch (error) {
-        tempMsg.textContent = 'Whoops, my circuits got tangled!';
+        tempMsg.textContent = 'Whoops, my circuits got tangled! Check your API key or connection.';
         tempMsg.classList.remove('processing');
         state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
-        console.error('Brain.js Error:', error);
+        console.error('xAI API Error:', error);
       }
     }
 
