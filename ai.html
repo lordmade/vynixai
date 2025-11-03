@@ -1155,56 +1155,13 @@
       return seq.slice(0, maxLen);
     }
 
-    function sampleFromProbs(probs) {
-      const sum = probs.reduce((a, b) => a + b, 0);
-      const normalized = probs.map(p => p / sum);
-      let cum = 0;
-      const rand = Math.random();
-      for (let i = 0; i < normalized.length; i++) {
-        cum += normalized[i];
-        if (rand <= cum) return i;
-      }
-      return normalized.length - 1;
-    }
-
-    async function generateText(model, wordToIdx, idxToWord, startPrompt, maxTokens = 20, maxLen) {
-      let inputIds = [wordToIdx.get('<BOS>') || 2];
-      const promptWords = startPrompt.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-      promptWords.forEach(w => inputIds.push(wordToIdx.get(w) || 1));
-      let outputText = promptWords.join(' ');
-      const temperature = 0.8;
-      const inputLength = maxLen - 1;
-      for (let step = 0; step < maxTokens; step++) {
-        let currentInput = inputIds.slice(-inputLength);
-        while (currentInput.length < inputLength) {
-          currentInput.unshift(0);
-        }
-        const inputTensor = tf.tensor2d([currentInput], [1, inputLength]);
-        let logits = model.predict(inputTensor);
-        const lastLogits = logits.slice([0, inputLength - 1, 0], [1, 1, -1]);
-        const probs = tf.softmax(lastLogits.div(tf.scalar(temperature))).dataSync()[0][0];
-        const nextId = sampleFromProbs(probs);
-        inputIds.push(nextId);
-        const nextWord = idxToWord.get(nextId);
-        if (nextWord === '<EOS>') {
-          break;
-        }
-        if (nextWord !== '<PAD>' && nextWord !== undefined) {
-          outputText += ' ' + nextWord;
-        }
-        inputTensor.dispose();
-        logits.dispose();
-        lastLogits.dispose();
-      }
-      return outputText;
-    }
-
     async function loadModelFromSaved(saved) {
       showLoading();
       try {
         await tf.setBackend('webgl');
         await tf.ready();
         let model;
+        const uniqueAnswers = saved.uniqueAnswers;
         const numClasses = saved.numClasses;
 
         if (saved.modelType === 'classifier') {
@@ -1224,7 +1181,7 @@
           const weightTensors = saved.weights.map(arr => tf.tensor(arr));
           model.setWeights(weightTensors);
           weightTensors.forEach(t => t.dispose());
-          return { model, vocab: vocab, uniqueAnswers: saved.uniqueAnswers, modelType: 'classifier' };
+          return { model, vocab, uniqueAnswers, modelType: 'classifier' };
         } else if (saved.modelType === 'gru') {
           const vocab = saved.vocab;
           const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1]]);
@@ -1251,47 +1208,7 @@
           const weightTensors = saved.weights.map(arr => tf.tensor(arr));
           model.setWeights(weightTensors);
           weightTensors.forEach(t => t.dispose());
-          return { model, wordToIdx, maxLen: saved.maxLen, uniqueAnswers: saved.uniqueAnswers, modelType: 'gru' };
-        } else if (saved.modelType === 'mini-gpt') {
-          const vocab = saved.vocab;
-          const wordToIdx = new Map([['<PAD>', 0], ['<UNK>', 1], ['<BOS>', 2], ['<EOS>', 3]]);
-          vocab.forEach((w, i) => wordToIdx.set(w, i + 4));
-          const idxToWord = new Map([...wordToIdx].map(([k, v]) => [v, k]));
-          const inputLength = saved.maxLen - 1;
-          model = tf.sequential({
-            layers: [
-              tf.layers.embedding({
-                inputDim: saved.vocabSize,
-                outputDim: saved.embedDim || 32,
-                inputLength: inputLength
-              }),
-              tf.layers.lstm({
-                units: saved.lstmUnits || 64,
-                returnSequences: true,
-                dropout: 0.3
-              }),
-              tf.layers.lstm({
-                units: saved.lstmUnits || 64,
-                returnSequences: true,
-                dropout: 0.3
-              }),
-              tf.layers.timeDistributed({
-                layer: tf.layers.dense({
-                  units: saved.vocabSize,
-                  activation: null
-                })
-              })
-            ]
-          });
-          model.compile({
-            optimizer: tf.train.adam(0.001),
-            loss: 'sparseCategoricalCrossentropy',
-            metrics: ['accuracy']
-          });
-          const weightTensors = saved.weights.map(arr => tf.tensor(arr));
-          model.setWeights(weightTensors);
-          weightTensors.forEach(t => t.dispose());
-          return { model, wordToIdx, idxToWord, maxLen: saved.maxLen, vocab, modelType: 'mini-gpt' };
+          return { model, wordToIdx, maxLen: saved.maxLen, uniqueAnswers, modelType: 'gru' };
         }
         return null;
       } finally {
@@ -1326,10 +1243,9 @@
               }
               state.loadedModel = loaded.model;
               state.modelType = loaded.modelType;
-              if (loaded.uniqueAnswers) state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
+              state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
               if (loaded.vocab) state.loadedModel.vocab = loaded.vocab;
               if (loaded.wordToIdx) state.loadedModel.wordToIdx = loaded.wordToIdx;
-              if (loaded.idxToWord) state.loadedModel.idxToWord = loaded.idxToWord;
               if (loaded.maxLen) state.loadedModel.maxLen = loaded.maxLen;
               await set(ref(db, 'currentModelId'), key);
               elements.modelSelector.querySelectorAll('.model-pill').forEach(p => p.classList.remove('active'));
@@ -1353,31 +1269,18 @@
       try {
         showLoading();
         if (state.loadedModel && state.modelType) {
-          let responseText;
-          if (state.modelType === 'mini-gpt') {
-            const fullPrompt = `Q: ${prompt} A: `;
-            responseText = await generateText(
-              state.loadedModel,
-              state.loadedModel.wordToIdx,
-              state.loadedModel.idxToWord,
-              fullPrompt,
-              20,
-              state.loadedModel.maxLen
-            );
-          } else {
-            let inputData;
-            if (state.modelType === 'classifier') {
-              inputData = textToVector(prompt, state.loadedModel.vocab);
-            } else {  // gru
-              inputData = questionToSequence(prompt, state.loadedModel.wordToIdx, state.loadedModel.maxLen);
-            }
-            const inputTensor = tf.tensor2d([inputData]);
-            const pred = state.loadedModel.predict(inputTensor);
-            const predIdx = pred.argMax(-1).dataSync()[0];
-            responseText = state.loadedModel.uniqueAnswers[predIdx];
-            pred.dispose();
-            inputTensor.dispose();
+          let inputData;
+          if (state.modelType === 'classifier') {
+            inputData = textToVector(prompt, state.loadedModel.vocab);
+          } else {  // gru
+            inputData = questionToSequence(prompt, state.loadedModel.wordToIdx, state.loadedModel.maxLen);
           }
+          const inputTensor = tf.tensor2d([inputData]);
+          const pred = state.loadedModel.predict(inputTensor);
+          const predIdx = pred.argMax(-1).dataSync()[0];
+          const responseText = state.loadedModel.uniqueAnswers[predIdx];
+          pred.dispose();
+          inputTensor.dispose();
           tempMsg.textContent = responseText;
           tempMsg.classList.remove('processing');
         } else {
@@ -1655,10 +1558,9 @@
                     }
                     state.loadedModel = loaded.model;
                     state.modelType = loaded.modelType;
-                    if (loaded.uniqueAnswers) state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
+                    state.loadedModel.uniqueAnswers = loaded.uniqueAnswers;
                     if (loaded.vocab) state.loadedModel.vocab = loaded.vocab;
                     if (loaded.wordToIdx) state.loadedModel.wordToIdx = loaded.wordToIdx;
-                    if (loaded.idxToWord) state.loadedModel.idxToWord = loaded.idxToWord;
                     if (loaded.maxLen) state.loadedModel.maxLen = loaded.maxLen;
                     console.log('Current model loaded:', saved.modelType);
                   }
