@@ -741,7 +741,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, get, set, push, update, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, set, push, update, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -757,6 +757,7 @@
     let editingStudentId = null;
     let selectedGrade = null;
     let currentOpenSection = null;
+    let listeners = {}; // To store and manage real-time listeners
 
     // Loader functions
     function showLoader() {
@@ -767,6 +768,12 @@
       document.getElementById('loader-overlay').classList.remove('active');
     }
 
+    // Unsubscribe from all listeners
+    function unsubscribeAll() {
+      Object.values(listeners).forEach(unsub => unsub());
+      listeners = {};
+    }
+
     function initializeFirebase() {
       app = initializeApp(firebaseConfig);
       auth = getAuth(app);
@@ -774,17 +781,11 @@
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
         if (user) {
+          unsubscribeAll(); // Clean up previous listeners if any
           showLoader();
           try {
-            await Promise.all([
-              loadStudents(),
-              loadTeachers(),
-              loadLessonPlans(),
-              loadAnnouncements(),
-              loadReminders(),
-              loadParents()
-            ]);
-            updateStats();
+            // Initial load with real-time setup
+            setupRealtimeListeners();
             setupMarkerGrid();
             setupTabListeners();
           } finally {
@@ -795,6 +796,190 @@
         }
       });
     }
+
+    function setupRealtimeListeners() {
+      // Dashboard Stats Listeners
+      const paths = ['students', 'teachers', 'lessonPlans', 'parents', 'reminders'];
+      paths.forEach(path => {
+        const listenerRef = ref(db, path);
+        listeners[path] = onValue(listenerRef, (snapshot) => {
+          const count = snapshot.exists() ? Object.keys(snapshot.val()).length : 0;
+          const statElement = document.getElementById(`stat-${path}`);
+          if (statElement) statElement.textContent = count;
+        });
+      });
+
+      // Students Table Listener
+      const studentsRef = ref(db, 'students');
+      listeners.studentsTable = onValue(studentsRef, (snapshot) => {
+        const tbody = document.getElementById('students-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        let studentsData = {};
+        if (snapshot.exists()) {
+          studentsData = snapshot.val();
+        }
+        if (Object.keys(studentsData).length > 0) {
+          Object.entries(studentsData).forEach(([id, student]) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+              <td>${student.name}</td>
+              <td>${student.email || ''}</td>
+              <td>${student.class || ''}</td>
+              <td>
+                <button class="btn btn-secondary" onclick="editStudent('${id}', '${student.name}', '${student.email || ''}', '${student.class || ''}')">Edit</button>
+                <button class="btn" onclick="deleteStudent('${id}')">Delete</button>
+              </td>
+            `;
+            tbody.appendChild(row);
+          });
+          // Update select for marker
+          const select = document.getElementById('student-select');
+          if (select) {
+            select.innerHTML = '<option>Select Student</option>';
+            Object.entries(studentsData).forEach(([id, student]) => {
+              const option = document.createElement('option');
+              option.value = id;
+              option.textContent = student.name;
+              select.appendChild(option);
+            });
+          }
+        } else {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No students available.</td></tr>';
+        }
+      });
+
+      // Teachers Table Listener
+      const teachersRef = ref(db, 'teachers');
+      listeners.teachersTable = onValue(teachersRef, (snapshot) => {
+        const tbody = document.getElementById('teachers-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        let teachersData = {};
+        if (snapshot.exists()) {
+          teachersData = snapshot.val();
+        }
+        if (Object.keys(teachersData).length > 0) {
+          Object.entries(teachersData).forEach(([id, teacher]) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+              <td>${teacher.name}</td>
+              <td>${teacher.email}</td>
+              <td>${teacher.subject}</td>
+              <td>
+                <button class="btn btn-secondary" onclick="editTeacher('${id}', '${teacher.name}', '${teacher.email}', '${teacher.subject}')">Edit</button>
+                <button class="btn" onclick="deleteTeacher('${id}')">Delete</button>
+              </td>
+            `;
+            tbody.appendChild(row);
+          });
+        } else {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No teachers available.</td></tr>';
+        }
+      });
+
+      // Lesson Plans List Listener
+      const plansRef = ref(db, 'lessonPlans');
+      listeners.lessonPlans = onValue(plansRef, (snapshot) => {
+        const list = document.getElementById('lesson-plans-list');
+        if (!list) return;
+        list.innerHTML = '';
+        let plansData = {};
+        if (snapshot.exists()) {
+          plansData = snapshot.val();
+        }
+        if (Object.keys(plansData).length > 0) {
+          Object.entries(plansData).forEach(([id, plan]) => {
+            const item = document.createElement('div');
+            item.className = 'lesson-plan-item';
+            item.onclick = () => editLessonPlan(id, plan);
+            item.innerHTML = `
+              <div><strong>${plan.title}</strong> - ${plan.subject} (${plan.phase})</div>
+              <button class="btn btn-secondary" onclick="event.stopPropagation(); deleteLessonPlan('${id}')">Delete</button>
+            `;
+            list.appendChild(item);
+          });
+        } else {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No lesson plans available.</p>';
+        }
+      });
+
+      // Announcements List Listener
+      const annRef = ref(db, 'announcements');
+      listeners.announcements = onValue(annRef, (snapshot) => {
+        const list = document.getElementById('announcements-list');
+        if (!list) return;
+        list.innerHTML = '';
+        let annData = {};
+        if (snapshot.exists()) {
+          annData = snapshot.val();
+        }
+        if (Object.keys(annData).length > 0) {
+          Object.entries(annData).sort((a, b) => b[1].timestamp - a[1].timestamp).forEach(([id, ann]) => {
+            const item = document.createElement('div');
+            item.innerHTML = `<p><strong>${ann.title}</strong>: ${ann.message} <small>${new Date(ann.timestamp).toLocaleString()}</small></p>`;
+            list.appendChild(item);
+          });
+        }
+      });
+
+      // Reminders List Listener
+      const remRef = ref(db, 'reminders');
+      listeners.reminders = onValue(remRef, (snapshot) => {
+        const list = document.getElementById('reminders-list');
+        if (!list) return;
+        list.innerHTML = '';
+        let remData = {};
+        if (snapshot.exists()) {
+          remData = snapshot.val();
+        }
+        if (Object.keys(remData).length > 0) {
+          Object.entries(remData).forEach(([id, rem]) => {
+            const item = document.createElement('div');
+            item.className = 'notification-item';
+            item.innerHTML = `
+              <div>
+                <strong>${rem.title}</strong><br>
+                <small>${rem.desc} - ${new Date(rem.date).toLocaleDateString()}</small>
+              </div>
+              <button class="btn btn-secondary" onclick="deleteReminder('${id}')">Delete</button>
+            `;
+            list.appendChild(item);
+          });
+        } else {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No reminders available.</p>';
+        }
+      });
+
+      // Parents List Listener
+      const parentsRef = ref(db, 'parents');
+      listeners.parents = onValue(parentsRef, (snapshot) => {
+        const list = document.getElementById('parents-list');
+        if (!list) return;
+        list.innerHTML = '';
+        let parentsData = {};
+        if (snapshot.exists()) {
+          parentsData = snapshot.val();
+        }
+        if (Object.keys(parentsData).length > 0) {
+          Object.entries(parentsData).forEach(([id, parent]) => {
+            const item = document.createElement('div');
+            item.className = 'parent-item';
+            item.innerHTML = `
+              <div>
+                <strong>${parent.name}</strong> - Parent of ${parent.childName}<br>
+                <small>${parent.email}</small>
+              </div>
+              <button class="btn btn-secondary" onclick="sendParentMessage('${id}', '${parent.name}')">Message</button>
+            `;
+            list.appendChild(item);
+          });
+        } else {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No parents registered.</p>';
+        }
+      });
+    }
+
     function setupTabListeners() {
       document.querySelectorAll('.tab-link').forEach(link => {
         link.addEventListener('click', (e) => {
@@ -804,23 +989,7 @@
         });
       });
     }
-    async function updateStats() {
-      // Students
-      const studentsSnap = await get(ref(db, 'students'));
-      document.getElementById('stat-students').textContent = studentsSnap.exists() ? Object.keys(studentsSnap.val()).length : 0;
-      // Teachers
-      const teachersSnap = await get(ref(db, 'teachers'));
-      document.getElementById('stat-teachers').textContent = teachersSnap.exists() ? Object.keys(teachersSnap.val()).length : 0;
-      // Lesson Plans
-      const plansSnap = await get(ref(db, 'lessonPlans'));
-      document.getElementById('stat-plans').textContent = plansSnap.exists() ? Object.keys(plansSnap.val()).length : 0;
-      // Parents
-      const parentsSnap = await get(ref(db, 'parents'));
-      document.getElementById('stat-parents').textContent = parentsSnap.exists() ? Object.keys(parentsSnap.val()).length : 0;
-      // Reminders
-      const remindersSnap = await get(ref(db, 'reminders'));
-      document.getElementById('stat-reminders').textContent = remindersSnap.exists() ? Object.keys(remindersSnap.val()).length : 0;
-    }
+
     function openSection(section) {
       // Update active tab
       document.querySelectorAll('.tab-link').forEach(link => link.classList.remove('active'));
@@ -837,77 +1006,6 @@
         const el = document.getElementById(`${section}-section`);
         if (el) el.classList.remove('hidden');
         currentOpenSection = section;
-      }
-    }
-    // Students
-    async function loadStudents() {
-      const tbody = document.getElementById('students-tbody');
-      tbody.innerHTML = '';
-      const studentsRef = ref(db, 'students');
-      const snapshot = await get(studentsRef);
-      let studentsData = {};
-      if (snapshot.exists()) {
-        studentsData = snapshot.val();
-      } else {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No students available.</td></tr>';
-        return;
-      }
-      if (Object.keys(studentsData).length > 0) {
-        Object.entries(studentsData).forEach(([id, student]) => {
-          const row = document.createElement('tr');
-          row.innerHTML = `
-            <td>${student.name}</td>
-            <td>${student.email || ''}</td>
-            <td>${student.class || ''}</td>
-            <td>
-              <button class="btn btn-secondary" onclick="editStudent('${id}', '${student.name}', '${student.email || ''}', '${student.class || ''}')">Edit</button>
-              <button class="btn" onclick="deleteStudent('${id}')">Delete</button>
-            </td>
-          `;
-          tbody.appendChild(row);
-        });
-        // Update select for marker
-        const select = document.getElementById('student-select');
-        select.innerHTML = '<option>Select Student</option>';
-        Object.entries(studentsData).forEach(([id, student]) => {
-          const option = document.createElement('option');
-          option.value = id;
-          option.textContent = student.name;
-          select.appendChild(option);
-        });
-      } else {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No students available.</td></tr>';
-      }
-    }
-    // Teachers
-    async function loadTeachers() {
-      const tbody = document.getElementById('teachers-tbody');
-      tbody.innerHTML = '';
-      const teachersRef = ref(db, 'teachers');
-      const snapshot = await get(teachersRef);
-      let teachersData = {};
-      if (snapshot.exists()) {
-        teachersData = snapshot.val();
-      } else {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No teachers available.</td></tr>';
-        return;
-      }
-      if (Object.keys(teachersData).length > 0) {
-        Object.entries(teachersData).forEach(([id, teacher]) => {
-          const row = document.createElement('tr');
-          row.innerHTML = `
-            <td>${teacher.name}</td>
-            <td>${teacher.email}</td>
-            <td>${teacher.subject}</td>
-            <td>
-              <button class="btn btn-secondary" onclick="editTeacher('${id}', '${teacher.name}', '${teacher.email}', '${teacher.subject}')">Edit</button>
-              <button class="btn" onclick="deleteTeacher('${id}')">Delete</button>
-            </td>
-          `;
-          tbody.appendChild(row);
-        });
-      } else {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No teachers available.</td></tr>';
       }
     }
     function openModal(type) {
@@ -946,8 +1044,6 @@
           alert('Student added successfully!');
         }
         closeModal('add-student');
-        await loadStudents();
-        if (currentOpenSection === 'dashboard') await updateStats();
       } catch (error) {
         console.error('Error saving student:', error);
         alert('Failed to save student.');
@@ -969,8 +1065,6 @@
         showLoader();
         try {
           await remove(ref(db, `students/${id}`));
-          await loadStudents();
-          if (currentOpenSection === 'dashboard') await updateStats();
           alert('Student deleted!');
         } catch (error) {
           console.error('Error deleting student:', error);
@@ -997,8 +1091,6 @@
           alert('Teacher added successfully!');
         }
         closeModal('add-teacher');
-        await loadTeachers();
-        if (currentOpenSection === 'dashboard') await updateStats();
       } catch (error) {
         console.error('Error saving teacher:', error);
         alert('Failed to save teacher.');
@@ -1020,8 +1112,6 @@
         showLoader();
         try {
           await remove(ref(db, `teachers/${id}`));
-          await loadTeachers();
-          if (currentOpenSection === 'dashboard') await updateStats();
           alert('Teacher deleted!');
         } catch (error) {
           console.error('Error deleting teacher:', error);
@@ -1032,33 +1122,6 @@
       }
     }
     // Lesson Plans
-    async function loadLessonPlans() {
-      const list = document.getElementById('lesson-plans-list');
-      list.innerHTML = '';
-      const plansRef = ref(db, 'lessonPlans');
-      const snapshot = await get(plansRef);
-      let plansData = {};
-      if (snapshot.exists()) {
-        plansData = snapshot.val();
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No lesson plans available.</p>';
-        return;
-      }
-      if (Object.keys(plansData).length > 0) {
-        Object.entries(plansData).forEach(([id, plan]) => {
-          const item = document.createElement('div');
-          item.className = 'lesson-plan-item';
-          item.onclick = () => editLessonPlan(id, plan);
-          item.innerHTML = `
-            <div><strong>${plan.title}</strong> - ${plan.subject} (${plan.phase})</div>
-            <button class="btn btn-secondary" onclick="event.stopPropagation(); deleteLessonPlan('${id}')">Delete</button>
-          `;
-          list.appendChild(item);
-        });
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No lesson plans available.</p>';
-      }
-    }
     function openLessonPlanModal(edit = false) {
       if (edit) {
         document.getElementById('add-lesson-plan-modal').querySelector('h3').textContent = 'Edit Lesson Plan';
@@ -1083,8 +1146,6 @@
           alert('Lesson plan added!');
         }
         closeModal('add-lesson-plan');
-        await loadLessonPlans();
-        if (currentOpenSection === 'dashboard') await updateStats();
       } catch (error) {
         console.error('Error saving lesson plan:', error);
         alert('Failed to save lesson plan.');
@@ -1105,33 +1166,12 @@
         showLoader();
         try {
           await remove(ref(db, `lessonPlans/${id}`));
-          await loadLessonPlans();
-          if (currentOpenSection === 'dashboard') await updateStats();
         } finally {
           hideLoader();
         }
       }
     }
     // Communication
-    async function loadAnnouncements() {
-      const list = document.getElementById('announcements-list');
-      list.innerHTML = '';
-      const annRef = ref(db, 'announcements');
-      const snapshot = await get(annRef);
-      let annData = {};
-      if (snapshot.exists()) {
-        annData = snapshot.val();
-      } else {
-        return;
-      }
-      if (Object.keys(annData).length > 0) {
-        Object.entries(annData).reverse().forEach(([id, ann]) => {
-          const item = document.createElement('div');
-          item.innerHTML = `<p><strong>${ann.title}</strong>: ${ann.message} <small>${new Date(ann.timestamp).toLocaleString()}</small></p>`;
-          list.appendChild(item);
-        });
-      }
-    }
     async function sendAnnouncement() {
       showLoader();
       try {
@@ -1145,7 +1185,6 @@
             timestamp: Date.now()
           });
           document.getElementById('announcement-text').value = '';
-          await loadAnnouncements();
           alert('Announcement sent!');
         }
       } finally {
@@ -1153,35 +1192,6 @@
       }
     }
     // Reminders
-    async function loadReminders() {
-      const list = document.getElementById('reminders-list');
-      list.innerHTML = '';
-      const remRef = ref(db, 'reminders');
-      const snapshot = await get(remRef);
-      let remData = {};
-      if (snapshot.exists()) {
-        remData = snapshot.val();
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No reminders available.</p>';
-        return;
-      }
-      if (Object.keys(remData).length > 0) {
-        Object.entries(remData).forEach(([id, rem]) => {
-          const item = document.createElement('div');
-          item.className = 'notification-item';
-          item.innerHTML = `
-            <div>
-              <strong>${rem.title}</strong><br>
-              <small>${rem.desc} - ${new Date(rem.date).toLocaleDateString()}</small>
-            </div>
-            <button class="btn btn-secondary" onclick="deleteReminder('${id}')">Delete</button>
-          `;
-          list.appendChild(item);
-        });
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No reminders available.</p>';
-      }
-    }
     async function saveReminder() {
       showLoader();
       try {
@@ -1191,8 +1201,6 @@
         if (title && date && desc) {
           await push(ref(db, 'reminders'), { title, date, desc, timestamp: Date.now() });
           closeModal('add-reminder');
-          await loadReminders();
-          if (currentOpenSection === 'dashboard') await updateStats();
           alert('Reminder added!');
         }
       } finally {
@@ -1204,8 +1212,6 @@
         showLoader();
         try {
           await remove(ref(db, `reminders/${id}`));
-          await loadReminders();
-          if (currentOpenSection === 'dashboard') await updateStats();
         } finally {
           hideLoader();
         }
@@ -1237,7 +1243,12 @@
       messages.scrollTop = messages.scrollHeight;
     }
     // Marker
+    let assignmentsListener = null;
     async function loadAssignmentsForStudent() {
+      if (assignmentsListener) {
+        assignmentsListener();
+        assignmentsListener = null;
+      }
       showLoader();
       try {
         const studentId = document.getElementById('student-select').value;
@@ -1245,24 +1256,22 @@
         select.innerHTML = '<option>Select Assignment</option>';
         if (!studentId) return;
         const assignmentsRef = ref(db, `assignments/${studentId}`);
-        const snapshot = await get(assignmentsRef);
-        let assignmentsData = {};
-        if (snapshot.exists()) {
-          assignmentsData = snapshot.val();
-        } else {
-          select.innerHTML += '<option>No assignments available</option>';
-          return;
-        }
-        if (Object.keys(assignmentsData).length > 0) {
-          Object.entries(assignmentsData).forEach(([id, assignment]) => {
-            const option = document.createElement('option');
-            option.value = id;
-            option.textContent = assignment.title;
-            select.appendChild(option);
-          });
-        } else {
-          select.innerHTML += '<option>No assignments available</option>';
-        }
+        assignmentsListener = onValue(assignmentsRef, (snapshot) => {
+          let assignmentsData = {};
+          if (snapshot.exists()) {
+            assignmentsData = snapshot.val();
+          }
+          if (Object.keys(assignmentsData).length > 0) {
+            Object.entries(assignmentsData).forEach(([id, assignment]) => {
+              const option = document.createElement('option');
+              option.value = id;
+              option.textContent = assignment.title;
+              select.appendChild(option);
+            });
+          } else {
+            select.innerHTML += '<option>No assignments available</option>';
+          }
+        });
       } finally {
         hideLoader();
       }
@@ -1306,35 +1315,6 @@
       }
     }
     // Parents
-    async function loadParents() {
-      const list = document.getElementById('parents-list');
-      list.innerHTML = '';
-      const parentsRef = ref(db, 'parents');
-      const snapshot = await get(parentsRef);
-      let parentsData = {};
-      if (snapshot.exists()) {
-        parentsData = snapshot.val();
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No parents registered.</p>';
-        return;
-      }
-      if (Object.keys(parentsData).length > 0) {
-        Object.entries(parentsData).forEach(([id, parent]) => {
-          const item = document.createElement('div');
-          item.className = 'parent-item';
-          item.innerHTML = `
-            <div>
-              <strong>${parent.name}</strong> - Parent of ${parent.childName}<br>
-              <small>${parent.email}</small>
-            </div>
-            <button class="btn btn-secondary" onclick="sendParentMessage('${id}', '${parent.name}')">Message</button>
-          `;
-          list.appendChild(item);
-        });
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No parents registered.</p>';
-      }
-    }
     async function saveParent() {
       showLoader();
       try {
@@ -1344,8 +1324,6 @@
         if (!name || !childName || !email) return alert('Please fill all fields.');
         await push(ref(db, 'parents'), { name, childName: childName, email, timestamp: Date.now() });
         closeModal('add-parent');
-        await loadParents();
-        if (currentOpenSection === 'dashboard') await updateStats();
         alert('Parent added!');
       } catch (error) {
         console.error('Error adding parent:', error);
