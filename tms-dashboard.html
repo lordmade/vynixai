@@ -179,14 +179,14 @@
       color: var(--text-primary);
       margin: 0;
     }
-    .teachers-table {
+    .students-table, .teachers-table {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 20px;
       overflow: hidden;
       box-shadow: var(--shadow-md);
     }
-    .teachers-table-header {
+    .students-table-header, .teachers-table-header {
       padding: 20px;
       background: rgba(212, 0, 0, 0.1);
       border-bottom: 1px solid var(--border);
@@ -435,6 +435,7 @@
   <div class="tabs-container">
     <ul class="tabs" id="tabs-nav">
       <li class="tab"><a href="#" class="tab-link active" data-section="dashboard"><span class="material-icons" style="font-size: 16px; vertical-align: middle; margin-right: 4px;">dashboard</span>Dashboard</a></li>
+      <li class="tab"><a href="#" class="tab-link" data-section="students"><span class="material-icons" style="font-size: 16px; vertical-align: middle; margin-right: 4px;">school</span>Students</a></li>
       <li class="tab"><a href="#" class="tab-link" data-section="lesson-plans"><span class="material-icons" style="font-size: 16px; vertical-align: middle; margin-right: 4px;">menu_book</span>Lesson Plans</a></li>
       <li class="tab"><a href="#" class="tab-link" data-section="communication"><span class="material-icons" style="font-size: 16px; vertical-align: middle; margin-right: 4px;">chat</span>Communication</a></li>
       <li class="tab"><a href="#" class="tab-link" data-section="reminders"><span class="material-icons" style="font-size: 16px; vertical-align: middle; margin-right: 4px;">notifications</span>Reminders</a></li>
@@ -451,6 +452,11 @@
     </h1>
     <div id="dashboard-content" class="hidden">
       <div class="dashboard-grid">
+        <div class="dashboard-card">
+          <span class="material-icons">school</span>
+          <h3>Total Students</h3>
+          <p id="stat-students">0</p>
+        </div>
         <div class="dashboard-card">
           <span class="material-icons">people</span>
           <h3>Total Teachers</h3>
@@ -471,6 +477,30 @@
           <h3>Reminders</h3>
           <p id="stat-reminders">0</p>
         </div>
+      </div>
+    </div>
+    <!-- Students Section -->
+    <div id="students-section" class="hidden">
+      <div class="students-table">
+        <div class="students-table-header section-header">
+          <h2>Students List</h2>
+          <div>
+            <button class="btn" onclick="openModal('add-student')">Add New</button>
+          </div>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Class</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="students-tbody">
+            <!-- Students loaded here -->
+          </tbody>
+        </table>
       </div>
     </div>
     <!-- Teachers Section -->
@@ -598,6 +628,20 @@
       </div>
     </div>
   </main>
+  <!-- Add/Edit Student Modal -->
+  <div id="add-student-modal" class="modal">
+    <div class="modal-content">
+      <h3 id="student-modal-title">Add Student</h3>
+      <input type="hidden" id="student-id">
+      <input type="text" id="student-name" class="input-field" placeholder="Full Name">
+      <input type="email" id="student-email" class="input-field" placeholder="Email">
+      <input type="text" id="student-class" class="input-field" placeholder="Class">
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button class="btn btn-secondary" onclick="closeModal('add-student')">Cancel</button>
+        <button class="btn" onclick="saveOrUpdateStudent()">Save</button>
+      </div>
+    </div>
+  </div>
   <!-- Add/Edit Teacher Modal -->
   <div id="add-teacher-modal" class="modal">
     <div class="modal-content">
@@ -672,6 +716,7 @@
     let app, auth, db, currentUser;
     let editingTeacherId = null;
     let editingPlanId = null;
+    let editingStudentId = null;
     let currentOpenSection = null;
     function initializeFirebase() {
       app = initializeApp(firebaseConfig);
@@ -681,12 +726,12 @@
         currentUser = user;
         if (user) {
           await Promise.all([
+            loadStudents(),
             loadTeachers(),
             loadLessonPlans(),
             loadAnnouncements(),
             loadReminders(),
-            loadParents(),
-            loadStudents()
+            loadParents()
           ]);
           updateStats();
           setupMarkerGrid();
@@ -706,6 +751,9 @@
       });
     }
     async function updateStats() {
+      // Students
+      const studentsSnap = await get(ref(db, 'students'));
+      document.getElementById('stat-students').textContent = studentsSnap.exists() ? Object.keys(studentsSnap.val()).length : 0;
       // Teachers
       const teachersSnap = await get(ref(db, 'teachers'));
       document.getElementById('stat-teachers').textContent = teachersSnap.exists() ? Object.keys(teachersSnap.val()).length : 0;
@@ -737,6 +785,46 @@
         currentOpenSection = section;
       }
     }
+    // Students
+    async function loadStudents() {
+      const tbody = document.getElementById('students-tbody');
+      tbody.innerHTML = '';
+      const studentsRef = ref(db, 'students');
+      const snapshot = await get(studentsRef);
+      if (snapshot.exists()) {
+        Object.entries(snapshot.val()).forEach(([id, student]) => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${student.name}</td>
+            <td>${student.email || ''}</td>
+            <td>${student.class || ''}</td>
+            <td>
+              <button class="btn btn-secondary" onclick="editStudent('${id}', '${student.name}', '${student.email || ''}', '${student.class || ''}')">Edit</button>
+              <button class="btn" onclick="deleteStudent('${id}')">Delete</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+      } else {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No students yet.</td></tr>';
+        // Sample data
+        await set(ref(db, 'students'), {
+          '1': { name: 'John Doe', email: 'john@example.com', class: '10A' },
+          '2': { name: 'Jane Smith', email: 'jane@example.com', class: '10B' }
+        });
+        loadStudents();
+        return;
+      }
+      // Update select for marker
+      const select = document.getElementById('student-select');
+      select.innerHTML = '<option>Select Student</option>';
+      Object.entries(snapshot.val()).forEach(([id, student]) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = student.name;
+        select.appendChild(option);
+      });
+    }
     // Teachers
     async function loadTeachers() {
       const tbody = document.getElementById('teachers-tbody');
@@ -763,7 +851,13 @@
     }
     function openModal(type) {
       document.getElementById(`${type}-modal`).classList.add('active');
-      if (type === 'add-teacher') {
+      if (type === 'add-student') {
+        editingStudentId = null;
+        document.getElementById('student-modal-title').textContent = 'Add Student';
+        document.getElementById('student-name').value = '';
+        document.getElementById('student-email').value = '';
+        document.getElementById('student-class').value = '';
+      } else if (type === 'add-teacher') {
         editingTeacherId = null;
         document.getElementById('teacher-modal-title').textContent = 'Add Teacher';
         document.getElementById('teacher-name').value = '';
@@ -773,6 +867,51 @@
     }
     function closeModal(type) {
       document.getElementById(`${type}-modal`).classList.remove('active');
+    }
+    async function saveOrUpdateStudent() {
+      const name = document.getElementById('student-name').value.trim();
+      const email = document.getElementById('student-email').value.trim();
+      const className = document.getElementById('student-class').value.trim();
+      if (!name || !className) return alert('Please fill name and class.');
+      try {
+        if (editingStudentId) {
+          await update(ref(db, `students/${editingStudentId}`), { name, email, class: className });
+          alert('Student updated successfully!');
+        } else {
+          const studentsRef = ref(db, 'students');
+          const newStudentRef = push(studentsRef);
+          await set(newStudentRef, { name, email, class: className });
+          alert('Student added successfully!');
+        }
+        closeModal('add-student');
+        loadStudents();
+        if (currentOpenSection === 'dashboard') updateStats();
+      } catch (error) {
+        console.error('Error saving student:', error);
+        alert('Failed to save student.');
+      }
+    }
+    function editStudent(id, name, email, className) {
+      editingStudentId = id;
+      document.getElementById('student-modal-title').textContent = 'Edit Student';
+      document.getElementById('student-id').value = id;
+      document.getElementById('student-name').value = name;
+      document.getElementById('student-email').value = email;
+      document.getElementById('student-class').value = className;
+      openModal('add-student');
+    }
+    async function deleteStudent(id) {
+      if (confirm('Delete this student?')) {
+        try {
+          await remove(ref(db, `students/${id}`));
+          loadStudents();
+          if (currentOpenSection === 'dashboard') updateStats();
+          alert('Student deleted!');
+        } catch (error) {
+          console.error('Error deleting student:', error);
+          alert('Failed to delete student.');
+        }
+      }
     }
     async function saveOrUpdateTeacher() {
       const name = document.getElementById('teacher-name').value.trim();
@@ -978,27 +1117,6 @@
       messages.scrollTop = messages.scrollHeight;
     }
     // Marker
-    async function loadStudents() {
-      const select = document.getElementById('student-select');
-      select.innerHTML = '<option>Select Student</option>';
-      const studentsRef = ref(db, 'students');
-      const snapshot = await get(studentsRef);
-      if (snapshot.exists()) {
-        Object.entries(snapshot.val()).forEach(([id, student]) => {
-          const option = document.createElement('option');
-          option.value = id;
-          option.textContent = student.name;
-          select.appendChild(option);
-        });
-      } else {
-        // Sample data
-        await set(ref(db, 'students'), {
-          '1': { name: 'John Doe' },
-          '2': { name: 'Jane Smith' }
-        });
-        loadStudents();
-      }
-    }
     async function loadAssignmentsForStudent() {
       const studentId = document.getElementById('student-select').value;
       const select = document.getElementById('assignment-select');
