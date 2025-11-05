@@ -1002,6 +1002,7 @@
       document.querySelector('.add-student-btn').addEventListener('click', () => openModal('add-student'));
       document.querySelector('.add-lesson-plan-btn').addEventListener('click', () => openLessonPlanModal(false));
       document.querySelector('.generate-lesson-plan-btn').addEventListener('click', generateLessonPlanWithGemini);
+      document.querySelector('.close-lesson-plan-modal').addEventListener('click', () => closeModal('add-lesson-plan'));
       document.querySelector('.send-announcement-btn').addEventListener('click', sendAnnouncement);
       document.querySelector('.add-reminder-btn').addEventListener('click', () => openModal('add-reminder'));
       document.querySelector('.send-chatbot-btn').addEventListener('click', sendChatbotMessage);
@@ -1246,6 +1247,9 @@
     }
     function closeModal(type) {
       document.getElementById(`${type}-modal`).classList.remove('active');
+      if (type === 'add-lesson-plan') {
+        editingPlanId = null;
+      }
     }
     async function saveOrUpdateStudent() {
       showLoader();
@@ -1295,13 +1299,17 @@
         }
       }
     }
-    function openLessonPlanModal(edit = false) {
+    function openLessonPlanModal(isEdit = false) {
       const modal = document.getElementById('add-lesson-plan-modal');
-      const title = modal.querySelector('.lesson-plan-title');
-      if (edit) {
-        title.textContent = 'Edit Lesson Plan';
+      const titleEl = modal.querySelector('.lesson-plan-title');
+      const generateBtn = modal.querySelector('.generate-lesson-plan-btn');
+      if (isEdit) {
+        titleEl.textContent = 'Regenerate Lesson Plan with AI';
+        generateBtn.textContent = 'Regenerate & Save';
       } else {
-        title.textContent = 'Generate Lesson Plan with AI';
+        titleEl.textContent = 'Generate Lesson Plan with AI';
+        generateBtn.textContent = 'Generate Plan';
+        editingPlanId = null;
         document.getElementById('plan-subject').value = '';
         document.getElementById('plan-topic').value = '';
         document.getElementById('plan-phase').value = 'Foundation';
@@ -1332,10 +1340,16 @@
         const data = await response.json();
         const content = data.candidates[0].content.parts[0].text;
         const title = `${subject} - ${topic} (${phase})`;
-        await push(ref(db, 'lessonPlans'), { title, subject, phase, content, timestamp: Date.now() });
+        if (editingPlanId) {
+          await update(ref(db, `lessonPlans/${editingPlanId}`), { title, subject, phase, content, timestamp: Date.now() });
+          showAlert('Lesson plan regenerated and updated!');
+        } else {
+          await push(ref(db, 'lessonPlans'), { title, subject, phase, content, timestamp: Date.now() });
+          showAlert('Lesson plan generated and saved!');
+        }
         generatePDF(title, content);
+        editingPlanId = null;
         closeModal('add-lesson-plan');
-        showAlert('Lesson plan generated and saved!');
       } catch (error) {
         console.error('Error generating lesson plan:', error);
         showAlert('Failed to generate lesson plan. Check API key and network.');
@@ -1354,14 +1368,19 @@
       doc.save(`${title.replace(/[^a-z0-9]/gi, '_')}.pdf`);
     }
     function editLessonPlan(id, plan) {
-      // For editing, you can open the modal and allow manual edit, but since AI-focused, perhaps regenerate or manual.
-      // For now, open modal with fields populated for manual edit.
       editingPlanId = id;
-      document.getElementById('plan-subject').value = plan.subject;
-      document.getElementById('plan-topic').value = plan.title.split(' - ')[1]?.split(' (')[0] || '';
-      document.getElementById('plan-phase').value = plan.phase;
+      const titleParts = plan.title.split(' - ');
+      if (titleParts.length >= 2) {
+        const subPhaseParts = titleParts[1].split(' (');
+        if (subPhaseParts.length >= 2) {
+          const topic = subPhaseParts[0];
+          const phase = subPhaseParts[1].replace(')', '');
+          document.getElementById('plan-subject').value = titleParts[0];
+          document.getElementById('plan-topic').value = topic;
+          document.getElementById('plan-phase').value = phase;
+        }
+      }
       openLessonPlanModal(true);
-      // Note: For full edit, you might need to add a manual save button, but keeping AI flow primary.
     }
     async function deleteLessonPlan(id) {
       const confirmed = await showConfirm('Delete this plan?');
