@@ -2714,77 +2714,7 @@
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
-    import { query, orderByChild, limitToLast, endAt } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
-
-    // IndexedDB Cache for Statuses
-    class StatusCache {
-      constructor(dbName = 'SocialFeedDB', storeName = 'statuses') {
-        this.dbName = dbName;
-        this.storeName = storeName;
-        this.db = null;
-      }
-
-      async init() {
-        return new Promise((resolve, reject) => {
-          const request = indexedDB.open(this.dbName, 1);
-          request.onerror = () => reject(request.error);
-          request.onsuccess = () => {
-            this.db = request.result;
-            resolve();
-          };
-          request.onupgradeneeded = (e) => {
-            const db = e.target.result;
-            if (!db.objectStoreNames.contains(this.storeName)) {
-              const store = db.createObjectStore(this.storeName, { keyPath: 'key' });
-              store.createIndex('key', 'key', { unique: true });
-            }
-          };
-        });
-      }
-
-      async getByPage(key) {
-        if (!this.db) await this.init();
-        return new Promise((resolve) => {
-          const transaction = this.db.transaction([this.storeName], 'readonly');
-          const store = transaction.objectStore(this.storeName);
-          const request = store.get(key);
-          request.onsuccess = () => resolve(request.result?.statuses || []);
-        });
-      }
-
-      async setByPage(key, statuses) {
-        if (!this.db) await this.init();
-        return new Promise((resolve, reject) => {
-          const transaction = this.db.transaction([this.storeName], 'readwrite');
-          const store = transaction.objectStore(this.storeName);
-          const request = store.put({ key, statuses, timestamp: Date.now() });
-          request.onsuccess = resolve;
-          request.onerror = reject;
-        });
-      }
-
-      async clearOldCache(maxAge = 86400000) { // 1 day
-        if (!this.db) await this.init();
-        return new Promise((resolve) => {
-          const transaction = this.db.transaction([this.storeName], 'readwrite');
-          const store = transaction.objectStore(this.storeName);
-          const request = store.openCursor();
-          request.onsuccess = (e) => {
-            const cursor = e.target.result;
-            if (cursor) {
-              const item = cursor.value;
-              if (Date.now() - item.timestamp > maxAge) {
-                cursor.delete();
-              }
-              cursor.continue();
-            } else {
-              resolve();
-            }
-          };
-        });
-      }
-    }
-
+    import { query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -2839,19 +2769,6 @@
     let currentEditStatusId = null;
     let currentEditMediaUrl = null;
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
-
-    // Infinite Scroll Globals
-    let statusCache = null;
-    let statusPagination = {
-      all: { page: 0, lastTimestamp: null, hasMore: true },
-      images: { page: 0, lastTimestamp: null, hasMore: true },
-      text: { page: 0, lastTimestamp: null, hasMore: true }
-    };
-    let currentStatusFilterKey = 'all';
-    let currentStatusContainer = null;
-    let statusObserver = null;
-    let statusIsLoading = false;
-
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
       if (spinnerOverlay) spinnerOverlay.classList.add('active');
@@ -3135,220 +3052,520 @@
       postItem.addEventListener('mouseup', clearPressTimer);
       postItem.addEventListener('mouseleave', clearPressTimer);
     }
-
-    // Render a single status post
-    async function renderStatusPost(status, container, isRepost = false) {
-      const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
-      let innerHTML = '';
-      let aiTargetId = status.statusId;
-      let deleteHtml = '';
-      if (status.userId === currentUser.uid) {
-        deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
-      }
-      if (status.type === 'repost') {
-        const original = window.currentAllStatuses ? window.currentAllStatuses.find(s => s.statusId === status.originalId) : null;
-        if (original && original.user) {
-          // ... (keep the repost rendering logic from original code)
-          // For brevity, assume the repost HTML is generated as in original
-          innerHTML = generateRepostHTML(status, original, isFollowing, likes, comments, reposts, isLiked, likeIcon, deleteHtml, aiTargetId); // Pseudo
-        } else {
-          // Fallback HTML
-        }
-      } else {
-        // Original status rendering logic
-        // ... (keep from original code)
-        innerHTML = generateStatusHTML(status, isFollowing, likes, comments, reposts, isLiked, likeIcon, deleteHtml, aiTargetId); // Pseudo
-      }
-      const postItem = document.createElement('div');
-      postItem.className = 'status-post';
-      postItem.setAttribute('data-status-id', status.statusId);
-      postItem.innerHTML = innerHTML;
-      if (status.userId === currentUser.uid && status.type !== 'repost') {
-        setupLongPress(postItem, status.statusId);
-      }
-      // Video setup logic (keep from original)
-      const videoEl = postItem.querySelector('video');
-      if (videoEl) {
-        // ... video event listeners from original
-      }
-      // Impression observer (keep)
-      if (!viewedStatuses.has(status.statusId)) {
-        const viewObserver = new IntersectionObserver((entries) => {
-          entries.forEach(entry => {
-            if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
-              const impRef = ref(db, `statuses/${status.statusId}/impressions`);
-              get(impRef).then(snap => {
-                const curr = snap.val() || 0;
-                set(impRef, curr + 1);
-              });
-              viewedStatuses.add(status.statusId);
-              viewObserver.unobserve(postItem);
-            }
-          });
-        }, { threshold: 0.5 });
-        viewObserver.observe(postItem);
-      }
-      container.appendChild(postItem);
-    }
-
-    // Modified loadStatuses with pagination and cache
-    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null, page = 0) {
+    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
-      if (statusesLoaded[loadKey] && silent && page === 0) return [];
+      if (statusesLoaded[loadKey] && silent) return;
       if (!silent) showSpinner();
       let loadedAny = false;
       try {
-        if (mode === 'carousel') {
-          // Keep original carousel logic
-          container.innerHTML = '';
-          statusesLoaded[loadKey] = true;
-          // ... (original carousel code)
-          return []; // No return for carousel
-        } else { // list mode
-          const filterKey = filter || 'all';
-          const cacheKey = `${filterKey}_${page}`;
-          const pag = statusPagination[filterKey];
-          let statuses = await statusCache.getByPage(cacheKey);
-          let fetched = [];
-          const isOnline = navigator.onLine;
-          if (statuses.length === 0 || isOnline) {
-            try {
-              let q = ref(db, 'statuses');
-              q = query(q, orderByChild('timestamp'));
-              if (page > 0 && pag.lastTimestamp !== null) {
-                q = query(q, endAt(pag.lastTimestamp));
-              }
-              q = query(q, limitToLast(10));
-              if (filter) q = query(q, limitToLast(50)); // Limit for filtered tabs
-              const snapshot = await get(q);
-              if (snapshot.exists()) {
-                fetched = Object.entries(snapshot.val()).map(([id, s]) => ({ statusId: id, ...s }));
-                fetched.sort((a, b) => b.timestamp - a.timestamp);
-                if (page > 0) {
-                  // For pagination, the query should return the next batch
+        container.innerHTML = '';
+        statusesLoaded[loadKey] = true;
+        if (currentUser) {
+          let friendIds = [];
+          if (mode === 'carousel') {
+            friendIds = Object.keys(currentUserFollows || {});
+          }
+          const statusesRef = ref(db, 'statuses');
+          const snapshot = await get(statusesRef);
+         
+          let recentStatusesByUser = {};
+          let allStatuses = [];
+          if (snapshot.exists()) {
+            Object.entries(snapshot.val()).forEach(([id, s]) => {
+              const status = { statusId: id, ...s };
+              const shouldInclude = mode === 'carousel' ? (friendIds.includes(status.userId) || status.userId === currentUser.uid) : true;
+              if (shouldInclude) {
+                const uid = status.userId;
+                if (!recentStatusesByUser[uid]) {
+                  recentStatusesByUser[uid] = { user: null, statuses: [] };
                 }
-                if (fetched.length > 0) {
-                  pag.lastTimestamp = fetched[fetched.length - 1].timestamp;
+                recentStatusesByUser[uid].statuses.push(status);
+                allStatuses.push(status);
+              }
+            });
+            Object.keys(recentStatusesByUser).forEach(uid => {
+              recentStatusesByUser[uid].statuses.sort((a, b) => b.timestamp - a.timestamp);
+            });
+            const userIdsWithStatuses = Object.keys(recentStatusesByUser);
+            if (userIdsWithStatuses.length > 0) {
+              const userPromises = userIdsWithStatuses.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+              const userResults = await Promise.allSettled(userPromises);
+              const successfulResults = userResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+              userResults.filter(r => r.status === 'rejected').forEach(r => console.warn('Failed to fetch user data:', r.reason));
+              successfulResults.forEach(ur => {
+                if (recentStatusesByUser[ur.uid]) {
+                  recentStatusesByUser[ur.uid].user = ur.user;
                 }
-                if (fetched.length < 10) pag.hasMore = false;
-                await statusCache.setByPage(cacheKey, fetched);
-                statuses = fetched;
-              }
-            } catch (error) {
-              console.error('Fetch error:', error);
-              if (statuses.length === 0) {
-                showAlert('Failed to load statuses. Try refreshing.');
-                return [];
-              }
-              console.warn('Using cached data (offline)');
+              });
             }
           }
-          if (page === 0) {
-            container.innerHTML = '';
-            if (filter) {
-              // For images/text, filter the fetched (limited to 50)
-              statuses = statuses.filter(s => {
-                if (filter === 'images') return s.mediaUrl && s.type === 'image';
-                if (filter === 'text') return !s.mediaUrl;
-                return true;
-              });
-              pag.hasMore = false; // No pagination for filtered
+          window.currentStatusesByUser = recentStatusesByUser;
+          allStatuses.forEach(status => {
+            status.user = recentStatusesByUser[status.userId]?.user;
+          });
+          let userFiltered = allStatuses;
+          if (mode === 'list' && currentStatusFilter) {
+            userFiltered = allStatuses.filter(s => s.userId === currentStatusFilter);
+          }
+          let mediaFiltered = userFiltered;
+          if (mode === 'list' && filter) {
+            mediaFiltered = userFiltered.filter(s => {
+              if (filter === 'images') return s.mediaUrl && s.type === 'image';
+              if (filter === 'text') return !s.mediaUrl;
+              return true;
+            });
+          }
+          let sortedStatuses = mediaFiltered;
+          if (mode === 'list') {
+            if (mediaFiltered.length > 0) {
+              const mostRecent = mediaFiltered.reduce((prev, current) => (prev.timestamp > current.timestamp ? prev : current));
+              const others = mediaFiltered.filter(s => s.statusId !== mostRecent.statusId);
+              others.sort(() => 0.5 - Math.random());
+              sortedStatuses = [mostRecent, ...others];
             }
-            // Apply search filter
-            statuses = filterStatuses(statuses);
-            // Fetch users for this batch
-            const uids = [...new Set(statuses.map(s => s.userId))];
-            const userPromises = uids.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-            const userResults = await Promise.allSettled(userPromises);
-            const userMap = Object.fromEntries(userResults.filter(r => r.status === 'fulfilled').map(r => [r.value.uid, r.value.user]));
-            statuses.forEach(s => s.user = userMap[s.userId]);
-            window.currentAllStatuses = statuses; // Update global for modal
-            // Render
-            if (statuses.length === 0) {
+            // New Feature: Filter by search term
+            sortedStatuses = filterStatuses(sortedStatuses);
+          }
+          window.currentAllStatuses = sortedStatuses;
+          const subtitle = document.getElementById('status-subtitle');
+          if (mode === 'list') {
+            if (currentStatusFilter && sortedStatuses.length > 0) {
+              const user = sortedStatuses[0].user;
+              subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
+              subtitle.style.display = 'block';
+            } else {
+              subtitle.style.display = 'none';
+            }
+          }
+          const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
+            .sort((a, b) => {
+              if (a === currentUser.uid) return -1;
+              if (b === currentUser.uid) return 1;
+              return recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp;
+            });
+          if (mode === 'carousel') {
+            if (uids.length === 0) {
+              container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
+            } else {
+              for (let i = 0; i < uids.length; i++) {
+                const uid = uids[i];
+                const { user, statuses } = recentStatusesByUser[uid];
+                const latestStatus = statuses[0];
+                const statusItem = document.createElement('div');
+                statusItem.className = 'status-item';
+                statusItem.onclick = () => {
+                  window.currentStatusFilter = uid;
+                  loadFilteredStatuses(currentStatusSubTab);
+                };
+                const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
+                let avatarHtml;
+                if (user?.photoURL) {
+                  avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                } else {
+                  avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                }
+                let nameHtml = user?.displayName || 'User';
+                if (user?.verified) {
+                  nameHtml += verifiedIcon;
+                }
+                let businessHtml = user?.businessMode ? '<div class="status-business">Business</div>' : '';
+                statusItem.innerHTML = `
+                  ${avatarHtml}
+                  <div class="status-name">${nameHtml}</div>
+                  ${businessHtml}
+                `;
+                container.appendChild(statusItem);
+                loadedAny = true;
+              }
+            }
+          } else if (mode === 'list') {
+            if (sortedStatuses.length === 0) {
               let msg = 'No statuses yet.';
               if (filter === 'images') msg = 'No image statuses yet.';
               else if (filter === 'text') msg = 'No text statuses yet.';
               if (statusSearchTerm) msg = 'No statuses match your search.';
               if (currentStatusFilter) msg = `No ${filter || 'statuses'} from this user.`;
               container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">${msg}</p>`;
-              return [];
+              if (!silent) hideSpinner();
+              return;
             }
             viewedStatuses.clear();
-            for (let status of statuses) {
-              await renderStatusPost(status, container);
+            for (let i = 0; i < sortedStatuses.length; i++) {
+              const status = sortedStatuses[i];
+              const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
+              try {
+                const postItem = document.createElement('div');
+                postItem.className = 'status-post';
+                postItem.setAttribute('data-status-id', status.statusId);
+                let innerHTML = '';
+                let aiTargetId = status.statusId;
+                let deleteHtml = '';
+                // Removed editHtml - now using long press
+                if (status.userId === currentUser.uid) {
+                  deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
+                }
+                if (status.type === 'repost') {
+                  const original = window.currentAllStatuses.find(s => s.statusId === status.originalId);
+                  if (original && original.user) {
+                    const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
+                    let avatarHtml;
+                    if (status.user?.photoURL) {
+                      avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                    } else {
+                      avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                    }
+                    let nameHtml = status.user?.displayName || 'User';
+                    if (status.user?.verified) {
+                      nameHtml += verifiedIcon;
+                    }
+                    let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+                    const repostTime = formatTimestamp(status.timestamp);
+                    const reposterHeader = `
+                      <div class="status-post-header">
+                        <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                          ${avatarHtml}
+                          <div class="status-post-user">
+                            <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
+                            ${businessHtml}
+                            <div class="status-post-time">${repostTime}</div>
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                    const origInitial = original.user?.displayName ? original.user.displayName[0].toUpperCase() : 'U';
+                    let origAvatarHtml;
+                    if (original.user?.photoURL) {
+                      origAvatarHtml = `<img src="${original.user.photoURL}" alt="${original.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                    } else {
+                      origAvatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${origInitial}</div>`;
+                    }
+                    let origNameHtml = original.user?.displayName || 'User';
+                    if (original.user?.verified) {
+                      origNameHtml += verifiedIcon;
+                    }
+                    let origBusinessHtml = original.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+                    const origTime = formatTimestamp(original.timestamp);
+                    const origHeader = `
+                      <div class="status-post-header" style="margin-top: 8px;">
+                        <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${original.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                          ${origAvatarHtml}
+                          <div class="status-post-user">
+                            <div class="status-post-user-name">${origNameHtml}</div>
+                            ${origBusinessHtml}
+                            <div class="status-post-time">${origTime}</div>
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                    let origContentHtml = '';
+                    if (original.content) {
+                      const highlightedOrigContent = highlightContent(original.content);
+                      origContentHtml = `<div class="status-post-content">${highlightedOrigContent}</div>`;
+                    }
+                    let origMediaHtml = '';
+                    if (original.mediaUrl) {
+                      const oncontext = 'oncontextmenu="return false;"';
+                      if (original.type === 'image') {
+                        origMediaHtml = `<div class="status-post-media-container"><img src="${original.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
+                      } else if (original.type === 'video') {
+                        origMediaHtml = `<div class="status-post-media-container">
+                          <div class="video-container">
+                            <video src="${original.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                            <div class="video-controls">
+                              <button class="play-pause-btn material-icons">play_arrow</button>
+                              <div class="progress-container">
+                                <div class="progress-fill"></div>
+                              </div>
+                              <button class="volume-btn material-icons">volume_up</button>
+                            </div>
+                            <div class="video-overlay">
+                              <button class="play-again-btn" onclick="playVideoAgain(this)">
+                                <span class="material-icons">replay</span>Play Again
+                              </button>
+                              <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                            </div>
+                          </div>
+                        </div>`;
+                      }
+                    }
+                    const embedded = `
+                      <div style="margin: 12px 0; padding: 16px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px;">
+                        ${origHeader}
+                        ${origContentHtml}
+                        ${origMediaHtml}
+                      </div>
+                    `;
+                    let repostCaptionHtml = '';
+                    if (status.content) {
+                      const highlightedRepostContent = highlightContent(status.content);
+                      repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
+                    }
+                    let reposts = status.reposts || 0;
+                    let likes = 0;
+                    let comments = 0;
+                    let isLiked = false;
+                    let likeIcon = 'favorite_border';
+                    try {
+                      const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+                      likes = Object.keys(likesSnap.val() || {}).length;
+                      const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+                      comments = Object.keys(commentsSnap.val() || {}).length;
+                      const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+                      const likeSnap = await get(likeRef);
+                      isLiked = likeSnap.exists();
+                      likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                    } catch (e) {
+                      console.warn(`Failed to load counts for repost ${status.statusId}:`, e);
+                    }
+                    aiTargetId = original.statusId;
+                    innerHTML = `
+                      <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
+                      ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
+                      ${reposterHeader}
+                      ${embedded}
+                      ${repostCaptionHtml}
+                      <div class="status-actions">
+                        <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+                        <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+                        <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+                        ${deleteHtml}
+                      </div>
+                    `;
+                  } else {
+                    innerHTML = `
+                      <button class="status-ai-btn" onclick="analyzeStatus('${status.statusId}')">AI</button>
+                      ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
+                      <div class="status-post-header">
+                        ${avatarHtml}
+                        <div class="status-post-user">
+                          <div class="status-post-user-name">${nameHtml} <span class="status-post-repost-badge">Reposted</span></div>
+                          ${businessHtml}
+                          <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                        </div>
+                      </div>
+                      <div class="status-post-content">Original post not available</div>
+                      <div class="status-actions">
+                        <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">favorite_border</span> 0</span>
+                        <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> 0</span>
+                        <span onclick="openRepostModal('${status.originalId}')"><span class="material-icons">repeat</span> 0</span>
+                        ${deleteHtml}
+                      </div>
+                    `;
+                  }
+                } else {
+                  const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
+                  let avatarHtml;
+                  if (status.user?.photoURL) {
+                    avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                  } else {
+                    avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                  }
+                  let nameHtml = status.user?.displayName || 'User';
+                  if (status.user?.verified) {
+                    nameHtml += verifiedIcon;
+                  }
+                  let businessHtml = status.user?.businessMode ? '<div class="status-post-business">Business</div>' : '';
+                  let mediaHtml = '';
+                  if (status.mediaUrl) {
+                    const oncontext = 'oncontextmenu="return false;"';
+                    if (status.type === 'image') {
+                      mediaHtml = `<div class="status-post-media-container"><img src="${status.mediaUrl}" alt="Status media" class="status-post-media" loading="lazy" ${oncontext}></div>`;
+                    } else if (status.type === 'video') {
+                      mediaHtml = `<div class="status-post-media-container">
+                        <div class="video-container">
+                          <video src="${status.mediaUrl}" class="status-post-media" loading="lazy" ${oncontext}></video>
+                          <div class="video-controls">
+                            <button class="play-pause-btn material-icons">play_arrow</button>
+                            <div class="progress-container">
+                              <div class="progress-fill"></div>
+                            </div>
+                            <button class="volume-btn material-icons">volume_up</button>
+                          </div>
+                          <div class="video-overlay">
+                            <button class="play-again-btn" onclick="playVideoAgain(this)">
+                              <span class="material-icons">replay</span>Play Again
+                            </button>
+                            <button class="watch-more-btn" onclick="window.location.href='reels.html'">Watch More videos</button>
+                          </div>
+                        </div>
+                      </div>`;
+                    }
+                  }
+                  let reposts = 0;
+                  let likes = 0;
+                  let comments = 0;
+                  let isLiked = false;
+                  let likeIcon = 'favorite_border';
+                  try {
+                    const repostsSnap = await get(ref(db, `statuses/${status.statusId}/repostsCount`));
+                    reposts = repostsSnap.val() || 0;
+                    const likesSnap = await get(ref(db, `statuses/${status.statusId}/likes`));
+                    likes = Object.keys(likesSnap.val() || {}).length;
+                    const commentsSnap = await get(ref(db, `statuses/${status.statusId}/comments`));
+                    comments = Object.keys(commentsSnap.val() || {}).length;
+                    const likeRef = ref(db, `statuses/${status.statusId}/likes/${currentUser.uid}`);
+                    const likeSnap = await get(likeRef);
+                    isLiked = likeSnap.exists();
+                    likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                  } catch (e) {
+                    console.warn(`Failed to load counts for status ${status.statusId}:`, e);
+                  }
+                  let contentHtml = '';
+                  if (status.content) {
+                    const highlightedContent = highlightContent(status.content);
+                    contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
+                  }
+                  innerHTML = `
+                    <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
+                    ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
+                    <div class="status-post-header">
+                      <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
+                        ${avatarHtml}
+                        <div class="status-post-user">
+                          <div class="status-post-user-name">${nameHtml}</div>
+                          ${businessHtml}
+                          <div class="status-post-time">${formatTimestamp(status.timestamp)}</div>
+                        </div>
+                      </div>
+                    </div>
+                    ${contentHtml}
+                    ${mediaHtml}
+                    <div class="status-actions">
+                      <span onclick="likeStatus('${status.statusId}')"><span class="material-icons">${likeIcon}</span> ${likes}</span>
+                      <span onclick="openComments('${status.statusId}')"><span class="material-icons">chat_bubble_outline</span> ${comments}</span>
+                      <span onclick="openRepostModal('${status.statusId}')"><span class="material-icons">repeat</span> ${reposts}</span>
+                      ${deleteHtml}
+                    </div>
+                  `;
+                }
+                postItem.innerHTML = innerHTML;
+                // Setup long press for edit if it's the user's status
+                if (status.userId === currentUser.uid && status.type !== 'repost') {
+                  setupLongPress(postItem, status.statusId);
+                }
+                const videoEl = postItem.querySelector('video');
+                if (videoEl) {
+                  const playPauseBtn = postItem.querySelector('.play-pause-btn');
+                  const volumeBtn = postItem.querySelector('.volume-btn');
+                  const progressContainer = postItem.querySelector('.progress-container');
+                  const progressFill = postItem.querySelector('.progress-fill');
+                  const overlay = postItem.querySelector('.video-overlay');
+                  const controls = postItem.querySelector('.video-controls');
+                  videoEl.playbackRate = 1;
+                  videoEl.defaultPlaybackRate = 1;
+                  // Event listeners for video state
+                  videoEl.addEventListener('play', () => {
+                    playPauseBtn.innerHTML = 'pause';
+                    controls.classList.add('hidden');
+                    overlay.style.display = 'none';
+                  });
+                  videoEl.addEventListener('pause', () => {
+                    playPauseBtn.innerHTML = 'play_arrow';
+                    controls.classList.remove('hidden');
+                  });
+                  videoEl.addEventListener('ended', () => {
+                    playPauseBtn.innerHTML = 'replay';
+                    controls.classList.remove('hidden');
+                    overlay.style.display = 'flex';
+                  });
+                  // Play/Pause button
+                  playPauseBtn.addEventListener('click', () => {
+                    if (videoEl.paused) {
+                      videoEl.play().catch(console.error);
+                    } else {
+                      videoEl.pause();
+                    }
+                  });
+                  // Progress update and seek
+                  videoEl.addEventListener('loadedmetadata', () => {
+                    videoEl.addEventListener('timeupdate', () => {
+                      if (progressFill && videoEl.duration) {
+                        progressFill.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+                      }
+                    });
+                  });
+                  progressContainer.addEventListener('click', (e) => {
+                    const rect = progressContainer.getBoundingClientRect();
+                    const pos = (e.clientX - rect.left) / rect.width;
+                    videoEl.currentTime = pos * videoEl.duration;
+                  });
+                  // Volume toggle
+                  let videoMuted = false;
+                  volumeBtn.addEventListener('click', () => {
+                    videoMuted = !videoMuted;
+                    videoEl.muted = videoMuted;
+                    volumeBtn.innerHTML = videoMuted ? 'volume_off' : 'volume_up';
+                  });
+                  // Show/hide controls on interaction
+                  let hideTimeout;
+                  const showControls = () => {
+                    controls.classList.remove('hidden');
+                    if (hideTimeout) clearTimeout(hideTimeout);
+                    if (!videoEl.paused) {
+                      hideTimeout = setTimeout(() => {
+                        controls.classList.add('hidden');
+                      }, 3000);
+                    }
+                  };
+                  const videoContainer = postItem.querySelector('.video-container');
+                  videoContainer.addEventListener('click', (e) => {
+                    if (e.target === videoEl || e.target.closest('.video-controls')) return;
+                    showControls();
+                  });
+                  videoContainer.addEventListener('touchstart', showControls);
+                  videoContainer.addEventListener('mouseenter', showControls);
+                  videoContainer.addEventListener('mouseleave', () => {
+                    if (!videoEl.paused) {
+                      hideTimeout = setTimeout(() => {
+                        controls.classList.add('hidden');
+                      }, 1000);
+                    }
+                  });
+                  if (videoObserver) {
+                    videoObserver.observe(videoEl);
+                  }
+                }
+                if (mode === 'list') {
+                  if (!viewedStatuses.has(status.statusId)) {
+                    const viewObserver = new IntersectionObserver((entries) => {
+                      entries.forEach(entry => {
+                        if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+                          const impRef = ref(db, `statuses/${status.statusId}/impressions`);
+                          get(impRef).then(snap => {
+                            const curr = snap.val() || 0;
+                            set(impRef, curr + 1);
+                          });
+                          viewedStatuses.add(status.statusId);
+                          viewObserver.unobserve(postItem);
+                        }
+                      });
+                    }, { threshold: 0.5 });
+                    viewObserver.observe(postItem);
+                  }
+                }
+                container.appendChild(postItem);
+                loadedAny = true;
+              } catch (statusError) {
+                console.warn(`Failed to render status ${status.statusId}:`, statusError);
+                const postItem = document.createElement('div');
+                postItem.className = 'status-post';
+                postItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Error loading this status. <button onclick="loadFilteredStatuses(currentStatusSubTab)" style="background: none; border: none; color: var(--bbm-red); cursor: pointer; font-weight: 600;">Retry</button></p>';
+                container.appendChild(postItem);
+              }
             }
-            loadedAny = true;
-            // Setup infinite scroll if 'all' and hasMore
-            if (filterKey === 'all' && pag.hasMore) {
-              setupStatusObserver(container);
-            }
-          } else {
-            // Append new batch
-            const uids = [...new Set(statuses.map(s => s.userId))];
-            const userPromises = uids.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-            const userResults = await Promise.allSettled(userPromises);
-            const userMap = Object.fromEntries(userResults.filter(r => r.status === 'fulfilled').map(r => [r.value.uid, r.value.user]));
-            statuses.forEach(s => s.user = userMap[s.userId]);
-            for (let status of statuses) {
-              await renderStatusPost(status, container);
-            }
-            loadedAny = statuses.length > 0;
           }
-          // Update subtitle
-          const subtitle = document.getElementById('status-subtitle');
-          if (currentStatusFilter && statuses.length > 0) {
-            const user = statuses[0].user;
-            subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
-            subtitle.style.display = 'block';
-          } else {
-            subtitle.style.display = 'none';
-          }
-          return statuses;
         }
       } catch (globalError) {
         console.error(`loadStatuses failed: ${mode} mode`, globalError);
-        if (!loadedAny && page === 0) {
+        if (!loadedAny) {
           showAlert('Failed to load statuses. Please try refreshing.');
         }
-        return [];
       } finally {
         if (!silent) hideSpinner();
       }
     }
-
-    // Setup infinite scroll observer
-    function setupStatusObserver(container) {
-      if (statusObserver) statusObserver.disconnect();
-      const sentinel = document.createElement('div');
-      sentinel.id = 'sentinel';
-      sentinel.style.height = '1px';
-      container.appendChild(sentinel);
-      statusObserver = new IntersectionObserver((entries) => {
-        if (entries[0].isIntersecting && !statusIsLoading && statusPagination[currentStatusFilterKey].hasMore) {
-          loadMoreStatuses();
-        }
-      }, { threshold: 0.1 });
-      statusObserver.observe(sentinel);
-    }
-
-    // Load more statuses
-    async function loadMoreStatuses() {
-      if (statusIsLoading) return;
-      statusIsLoading = true;
-      const pag = statusPagination[currentStatusFilterKey];
-      const nextPage = pag.page + 1;
-      const containerId = currentStatusSubTab === 'all' ? 'statuses-list' : currentStatusSubTab === 'images' ? 'images-list' : 'text-list';
-      const newStatuses = await loadStatuses(containerId, 'list', true, currentStatusFilterKey, nextPage);
-      if (newStatuses.length === 0) {
-        pag.hasMore = false;
-      }
-      pag.page = nextPage;
-      statusIsLoading = false;
-    }
-
     async function loadSuggestedUsers() {
-      // Keep original
       const container = document.getElementById('suggested-users-carousel');
       if (!container || !currentUser) return;
       try {
@@ -3387,14 +3604,8 @@
     }
     async function loadFilteredStatuses(filter, silent = false) {
       currentStatusSubTab = filter;
-      currentStatusFilterKey = filter;
       const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
-      currentStatusContainer = document.getElementById(containerId);
-      const pag = statusPagination[filter];
-      pag.page = 0;
-      pag.lastTimestamp = null;
-      pag.hasMore = true;
-      await loadStatuses(containerId, 'list', silent, filter, 0);
+      await loadStatuses(containerId, 'list', silent, filter);
     }
     window.loadTopStatuses = async (silent = false) => {
       await loadStatuses('statuses-carousel', 'carousel', silent);
@@ -3500,7 +3711,6 @@
       });
     }
     async function updateChatsUI(snapshot) {
-      // Keep original chats UI logic
       const chatList = document.getElementById('chat-list');
       chatList.innerHTML = '';
       totalUnread = 0;
@@ -4396,7 +4606,7 @@
       }
       let comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
       const userIds = [...new Set(comments.map(c => c.userId))];
-      const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
+      const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
       const userResults = await Promise.all(userPromises);
       const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.user]));
       let commentMap = {};
@@ -5564,8 +5774,6 @@
       if ('Notification' in window) {
         Notification.requestPermission();
       }
-      statusCache = new StatusCache();
-      statusCache.init().then(() => statusCache.clearOldCache());
       onAuthStateChanged(auth, async (user) => {
         currentUser = user;
         if (user) {
