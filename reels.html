@@ -853,6 +853,7 @@
     let currentReplyTo = null;
     let currentReplyUser = null;
     let selectedVideoFile = null;
+    let audioUnlocked = false;
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -870,6 +871,10 @@
         setTimeout(() => alert.classList.remove('active'), 4000);
       }
     };
+    function optimizeCloudinaryUrl(url) {
+      // Insert transformations before the version in the URL for video delivery optimization
+      return url.replace(/\/upload(\/v[^\/]+\/)/, '/upload/h_568,q_auto:eco,f_auto$1');
+    }
     function formatTimestamp(timestamp) {
       const date = new Date(timestamp);
       const now = new Date();
@@ -1004,8 +1009,9 @@
             const isLiked = likesSnap[currentUser.uid];
             const likeIcon = isLiked ? 'favorite' : 'favorite_border';
             const likeClass = isLiked ? 'liked' : '';
+            const optimizedMediaUrl = optimizeCloudinaryUrl(status.mediaUrl);
             reelDiv.innerHTML = `
-              <video src="${status.mediaUrl}" class="reel-video" loop playsinline webkit-playsinline preload="none" poster="${status.mediaUrl}?q=10&w=320&h=568&f=auto&fl=progressive"></video>
+              <video src="${optimizedMediaUrl}" class="reel-video" loop playsinline webkit-playsinline preload="none" poster="${status.mediaUrl}?q=10&w=320&h=568&f=auto&fl=progressive" muted></video>
               <div class="reel-overlay">
                 <div class="reel-header">
                   ${avatarHtml}
@@ -1033,8 +1039,8 @@
             // Optimized: Tap to play/pause with low data mode
             video.addEventListener('click', () => {
               if (video.paused) {
+                video.muted = false;
                 video.play().catch(console.error);
-                video.muted = false; // Unmute on user interaction
               } else {
                 video.pause();
               }
@@ -1051,12 +1057,17 @@
             }
           });
           setupVideoObserver();
+          // Unlock audio on first user interaction
+          document.addEventListener('click', () => {
+            audioUnlocked = true;
+          }, { once: true });
           // Auto-play first after load
           setTimeout(() => {
             if (videoStatuses.length > 0) {
               const firstReel = container.querySelector('.reel-item');
               if (firstReel) {
                 const firstVideo = firstReel.querySelector('.reel-video');
+                firstVideo.muted = !audioUnlocked;
                 firstVideo.play().catch(console.error);
                 const firstProgressFill = firstReel.querySelector('.progress-fill');
                 if (firstProgressFill) firstProgressFill.style.width = '0%';
@@ -1071,14 +1082,23 @@
       hideSpinner();
     }
     function setupVideoObserver() {
+      const items = document.querySelectorAll('.reel-item');
       const observer = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
           const video = entry.target.querySelector('.reel-video');
           const progressFill = entry.target.querySelector('.progress-fill');
+          const currentIndex = Array.from(items).indexOf(entry.target);
           if (entry.isIntersecting) {
-            // Enable sound on autoplay (note: browser policies may still restrict without prior user gesture)
-            video.muted = false;
+            video.muted = !audioUnlocked;
             video.play().catch(console.error);
+            // Preload next video metadata
+            if (currentIndex < items.length - 1) {
+              const nextItem = items[currentIndex + 1];
+              const nextVideo = nextItem.querySelector('.reel-video');
+              if (nextVideo) {
+                nextVideo.preload = 'metadata';
+              }
+            }
             const updateProgress = () => {
               if (video.duration && !video.paused && !video.ended) {
                 const progress = (video.currentTime / video.duration) * 100;
@@ -1095,8 +1115,8 @@
             if (progressFill) progressFill.style.width = '0%';
           }
         });
-      }, { threshold: 0.7 }); // Increased threshold to pause earlier and reduce trailing
-      document.querySelectorAll('.reel-item').forEach(item => observer.observe(item));
+      }, { threshold: 0.6 });
+      items.forEach(item => observer.observe(item));
     }
     window.likeReel = async (statusId, event) => {
       event.stopPropagation();
@@ -1357,7 +1377,6 @@
       const progress = document.getElementById('upload-progress');
       const progressFill = document.getElementById('upload-progress-fill');
       const postBtn = document.getElementById('post-upload-btn');
-      let data;
       try {
         showSpinner();
         progress.style.display = 'block';
@@ -1376,11 +1395,11 @@
             progressFill.style.width = percent + '%';
           }
         });
-        await new Promise((resolve, reject) => {
+        const uploadedData = await new Promise((resolve, reject) => {
           xhr.onload = () => {
             if (xhr.status === 200) {
-              data = JSON.parse(xhr.responseText);
-              resolve(data.secure_url);
+              const data = JSON.parse(xhr.responseText);
+              resolve(data);
             } else {
               reject(new Error(`Upload failed: ${xhr.statusText}`));
             }
@@ -1394,7 +1413,7 @@
           userId: currentUser.uid,
           userName: currentUserData.displayName,
           type: 'video',
-          mediaUrl: data.secure_url, // Use uploaded URL
+          mediaUrl: uploadedData.secure_url, // Use uploaded URL
           content: caption,
           timestamp: Date.now(),
           impressions: 0,
