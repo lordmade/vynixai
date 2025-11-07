@@ -383,6 +383,8 @@
       flex-direction: column;
       gap: 16px;
       padding-bottom: 120px;
+      max-height: calc(100vh - 200px);
+      overflow-y: auto;
     }
     .chat-item, .notification-item {
       display: flex;
@@ -1218,7 +1220,6 @@
    .main-content {
   padding: 70px 20px 0;
 }
-
 @media (min-width: 768px) {
   .main-content {
     padding: 70px 60px 0;
@@ -2492,7 +2493,7 @@
       </div>
       <div id="status-subtitle"></div>
       <!-- New Feature: Status Search -->
-      <div class="status-search-container" id="status-search-container" style="display: none;">
+      <div class="status-search-container" id="status-search-container">
         <span class="material-icons" style="color: var(--text-secondary);">search</span>
         <input type="text" id="status-search-input" class="status-search-input" placeholder="Search statuses..." aria-label="Search statuses">
       </div>
@@ -2768,6 +2769,10 @@
     let loadingMore = false;
     let currentEditStatusId = null;
     let currentEditMediaUrl = null;
+    let statusPage = 0;
+    const statusesPerPage = 20;
+    let allStatusesLoaded = [];
+    let loadedStatusIds = new Set();
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -2820,6 +2825,8 @@
     // Enhanced Status Search Feature
     document.getElementById('status-search-input')?.addEventListener('input', (e) => {
       statusSearchTerm = e.target.value.toLowerCase();
+      statusPage = 0;
+      loadedStatusIds.clear();
       loadFilteredStatuses(currentStatusSubTab, true);
     });
     function extractHashtags(content) {
@@ -3052,15 +3059,17 @@
       postItem.addEventListener('mouseup', clearPressTimer);
       postItem.addEventListener('mouseleave', clearPressTimer);
     }
-    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null) {
+    async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null, append = false) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
-      if (statusesLoaded[loadKey] && silent) return;
+      if (statusesLoaded[loadKey] && silent && !append) return;
       if (!silent) showSpinner();
       let loadedAny = false;
       try {
-        container.innerHTML = '';
-        statusesLoaded[loadKey] = true;
+        if (mode === 'carousel') {
+          container.innerHTML = '';
+          statusesLoaded[loadKey] = true;
+        }
         if (currentUser) {
           let friendIds = [];
           if (mode === 'carousel') {
@@ -3068,7 +3077,6 @@
           }
           const statusesRef = ref(db, 'statuses');
           const snapshot = await get(statusesRef);
- 
           let recentStatusesByUser = {};
           let allStatuses = [];
           if (snapshot.exists()) {
@@ -3116,71 +3124,21 @@
               return true;
             });
           }
-          let sortedStatuses = mediaFiltered;
+          let sortedStatuses = mediaFiltered.sort((a, b) => b.timestamp - a.timestamp);
           if (mode === 'list') {
-            if (mediaFiltered.length > 0) {
-              const mostRecent = mediaFiltered.reduce((prev, current) => (prev.timestamp > current.timestamp ? prev : current));
-              const others = mediaFiltered.filter(s => s.statusId !== mostRecent.statusId);
-              others.sort(() => 0.5 - Math.random());
-              sortedStatuses = [mostRecent, ...others];
-            }
             // New Feature: Filter by search term
             sortedStatuses = filterStatuses(sortedStatuses);
-          }
-          window.currentAllStatuses = sortedStatuses;
-          const subtitle = document.getElementById('status-subtitle');
-          if (mode === 'list') {
-            if (currentStatusFilter && sortedStatuses.length > 0) {
-              const user = sortedStatuses[0].user;
-              subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
-              subtitle.style.display = 'block';
-            } else {
-              subtitle.style.display = 'none';
+            if (!append) {
+              allStatusesLoaded = sortedStatuses;
+              statusPage = 0;
+              loadedStatusIds.clear();
+              container.innerHTML = '';
             }
-          }
-          const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
-            .sort((a, b) => {
-              if (a === currentUser.uid) return -1;
-              if (b === currentUser.uid) return 1;
-              return recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp;
-            });
-          if (mode === 'carousel') {
-            if (uids.length === 0) {
-              container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
-            } else {
-              for (let i = 0; i < uids.length; i++) {
-                const uid = uids[i];
-                const { user, statuses } = recentStatusesByUser[uid];
-                const latestStatus = statuses[0];
-                const statusItem = document.createElement('div');
-                statusItem.className = 'status-item';
-                statusItem.onclick = () => {
-                  window.currentStatusFilter = uid;
-                  loadFilteredStatuses(currentStatusSubTab);
-                };
-                const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
-                let avatarHtml;
-                if (user?.photoURL) {
-                  avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
-                } else {
-                  avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-                }
-                let nameHtml = user?.displayName || 'User';
-                if (user?.verified) {
-                  nameHtml += verifiedIcon;
-                }
-                let businessHtml = user?.businessMode ? '<div class="status-business">Business</div>' : '';
-                statusItem.innerHTML = `
-                  ${avatarHtml}
-                  <div class="status-name">${nameHtml}</div>
-                  ${businessHtml}
-                `;
-                container.appendChild(statusItem);
-                loadedAny = true;
-              }
-            }
-          } else if (mode === 'list') {
-            if (sortedStatuses.length === 0) {
+            const startIndex = statusPage * statusesPerPage;
+            const endIndex = startIndex + statusesPerPage;
+            const toRender = allStatusesLoaded.slice(startIndex, endIndex);
+            const hasMore = endIndex < allStatusesLoaded.length;
+            if (toRender.length === 0 && startIndex === 0) {
               let msg = 'No statuses yet.';
               if (filter === 'images') msg = 'No image statuses yet.';
               else if (filter === 'text') msg = 'No text statuses yet.';
@@ -3190,9 +3148,10 @@
               if (!silent) hideSpinner();
               return;
             }
-            viewedStatuses.clear();
-            for (let i = 0; i < sortedStatuses.length; i++) {
-              const status = sortedStatuses[i];
+            for (let i = 0; i < toRender.length; i++) {
+              const status = toRender[i];
+              if (loadedStatusIds.has(status.statusId)) continue;
+              loadedStatusIds.add(status.statusId);
               const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
               try {
                 const postItem = document.createElement('div');
@@ -3205,7 +3164,10 @@
                 if (status.userId === currentUser.uid) {
                   deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
                 }
+                let reposts = status.reposts || 0;
                 if (status.type === 'repost') {
+                  const origSnap = await get(ref(db, `statuses/${status.originalId}/repostsCount`));
+                  reposts = origSnap.val() || 0;
                   const original = window.currentAllStatuses.find(s => s.statusId === status.originalId);
                   if (original && original.user) {
                     const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
@@ -3301,7 +3263,6 @@
                       const highlightedRepostContent = highlightContent(status.content);
                       repostCaptionHtml = `<div class="status-post-content" style="margin-top: 12px;">${highlightedRepostContent}</div>`;
                     }
-                    let reposts = status.reposts || 0;
                     let likes = 0;
                     let comments = 0;
                     let isLiked = false;
@@ -3392,7 +3353,6 @@
                       </div>`;
                     }
                   }
-                  let reposts = 0;
                   let likes = 0;
                   let comments = 0;
                   let isLiked = false;
@@ -3554,6 +3514,63 @@
                 container.appendChild(postItem);
               }
             }
+            statusPage++;
+            if (!hasMore) {
+              // No more to load
+            }
+            setupStatusScrollListener(container);
+          }
+          const subtitle = document.getElementById('status-subtitle');
+          if (mode === 'list') {
+            if (currentStatusFilter && sortedStatuses.length > 0) {
+              const user = sortedStatuses[0].user;
+              subtitle.textContent = `${user?.displayName || 'Unknown'}'s Statuses`;
+              subtitle.style.display = 'block';
+            } else {
+              subtitle.style.display = 'none';
+            }
+          }
+          const uids = Object.keys(recentStatusesByUser).filter(uid => recentStatusesByUser[uid].statuses.length > 0)
+            .sort((a, b) => {
+              if (a === currentUser.uid) return -1;
+              if (b === currentUser.uid) return 1;
+              return recentStatusesByUser[b].statuses[0].timestamp - recentStatusesByUser[a].statuses[0].timestamp;
+            });
+          if (mode === 'carousel') {
+            if (uids.length === 0) {
+              container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No statuses yet.</p>';
+            } else {
+              for (let i = 0; i < uids.length; i++) {
+                const uid = uids[i];
+                const { user, statuses } = recentStatusesByUser[uid];
+                const latestStatus = statuses[0];
+                const statusItem = document.createElement('div');
+                statusItem.className = 'status-item';
+                statusItem.onclick = () => {
+                  window.currentStatusFilter = uid;
+                  loadFilteredStatuses(currentStatusSubTab);
+                };
+                const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
+                let avatarHtml;
+                if (user?.photoURL) {
+                  avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName || 'User'} avatar" class="status-avatar" loading="lazy">`;
+                } else {
+                  avatarHtml = `<div class="status-avatar" style="background: var(--bbm-red); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
+                }
+                let nameHtml = user?.displayName || 'User';
+                if (user?.verified) {
+                  nameHtml += verifiedIcon;
+                }
+                let businessHtml = user?.businessMode ? '<div class="status-business">Business</div>' : '';
+                statusItem.innerHTML = `
+                  ${avatarHtml}
+                  <div class="status-name">${nameHtml}</div>
+                  ${businessHtml}
+                `;
+                container.appendChild(statusItem);
+                loadedAny = true;
+              }
+            }
           }
         }
       } catch (globalError) {
@@ -3564,6 +3581,14 @@
       } finally {
         if (!silent) hideSpinner();
       }
+    }
+    function setupStatusScrollListener(container) {
+      container.addEventListener('scroll', throttle(() => {
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        if (scrollTop + clientHeight >= scrollHeight - 100) {
+          loadFilteredStatuses(currentStatusSubTab, true, true);
+        }
+      }, 200));
     }
     async function loadSuggestedUsers() {
       const container = document.getElementById('suggested-users-carousel');
@@ -3602,10 +3627,10 @@
         console.error('Failed to load suggested users:', error);
       }
     }
-    async function loadFilteredStatuses(filter, silent = false) {
+    async function loadFilteredStatuses(filter, silent = false, append = false) {
       currentStatusSubTab = filter;
       const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
-      await loadStatuses(containerId, 'list', silent, filter);
+      await loadStatuses(containerId, 'list', silent, filter, append);
     }
     window.loadTopStatuses = async (silent = false) => {
       await loadStatuses('statuses-carousel', 'carousel', silent);
@@ -3618,8 +3643,9 @@
       currentStatusFilter = null;
       statusSearchTerm = '';
       document.getElementById('status-search-input').value = '';
-      document.getElementById('status-search-container').style.display = 'none';
       document.getElementById('status-subtitle').style.display = 'none';
+      statusPage = 0;
+      loadedStatusIds.clear();
       await loadFilteredStatuses(currentStatusSubTab);
     };
     window.playVideoAgain = (btn) => {
@@ -3859,6 +3885,8 @@
       const statusesRef = ref(db, 'statuses');
       statusesListener = onValue(statusesRef, async (snapshot) => {
         if (document.getElementById('status-tab').classList.contains('active')) {
+          statusPage = 0;
+          loadedStatusIds.clear();
           await loadFilteredStatuses(currentStatusSubTab, true);
         }
       }, (error) => {
@@ -4354,6 +4382,8 @@
         if (confirmed) {
           await set(ref(db, `statuses/${statusId}`), null);
           showAlert('Status deleted.');
+          statusPage = 0;
+          loadedStatusIds.clear();
           loadFilteredStatuses(currentStatusSubTab);
         }
       });
@@ -4494,6 +4524,8 @@
           }
         }
         closeEditSheet();
+        statusPage = 0;
+        loadedStatusIds.clear();
         loadFilteredStatuses(currentStatusSubTab);
         showAlert('Status updated!');
       } catch (error) {
@@ -4718,6 +4750,16 @@
       if (status.type === 'text') {
         let highlightedText = highlightContent(status.content);
         textHtml = `<div class="status-text-overlay">${highlightedText}</div>`;
+      }
+      if (status.type === 'repost') {
+        const originalSnap = await get(ref(db, `statuses/${status.originalId}`));
+        const original = originalSnap.val();
+        if (original) {
+          // Render embedded for repost in modal
+          const origMediaHtml = original.mediaUrl ? (original.type === 'image' ? `<img src="${original.mediaUrl}" class="status-media" style="max-height: 70vh;">` : `<video src="${original.mediaUrl}" class="status-media" style="max-height: 70vh;" autoplay muted playsinline></video>`) : '';
+          textHtml = `<div class="status-text-overlay">${highlightContent(original.content || '')}</div><div style="margin-top: 20px; padding: 16px; background: rgba(0,0,0,0.5); border-radius: 12px;">${status.content ? highlightContent(status.content) : ''}</div>`;
+          mediaHtml = origMediaHtml;
+        }
       }
       const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
       let avatarHtml;
@@ -4963,6 +5005,8 @@
           }
         }
         closeUploadSheet();
+        statusPage = 0;
+        loadedStatusIds.clear();
         loadFilteredStatuses(currentStatusSubTab);
         showAlert('Status uploaded!');
       } catch (error) {
@@ -5682,6 +5726,8 @@
           });
           document.querySelectorAll('#status-tab .sub-tab-content').forEach(c => c.classList.remove('active'));
           document.getElementById(`sub-${subTab}-content`).classList.add('active');
+          statusPage = 0;
+          loadedStatusIds.clear();
           loadFilteredStatuses(subTab);
         });
       });
@@ -5720,6 +5766,8 @@
           await set(repostCountRef, curr + 1);
           closeRepostSheet();
           showAlert(caption ? 'Reposted with caption!' : 'Reposted!');
+          statusPage = 0;
+          loadedStatusIds.clear();
           loadFilteredStatuses(currentStatusSubTab);
         }
       } catch (error) {
@@ -5866,10 +5914,10 @@
         }
       });
     }
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventLoaded, () => {
       initializeFirebase();
       setupEventListeners();
-    });
+    };
   </script>
 </body>
 </html>
