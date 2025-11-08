@@ -9,7 +9,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <!-- Removed TF.js; now using Transformers.js via ES import -->
+  <!-- Updated to stable Transformers.js v2.17.0 -->
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -699,6 +699,29 @@
       opacity: 1;
       visibility: visible;
     }
+    .loading-content {
+      text-align: center;
+      color: var(--text-primary);
+    }
+    .progress-bar {
+      width: 200px;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin: 1rem auto;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--highlight);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    #loading-text {
+      font-size: 0.875rem;
+      margin-top: 0.5rem;
+      color: var(--text-secondary);
+    }
     .message {
       max-width: 70%;
       padding: 1rem 1.25rem;
@@ -883,7 +906,7 @@
 </head>
 <body>
   <main class="flex flex-col h-screen" id="main-content">
-    <!-- [All existing HTML body content remains unchanged, except chat-input-container updated below] -->
+    <!-- [All existing HTML body content remains unchanged, except loading-overlay updated below] -->
     <!-- Desktop Sidebar -->
     <nav class="desktop-sidebar" id="desktop-sidebar">
       <div class="sidebar-icon-wrapper active" data-tab="chat">
@@ -980,12 +1003,88 @@
       </div>
     </div>
     <div class="loading-overlay" id="loading-overlay">
-      <div class="loading-spinner"></div>
+      <div class="loading-content">
+        <div class="loading-spinner"></div>
+        <div class="progress-bar">
+          <div class="progress-fill"></div>
+        </div>
+        <p id="loading-text">Loading model...</p>
+      </div>
     </div>
   </main>
   <script type="module">
-    // Import Transformers.js via CDN
-    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6';
+    // Custom fetch override for real download progress on HF model files
+    const originalFetch = window.fetch;
+    let downloadProgress = 0;
+    let currentFileName = '';
+
+    function updateDownloadProgress(progress, fileName = '') {
+      downloadProgress = progress;
+      currentFileName = fileName;
+      // Adjust overall progress: assume tokenizer ~20%, model files ~70%
+      const overallProgress = 5 + (progress * 85); // Rough estimate
+      updateProgress(overallProgress, `Downloading ${fileName || 'model files'}...`);
+    }
+
+    window.fetch = async function(input, init = {}) {
+      if (typeof input === 'string' && input.includes('huggingface.co') && input.includes('resolve/main/')) {
+        // Target model file downloads
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open((init.method || 'GET'), input);
+          if (init.headers) {
+            Object.entries(init.headers).forEach(([key, value]) => {
+              xhr.setRequestHeader(key, value);
+            });
+          }
+          xhr.responseType = 'arraybuffer';
+          let lastProgress = 0;
+
+          xhr.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const fileProgress = event.loaded / event.total;
+              if (fileProgress - lastProgress > 0.05) { // Throttle updates
+                lastProgress = fileProgress;
+                const fileName = input.split('/').pop();
+                updateDownloadProgress(fileProgress, fileName);
+              }
+            }
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              // Parse headers for Response
+              const headers = new Headers();
+              const headerLines = xhr.getAllResponseHeaders().trim().split('\n');
+              headerLines.forEach(line => {
+                const [key, ...valueParts] = line.split(':');
+                if (key) {
+                  headers.append(key.trim(), valueParts.join(':').trim());
+                }
+              });
+              const response = new Response(xhr.response, {
+                status: xhr.status,
+                statusText: xhr.statusText,
+                headers: headers
+              });
+              updateDownloadProgress(1, input.split('/').pop());
+              resolve(response);
+            } else {
+              reject(new Error(`HTTP error! status: ${xhr.status}`));
+            }
+          };
+
+          xhr.onerror = () => reject(new Error('Network error during download'));
+          xhr.ontimeout = () => reject(new Error('Download timeout'));
+          xhr.send(init.body || null);
+        });
+      }
+      // Fallback to original fetch for non-HF requests
+      return originalFetch.call(this, input, init);
+    };
+
+    // Import Transformers.js via CDN (stable version)
+    import { pipeline, AutoTokenizer, AutoModelForCausalLM } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@2.17.0';
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
@@ -1065,6 +1164,14 @@
 
     // Placeholder for image generation API (unchanged)
     const IMAGE_GEN_API_URL = 'https://api.example.com/generate'; // Replace with real endpoint
+
+    // Progress update function
+    function updateProgress(percent, text = '') {
+      const fill = document.querySelector('.progress-fill');
+      const textEl = document.getElementById('loading-text');
+      if (fill) fill.style.width = Math.min(100, percent) + '%';
+      if (textEl) textEl.textContent = text || 'Loading model...';
+    }
 
     // Bottom Sheet Functions (unchanged)
     function openSheet() {
@@ -1151,47 +1258,85 @@
     // Backdrop click to close (unchanged)
     elements.sheetBackdrop.addEventListener('click', closeSheet);
 
-    // Loading functions (unchanged)
+    // Loading functions (updated for progress)
     function showLoading() {
       elements.loadingOverlay.classList.add('active');
+      updateProgress(0);
     }
     function hideLoading() {
-      elements.loadingOverlay.classList.remove('active');
+      updateProgress(100, 'Ready!');
+      setTimeout(() => {
+        elements.loadingOverlay.classList.remove('active');
+      }, 500);
     }
 
-    // NEW: Transformers.js Integration (unchanged from previous)
+    // UPDATED: Load pipeline with progress_callback (library handles some, fetch handles real download)
     async function loadPipeline(modelId) {
       showLoading();
+      updateProgress(0, 'Preparing...');
       try {
         if (state.loadedPipeline && state.currentModelId === modelId) {
           return; // Already loaded
         }
-        // Dispose previous if exists (Transformers.js pipelines can be reused, but reload for switch)
-        if (state.loadedPipeline) {
-          // Note: Transformers.js doesn't have explicit dispose, but we can reassign
-          state.loadedPipeline = null;
-        }
+        // Dispose previous if exists
+        state.loadedPipeline = null;
+
         console.log(`Loading Transformers.js pipeline for ${modelId}...`);
-        state.loadedPipeline = await pipeline('text-generation', modelId, {
-          quantized: true, // Use quantized for lighter load (q4 or similar)
-          dtype: 'q4' // Quantize to reduce memory (~75% smaller)
+
+        // Step 1: Load tokenizer
+        updateProgress(5, 'Loading tokenizer...');
+        const tokenizer = await AutoTokenizer.from_pretrained(modelId, {
+          progressCallback: (progress) => {
+            updateProgress(5 + (progress * 25), `Tokenizer: ${Math.round(progress * 100)}%`);
+          }
         });
+
+        // Step 2: Load model
+        updateProgress(30, 'Downloading model weights...');
+        // The custom fetch will update progress here via onprogress
+        const model = await AutoModelForCausalLM.from_pretrained(modelId, {
+          dtype: 'q4', // Quantized for lighter load
+          progressCallback: (progress) => {
+            // Library callback for additional steps
+            updateProgress(30 + (progress * 60), `Model: ${Math.round(progress * 100)}%`);
+          }
+        });
+
+        // Step 3: Initialize pipeline
+        updateProgress(95, 'Setting up pipeline...');
+        state.loadedPipeline = pipeline('text-generation', model, {
+          tokenizer,
+          model,
+          dtype: 'q4'
+        });
+
         state.currentModelId = modelId;
         console.log('Pipeline loaded successfully!');
       } catch (error) {
         console.error('Failed to load pipeline:', error);
-        throw error;
+        updateProgress(0, 'Load failed. Retrying without quantization...');
+        // Fallback
+        try {
+          const tokenizer = await AutoTokenizer.from_pretrained(modelId);
+          const model = await AutoModelForCausalLM.from_pretrained(modelId);
+          state.loadedPipeline = pipeline('text-generation', model, { tokenizer });
+          state.currentModelId = modelId;
+          updateProgress(100, 'Loaded (fallback)');
+        } catch (fallbackError) {
+          throw error;
+        }
       } finally {
         hideLoading();
       }
     }
 
-    // Updated: Render Model Options in Modal
+    // Updated: Render Model Options in Modal (with better error handling)
     function renderModelOptions() {
       elements.modalModelList.innerHTML = '';
       Object.entries(availableModels).forEach(([key, modelInfo]) => {
         const option = document.createElement('div');
         option.className = `model-option ${key === state.currentModelId ? 'active' : ''}`;
+        option.dataset.modelId = key;
         option.innerHTML = `
           <div class="model-info">
             <div class="model-name">${modelInfo.name}</div>
@@ -1213,10 +1358,8 @@
           e.stopPropagation();
           const loadingSpinner = document.createElement('span');
           loadingSpinner.className = 'model-loading';
-          loadingSpinner.innerHTML = '<div class="loading-spinner" style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;animation:spin 1s linear infinite;"></div>';
-          const originalText = loadBtn.textContent;
-          loadBtn.textContent = 'Loading...';
-          loadBtn.appendChild(loadingSpinner);
+          const originalText = loadBtn.innerHTML;
+          loadBtn.innerHTML = 'Loading... ' + loadingSpinner.outerHTML;
           loadBtn.disabled = true;
           try {
             await loadPipeline(key);
@@ -1224,9 +1367,8 @@
             elements.modalModelList.querySelectorAll('.model-option').forEach(opt => {
               opt.classList.remove('active');
               const optBtn = opt.querySelector('.model-load-btn');
-              optBtn.textContent = opt.dataset.modelId === key ? 'Loaded' : originalText;
+              optBtn.innerHTML = opt.dataset.modelId === key ? 'Loaded' : originalText;
               optBtn.disabled = false;
-              optBtn.querySelector('.model-loading')?.remove();
             });
             option.classList.add('active');
             // Update badge
@@ -1236,14 +1378,14 @@
             closeModal();
             console.log('Switched to model:', modelInfo.name);
           } catch (error) {
-            loadBtn.textContent = 'Load Failed';
+            loadBtn.innerHTML = 'Load Failed';
             loadBtn.style.background = '#ef4444';
             setTimeout(() => {
-              loadBtn.textContent = originalText;
+              loadBtn.innerHTML = originalText;
               loadBtn.style.background = '';
               loadBtn.disabled = false;
-              loadingSpinner.remove();
             }, 2000);
+            console.error('Model load error:', error);
           }
         });
         elements.modalModelList.appendChild(option);
@@ -1294,7 +1436,7 @@
 
         const responseText = output[0].generated_text.slice(prompt.length); // Trim prompt
         tempMsg.innerHTML = `
-          <div class="message-content">${responseText}</div>
+          <div class="message-content">${marked.parse(responseText)}</div>
           <small class="timestamp">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</small>
         `;
         tempMsg.classList.remove('processing');
@@ -1465,7 +1607,7 @@
             userDisplayName = user.displayName;
             elements.chatInput.disabled = false;
             elements.sendButton.disabled = false;
-            // Load default model
+            // Load default model with progress
             await loadPipeline(state.currentModelId);
             updateCurrentModelDisplay();
             elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}! Ready to chat with AI?`;
@@ -1473,6 +1615,8 @@
             window.location.href = 'signup.html';
           }
         });
+      } catch (error) {
+        console.error('Firebase init error:', error);
       } finally {
         hideLoading();
       }
