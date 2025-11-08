@@ -860,6 +860,22 @@
       width: 0%;
       transition: width 0.3s ease;
     }
+    .upload-global-progress {
+      position: fixed;
+      top: 56px;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.2);
+      z-index: 100;
+      display: none;
+    }
+    .upload-global-progress-fill {
+      height: 100%;
+      background: var(--bbm-red);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
     .edit-controls {
       margin-top: 16px; /* Smaller margin */
       padding: 12px; /* Smaller padding */
@@ -1103,6 +1119,12 @@
       border-radius: 30px;
       margin: 20px;
     }
+    .selected-media-info {
+      text-align: center;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
@@ -1111,6 +1133,9 @@
       <button class="tab-btn active" data-type="video" onclick="switchTab('video')"><span class="material-icons" style="font-size: 18px; margin-right: 6px;">videocam</span>Videos</button>
       <button class="tab-btn" data-type="image" onclick="switchTab('image')"><span class="material-icons" style="font-size: 18px; margin-right: 6px;">image</span>Images</button>
       <button class="tab-btn" data-type="text" onclick="switchTab('text')"><span class="material-icons" style="font-size: 18px; margin-right: 6px;">text_fields</span>Texts</button>
+    </div>
+    <div id="global-upload-progress" class="upload-global-progress">
+      <div id="global-upload-progress-fill" class="upload-global-progress-fill"></div>
     </div>
     <div class="reels-container" id="reels-container">
       <!-- Reels loaded here; initial skeleton -->
@@ -1136,6 +1161,7 @@
     </div>
     <input type="file" id="media-input" accept="image/*,video/*" multiple style="display: none;" onchange="handleMediaUpload(event)">
     <p id="upload-info-p" style="text-align: center; color: var(--text-secondary); margin-bottom: 16px; font-size: 14px;">Select media to upload (video max 60s, image max 10MB recommended)</p>
+    <div id="selected-media-info" class="selected-media-info" style="display: none;"></div>
     <button id="choose-media-btn" class="upload-btn" onclick="document.getElementById('media-input').click()">Choose Media</button>
     <div id="upload-progress" class="upload-progress" style="display: none;">
       <div class="upload-progress-fill" id="upload-progress-fill"></div>
@@ -2098,6 +2124,7 @@
       document.getElementById('media-input').accept = currentTab === 'text' ? '' : currentTab === 'video' ? 'video/*' : 'image/*';
       document.getElementById('choose-media-btn').style.display = 'block';
       document.getElementById('upload-info-p').style.display = 'block';
+      document.getElementById('selected-media-info').style.display = 'none';
       document.getElementById('caption-input').style.display = 'none';
       document.getElementById('post-upload-btn').style.display = 'none';
       document.getElementById('post-upload-btn').disabled = true;
@@ -2115,15 +2142,19 @@
       if (imageCarousel) imageCarousel.innerHTML = '';
       document.getElementById('overlay-text').value = '';
       updateOverlay();
+      document.getElementById('caption-input').value = '';
       if (currentTab === 'text') {
         document.getElementById('choose-media-btn').style.display = 'none';
         document.getElementById('upload-info-p').style.display = 'none';
+        document.getElementById('selected-media-info').style.display = 'none';
         document.getElementById('caption-input').style.display = 'block';
+        document.getElementById('caption-input').placeholder = 'Enter your text...';
         document.getElementById('post-upload-btn').style.display = 'block';
         document.getElementById('post-upload-btn').disabled = false;
         document.getElementById('post-upload-btn').textContent = 'Post';
       } else {
         document.getElementById('post-upload-btn').textContent = 'Upload';
+        document.getElementById('caption-input').placeholder = 'Add caption (optional)';
       }
     };
     window.closeUploadSheet = () => {
@@ -2144,6 +2175,8 @@
       }
       const imageCarousel = document.getElementById('image-carousel');
       if (imageCarousel) imageCarousel.innerHTML = '';
+      document.getElementById('selected-media-info').style.display = 'none';
+      document.getElementById('caption-input').value = '';
     };
     window.handleMediaUpload = (event) => {
       const files = Array.from(event.target.files);
@@ -2154,6 +2187,7 @@
         showAlert('Only one video can be uploaded at a time.');
         return;
       }
+      let infoText = '';
       if (videos.length === 1) {
         const file = videos[0];
         if (file.size > 50 * 1024 * 1024) {
@@ -2165,20 +2199,16 @@
         tempVideo.onloadedmetadata = () => {
           if (tempVideo.duration > 60) {
             showAlert('Video too long (max 60s).');
+            URL.revokeObjectURL(tempVideo.src);
             return;
           }
           selectedMediaFiles = [file];
           isVideoUpload = true;
-          document.getElementById('upload-sheet').className = 'upload-sheet video-upload';
-          document.getElementById('caption-input').style.display = 'block';
-          document.getElementById('post-upload-btn').style.display = 'block';
-          document.getElementById('post-upload-btn').disabled = false;
-          showAlert(`Video selected: ${file.name} (${Math.round(file.size / 1024)}KB)`);
-          setupVideoPreview(file);
-          document.getElementById('edit-controls').style.display = 'block';
-          applyEffect('normal');
-          currentPosition = 'center';
-          setPosition('center');
+          window.startTime = 0;
+          window.endTime = tempVideo.duration;
+          infoText = `Video selected: ${file.name}`;
+          URL.revokeObjectURL(tempVideo.src);
+          setupMediaSelected(infoText);
         };
         tempVideo.src = URL.createObjectURL(file);
       } else if (images.length > 0) {
@@ -2194,25 +2224,32 @@
         }
         selectedMediaFiles = images;
         isVideoUpload = false;
-        document.getElementById('upload-sheet').className = 'upload-sheet image-upload';
-        document.getElementById('caption-input').style.display = 'block';
-        document.getElementById('post-upload-btn').style.display = 'block';
-        document.getElementById('post-upload-btn').disabled = false;
-        showAlert(`Selected ${images.length} images (${Math.round(totalSize / 1024)}KB total)`);
-        setupImagePreview(images);
-        document.getElementById('edit-controls').style.display = 'block';
-        applyEffect('normal');
-        currentPosition = 'center';
-        setPosition('center');
+        infoText = `Selected ${images.length} images`;
+        setupMediaSelected(infoText);
       } else {
         showAlert('Please select valid image or video files.');
       }
     };
+    function setupMediaSelected(infoText) {
+      document.getElementById('selected-media-info').textContent = infoText;
+      document.getElementById('selected-media-info').style.display = 'block';
+      document.getElementById('upload-info-p').style.display = 'none';
+      document.getElementById('choose-media-btn').style.display = 'none';
+      document.getElementById('video-preview').style.display = 'none';
+      document.getElementById('image-preview').style.display = 'none';
+      document.getElementById('video-trim').style.display = 'none';
+      document.getElementById('edit-controls').style.display = 'none';
+      document.getElementById('upload-progress').style.display = 'none';
+      document.getElementById('caption-input').style.display = 'block';
+      document.getElementById('post-upload-btn').style.display = 'block';
+      document.getElementById('post-upload-btn').disabled = false;
+      showAlert(`${infoText}. Add optional caption and upload.`);
+    }
     window.uploadReel = async () => {
       if (!currentUser) return;
       const caption = document.getElementById('caption-input').value.trim();
-      const progress = document.getElementById('upload-progress');
-      const progressFill = document.getElementById('upload-progress-fill');
+      const globalProgress = document.getElementById('global-upload-progress');
+      const globalFill = document.getElementById('global-upload-progress-fill');
       const postBtn = document.getElementById('post-upload-btn');
       if (currentTab === 'text') {
         if (!caption) {
@@ -2261,25 +2298,15 @@
         }
       }
       try {
+        closeUploadSheet();
         showSpinner();
-        progress.style.display = 'block';
+        globalProgress.style.display = 'block';
+        globalFill.style.width = '0%';
         postBtn.disabled = true;
         postBtn.textContent = 'Uploading...';
         const urls = [];
-        const b = document.getElementById('brightness').value;
-        const c = document.getElementById('contrast').value;
-        const s = document.getElementById('saturation').value;
-        const h = document.getElementById('hue-rotate').value;
-        const bl = document.getElementById('blur').value;
-        const filter = `brightness(${b}) contrast(${c}) saturate(${s}) hue-rotate(${h}deg) blur(${bl}px)`;
-        const text = document.getElementById('overlay-text').value.trim();
-        let textOverlay = null;
-        if (text) {
-          const size = document.getElementById('text-size').value;
-          const color = document.getElementById('text-color').value.slice(1);
-          const gravity = {top: 'north', center: 'center', bottom: 'south'}[currentPosition];
-          textOverlay = `l_text:Arial_${size}:bold,c_rgb:${color},g_${gravity},text:${encodeURIComponent(text)}`;
-        }
+        const filter = null;
+        const textOverlay = null;
         if (isVideoUpload) {
           const file = selectedMediaFiles[0];
           const formData = new FormData();
@@ -2292,7 +2319,7 @@
           xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
               const percent = Math.round((e.loaded / e.total) * 100);
-              progressFill.style.width = percent + '%';
+              globalFill.style.width = percent + '%';
             }
           });
           const uploadedData = await new Promise((resolve, reject) => {
@@ -2309,7 +2336,8 @@
           });
           urls.push(uploadedData.secure_url);
         } else {
-          for (const file of selectedMediaFiles) {
+          for (let i = 0; i < selectedMediaFiles.length; i++) {
+            const file = selectedMediaFiles[i];
             const formData = new FormData();
             formData.append('file', file);
             formData.append('upload_preset', cloudinaryConfig.uploadPreset);
@@ -2318,14 +2346,12 @@
             const xhr = new XMLHttpRequest();
             xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
             const uploadedData = await new Promise((resolve, reject) => {
-              let progressPercent = 0;
+              let progressPercent = (i / selectedMediaFiles.length) * 100;
               xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
                   const percent = Math.round((e.loaded / e.total) * 100);
-                  if (percent > progressPercent) {
-                    progressPercent = percent;
-                    progressFill.style.width = (progressPercent / selectedMediaFiles.length) + '%';
-                  }
+                  const currentProgress = progressPercent + ((percent / 100) * (100 / selectedMediaFiles.length));
+                  globalFill.style.width = Math.min(currentProgress, 100) + '%';
                 }
               });
               xhr.onload = () => {
@@ -2351,20 +2377,19 @@
           mediaUrls: urls,
           content: caption,
           timestamp: Date.now(),
-          filter: filter !== 'brightness(1) contrast(1) saturate(1) hue-rotate(0deg) blur(0px)' ? filter : null,
+          filter: filter,
           textOverlay: textOverlay,
           impressions: 0,
           likes: {},
           comments: {}
         };
         if (isVideoUpload) {
-          statusData.originalDuration = document.getElementById('preview-video').duration;
+          statusData.originalDuration = window.endTime;
           statusData.startTime = window.startTime;
           statusData.endTime = window.endTime;
-          statusData.speed = parseFloat(document.getElementById('speed-select').value);
+          statusData.speed = 1;
         }
         await set(newStatusRef, statusData);
-        closeUploadSheet();
         if (currentTab === (isVideoUpload ? 'video' : 'image')) loadReels(currentTab);
         showAlert('Reel uploaded successfully!');
       } catch (error) {
@@ -2372,8 +2397,8 @@
         showAlert('Failed to upload reel. Try again.');
       } finally {
         hideSpinner();
-        progress.style.display = 'none';
-        if (progressFill) progressFill.style.width = '0%';
+        globalProgress.style.display = 'none';
+        globalFill.style.width = '0%';
         postBtn.disabled = false;
         postBtn.textContent = 'Upload';
       }
