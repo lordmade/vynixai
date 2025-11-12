@@ -1438,7 +1438,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, get, set, push, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, set, push, update, onValue } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -1464,6 +1464,9 @@
     let currentTab = 'video';
     const tabOrder = ['video', 'image', 'text'];
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
+    let allStatuses = []; // Global cache for live statuses
+    let statusListener = null; // To manage the listener
+
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
       if (spinnerOverlay) spinnerOverlay.classList.add('active');
@@ -1718,12 +1721,253 @@
         return bScore - aScore;
       });
     }
+    // New live listener setup
+    function setupLiveStatusesListener() {
+      if (statusListener) return; // Already listening
+      const statusesRef = ref(db, 'liveStatuses');
+      statusListener = onValue(statusesRef, async (snapshot) => {
+        let mediaStatuses = [];
+        if (snapshot.exists()) {
+          Object.entries(snapshot.val()).forEach(([id, s]) => {
+            mediaStatuses.push({ statusId: id, ...s });
+          });
+          const userIds = [...new Set(mediaStatuses.map(s => s.userId))];
+          const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
+          const userResults = await Promise.all(userPromises);
+          const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.snap]));
+          mediaStatuses.forEach(status => {
+            status.user = userMap[status.userId];
+          });
+          allStatuses = sortStatuses(mediaStatuses);
+        } else {
+          allStatuses = [];
+        }
+        // Re-render current tab if active
+        if (currentUser) {
+          renderReelsForTab(currentTab);
+        }
+      }, (error) => {
+        console.error('Error in live statuses listener:', error);
+        showAlert('Failed to load statuses. Retrying...');
+      });
+    }
+    function renderReelsForTab(type) {
+      const container = document.getElementById('reels-container');
+      container.innerHTML = '';
+      if (allStatuses.length === 0) {
+        container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No ${type}s yet. Upload the first one!</p>`;
+        return;
+      }
+      const filteredStatuses = allStatuses.filter(s => s.type === type && (type === 'text' ? !!s.content : true)).slice(0, 20);
+      if (filteredStatuses.length === 0) {
+        container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No ${type}s yet. Upload the first one!</p>`;
+        return;
+      }
+      filteredStatuses.forEach(status => {
+        const reelDiv = document.createElement('div');
+        reelDiv.className = 'reel-item';
+        reelDiv.setAttribute('data-status-id', status.statusId);
+        const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
+        let avatarHtml = '';
+        if (status.user?.photoURL) {
+          avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName}" class="reel-user-avatar" loading="lazy">`;
+        } else {
+          avatarHtml = `<div class="reel-user-avatar" style="font-size: 20px;">${initial}</div>`;
+        }
+        let nameHtml = status.user?.displayName || 'User';
+        if (status.user?.verified) {
+          nameHtml += verifiedIcon;
+        }
+        let descHtml = '';
+        if (status.content) {
+          descHtml = `<div class="reel-description">
+            <span class="caption-text">${status.content.replace(/\n/g, '<br>')}</span>
+            <button class="see-more-btn">see more</button>
+          </div>`;
+        }
+        const likesSnap = status.likes || {};
+        const likes = Object.keys(likesSnap).length;
+        const comments = Object.keys(status.comments || {}).length;
+        const isLiked = likesSnap[currentUser.uid];
+        const likeIcon = isLiked ? 'favorite' : 'favorite_border';
+        const likeClass = isLiked ? 'liked' : '';
+        let mediaHtml = '';
+        let progressBarHtml = '';
+        let mediaElements = [];
+        const urls = status.mediaUrls || [status.mediaUrl].filter(Boolean);
+        if (type === 'text') {
+          mediaHtml = `<div class="text-content">${status.content.replace(/\n/g, '<br>')}</div>`;
+        } else if (type === 'video') {
+          let transforms = ['h_568,q_auto:eco,f_auto'];
+          if (status.textOverlay) {
+            transforms.push(status.textOverlay);
+          }
+          if (status.originalDuration && (status.startTime > 0 || status.endTime < status.originalDuration)) {
+            if (status.startTime > 0) transforms.push(`so_${status.startTime}`);
+            if (status.endTime < status.originalDuration) transforms.push(`eo_${status.endTime}`);
+          }
+          const optUrl = buildCloudinaryUrl(urls[0], transforms);
+          mediaHtml = `<video src="${optUrl}" class="reel-video" loop playsinline webkit-playsinline preload="metadata" poster="${urls[0]}?q=10&w=320&h=568&f=auto&fl=progressive" muted></video>
+          <div class="video-spinner">
+            <div class="spinner">
+              <div class="dot"></div>
+              <div class="dot"></div>
+              <div class="dot"></div>
+            </div>
+          </div>
+          <div class="reel-play-pause"></div>`;
+          progressBarHtml = `<div class="progress-bar video-only">
+            <div class="progress-fill"></div>
+          </div>`;
+        } else {
+          let transforms = ['h_568,q_auto:eco,f_auto'];
+          if (status.textOverlay) {
+            transforms.push(status.textOverlay);
+          }
+          urls.forEach(url => {
+            const optUrl = buildCloudinaryUrl(url, transforms);
+            mediaElements.push(`<img src="${optUrl}" alt="Reel image" class="reel-image" loading="lazy">`);
+          });
+          if (mediaElements.length === 1) {
+            mediaHtml = mediaElements[0];
+          } else {
+            mediaHtml = `
+              <div class="reel-carousel">
+                <div class="carousel-track">
+                  ${mediaElements.join('')}
+                </div>
+                <div class="carousel-dots">
+                  ${mediaElements.map((_, i) => `<span class="carousel-dot ${i === 0 ? 'active' : ''}"></span>`).join('')}
+                </div>
+              </div>`;
+          }
+        }
+        reelDiv.innerHTML = `
+          ${mediaHtml}
+          <div class="reel-overlay">
+            <div class="reel-header">
+              ${avatarHtml}
+              <div class="reel-user-info">
+                <div class="reel-username">${nameHtml}</div>
+                ${descHtml}
+              </div>
+            </div>
+            <div class="reel-actions">
+              <button class="action-btn ${likeClass}" onclick="likeReel('${status.statusId}', event)">
+                <span class="material-icons action-icon">${likeIcon}</span>
+                <span class="action-count">${likes}</span>
+              </button>
+              <button class="action-btn" onclick="openComments('${status.statusId}', event)">
+                <span class="material-icons action-icon">chat_bubble_outline</span>
+                <span class="action-count">${comments}</span>
+              </button>
+              ${type === 'video' ? `<button class="action-btn" onclick="toggleMute('${status.statusId}', event)">
+                <span class="material-icons action-icon">volume_off</span>
+              </button>` : ''}
+            </div>
+            ${progressBarHtml}
+          </div>
+        `;
+        const mediaEl = reelDiv.querySelector(type === 'video' ? '.reel-video' : type === 'text' ? '.text-content' : '.reel-image');
+        if (type === 'video') {
+          if (status.speed) mediaEl.playbackRate = status.speed;
+          if (status.filter) mediaEl.style.filter = status.filter;
+          mediaEl.addEventListener('loadstart', () => showVideoSpinner(mediaEl));
+          mediaEl.addEventListener('waiting', () => showVideoSpinner(mediaEl));
+          mediaEl.addEventListener('stalled', () => showVideoSpinner(mediaEl));
+          mediaEl.addEventListener('canplay', () => hideVideoSpinner(mediaEl));
+          mediaEl.addEventListener('playing', () => hideVideoSpinner(mediaEl));
+          mediaEl.addEventListener('pause', () => togglePlayPauseIcon(mediaEl));
+          mediaEl.addEventListener('play', () => togglePlayPauseIcon(mediaEl));
+          mediaEl.addEventListener('error', () => {
+            console.warn('Video load error:', mediaEl.src);
+            hideVideoSpinner(mediaEl);
+            mediaEl.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+          });
+          mediaEl.addEventListener('click', () => {
+            if (mediaEl.paused) {
+              mediaEl.play().catch(console.error);
+            } else {
+              mediaEl.pause();
+            }
+          });
+          togglePlayPauseIcon(mediaEl);
+        } else if (type === 'image') {
+          const imgs = reelDiv.querySelectorAll('.reel-image');
+          if (status.filter) {
+            imgs.forEach(img => img.style.filter = status.filter);
+          }
+          if (mediaElements.length > 1) {
+            initReelCarousel(reelDiv);
+          }
+        }
+        container.appendChild(reelDiv);
+        const descriptionEl = reelDiv.querySelector('.reel-description');
+        if (descriptionEl) {
+          setupCaptionToggle(descriptionEl);
+        }
+      });
+      container.scrollTop = 0;
+      setupMediaObserver(type);
+      if (filteredStatuses.length > 0) {
+        const firstReel = container.querySelector('.reel-item');
+        if (firstReel) {
+          if (type === 'video') {
+            const firstMedia = firstReel.querySelector('.reel-video');
+            firstMedia.play().catch(console.error);
+            const firstProgressFill = firstReel.querySelector('.progress-fill');
+            if (firstProgressFill) firstProgressFill.style.width = '0%';
+          }
+        }
+      }
+    }
+    function setupMediaObserver(type) {
+      const items = document.querySelectorAll('.reel-item');
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          const mediaEl = entry.target.querySelector(type === 'video' ? '.reel-video' : '.reel-image');
+          const progressFill = entry.target.querySelector('.progress-fill');
+          const currentIndex = Array.from(items).indexOf(entry.target);
+          if (entry.isIntersecting) {
+            entry.target.classList.add('entered');
+            if (type === 'video') {
+              showVideoSpinner(mediaEl);
+              mediaEl.play().catch(console.error);
+              if (currentIndex < items.length - 1) {
+                const nextItem = items[currentIndex + 1];
+                const nextMedia = nextItem.querySelector('.reel-video');
+                if (nextMedia) {
+                  nextMedia.preload = 'metadata';
+                }
+              }
+              const updateProgress = () => {
+                if (mediaEl.duration && !mediaEl.paused && !mediaEl.ended) {
+                  const progress = (mediaEl.currentTime / mediaEl.duration) * 100;
+                  progressFill.style.width = progress + '%';
+                  requestAnimationFrame(updateProgress);
+                }
+              };
+              updateProgress();
+            }
+          } else {
+            entry.target.classList.remove('entered');
+            if (type === 'video') {
+              mediaEl.pause();
+              mediaEl.currentTime = 0;
+              if (progressFill) progressFill.style.width = '0%';
+              hideVideoSpinner(mediaEl);
+            }
+          }
+        });
+      }, { threshold: 0.6 });
+      items.forEach(item => observer.observe(item));
+    }
     window.switchTab = (type) => {
       if (type === currentTab) return;
       currentTab = type;
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       event.target.classList.add('active');
-      loadReels(type);
+      renderReelsForTab(type);
     };
     function nextTab() {
       const currentIndex = tabOrder.indexOf(currentTab);
@@ -1801,248 +2045,6 @@
       event.target.classList.add('active');
       updateOverlay();
     };
-    async function loadReels(type = 'video') {
-      showSpinner();
-      const container = document.getElementById('reels-container');
-      container.innerHTML = '';
-      for (let i = 0; i < 3; i++) {
-        const skeleton = document.createElement('div');
-        skeleton.className = 'reel-item skeleton';
-        skeleton.innerHTML = '<div class="skeleton-video"></div>';
-        container.appendChild(skeleton);
-      }
-      if (currentUser) {
-        try {
-          const statusesRef = ref(db, 'statuses');
-          const snapshot = await get(statusesRef);
-          let mediaStatuses = [];
-          if (snapshot.exists()) {
-            Object.entries(snapshot.val()).forEach(([id, s]) => {
-              if (s.type === type && (type === 'text' ? !!s.content : true)) {
-                if (type !== 'text' && (!s.mediaUrls && !s.mediaUrl)) return;
-                mediaStatuses.push({ statusId: id, ...s });
-              }
-            });
-            const userIds = [...new Set(mediaStatuses.map(s => s.userId))];
-            const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
-            const userResults = await Promise.all(userPromises);
-            const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.snap]));
-            mediaStatuses.forEach(status => {
-              status.user = userMap[status.userId];
-            });
-            mediaStatuses = sortStatuses(mediaStatuses).slice(0, 20);
-          }
-          container.innerHTML = '';
-          if (mediaStatuses.length === 0) {
-            container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No ${type}s yet. Upload the first one!</p>`;
-            hideSpinner();
-            return;
-          }
-          mediaStatuses.forEach(status => {
-            const reelDiv = document.createElement('div');
-            reelDiv.className = 'reel-item';
-            reelDiv.setAttribute('data-status-id', status.statusId);
-            const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
-            let avatarHtml = '';
-            if (status.user?.photoURL) {
-              avatarHtml = `<img src="${status.user.photoURL}" alt="${status.user?.displayName}" class="reel-user-avatar" loading="lazy">`;
-            } else {
-              avatarHtml = `<div class="reel-user-avatar" style="font-size: 20px;">${initial}</div>`;
-            }
-            let nameHtml = status.user?.displayName || 'User';
-            if (status.user?.verified) {
-              nameHtml += verifiedIcon;
-            }
-            let descHtml = '';
-            if (status.content) {
-              descHtml = `<div class="reel-description">
-                <span class="caption-text">${status.content.replace(/\n/g, '<br>')}</span>
-                <button class="see-more-btn">see more</button>
-              </div>`;
-            }
-            const likesSnap = status.likes || {};
-            const likes = Object.keys(likesSnap).length;
-            const comments = Object.keys(status.comments || {}).length;
-            const isLiked = likesSnap[currentUser.uid];
-            const likeIcon = isLiked ? 'favorite' : 'favorite_border';
-            const likeClass = isLiked ? 'liked' : '';
-            let mediaHtml = '';
-            let progressBarHtml = '';
-            let mediaElements = [];
-            const urls = status.mediaUrls || [status.mediaUrl].filter(Boolean);
-            if (type === 'text') {
-              mediaHtml = `<div class="text-content">${status.content.replace(/\n/g, '<br>')}</div>`;
-            } else if (type === 'video') {
-              let transforms = ['h_568,q_auto:eco,f_auto'];
-              if (status.textOverlay) {
-                transforms.push(status.textOverlay);
-              }
-              if (status.originalDuration && (status.startTime > 0 || status.endTime < status.originalDuration)) {
-                if (status.startTime > 0) transforms.push(`so_${status.startTime}`);
-                if (status.endTime < status.originalDuration) transforms.push(`eo_${status.endTime}`);
-              }
-              const optUrl = buildCloudinaryUrl(urls[0], transforms);
-              mediaHtml = `<video src="${optUrl}" class="reel-video" loop playsinline webkit-playsinline preload="metadata" poster="${urls[0]}?q=10&w=320&h=568&f=auto&fl=progressive" muted></video>
-              <div class="video-spinner">
-                <div class="spinner">
-                  <div class="dot"></div>
-                  <div class="dot"></div>
-                  <div class="dot"></div>
-                </div>
-              </div>
-              <div class="reel-play-pause"></div>`;
-              progressBarHtml = `<div class="progress-bar video-only">
-                <div class="progress-fill"></div>
-              </div>`;
-            } else {
-              let transforms = ['h_568,q_auto:eco,f_auto'];
-              if (status.textOverlay) {
-                transforms.push(status.textOverlay);
-              }
-              urls.forEach(url => {
-                const optUrl = buildCloudinaryUrl(url, transforms);
-                mediaElements.push(`<img src="${optUrl}" alt="Reel image" class="reel-image" loading="lazy">`);
-              });
-              if (mediaElements.length === 1) {
-                mediaHtml = mediaElements[0];
-              } else {
-                mediaHtml = `
-                  <div class="reel-carousel">
-                    <div class="carousel-track">
-                      ${mediaElements.join('')}
-                    </div>
-                    <div class="carousel-dots">
-                      ${mediaElements.map((_, i) => `<span class="carousel-dot ${i === 0 ? 'active' : ''}"></span>`).join('')}
-                    </div>
-                  </div>`;
-              }
-            }
-            reelDiv.innerHTML = `
-              ${mediaHtml}
-              <div class="reel-overlay">
-                <div class="reel-header">
-                  ${avatarHtml}
-                  <div class="reel-user-info">
-                    <div class="reel-username">${nameHtml}</div>
-                    ${descHtml}
-                  </div>
-                </div>
-                <div class="reel-actions">
-                  <button class="action-btn ${likeClass}" onclick="likeReel('${status.statusId}', event)">
-                    <span class="material-icons action-icon">${likeIcon}</span>
-                    <span class="action-count">${likes}</span>
-                  </button>
-                  <button class="action-btn" onclick="openComments('${status.statusId}', event)">
-                    <span class="material-icons action-icon">chat_bubble_outline</span>
-                    <span class="action-count">${comments}</span>
-                  </button>
-                  ${type === 'video' ? `<button class="action-btn" onclick="toggleMute('${status.statusId}', event)">
-                    <span class="material-icons action-icon">volume_off</span>
-                  </button>` : ''}
-                </div>
-                ${progressBarHtml}
-              </div>
-            `;
-            const mediaEl = reelDiv.querySelector(type === 'video' ? '.reel-video' : type === 'text' ? '.text-content' : '.reel-image');
-            if (type === 'video') {
-              if (status.speed) mediaEl.playbackRate = status.speed;
-              if (status.filter) mediaEl.style.filter = status.filter;
-              mediaEl.addEventListener('loadstart', () => showVideoSpinner(mediaEl));
-              mediaEl.addEventListener('waiting', () => showVideoSpinner(mediaEl));
-              mediaEl.addEventListener('stalled', () => showVideoSpinner(mediaEl));
-              mediaEl.addEventListener('canplay', () => hideVideoSpinner(mediaEl));
-              mediaEl.addEventListener('playing', () => hideVideoSpinner(mediaEl));
-              mediaEl.addEventListener('pause', () => togglePlayPauseIcon(mediaEl));
-              mediaEl.addEventListener('play', () => togglePlayPauseIcon(mediaEl));
-              mediaEl.addEventListener('error', () => {
-                console.warn('Video load error:', mediaEl.src);
-                hideVideoSpinner(mediaEl);
-                mediaEl.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
-              });
-              mediaEl.addEventListener('click', () => {
-                if (mediaEl.paused) {
-                  mediaEl.play().catch(console.error);
-                } else {
-                  mediaEl.pause();
-                }
-              });
-              togglePlayPauseIcon(mediaEl);
-            } else if (type === 'image') {
-              const imgs = reelDiv.querySelectorAll('.reel-image');
-              if (status.filter) {
-                imgs.forEach(img => img.style.filter = status.filter);
-              }
-              if (mediaElements.length > 1) {
-                initReelCarousel(reelDiv);
-              }
-            }
-            container.appendChild(reelDiv);
-            const descriptionEl = reelDiv.querySelector('.reel-description');
-            if (descriptionEl) {
-              setupCaptionToggle(descriptionEl);
-            }
-          });
-          container.scrollTop = 0;
-          setupMediaObserver(type);
-          if (mediaStatuses.length > 0) {
-            const firstReel = container.querySelector('.reel-item');
-            if (firstReel) {
-              if (type === 'video') {
-                const firstMedia = firstReel.querySelector('.reel-video');
-                firstMedia.play().catch(console.error);
-                const firstProgressFill = firstReel.querySelector('.progress-fill');
-                if (firstProgressFill) firstProgressFill.style.width = '0%';
-              }
-            }
-          }
-        } catch (error) {
-          console.error('Error loading reels:', error);
-          container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Failed to load reels. <button onclick="loadReels(currentTab)" style="background: none; border: none; color: var(--bbm-red); cursor: pointer;">Retry</button></p>';
-        }
-      }
-      hideSpinner();
-    }
-    function setupMediaObserver(type) {
-      const items = document.querySelectorAll('.reel-item');
-      const observer = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          const mediaEl = entry.target.querySelector(type === 'video' ? '.reel-video' : '.reel-image');
-          const progressFill = entry.target.querySelector('.progress-fill');
-          const currentIndex = Array.from(items).indexOf(entry.target);
-          if (entry.isIntersecting) {
-            entry.target.classList.add('entered');
-            if (type === 'video') {
-              showVideoSpinner(mediaEl);
-              mediaEl.play().catch(console.error);
-              if (currentIndex < items.length - 1) {
-                const nextItem = items[currentIndex + 1];
-                const nextMedia = nextItem.querySelector('.reel-video');
-                if (nextMedia) {
-                  nextMedia.preload = 'metadata';
-                }
-              }
-              const updateProgress = () => {
-                if (mediaEl.duration && !mediaEl.paused && !mediaEl.ended) {
-                  const progress = (mediaEl.currentTime / mediaEl.duration) * 100;
-                  progressFill.style.width = progress + '%';
-                  requestAnimationFrame(updateProgress);
-                }
-              };
-              updateProgress();
-            }
-          } else {
-            entry.target.classList.remove('entered');
-            if (type === 'video') {
-              mediaEl.pause();
-              mediaEl.currentTime = 0;
-              if (progressFill) progressFill.style.width = '0%';
-              hideVideoSpinner(mediaEl);
-            }
-          }
-        });
-      }, { threshold: 0.6 });
-      items.forEach(item => observer.observe(item));
-    }
     window.likeReel = async (statusId, event) => {
       event.stopPropagation();
       if (!currentUser) return;
@@ -2051,7 +2053,7 @@
       const likeBtn = reelItem.querySelector('.action-btn:first-child');
       const currentLikes = parseInt(likeBtn.querySelector('.action-count').textContent);
       try {
-        const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
+        const likeRef = ref(db, `liveStatuses/${statusId}/likes/${currentUser.uid}`);
         const snap = await get(likeRef);
         const liked = snap.exists();
         if (liked) {
@@ -2107,7 +2109,7 @@
       const commentsList = document.getElementById('comments-list');
       commentsList.innerHTML = '<div class="no-comments">Loading comments...</div>';
       try {
-        const commentsRef = ref(db, `statuses/${statusId}/comments`);
+        const commentsRef = ref(db, `liveStatuses/${statusId}/comments`);
         const snapshot = await get(commentsRef);
         commentsList.innerHTML = '';
         if (snapshot.exists()) {
@@ -2222,10 +2224,10 @@
       try {
         let newRef;
         if (isReply) {
-          const replyRef = ref(db, `statuses/${currentStatusId}/comments/${currentReplyTo}/replies`);
+          const replyRef = ref(db, `liveStatuses/${currentStatusId}/comments/${currentReplyTo}/replies`);
           newRef = push(replyRef);
         } else {
-          const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
+          const commentsRef = ref(db, `liveStatuses/${currentStatusId}/comments`);
           newRef = push(commentsRef);
         }
         await set(newRef, {
@@ -2248,7 +2250,7 @@
     };
     async function updateCommentsCount(statusId) {
       try {
-        const commentsRef = ref(db, `statuses/${statusId}/comments`);
+        const commentsRef = ref(db, `liveStatuses/${statusId}/comments`);
         const snapshot = await get(commentsRef);
         const count = snapshot.exists() ? Object.keys(snapshot.val()).length : 0;
         const reelItem = document.querySelector(`[data-status-id="${statusId}"]`);
@@ -2268,41 +2270,44 @@
       previewVideo.src = previewUrl;
       previewVideo.onloadedmetadata = () => {
         const dur = previewVideo.duration;
-        window.originalDuration = dur;
         const startTrim = document.getElementById('start-trim');
         const endTrim = document.getElementById('end-trim');
         startTrim.max = dur;
         endTrim.max = dur;
         endTrim.value = dur;
         document.getElementById('duration-display').textContent = `Duration: ${Math.round(dur)}s`;
-        window.startTime = 0;
-        window.endTime = dur;
+        let startTime = 0; // Local scope
+        let endTime = dur; // Local scope
         startTrim.oninput = (e) => {
-          window.startTime = parseFloat(e.target.value);
-          if (window.startTime >= window.endTime) {
-            window.endTime = window.startTime + 1;
-            endTrim.value = window.endTime;
+          startTime = parseFloat(e.target.value);
+          if (startTime >= endTime) {
+            endTime = startTime + 1;
+            endTrim.value = endTime;
           }
-          previewVideo.currentTime = window.startTime;
-          document.getElementById('duration-display').textContent = `Trimmed: ${Math.round(window.endTime - window.startTime)}s`;
+          previewVideo.currentTime = startTime;
+          document.getElementById('duration-display').textContent = `Trimmed: ${Math.round(endTime - startTime)}s`;
         };
         endTrim.oninput = (e) => {
-          window.endTime = parseFloat(e.target.value);
-          if (window.endTime <= window.startTime) {
-            window.startTime = window.endTime - 1;
-            startTrim.value = window.startTime;
+          endTime = parseFloat(e.target.value);
+          if (endTime <= startTime) {
+            startTime = endTime - 1;
+            startTrim.value = startTime;
           }
-          document.getElementById('duration-display').textContent = `Trimmed: ${Math.round(window.endTime - window.startTime)}s`;
+          document.getElementById('duration-display').textContent = `Trimmed: ${Math.round(endTime - startTime)}s`;
         };
         const loopPreview = () => {
-          if (!previewVideo.paused && !previewVideo.ended && previewVideo.currentTime >= window.endTime) {
-            previewVideo.currentTime = window.startTime;
+          if (!previewVideo.paused && !previewVideo.ended && previewVideo.currentTime >= endTime) {
+            previewVideo.currentTime = startTime;
           }
         };
         previewVideo.addEventListener('timeupdate', loopPreview);
         previewVideo.addEventListener('play', () => {
-          previewVideo.currentTime = window.startTime;
+          previewVideo.currentTime = startTime;
         });
+        // Store for upload
+        window.startTime = startTime;
+        window.endTime = endTime;
+        window.originalDuration = dur;
       };
       document.getElementById('video-preview').style.display = 'block';
       document.getElementById('video-trim').style.display = 'block';
@@ -2382,6 +2387,9 @@
       }
       const imageCarousel = document.getElementById('image-carousel');
       if (imageCarousel) imageCarousel.innerHTML = '';
+      document.querySelectorAll('#image-preview img').forEach(img => {
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+      });
       document.getElementById('selected-media-info').style.display = 'none';
       document.getElementById('caption-input').value = '';
     };
@@ -2411,8 +2419,6 @@
           }
           selectedMediaFiles = [file];
           isVideoUpload = true;
-          window.startTime = 0;
-          window.endTime = tempVideo.duration;
           infoText = `Video selected: ${file.name}`;
           URL.revokeObjectURL(tempVideo.src);
           setupMediaSelected(infoText);
@@ -2469,7 +2475,7 @@
           showSpinner();
           postBtn.disabled = true;
           postBtn.textContent = 'Posting...';
-          const statusRef = ref(db, 'statuses');
+          const statusRef = ref(db, 'liveStatuses');
           const newStatusRef = push(statusRef);
           const statusData = {
             userId: currentUser.uid,
@@ -2483,7 +2489,6 @@
           };
           await set(newStatusRef, statusData);
           closeUploadSheet();
-          if (currentTab === 'text') loadReels(currentTab);
           showAlert('Text posted!');
         } catch (error) {
           console.error('Post failed:', error);
@@ -2591,7 +2596,7 @@
             urls.push(uploadedData.secure_url);
           }
         }
-        const statusRef = ref(db, 'statuses');
+        const statusRef = ref(db, 'liveStatuses');
         const newStatusRef = push(statusRef);
         const statusData = {
           userId: currentUser.uid,
@@ -2613,10 +2618,7 @@
           statusData.speed = parseFloat(document.getElementById('speed-select').value);
         }
         await set(newStatusRef, statusData);
-        // Increased delay to ensure Firebase and Cloudinary propagation
-        setTimeout(() => {
-          if (currentTab === (isVideoUpload ? 'video' : 'image')) loadReels(currentTab);
-        }, 1000);
+        // No need for setTimeout - live listener will handle refresh
         showAlert('Reel uploaded successfully!');
       } catch (error) {
         console.error('Upload failed:', error);
@@ -2648,7 +2650,8 @@
           if (snapshot.exists()) {
             currentUserData = snapshot.val();
           }
-          loadReels(currentTab);
+          setupLiveStatusesListener(); // Start live listening
+          renderReelsForTab(currentTab); // Initial render
         } else {
           window.location.href = 'signup.html';
         }
