@@ -112,6 +112,7 @@
       gap: 16px;
       height: 56px;
       box-shadow: var(--shadow-sm);
+      touch-action: pan-y;
     }
     .tab-btn {
       background: rgba(255, 255, 255, 0.1);
@@ -1292,7 +1293,7 @@
 </head>
 <body>
   <main class="main-content">
-    <div class="reels-header">
+    <div class="reels-header" id="reels-header">
       <button class="tab-btn active" data-type="video" onclick="switchTab('video')">
         <span class="material-icons" style="font-size: 20px;">videocam</span>Videos
       </button>
@@ -1461,6 +1462,7 @@
     let isVideoUpload = false;
     let currentPosition = 'center';
     let currentTab = 'video';
+    const tabOrder = ['video', 'image', 'text'];
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1709,6 +1711,13 @@
         isDragging = false;
       }, { passive: true });
     }
+    function sortStatuses(statuses) {
+      return statuses.sort((a, b) => {
+        const aScore = (a.user?.verified ? 1000000000000 : 0) + a.timestamp;
+        const bScore = (b.user?.verified ? 1000000000000 : 0) + b.timestamp;
+        return bScore - aScore;
+      });
+    }
     window.switchTab = (type) => {
       if (type === currentTab) return;
       currentTab = type;
@@ -1716,6 +1725,16 @@
       event.target.classList.add('active');
       loadReels(type);
     };
+    function nextTab() {
+      const currentIndex = tabOrder.indexOf(currentTab);
+      const nextIndex = (currentIndex + 1) % tabOrder.length;
+      switchTab(tabOrder[nextIndex]);
+    }
+    function prevTab() {
+      const currentIndex = tabOrder.indexOf(currentTab);
+      const prevIndex = (currentIndex - 1 + tabOrder.length) % tabOrder.length;
+      switchTab(tabOrder[prevIndex]);
+    }
     window.navigate = (page) => {
       console.log('Navigate to:', page);
       // Implement navigation logic here
@@ -1804,13 +1823,14 @@
                 mediaStatuses.push({ statusId: id, ...s });
               }
             });
-            mediaStatuses = mediaStatuses.sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
-            if (mediaStatuses.length > 0) {
-              const mostRecent = mediaStatuses[0];
-              const others = mediaStatuses.slice(1);
-              others.sort(() => 0.5 - Math.random());
-              mediaStatuses = [mostRecent, ...others];
-            }
+            const userIds = [...new Set(mediaStatuses.map(s => s.userId))];
+            const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
+            const userResults = await Promise.all(userPromises);
+            const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.snap]));
+            mediaStatuses.forEach(status => {
+              status.user = userMap[status.userId];
+            });
+            mediaStatuses = sortStatuses(mediaStatuses).slice(0, 20);
           }
           container.innerHTML = '';
           if (mediaStatuses.length === 0) {
@@ -1818,14 +1838,7 @@
             hideSpinner();
             return;
           }
-          const userIds = [...new Set(mediaStatuses.map(s => s.userId))];
-          const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, snap: snap.val() })));
-          const userResults = await Promise.all(userPromises);
-          const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.snap]));
           mediaStatuses.forEach(status => {
-            status.user = userMap[status.userId];
-          });
-          mediaStatuses.forEach((status, index) => {
             const reelDiv = document.createElement('div');
             reelDiv.className = 'reel-item';
             reelDiv.setAttribute('data-status-id', status.statusId);
@@ -1923,6 +1936,9 @@
                     <span class="material-icons action-icon">chat_bubble_outline</span>
                     <span class="action-count">${comments}</span>
                   </button>
+                  ${type === 'video' ? `<button class="action-btn" onclick="toggleMute('${status.statusId}', event)">
+                    <span class="material-icons action-icon">volume_off</span>
+                  </button>` : ''}
                 </div>
                 ${progressBarHtml}
               </div>
@@ -2051,6 +2067,17 @@
       } catch (error) {
         console.error('Error toggling like:', error);
         showAlert('Failed to update like.');
+      }
+    };
+    window.toggleMute = (statusId, event) => {
+      event.stopPropagation();
+      const reelItem = document.querySelector(`[data-status-id="${statusId}"]`);
+      const video = reelItem.querySelector('.reel-video');
+      if (video) {
+        video.muted = !video.muted;
+        const btn = event.currentTarget;
+        const icon = btn.querySelector('.action-icon');
+        icon.textContent = video.muted ? 'volume_off' : 'volume_up';
       }
     };
     window.openComments = async (statusId, event) => {
@@ -2586,10 +2613,10 @@
           statusData.speed = parseFloat(document.getElementById('speed-select').value);
         }
         await set(newStatusRef, statusData);
-        // Small delay to ensure Firebase propagation
+        // Increased delay to ensure Firebase and Cloudinary propagation
         setTimeout(() => {
           if (currentTab === (isVideoUpload ? 'video' : 'image')) loadReels(currentTab);
-        }, 500);
+        }, 1000);
         showAlert('Reel uploaded successfully!');
       } catch (error) {
         console.error('Upload failed:', error);
@@ -2629,6 +2656,23 @@
     }
     document.addEventListener('DOMContentLoaded', () => {
       initializeFirebase();
+      // Swipe gestures for tab navigation
+      const header = document.getElementById('reels-header');
+      let startX = 0;
+      header.addEventListener('touchstart', (e) => {
+        startX = e.touches[0].clientX;
+      }, { passive: true });
+      header.addEventListener('touchend', (e) => {
+        const endX = e.changedTouches[0].clientX;
+        const diff = startX - endX;
+        if (Math.abs(diff) > 50) {
+          if (diff > 0) {
+            nextTab();
+          } else {
+            prevTab();
+          }
+        }
+      }, { passive: true });
       document.getElementById('new-comment-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
