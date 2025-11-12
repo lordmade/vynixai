@@ -1174,6 +1174,36 @@
     .image-upload .video-preview-container {
       display: none;
     }
+    #text-design {
+      display: none;
+      margin-bottom: 20px;
+    }
+    #text-design label {
+      display: block;
+      margin-bottom: 12px;
+      font-weight: 600;
+    }
+    #text-preview-box {
+      display: none;
+      height: 200px;
+      background-color: #1a1a2e;
+      border-radius: 20px;
+      margin: 20px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    #preview-text {
+      color: white;
+      text-align: center;
+      padding: 20px;
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.3;
+      max-width: 80%;
+      text-shadow: 0 4px 8px rgba(0,0,0,0.7);
+    }
     @media (min-width: 768px) {
       .reels-header {
         padding: 12px 24px;
@@ -1244,6 +1274,9 @@
       }
       #overlay-span {
         font-size: 50px;
+      }
+      #text-preview-box {
+        height: 300px;
       }
     }
     @media (prefers-color-scheme: dark) {
@@ -1400,6 +1433,12 @@
         </div>
       </div>
     </div>
+    <div id="text-design">
+      <label>Background Color: <input type="color" id="text-bg-color" value="#1a1a2e" style="width: 100%; height: 44px; border-radius: 8px; border: 1px solid var(--border);"></label>
+      <div id="text-preview-box">
+        <div id="preview-text" class="text-content">Your text will appear here...</div>
+      </div>
+    </div>
     <input type="text" id="caption-input" class="upload-input" placeholder="What's the story? (optional)" style="display: none;">
     <button id="post-upload-btn" class="upload-btn" style="display: none;" onclick="uploadReel()" disabled>Launch Reel</button>
   </div>
@@ -1464,8 +1503,9 @@
     let currentTab = 'video';
     const tabOrder = ['video', 'image', 'text'];
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
-    let allStatuses = []; // Global cache for live statuses
-    let statusListener = null; // To manage the listener
+    let allStatuses = [];
+    let statusListener = null;
+    let previousStatusCount = 0;
 
     const showSpinner = () => {
       const spinnerOverlay = document.getElementById('spinner-overlay');
@@ -1487,7 +1527,10 @@
       if (transforms.length === 0) return baseUrl;
       const transformStr = '/' + transforms.join(',');
       const parts = baseUrl.split('/upload/');
-      if (parts.length !== 2) return baseUrl;
+      if (parts.length !== 2) {
+        console.warn('Invalid Cloudinary URL format:', baseUrl);
+        return baseUrl; // Fallback to base
+      }
       const before = parts[0] + '/upload' + transformStr + '/';
       return before + parts[1];
     }
@@ -1650,6 +1693,7 @@
         img.style.width = '100%';
         img.style.height = '100%';
         img.style.objectFit = 'contain';
+        img.onerror = () => console.error('Preview image load failed:', url);
         imgDiv.appendChild(img);
         track.appendChild(imgDiv);
       });
@@ -1721,9 +1765,8 @@
         return bScore - aScore;
       });
     }
-    // New live listener setup
     function setupLiveStatusesListener() {
-      if (statusListener) return; // Already listening
+      if (statusListener) return;
       const statusesRef = ref(db, 'liveStatuses');
       statusListener = onValue(statusesRef, async (snapshot) => {
         let mediaStatuses = [];
@@ -1738,13 +1781,48 @@
           mediaStatuses.forEach(status => {
             status.user = userMap[status.userId];
           });
-          allStatuses = sortStatuses(mediaStatuses);
+          const newStatuses = sortStatuses(mediaStatuses);
+          const newCount = newStatuses.length;
+          if (newCount !== previousStatusCount) {
+            // Structure change: full re-render
+            allStatuses = newStatuses;
+            previousStatusCount = newCount;
+            if (currentUser) {
+              renderReelsForTab(currentTab);
+            }
+          } else {
+            // Sub-change (likes/comments): partial update
+            newStatuses.forEach(newS => {
+              const reel = document.querySelector(`[data-status-id="${newS.statusId}"]`);
+              if (reel && (currentTab === 'all' || newS.type === currentTab)) {
+                // Update likes
+                const newLikesSnap = newS.likes || {};
+                const newLikes = Object.keys(newLikesSnap).length;
+                const isLiked = newLikesSnap[currentUser?.uid];
+                const likeBtn = reel.querySelector('.action-btn:first-child');
+                if (likeBtn) {
+                  const likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                  const likeClass = isLiked ? 'liked' : '';
+                  likeBtn.innerHTML = `<span class="material-icons action-icon">${likeIcon}</span><span class="action-count">${newLikes}</span>`;
+                  likeBtn.classList.toggle('liked', !!isLiked);
+                }
+                // Update comments
+                const newComments = Object.keys(newS.comments || {}).length;
+                const commentBtn = reel.querySelector('.action-btn:nth-child(2)');
+                if (commentBtn) {
+                  const span = commentBtn.querySelector('.action-count');
+                  if (span) span.textContent = newComments;
+                }
+              }
+            });
+            allStatuses = newStatuses;
+          }
         } else {
           allStatuses = [];
-        }
-        // Re-render current tab if active
-        if (currentUser) {
-          renderReelsForTab(currentTab);
+          previousStatusCount = 0;
+          if (currentUser) {
+            renderReelsForTab(currentTab);
+          }
         }
       }, (error) => {
         console.error('Error in live statuses listener:', error);
@@ -1788,7 +1866,7 @@
         const likesSnap = status.likes || {};
         const likes = Object.keys(likesSnap).length;
         const comments = Object.keys(status.comments || {}).length;
-        const isLiked = likesSnap[currentUser.uid];
+        const isLiked = likesSnap[currentUser?.uid];
         const likeIcon = isLiked ? 'favorite' : 'favorite_border';
         const likeClass = isLiked ? 'liked' : '';
         let mediaHtml = '';
@@ -1796,7 +1874,8 @@
         let mediaElements = [];
         const urls = status.mediaUrls || [status.mediaUrl].filter(Boolean);
         if (type === 'text') {
-          mediaHtml = `<div class="text-content">${status.content.replace(/\n/g, '<br>')}</div>`;
+          const bgColor = status.bgColor || '#000000';
+          mediaHtml = `<div class="text-content" style="background-color: ${bgColor};">${status.content.replace(/\n/g, '<br>')}</div>`;
         } else if (type === 'video') {
           let transforms = ['h_568,q_auto:eco,f_auto'];
           if (status.textOverlay) {
@@ -1826,7 +1905,8 @@
           }
           urls.forEach(url => {
             const optUrl = buildCloudinaryUrl(url, transforms);
-            mediaElements.push(`<img src="${optUrl}" alt="Reel image" class="reel-image" loading="lazy">`);
+            const imgEl = `<img src="${optUrl}" alt="Reel image" class="reel-image" loading="lazy" style="filter: ${status.filter || ''}" onerror="console.error('Image load failed:', this.src); this.style.display='none';">`;
+            mediaElements.push(imgEl);
           });
           if (mediaElements.length === 1) {
             mediaHtml = mediaElements[0];
@@ -1894,7 +1974,7 @@
           togglePlayPauseIcon(mediaEl);
         } else if (type === 'image') {
           const imgs = reelDiv.querySelectorAll('.reel-image');
-          if (status.filter) {
+          if (status.filter && !status.textOverlay) {
             imgs.forEach(img => img.style.filter = status.filter);
           }
           if (mediaElements.length > 1) {
@@ -1981,7 +2061,6 @@
     }
     window.navigate = (page) => {
       console.log('Navigate to:', page);
-      // Implement navigation logic here
     };
     window.updateFilter = () => {
       const b = parseFloat(document.getElementById('brightness').value);
@@ -2045,6 +2124,16 @@
       event.target.classList.add('active');
       updateOverlay();
     };
+    function updateTextPreview() {
+      const color = document.getElementById('text-bg-color').value;
+      const text = document.getElementById('caption-input').value;
+      const previewBox = document.getElementById('text-preview-box');
+      const previewContent = document.getElementById('preview-text');
+      if (previewBox && previewContent) {
+        previewBox.style.backgroundColor = color;
+        previewContent.innerHTML = text.replace(/\n/g, '<br>');
+      }
+    }
     window.likeReel = async (statusId, event) => {
       event.stopPropagation();
       if (!currentUser) return;
@@ -2276,8 +2365,8 @@
         endTrim.max = dur;
         endTrim.value = dur;
         document.getElementById('duration-display').textContent = `Duration: ${Math.round(dur)}s`;
-        let startTime = 0; // Local scope
-        let endTime = dur; // Local scope
+        let startTime = 0;
+        let endTime = dur;
         startTrim.oninput = (e) => {
           startTime = parseFloat(e.target.value);
           if (startTime >= endTime) {
@@ -2304,7 +2393,6 @@
         previewVideo.addEventListener('play', () => {
           previewVideo.currentTime = startTime;
         });
-        // Store for upload
         window.startTime = startTime;
         window.endTime = endTime;
         window.originalDuration = dur;
@@ -2345,6 +2433,8 @@
       document.getElementById('image-preview').style.display = 'none';
       document.getElementById('video-trim').style.display = 'none';
       document.getElementById('edit-controls').style.display = 'none';
+      document.getElementById('text-design').style.display = 'none';
+      document.getElementById('text-preview-box').style.display = 'none';
       const previewVideo = document.getElementById('preview-video');
       if (previewVideo.src) {
         URL.revokeObjectURL(previewVideo.src);
@@ -2355,6 +2445,7 @@
       document.getElementById('overlay-text').value = '';
       updateOverlay();
       document.getElementById('caption-input').value = '';
+      document.getElementById('text-bg-color').value = '#1a1a2e';
       if (currentTab === 'text') {
         document.getElementById('choose-media-btn').style.display = 'none';
         document.getElementById('upload-info-p').style.display = 'none';
@@ -2364,6 +2455,11 @@
         document.getElementById('post-upload-btn').style.display = 'block';
         document.getElementById('post-upload-btn').disabled = false;
         document.getElementById('post-upload-btn').textContent = 'Post';
+        document.getElementById('text-design').style.display = 'block';
+        document.getElementById('text-preview-box').style.display = 'block';
+        document.getElementById('caption-input').addEventListener('input', updateTextPreview);
+        document.getElementById('text-bg-color').addEventListener('input', updateTextPreview);
+        updateTextPreview();
       } else {
         document.getElementById('post-upload-btn').textContent = 'Upload';
         document.getElementById('caption-input').placeholder = 'Add caption (optional)';
@@ -2392,6 +2488,8 @@
       });
       document.getElementById('selected-media-info').style.display = 'none';
       document.getElementById('caption-input').value = '';
+      const captionInput = document.getElementById('caption-input');
+      if (captionInput) captionInput.removeEventListener('input', updateTextPreview);
     };
     window.handleMediaUpload = (event) => {
       const files = Array.from(event.target.files);
@@ -2450,10 +2548,12 @@
       document.getElementById('selected-media-info').style.display = 'block';
       document.getElementById('upload-info-p').style.display = 'none';
       document.getElementById('choose-media-btn').style.display = 'none';
-      document.getElementById('video-preview').style.display = 'none';
-      document.getElementById('image-preview').style.display = 'none';
-      document.getElementById('video-trim').style.display = 'none';
-      document.getElementById('edit-controls').style.display = 'none';
+      if (currentTab !== 'text') {
+        document.getElementById('video-preview').style.display = 'block';
+        document.getElementById('image-preview').style.display = 'block';
+        document.getElementById('video-trim').style.display = isVideoUpload ? 'block' : 'none';
+        document.getElementById('edit-controls').style.display = 'block';
+      }
       document.getElementById('upload-progress').style.display = 'none';
       document.getElementById('caption-input').style.display = 'block';
       document.getElementById('post-upload-btn').style.display = 'block';
@@ -2477,11 +2577,13 @@
           postBtn.textContent = 'Posting...';
           const statusRef = ref(db, 'liveStatuses');
           const newStatusRef = push(statusRef);
+          const bgColor = document.getElementById('text-bg-color').value;
           const statusData = {
             userId: currentUser.uid,
             userName: currentUserData.displayName,
             type: 'text',
             content: caption,
+            bgColor: bgColor,
             timestamp: Date.now(),
             impressions: 0,
             likes: {},
@@ -2618,7 +2720,6 @@
           statusData.speed = parseFloat(document.getElementById('speed-select').value);
         }
         await set(newStatusRef, statusData);
-        // No need for setTimeout - live listener will handle refresh
         showAlert('Reel uploaded successfully!');
       } catch (error) {
         console.error('Upload failed:', error);
@@ -2650,8 +2751,8 @@
           if (snapshot.exists()) {
             currentUserData = snapshot.val();
           }
-          setupLiveStatusesListener(); // Start live listening
-          renderReelsForTab(currentTab); // Initial render
+          setupLiveStatusesListener();
+          renderReelsForTab(currentTab);
         } else {
           window.location.href = 'signup.html';
         }
@@ -2659,7 +2760,6 @@
     }
     document.addEventListener('DOMContentLoaded', () => {
       initializeFirebase();
-      // Swipe gestures for tab navigation
       const header = document.getElementById('reels-header');
       let startX = 0;
       header.addEventListener('touchstart', (e) => {
