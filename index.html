@@ -2639,13 +2639,6 @@
           Text
         </button>
       </div>
-      <div class="suggested-users-section">
-        <div class="section-title">
-          <span class="material-icons" style="font-size: 24px;">people_outline</span>
-          Who to follow
-        </div>
-        <div id="suggested-users-carousel" class="users-carousel"></div>
-      </div>
       <div id="status-subtitle"></div>
       <!-- New Feature: Status Search -->
       <div class="status-search-container" id="status-search-container" style="display: none;">
@@ -2945,6 +2938,14 @@
     let showBottomNav = true;
     let lastScrollY = 0;
     const bottomNav = document.getElementById('bottom-nav');
+    // Status pagination state
+    let statusesPagination = {
+      all: { rendered: [], total: [], page: 0, hasMore: false },
+      images: { rendered: [], total: [], page: 0, hasMore: false },
+      text: { rendered: [], total: [], page: 0, hasMore: false }
+    };
+    const statusesPerPage = 10;
+    let currentStatusScrollListener = null;
     function onScroll() {
       if (window.innerWidth >= 1024) return; // Only for mobile
       const currentScrollY = window.pageYOffset || document.documentElement.scrollTop;
@@ -3044,6 +3045,7 @@
         }
       } catch (error) {
         console.error('Search failed:', error);
+        showAlert('Search failed. Please try again.');
         document.getElementById('search-results').innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Search failed</p>';
       } finally {
         hideSpinner();
@@ -3237,6 +3239,7 @@
         return { score, likes, comments, reposts };
       } catch (error) {
         console.warn(`Failed to compute score for status ${statusId}:`, error);
+        showAlert('Error loading engagement data.');
         return { score: 0, likes: 0, comments: 0, reposts: 0 };
       }
     }
@@ -3310,12 +3313,14 @@
     async function loadStatuses(containerId, mode = 'carousel', silent = false, filter = null) {
       const container = document.getElementById(containerId);
       const loadKey = mode === 'carousel' ? 'carousel' : 'list';
-      if (statusesLoaded[loadKey] && silent) return;
+      if (statusesLoaded[loadKey] && silent && mode !== 'list') return;
       if (!silent) showSpinner();
       let loadedAny = false;
       try {
-        container.innerHTML = '';
-        statusesLoaded[loadKey] = true;
+        if (mode === 'carousel') {
+          container.innerHTML = '';
+          statusesLoaded[loadKey] = true;
+        }
         if (currentUser) {
           let friendIds = [];
           if (mode === 'carousel') {
@@ -3323,7 +3328,7 @@
           }
           const statusesRef = ref(db, 'statuses');
           const snapshot = await get(statusesRef);
-  
+
           let recentStatusesByUser = {};
           let allStatuses = [];
           if (snapshot.exists()) {
@@ -3435,19 +3440,36 @@
               }
             }
           } else if (mode === 'list') {
-            if (sortedStatuses.length === 0) {
-              let msg = 'No posts yet.';
-              if (filter === 'images') msg = 'No image posts yet.';
-              else if (filter === 'text') msg = 'No text posts yet.';
-              if (statusSearchTerm) msg = 'No posts match your search.';
-              if (currentStatusFilter) msg = `No ${filter || 'posts'} from this user.`;
-              container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">${msg}</p>`;
+            // Pagination logic for list mode
+            const stateKey = filter || 'all';
+            const state = statusesPagination[stateKey];
+            if (!state.total.length) {
+              // Initial load: set total
+              state.total = sortedStatuses;
+              state.rendered = [];
+              state.page = 0;
+              state.hasMore = state.total.length > statusesPerPage;
+            }
+            if (state.page === 0) {
+              container.innerHTML = '';
+              viewedStatuses.clear();
+            }
+            const startIndex = state.page * statusesPerPage;
+            const batch = state.total.slice(startIndex, startIndex + statusesPerPage);
+            if (batch.length === 0) {
+              if (state.page === 0) {
+                let msg = 'No posts yet.';
+                if (filter === 'images') msg = 'No image posts yet.';
+                else if (filter === 'text') msg = 'No text posts yet.';
+                if (statusSearchTerm) msg = 'No posts match your search.';
+                if (currentStatusFilter) msg = `No ${filter || 'posts'} from this user.`;
+                container.innerHTML = `<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">${msg}</p>`;
+              }
               if (!silent) hideSpinner();
               return;
             }
-            viewedStatuses.clear();
-            for (let i = 0; i < sortedStatuses.length; i++) {
-              const status = sortedStatuses[i];
+            for (let i = 0; i < batch.length; i++) {
+              const status = batch[i];
               const isFollowing = currentUserFollows && currentUserFollows[status.userId] ? true : false;
               try {
                 const postItem = document.createElement('div');
@@ -3790,7 +3812,7 @@
                           get(impRef).then(snap => {
                             const curr = snap.val() || 0;
                             set(impRef, curr + 1);
-                          });
+                          }).catch(e => console.error('Failed to update impression:', e));
                           viewedStatuses.add(status.statusId);
                           viewObserver.unobserve(postItem);
                         }
@@ -3800,63 +3822,60 @@
                   }
                 }
                 container.appendChild(postItem);
+                state.rendered.push(status);
                 loadedAny = true;
               } catch (statusError) {
                 console.warn(`Failed to render status ${status.statusId}:`, statusError);
+                showAlert('Error loading some posts. Retrying...');
                 const postItem = document.createElement('div');
                 postItem.className = 'status-post';
                 postItem.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Error loading this post. <button onclick="loadFilteredStatuses(currentStatusSubTab)" style="background: none; border: none; color: var(--x-blue); cursor: pointer; font-weight: 600;">Retry</button></p>';
                 container.appendChild(postItem);
               }
             }
+            state.page++;
+            state.hasMore = state.rendered.length < state.total.length;
+            // Setup infinite scroll listener if first page
+            if (state.page === 1) {
+              setupStatusScrollListener(container);
+            }
           }
         }
       } catch (globalError) {
         console.error(`loadStatuses failed: ${mode} mode`, globalError);
-        if (!loadedAny) {
-          showAlert('Failed to load posts. Please try refreshing.');
+        showAlert('Failed to load posts. Please check your connection and try refreshing.');
+        if (!loadedAny && mode === 'list') {
+          container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Failed to load posts. <button onclick="loadFilteredStatuses(currentStatusSubTab)" style="background: none; border: none; color: var(--x-blue); cursor: pointer; font-weight: 600;">Retry</button></p>';
         }
       } finally {
         if (!silent) hideSpinner();
       }
     }
-    async function loadSuggestedUsers() {
-      const container = document.getElementById('suggested-users-carousel');
-      if (!container || !currentUser) return;
-      try {
-        const usersRef = ref(db, 'users');
-        const snapshot = await get(usersRef);
-        if (!snapshot.exists()) return;
-        const users = Object.entries(snapshot.val())
-          .map(([uid, user]) => ({ uid, ...user }))
-          .filter(user => user.uid !== currentUser.uid && !currentUserFollows[user.uid]); // Exclude self and followed users
-        // Randomly select 5-10 users
-        const shuffled = users.sort(() => 0.5 - Math.random()).slice(0, Math.min(8, users.length));
-        container.innerHTML = '';
-        shuffled.forEach(user => {
-          const initial = user.displayName ? user.displayName[0].toUpperCase() : 'U';
-          let avatarHtml = user.photoURL ? `<img src="${user.photoURL}" alt="${user.displayName} avatar" class="suggested-user-avatar" loading="lazy">` : `<div class="suggested-user-avatar" style="background: var(--x-blue); color: #000000; font-size: 20px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-          let nameHtml = user.displayName || 'User';
-          if (user.verified) {
-            nameHtml += verifiedIcon;
-          }
-          const card = document.createElement('div');
-          card.className = 'suggested-user-card';
-          card.onclick = () => window.location.href = `profile.html?uid=${user.uid}`;
-          card.innerHTML = `
-            ${avatarHtml}
-            <div class="suggested-user-name">${nameHtml}</div>
-            <button class="follow-btn-small" onclick="event.stopPropagation(); toggleFollow('${user.uid}', this)">Follow</button>
-          `;
-          container.appendChild(card);
-        });
-        if (shuffled.length === 0) {
-          container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 20px;">No suggested users yet.</p>';
-        }
-      } catch (error) {
-        console.error('Failed to load suggested users:', error);
+    function setupStatusScrollListener(container) {
+      // Remove previous listener
+      if (currentStatusScrollListener) {
+        container.removeEventListener('scroll', currentStatusScrollListener);
       }
+      currentStatusScrollListener = throttle(() => {
+        if (loadingMore || !statusesPagination[currentStatusSubTab].hasMore) return;
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        if (scrollTop + clientHeight >= scrollHeight - 100) {
+          loadMoreStatuses();
+        }
+      }, 200);
+      container.addEventListener('scroll', currentStatusScrollListener);
     }
+    window.loadMoreStatuses = async () => {
+      loadingMore = true;
+      try {
+        await loadFilteredStatuses(currentStatusSubTab, true);
+      } catch (error) {
+        console.error('Load more statuses failed:', error);
+        showAlert('Failed to load more posts. Please try again.');
+      } finally {
+        loadingMore = false;
+      }
+    };
     async function loadFilteredStatuses(filter, silent = false) {
       currentStatusSubTab = filter;
       const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
@@ -3864,7 +3883,6 @@
     }
     window.loadTopStatuses = async (silent = false) => {
       await loadStatuses('statuses-carousel', 'carousel', silent);
-      await loadSuggestedUsers();
     };
     window.loadFriendStatuses = async (silent = false) => {
       await loadFilteredStatuses('all', silent);
@@ -3894,10 +3912,15 @@
       return highlighted;
     }
     async function loadAllUsersForMentions() {
-      const usersRef = ref(db, 'users');
-      const snapshot = await get(usersRef);
-      if (snapshot.exists()) {
-        allUsers = snapshot.val();
+      try {
+        const usersRef = ref(db, 'users');
+        const snapshot = await get(usersRef);
+        if (snapshot.exists()) {
+          allUsers = snapshot.val();
+        }
+      } catch (error) {
+        console.error('Failed to load users for mentions:', error);
+        showAlert('Error loading user suggestions.');
       }
     }
     function setupMentionSuggestions(textarea, suggestionsId = 'mention-suggestions') {
@@ -4105,42 +4128,63 @@
       cleanupTypingListeners();
       const userChatsRef = ref(db, `users/${currentUser.uid}/chats`);
       chatsListener = onValue(userChatsRef, async (snapshot) => {
-        await updateChatsUI(snapshot);
+        try {
+          await updateChatsUI(snapshot);
+        } catch (error) {
+          console.error('Error updating chats UI:', error);
+          showAlert('Error loading chats. Please refresh.');
+        }
       }, (error) => {
         console.error('Error listening to chats:', error);
+        showAlert('Connection error. Please check your internet.');
       });
     }
     function setupStatusesListener() {
       const statusesRef = ref(db, 'statuses');
       statusesListener = onValue(statusesRef, async (snapshot) => {
-        if (document.getElementById('status-tab').classList.contains('active')) {
-          await loadFilteredStatuses(currentStatusSubTab, true);
+        try {
+          if (document.getElementById('status-tab').classList.contains('active')) {
+            await loadFilteredStatuses(currentStatusSubTab, true);
+          }
+        } catch (error) {
+          console.error('Error updating statuses:', error);
+          showAlert('Error updating feed. Please refresh.');
         }
       }, (error) => {
         console.error('Error listening to statuses:', error);
+        showAlert('Connection error for feed updates.');
       });
     }
     function setupFollowsListener() {
       if (followsListener) return;
       const followsRef = ref(db, `users/${currentUser.uid}/following`);
       followsListener = onValue(followsRef, (snap) => {
-        currentUserFollows = snap.val() || {};
+        try {
+          currentUserFollows = snap.val() || {};
+        } catch (error) {
+          console.error('Error updating follows:', error);
+        }
       });
     }
     function setupNotificationsListener() {
       if (notificationsListener) return;
       const notificationsRef = ref(db, `users/${currentUser.uid}/notifications`);
       notificationsListener = onValue(notificationsRef, (snapshot) => {
-        const notifications = snapshot.val() || {};
-        const unread = Object.values(notifications).filter(n => !n.read).length;
-        updateNotifUnread(unread);
-        if (unread > prevNotifCount) {
-          playNotificationSound();
-          showAlert('New notification!');
-        }
-        prevNotifCount = unread;
-        if (document.getElementById('notifications-tab').classList.contains('active')) {
-          loadNotifications(true);
+        try {
+          const notifications = snapshot.val() || {};
+          const unread = Object.values(notifications).filter(n => !n.read).length;
+          updateNotifUnread(unread);
+          if (unread > prevNotifCount) {
+            playNotificationSound();
+            showAlert('New notification!');
+          }
+          prevNotifCount = unread;
+          if (document.getElementById('notifications-tab').classList.contains('active')) {
+            loadNotifications(true);
+          }
+        } catch (error) {
+          console.error('Error processing notifications:', error);
+          showAlert('Error loading notifications.');
         }
       });
     }
@@ -4156,7 +4200,7 @@
         showAlert('Friend removed.');
       } catch (error) {
         console.error('Error removing chat:', error);
-        showAlert('Failed to remove friend.');
+        showAlert('Failed to remove friend. Please try again.');
       } finally {
         hideSpinner();
       }
@@ -4287,7 +4331,7 @@
         showAlert('Chat started!');
       } catch (error) {
         console.error('Error starting chat:', error);
-        showAlert('Failed to start chat.');
+        showAlert('Failed to start chat. Please try again.');
       }
     };
     // Full complete code for loadNotifications function
@@ -4324,19 +4368,20 @@
           const item = document.createElement('div');
           item.className = 'notification-item';
           item.onclick = async () => {
-            await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
-            if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
-              try {
+            try {
+              await set(ref(db, `users/${currentUser.uid}/notifications/${notif.id}/read`), true);
+              if (['like', 'comment', 'reply', 'tag'].includes(notif.type) && notif.statusId) {
                 const statusRef = ref(db, `statuses/${notif.statusId}`);
                 const statusSnap = await get(statusRef);
                 const status = statusSnap.val();
                 if (status && status.userId) {
                   window.currentStatusFilter = status.userId;
                 }
-              } catch (e) {
-                console.error('Failed to fetch status for notification:', e);
               }
               switchTab('status', null);
+            } catch (error) {
+              console.error('Error marking notification as read:', error);
+              showAlert('Error processing notification.');
             }
           };
           let icon = 'notifications';
@@ -4515,15 +4560,19 @@
     }
     async function updateLikeButton(statusId) {
       if (!currentUser) return;
-      const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
-      const snap = await get(likeRef);
-      const btn = document.getElementById('like-status-btn');
-      if (snap.exists()) {
-        btn.classList.add('liked');
-        btn.innerHTML = '♥';
-      } else {
-        btn.classList.remove('liked');
-        btn.innerHTML = '♡';
+      try {
+        const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
+        const snap = await get(likeRef);
+        const btn = document.getElementById('like-status-btn');
+        if (snap.exists()) {
+          btn.classList.add('liked');
+          btn.innerHTML = '♥';
+        } else {
+          btn.classList.remove('liked');
+          btn.innerHTML = '♡';
+        }
+      } catch (error) {
+        console.error('Error updating like button:', error);
       }
     }
     window.likeStatus = async (statusId) => {
@@ -4564,7 +4613,7 @@
         showAlert(liked ? 'Like removed' : 'Post liked!');
       } catch (error) {
         console.error('Error toggling like:', error);
-        showAlert('Failed to update like.');
+        showAlert('Failed to update like. Please try again.');
       }
     };
     window.shareStatus = async (statusId) => {
@@ -4601,62 +4650,72 @@
         }
       } catch (error) {
         console.error('Error reposting status:', error);
-        showAlert('Failed to repost post.');
+        showAlert('Failed to repost post. Please try again.');
       }
     };
     window.deleteStatus = async (statusId) => {
       showConfirm('Delete this post?', async (confirmed) => {
         if (confirmed) {
-          await set(ref(db, `statuses/${statusId}`), null);
-          showAlert('Post deleted.');
-          loadFilteredStatuses(currentStatusSubTab);
+          try {
+            await set(ref(db, `statuses/${statusId}`), null);
+            showAlert('Post deleted.');
+            loadFilteredStatuses(currentStatusSubTab);
+          } catch (error) {
+            console.error('Error deleting status:', error);
+            showAlert('Failed to delete post. Please try again.');
+          }
         }
       });
     };
     // New Feature: Edit Status
     window.editStatus = async (statusId) => {
-      currentEditStatusId = statusId;
-      const statusRef = ref(db, `statuses/${statusId}`);
-      const snap = await get(statusRef);
-      const status = snap.val();
-      if (!status || status.userId !== currentUser.uid) {
-        showAlert('Cannot edit this post.');
-        return;
+      try {
+        currentEditStatusId = statusId;
+        const statusRef = ref(db, `statuses/${statusId}`);
+        const snap = await get(statusRef);
+        const status = snap.val();
+        if (!status || status.userId !== currentUser.uid) {
+          showAlert('Cannot edit this post.');
+          return;
+        }
+        const sheet = document.getElementById('edit-sheet');
+        const captionInput = document.getElementById('edit-caption-input');
+        const mediaPreviewContainer = document.getElementById('edit-media-preview-container');
+        const mediaPreview = document.getElementById('edit-media-preview');
+        const mediaInput = document.getElementById('edit-media-input');
+        const deleteMediaBtn = document.getElementById('edit-delete-media');
+        const progressDiv = document.getElementById('edit-upload-progress');
+        const progressBar = document.getElementById('edit-progress-bar');
+        const saveBtn = document.getElementById('edit-save-btn');
+        captionInput.value = status.content || '';
+        setupMentionSuggestions(captionInput, 'edit-mention-suggestions');
+        if (status.mediaUrl) {
+          currentEditMediaUrl = status.mediaUrl;
+          mediaPreview.src = status.mediaUrl;
+          mediaPreviewContainer.style.display = 'block';
+          deleteMediaBtn.style.display = 'block';
+        } else {
+          currentEditMediaUrl = null;
+          mediaPreviewContainer.style.display = 'none';
+          deleteMediaBtn.style.display = 'none';
+        }
+        deleteMediaBtn.onclick = () => {
+          currentEditMediaUrl = null;
+          mediaPreviewContainer.style.display = 'none';
+          deleteMediaBtn.style.display = 'none';
+          mediaInput.value = '';
+        };
+        mediaInput.onclick = () => {
+          mediaInput.accept = status.type === 'image' ? 'image/*' : 'video/*';
+        };
+        saveBtn.disabled = false;
+        progressDiv.classList.add('hidden');
+        progressBar.style.width = '0%';
+        sheet.classList.add('active');
+      } catch (error) {
+        console.error('Error opening edit sheet:', error);
+        showAlert('Failed to load post for editing.');
       }
-      const sheet = document.getElementById('edit-sheet');
-      const captionInput = document.getElementById('edit-caption-input');
-      const mediaPreviewContainer = document.getElementById('edit-media-preview-container');
-      const mediaPreview = document.getElementById('edit-media-preview');
-      const mediaInput = document.getElementById('edit-media-input');
-      const deleteMediaBtn = document.getElementById('edit-delete-media');
-      const progressDiv = document.getElementById('edit-upload-progress');
-      const progressBar = document.getElementById('edit-progress-bar');
-      const saveBtn = document.getElementById('edit-save-btn');
-      captionInput.value = status.content || '';
-      setupMentionSuggestions(captionInput, 'edit-mention-suggestions');
-      if (status.mediaUrl) {
-        currentEditMediaUrl = status.mediaUrl;
-        mediaPreview.src = status.mediaUrl;
-        mediaPreviewContainer.style.display = 'block';
-        deleteMediaBtn.style.display = 'block';
-      } else {
-        currentEditMediaUrl = null;
-        mediaPreviewContainer.style.display = 'none';
-        deleteMediaBtn.style.display = 'none';
-      }
-      deleteMediaBtn.onclick = () => {
-        currentEditMediaUrl = null;
-        mediaPreviewContainer.style.display = 'none';
-        deleteMediaBtn.style.display = 'none';
-        mediaInput.value = '';
-      };
-      mediaInput.onclick = () => {
-        mediaInput.accept = status.type === 'image' ? 'image/*' : 'video/*';
-      };
-      saveBtn.disabled = false;
-      progressDiv.classList.add('hidden');
-      progressBar.style.width = '0%';
-      sheet.classList.add('active');
     };
     window.deleteEditMedia = () => {
       currentEditMediaUrl = null;
@@ -4753,7 +4812,7 @@
         showAlert('Post updated!');
       } catch (error) {
         console.error('Edit failed:', error);
-        showAlert(error.message || 'Failed to update post.');
+        showAlert(error.message || 'Failed to update post. Please try again.');
       } finally {
         hideSpinner();
         progressDiv.classList.add('hidden');
@@ -4849,49 +4908,54 @@
       comments.forEach(comment => renderComment(comment, container, level, userMap));
     }
     async function loadComments(statusId) {
-      const commentsRef = ref(db, `statuses/${statusId}/comments`);
-      const snap = await get(commentsRef);
-      const list = document.getElementById('comments-list');
-      const countEl = document.getElementById('comments-count');
-      list.innerHTML = '';
-      if (!snap.exists()) {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No comments yet.</p>';
-        countEl.textContent = 'No comments yet';
-        return;
-      }
-      let comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
-      const userIds = [...new Set(comments.map(c => c.userId))];
-      const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-      const userResults = await Promise.all(userPromises);
-      const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.user]));
-      let commentMap = {};
-      comments.forEach(c => {
-        c.children = [];
-        commentMap[c.id] = c;
-      });
-      comments.forEach(c => {
-        if (c.parentId && commentMap[c.parentId]) {
-          commentMap[c.parentId].children.push(c);
+      try {
+        const commentsRef = ref(db, `statuses/${statusId}/comments`);
+        const snap = await get(commentsRef);
+        const list = document.getElementById('comments-list');
+        const countEl = document.getElementById('comments-count');
+        list.innerHTML = '';
+        if (!snap.exists()) {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No comments yet.</p>';
+          countEl.textContent = 'No comments yet';
+          return;
         }
-      });
-      const commentTree = Object.values(commentMap).filter(c => !c.parentId);
-      commentTree.forEach(sortChildren);
-      countEl.textContent = `${commentTree.length} comment${commentTree.length !== 1 ? 's' : ''}`;
-      if (commentTree.length > 0) {
-        renderCommentTree(commentTree, list, 0, userMap);
-      } else {
-        list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No comments yet.</p>';
-      }
-      if (replyingTo) {
-        const inputBar = document.querySelector('#comment-modal .status-input-bar');
-        let cancelBtn = inputBar.querySelector('.cancel-reply');
-        if (!cancelBtn) {
-          cancelBtn = document.createElement('button');
-          cancelBtn.className = 'send-btn material-icons cancel-reply';
-          cancelBtn.innerHTML = 'close';
-          cancelBtn.onclick = cancelReply;
-          inputBar.insertBefore(cancelBtn, document.getElementById('comment-input').parentElement);
+        let comments = Object.entries(snap.val()).map(([id, c]) => ({ id, ...c })).sort((a, b) => b.timestamp - a.timestamp);
+        const userIds = [...new Set(comments.map(c => c.userId))];
+        const userPromises = userIds.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+        const userResults = await Promise.all(userPromises);
+        const userMap = Object.fromEntries(userResults.map(ur => [ur.uid, ur.user]));
+        let commentMap = {};
+        comments.forEach(c => {
+          c.children = [];
+          commentMap[c.id] = c;
+        });
+        comments.forEach(c => {
+          if (c.parentId && commentMap[c.parentId]) {
+            commentMap[c.parentId].children.push(c);
+          }
+        });
+        const commentTree = Object.values(commentMap).filter(c => !c.parentId);
+        commentTree.forEach(sortChildren);
+        countEl.textContent = `${commentTree.length} comment${commentTree.length !== 1 ? 's' : ''}`;
+        if (commentTree.length > 0) {
+          renderCommentTree(commentTree, list, 0, userMap);
+        } else {
+          list.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px;">No comments yet.</p>';
         }
+        if (replyingTo) {
+          const inputBar = document.querySelector('#comment-modal .status-input-bar');
+          let cancelBtn = inputBar.querySelector('.cancel-reply');
+          if (!cancelBtn) {
+            cancelBtn = document.createElement('button');
+            cancelBtn.className = 'send-btn material-icons cancel-reply';
+            cancelBtn.innerHTML = 'close';
+            cancelBtn.onclick = cancelReply;
+            inputBar.insertBefore(cancelBtn, document.getElementById('comment-input').parentElement);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading comments:', error);
+        showAlert('Failed to load comments. Please try again.');
       }
     }
     window.sendComment = async () => {
@@ -4902,46 +4966,52 @@
       if (replyingTo) {
         finalText = `Replying to @${replyingToUser}: ${text}`;
       }
-      const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
-      const newRef = push(commentsRef);
-      await set(newRef, {
-        userId: currentUser.uid,
-        text: finalText,
-        timestamp: Date.now(),
-        ...(replyingTo && { parentId: replyingTo })
-      });
-      const statusRef = ref(db, `statuses/${currentStatusId}`);
-      const statusSnap = await get(statusRef);
-      const statusOwner = statusSnap.val().userId;
-      if (statusOwner !== currentUser.uid) {
-        const notifType = replyingTo ? 'reply' : 'comment';
-        push(ref(db, `users/${statusOwner}/notifications`), {
-          type: notifType,
-          fromUserId: currentUser.uid,
-          statusId: currentStatusId,
-          commentId: newRef.key,
+      try {
+        const commentsRef = ref(db, `statuses/${currentStatusId}/comments`);
+        const newRef = push(commentsRef);
+        await set(newRef, {
+          userId: currentUser.uid,
+          text: finalText,
           timestamp: Date.now(),
-          read: false
+          ...(replyingTo && { parentId: replyingTo })
         });
-      }
-      input.value = '';
-      replyingTo = null;
-      replyingToUser = null;
-      input.placeholder = 'Add a comment...';
-      input.classList.remove('replying-placeholder');
-      input.removeAttribute('data-reply-user');
-      const cancelBtn = document.querySelector('.cancel-reply');
-      if (cancelBtn) cancelBtn.remove();
-      const newCommentsSnap = await get(commentsRef);
-      const newComments = Object.keys(newCommentsSnap.val() || {}).length;
-      const post = document.querySelector(`[data-status-id="${currentStatusId}"]`);
-      if (post) {
-        const commentSpan = post.querySelector('.status-actions span:nth-child(2)');
-        if (commentSpan) {
-          commentSpan.innerHTML = `<span class="material-icons">chat_bubble_outline</span> ${newComments}`;
+        const statusRef = ref(db, `statuses/${currentStatusId}`);
+        const statusSnap = await get(statusRef);
+        const statusOwner = statusSnap.val().userId;
+        if (statusOwner !== currentUser.uid) {
+          const notifType = replyingTo ? 'reply' : 'comment';
+          push(ref(db, `users/${statusOwner}/notifications`), {
+            type: notifType,
+            fromUserId: currentUser.uid,
+            statusId: currentStatusId,
+            commentId: newRef.key,
+            timestamp: Date.now(),
+            read: false
+          });
         }
+        input.value = '';
+        replyingTo = null;
+        replyingToUser = null;
+        input.placeholder = 'Add a comment...';
+        input.classList.remove('replying-placeholder');
+        input.removeAttribute('data-reply-user');
+        const cancelBtn = document.querySelector('.cancel-reply');
+        if (cancelBtn) cancelBtn.remove();
+        const newCommentsSnap = await get(commentsRef);
+        const newComments = Object.keys(newCommentsSnap.val() || {}).length;
+        const post = document.querySelector(`[data-status-id="${currentStatusId}"]`);
+        if (post) {
+          const commentSpan = post.querySelector('.status-actions span:nth-child(2)');
+          if (commentSpan) {
+            commentSpan.innerHTML = `<span class="material-icons">chat_bubble_outline</span> ${newComments}`;
+          }
+        }
+        await loadComments(currentStatusId);
+        showAlert('Comment posted!');
+      } catch (error) {
+        console.error('Error sending comment:', error);
+        showAlert('Failed to post comment. Please try again.');
       }
-      await loadComments(currentStatusId);
     };
     function setStatusTimer(duration) {
       if (statusTimer) clearTimeout(statusTimer);
@@ -5222,7 +5292,7 @@
         showAlert('Post uploaded!');
       } catch (error) {
         console.error('Upload failed:', error);
-        showAlert(error.message || 'Failed to upload post.');
+        showAlert(error.message || 'Failed to upload post. Please check your connection.');
       } finally {
         hideSpinner();
         progressDiv.classList.add('hidden');
@@ -5356,7 +5426,7 @@
         loadGroups();
       } catch (error) {
         console.error('Error creating group:', error);
-        showAlert('Failed to create group.');
+        showAlert('Failed to create group. Please try again.');
       } finally {
         hideSpinner();
       }
@@ -5399,7 +5469,7 @@
         loadSettings();
       } catch (error) {
         console.error('Failed to update business mode:', error);
-        showAlert('Failed to update business mode.');
+        showAlert('Failed to update business mode. Please try again.');
       }
     };
     window.toggleVerified = async (enabled) => {
@@ -5418,7 +5488,7 @@
         currentUserData.verified = enabled;
       } catch (error) {
         console.error('Failed to update verified status:', error);
-        showAlert('Failed to update verified status.');
+        showAlert('Failed to update verified status. Please try again.');
       }
     };
     function toggleSwipeDelete(enabled) {
@@ -5468,7 +5538,7 @@
         if (usernameEl) usernameEl.textContent = newName;
       } catch (error) {
         console.error('Error saving profile:', error);
-        showAlert('Failed to save profile.');
+        showAlert('Failed to save profile. Please try again.');
       } finally {
         hideSpinner();
       }
@@ -5501,7 +5571,7 @@
         currentUserData.tempPhotoURL = url;
       } catch (error) {
         console.error('Upload failed:', error);
-        showAlert('Failed to upload photo.');
+        showAlert('Failed to upload photo. Please try again.');
       } finally {
         hideSpinner();
       }
@@ -5537,6 +5607,7 @@
         }
       } catch (error) {
         console.error('Failed to load user preferences from Firebase:', error);
+        showAlert('Error loading preferences. Using local settings.');
         const isDark = localStorage.getItem('darkMode') === 'true';
         if (isDark) {
           document.body.classList.add('dark');
@@ -5593,6 +5664,7 @@
         }
       } catch (error) {
         console.error('Error updating permission states:', error);
+        showAlert('Error checking permissions.');
       }
     }
     window.requestNotificationPermission = async () => {
@@ -5781,6 +5853,9 @@
         `;
         settingsContent.innerHTML = settingsHtml;
         await updatePermissionStates();
+      } catch (error) {
+        console.error('Error loading settings:', error);
+        showAlert('Failed to load settings. Please refresh.');
       }
       hideSpinner();
     }
@@ -5794,6 +5869,7 @@
           prevUnread[otherUserId] = 0;
         } catch (error) {
           console.error('Failed to mark chat as read:', error);
+          showAlert('Error marking chat as read.');
         }
         window.location.href = `chat.html?chatId=${chatId}&userId=${otherUserId}`;
       } else {
@@ -5937,6 +6013,10 @@
           });
           document.querySelectorAll('#status-tab .sub-tab-content').forEach(c => c.classList.remove('active'));
           document.getElementById(`sub-${subTab}-content`).classList.add('active');
+          // Reset pagination for new subtab
+          const stateKey = subTab;
+          statusesPagination[stateKey].page = 0;
+          statusesPagination[stateKey].rendered = [];
           loadFilteredStatuses(subTab);
         });
       });
@@ -5979,7 +6059,7 @@
         }
       } catch (error) {
         console.error('Error reposting status:', error);
-        showAlert('Failed to repost post.');
+        showAlert('Failed to repost post. Please try again.');
       } finally {
         hideSpinner();
       }
@@ -6012,7 +6092,7 @@
         showAlert(currentlyFollowing ? 'Unfollowed' : 'Following now!');
       } catch (error) {
         console.error('Error toggling follow:', error);
-        showAlert('Failed to update follow status.');
+        showAlert('Failed to update follow status. Please try again.');
       }
     };
     function toggleAIFab(visible) {
