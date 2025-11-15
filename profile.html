@@ -2647,33 +2647,6 @@
     <div id="profile-container">
       <!-- Dynamic profile content loaded here -->
     </div>
-
-    <!-- Profile Tabs -->
-    <div id="profile-tabs" class="profile-tab-switcher" style="display: none;">
-      <button class="profile-tab-item active" data-tab="posts">Posts</button>
-      <button class="profile-tab-item" data-tab="replies">Replies</button>
-      <button class="profile-tab-item" data-tab="media">Media</button>
-      <button class="profile-tab-item" data-tab="likes">Likes</button>
-    </div>
-
-    <div id="posts-tab" class="posts-section active">
-      <div id="posts-list" class="status-list"></div>
-    </div>
-    <div id="replies-tab" class="posts-section">
-      <div id="replies-list" class="status-list">
-        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Replies coming soon.</div>
-      </div>
-    </div>
-    <div id="media-tab" class="posts-section">
-      <div id="media-list" class="status-list">
-        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Media coming soon.</div>
-      </div>
-    </div>
-    <div id="likes-tab" class="posts-section">
-      <div id="likes-list" class="status-list">
-        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Likes coming soon.</div>
-      </div>
-    </div>
   </main>
 
   <!-- Edit Profile Bottom Sheet -->
@@ -2740,7 +2713,7 @@
 
     let app, auth, db, analytics, currentUser, profileUser, profileUserId, currentUserFollows = {}, isOwnProfile = false;
     let currentEditType = '';
-    let postsListener = null;
+    let followersListener, followingListener;
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
     const showSpinner = () => {
@@ -2782,80 +2755,6 @@
       return highlighted;
     }
 
-    function renderPost(post, isOwn = false) {
-      const initial = post.userName ? post.userName[0].toUpperCase() : 'U';
-      const avatarHtml = post.photoURL ? `<img src="${post.photoURL}" alt="${post.userName}" class="status-post-avatar" loading="lazy">` : `<div class="status-post-avatar" style="background: var(--x-blue); color: #000000; font-size: 18px; display: flex; align-items: center; justify-content: center; font-weight: bold; border-radius: 50%; width: 40px; height: 40px;">${initial}</div>`;
-      const contentHtml = highlightContent(post.content || '');
-      const mediaHtml = post.mediaUrl ? `<div class="status-post-media-container"><img src="${post.mediaUrl}" alt="Post media" class="status-post-media" loading="lazy"></div>` : '';
-      const time = formatTimestamp(post.timestamp);
-      const nameHtml = post.userName || 'User';
-      if (post.verified) nameHtml += verifiedIcon;
-      return `
-        <div class="status-post">
-          <div class="status-post-header">
-            <div class="status-post-user-header">
-              ${avatarHtml}
-              <div class="status-post-user">
-                <div class="status-post-user-name">${nameHtml}</div>
-                <div class="status-post-business">${post.businessMode ? 'Business' : ''}</div>
-              </div>
-            </div>
-            <span class="status-post-time">${time}</span>
-          </div>
-          ${contentHtml ? `<div class="status-post-content">${contentHtml}</div>` : ''}
-          ${mediaHtml}
-          <div class="status-actions">
-            <span><span class="material-icons">chat_bubble_outline</span><span>0</span></span>
-            <span><span class="material-icons">repeat</span><span>0</span></span>
-            <span class="like-btn" onclick="toggleLike('${post.id}', this)"><span class="material-icons">favorite_border</span><span>0</span></span>
-            <span><span class="material-icons">share</span><span>0</span></span>
-          </div>
-        </div>
-      `;
-    }
-
-    async function loadPosts(tab = 'posts') {
-      showSpinner();
-      const statusesList = document.getElementById(`${tab}-list`);
-      statusesList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">Loading...</div>';
-      if (postsListener) postsListener();
-      try {
-        const statusesQuery = query(ref(db, 'statuses'), orderByChild('userId'), equalTo(profileUserId));
-        const snapshot = await get(statusesQuery);
-        let ownerStatuses = [];
-        if (snapshot.exists()) {
-          ownerStatuses = Object.entries(snapshot.val()).map(([id, s]) => ({ id, ...s }));
-          ownerStatuses.sort((a, b) => b.timestamp - a.timestamp);
-          ownerStatuses = ownerStatuses.slice(0, 20);
-        }
-        if (ownerStatuses.length === 0) {
-          statusesList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">No statuses yet.</div>';
-        } else {
-          // Assign user data to each status
-          ownerStatuses.forEach(status => {
-            status.userName = profileUser.displayName;
-            status.photoURL = profileUser.photoURL;
-            status.verified = profileUser.verified;
-            status.businessMode = profileUser.businessMode;
-          });
-          statusesList.innerHTML = ownerStatuses.map(status => renderPost(status)).join('');
-        }
-        // Real-time listener for updates
-        postsListener = onValue(statusesQuery, (snap) => {
-          // Re-run the filter and render on change (optimized: only if tab active)
-          if (document.getElementById(`${tab}-tab`).classList.contains('active')) {
-            // Quick re-render logic here if needed, but for simplicity, full reload on change
-            loadPosts(tab); // Recursive but throttled by Firebase
-          }
-        });
-      } catch (error) {
-        console.error('Error loading statuses:', error);
-        statusesList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">Failed to load statuses.</div>';
-      } finally {
-        hideSpinner();
-      }
-    }
-
     async function loadProfileHeader() {
       const containerEl = document.getElementById('profile-container');
       if (!profileUser) return;
@@ -2889,11 +2788,11 @@
             <div class="profile-bio">${bio}</div>
             <div class="profile-stats">
               <div class="stat-item" onclick="showFollowers()">
-                <div class="stat-number">${followersCount}</div>
+                <div class="stat-number" id="followers-count">${followersCount}</div>
                 <div class="stat-label">Followers</div>
               </div>
               <div class="stat-item" onclick="showFollowing()">
-                <div class="stat-number">${followingCount}</div>
+                <div class="stat-number" id="following-count">${followingCount}</div>
                 <div class="stat-label">Following</div>
               </div>
             </div>
@@ -2904,8 +2803,23 @@
           </div>
         </div>
       `;
-      document.getElementById('profile-tabs').style.display = 'flex';
-      loadPosts('posts');
+      // Setup real-time listeners after render (only once)
+      if (!followersListener) {
+        const followersCountRef = ref(db, `users/${profileUserId}/followersCount`);
+        followersListener = onValue(followersCountRef, (snap) => {
+          const count = snap.val() || 0;
+          const el = document.getElementById('followers-count');
+          if (el) el.textContent = count;
+        });
+      }
+      if (!followingListener) {
+        const followingRef = ref(db, `users/${profileUserId}/following`);
+        followingListener = onValue(followingRef, (snap) => {
+          const count = Object.keys(snap.val() || {}).length;
+          const el = document.getElementById('following-count');
+          if (el) el.textContent = count;
+        });
+      }
     }
 
     window.showFollowers = () => {
@@ -2915,23 +2829,6 @@
     window.showFollowing = () => {
       showAlert('Following list coming soon!');
     };
-
-    // Tab switching
-    document.addEventListener('click', (e) => {
-      if (e.target.classList.contains('profile-tab-item')) {
-        document.querySelectorAll('.profile-tab-item').forEach(tab => tab.classList.remove('active'));
-        e.target.classList.add('active');
-        document.querySelectorAll('.posts-section').forEach(sec => sec.classList.remove('active'));
-        document.getElementById(e.target.dataset.tab + '-tab').classList.add('active');
-        const tabName = e.target.dataset.tab;
-        if (tabName === 'posts') {
-          loadPosts('posts');
-        } else {
-          // Placeholder for other tabs
-          document.getElementById(`${tabName}-list`).innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">Coming soon.</div>';
-        }
-      }
-    });
 
     window.toggleFollow = async (otherUid, btn) => {
       if (!currentUser || otherUid === currentUser.uid) return;
@@ -2944,20 +2841,17 @@
         let currentFollowers = currentFollowersSnap.val() || 0;
         if (currentlyFollowing) {
           await set(followRef, null);
-          delete currentUserFollows[otherUid];
           currentFollowers = Math.max(0, currentFollowers - 1);
           await set(followersCountRef, currentFollowers);
           btn.textContent = 'Follow';
           showAlert('Unfollowed.');
         } else {
           await set(followRef, Date.now());
-          currentUserFollows[otherUid] = Date.now();
           currentFollowers += 1;
           await set(followersCountRef, currentFollowers);
           btn.textContent = 'Following';
           showAlert('Following now!');
         }
-        loadProfileHeader();
       } catch (error) {
         console.error('Error toggling follow:', error);
         showAlert('Failed to update follow status.');
@@ -2991,7 +2885,6 @@
       showAlert(isDark ? 'Dark mode enabled' : 'Light mode enabled');
     }
 
-    // Edit Profile Functions (unchanged)
     window.openEditProfileSheet = () => {
       if (!isOwnProfile) return;
       document.getElementById('edit-profile-sheet').classList.add('active');
@@ -3111,7 +3004,6 @@
     };
 
     window.toggleLike = async (postId, btn) => {
-      // Placeholder for like functionality
       showAlert('Like functionality coming soon!');
     };
 
@@ -3144,7 +3036,11 @@
           const followsRef = ref(db, `users/${user.uid}/following`);
           onValue(followsRef, (snap) => {
             currentUserFollows = snap.val() || {};
-            loadProfileHeader();
+            const btn = document.getElementById('follow-btn');
+            if (btn && !isOwnProfile) {
+              const isFollowing = currentUserFollows[profileUserId];
+              btn.textContent = isFollowing ? 'Following' : 'Follow';
+            }
           });
           await loadProfile();
           const themeSnapshot = await get(ref(db, `users/${user.uid}`));
