@@ -774,21 +774,25 @@
       background: var(--card-bg);
       transform: rotate(90deg);
     }
-    #progress-bar-container {
+    #loading-progress-bar {
       position: fixed;
-      top: 84px;
+      top: 64px;
       left: 0;
       right: 0;
-      height: 4px;
-      background: rgba(255, 255, 255, 0.1);
-      display: flex;
-      z-index: 10;
-      cursor: pointer;
+      height: 3px;
+      background: rgba(29, 155, 240, 0.2);
+      z-index: 99;
       transition: height 0.3s ease;
     }
-    #progress-bar-container:hover {
-      height: 5px;
-      box-shadow: var(--glow);
+    #loading-progress-bar.hidden {
+      height: 0;
+    }
+    #progress-fill {
+      height: 100%;
+      background: var(--x-blue);
+      width: 0%;
+      transition: width 0.3s ease;
+      border-radius: 0 2px 2px 0;
     }
     .progress-item {
       flex: 1;
@@ -2255,22 +2259,6 @@
     .follow-btn:hover {
       background: #0c84e4;
     }
-    .status-ai-btn {
-      position: absolute;
-      top: 12px;
-      right: 12px;
-      background: rgba(29, 155, 240, 0.8);
-      color: #ffffff;
-      border: none;
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      z-index: 10;
-    }
-    .status-ai-btn:hover {
-      background: var(--x-blue);
-    }
 
     /* Desktop Layout Adjustments */
     @media (min-width: 1024px) {
@@ -2458,6 +2446,9 @@ body.light .reactions-list {
       </div>
     </div>
   </header>
+  <div id="loading-progress-bar" class="hidden">
+    <div id="progress-fill"></div>
+  </div>
   <main class="main-content">
     <div class="tab-content" id="chats-tab" role="tabpanel">
       <div class="sub-tab-switcher">
@@ -2722,7 +2713,7 @@ body.light .reactions-list {
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, set, push, update, off, onChildChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getAnalytics, logEvent, setUserId } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-analytics.js';
     import { query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     const firebaseConfig = {
@@ -2739,7 +2730,6 @@ body.light .reactions-list {
       cloudName: 'dqkujefxj',
       uploadPreset: 'banter_box'
     };
-    const GEMINI_API_KEY = 'AIzaSyBf_ez9GZeqgEsk6HYMamjqSOegjBRyBTg';
     let app, auth, db, analytics, currentUser;
     let hasChats = false;
     let totalUnread = 0;
@@ -2779,11 +2769,11 @@ body.light .reactions-list {
     let currentEditStatusId = null;
     let currentEditMediaUrl = null;
     // Pagination for statuses
-    let statusPage = 0;
-    let hasMoreStatuses = true;
-    let loadingStatuses = false;
+    let statusPage = { all: 0, images: 0, text: 0 };
+    let hasMoreStatuses = { all: true, images: true, text: true };
+    let loadingStatuses = { all: false, images: false, text: false };
     const statusesPerPage = 10;
-    let allLoadedStatuses = [];
+    let allLoadedStatuses = { all: [], images: [], text: [] };
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
     let showBottomNav = true;
     let lastScrollY = 0;
@@ -2807,13 +2797,24 @@ body.light .reactions-list {
       lastScrollY = currentScrollY;
     }
     window.addEventListener('scroll', onScroll);
-    const showSpinner = () => {
-      const spinnerOverlay = document.getElementById('spinner-overlay');
-      if (spinnerOverlay) spinnerOverlay.classList.add('active');
+    const showLoadingBar = () => {
+      const bar = document.getElementById('loading-progress-bar');
+      const fill = document.getElementById('progress-fill');
+      if (bar && fill) {
+        bar.classList.remove('hidden');
+        fill.style.width = '0%';
+      }
     };
-    const hideSpinner = () => {
-      const spinnerOverlay = document.getElementById('spinner-overlay');
-      if (spinnerOverlay) spinnerOverlay.classList.remove('active');
+    const updateLoadingBar = (percent) => {
+      const fill = document.getElementById('progress-fill');
+      if (fill) fill.style.width = `${percent}%`;
+    };
+    const hideLoadingBar = () => {
+      const bar = document.getElementById('loading-progress-bar');
+      if (bar) {
+        updateLoadingBar(100);
+        setTimeout(() => bar.classList.add('hidden'), 300);
+      }
     };
     const showAlert = (message) => {
       const alert = document.getElementById('alert-message');
@@ -2868,7 +2869,7 @@ body.light .reactions-list {
         document.getElementById('search-results').innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Enter a search term</p>';
         return;
       }
-      showSpinner();
+      showLoadingBar();
       try {
         // Simple search: filter current statuses or fetch from DB
         const results = window.currentAllStatuses?.filter(s =>
@@ -2889,7 +2890,7 @@ body.light .reactions-list {
         console.error('Search failed:', error);
         document.getElementById('search-results').innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Search failed</p>';
       } finally {
-        hideSpinner();
+        hideLoadingBar();
       }
     };
     // Advanced search: Navigate to post tab and scroll to post
@@ -2913,9 +2914,15 @@ body.light .reactions-list {
     function extractHashtags(content) {
       return (content || '').match(/#(\w+)/g) || [];
     }
-    function filterStatuses(statuses) {
-      if (!statusSearchTerm) return statuses;
-      return statuses.filter(s => {
+    function filterStatuses(statuses, subTab) {
+      let filtered = statuses;
+      if (subTab === 'images') {
+        filtered = filtered.filter(s => s.mediaUrl && s.type === 'image');
+      } else if (subTab === 'text') {
+        filtered = filtered.filter(s => !s.mediaUrl);
+      }
+      if (!statusSearchTerm) return filtered;
+      return filtered.filter(s => {
         const contentLower = s.content?.toLowerCase() || '';
         const displayNameLower = s.user?.displayName?.toLowerCase() || '';
         const hashtags = extractHashtags(s.content);
@@ -3163,7 +3170,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
   const container = document.getElementById(containerId);
   const loadKey = mode === 'carousel' ? 'carousel' : 'list';
   if (statusesLoaded[loadKey] && silent) return;
-  if (!silent) showSpinner();
+  if (!silent) showLoadingBar();
   let loadedAny = false;
   try {
     if (mode === 'carousel') {
@@ -3252,19 +3259,20 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
     } else {
       // list mode with pagination
+      const subTabKey = filter || 'all';
       if (!silent) {
-        statusPage = 0;
-        allLoadedStatuses = [];
+        statusPage[subTabKey] = 0;
+        allLoadedStatuses[subTabKey] = [];
         container.innerHTML = '';
-        hasMoreStatuses = true;
+        hasMoreStatuses[subTabKey] = true;
       }
-      if (loadingStatuses || !hasMoreStatuses) {
-        if (!silent) hideSpinner();
+      if (loadingStatuses[subTabKey] || !hasMoreStatuses[subTabKey]) {
+        if (!silent) hideLoadingBar();
         return;
       }
-      loadingStatuses = true;
-      if (!silent) showSpinner();
-      if (statusPage > 0) {
+      loadingStatuses[subTabKey] = true;
+      if (!silent) showLoadingBar();
+      if (statusPage[subTabKey] > 0) {
         const loadingEl = document.createElement('div');
         loadingEl.id = 'loading-more-statuses';
         loadingEl.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--text-secondary);">Loading more posts...</div>';
@@ -3293,12 +3301,12 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
             return true;
           });
         }
-        const start = statusPage * statusesPerPage;
+        const start = statusPage[subTabKey] * statusesPerPage;
         newStatuses = mediaFiltered.slice(start, start + statusesPerPage);
-        hasMoreStatuses = start + statusesPerPage < mediaFiltered.length;
+        hasMoreStatuses[subTabKey] = start + statusesPerPage < mediaFiltered.length;
       } else {
         // For 'all', paginate with limitToLast
-        const totalLimit = statusesPerPage * (statusPage + 1);
+        const totalLimit = statusesPerPage * (statusPage[subTabKey] + 1);
         const queryRef = query(ref(db, 'statuses'), orderByChild('timestamp'), limitToLast(totalLimit));
         snapshot = await get(queryRef);
         let rawStatuses = [];
@@ -3306,9 +3314,9 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
           rawStatuses = Object.entries(snapshot.val()).map(([id, s]) => ({ statusId: id, ...s }));
           rawStatuses.sort((a, b) => b.timestamp - a.timestamp);
         }
-        const existingIds = new Set(allLoadedStatuses.map(s => s.statusId));
+        const existingIds = new Set(allLoadedStatuses[subTabKey].map(s => s.statusId));
         newStatuses = rawStatuses.filter(s => !existingIds.has(s.statusId));
-        hasMoreStatuses = rawStatuses.length >= totalLimit;
+        hasMoreStatuses[subTabKey] = rawStatuses.length >= totalLimit;
       }
       // Fetch users for new statuses
       const userIdsForNew = [...new Set(newStatuses.map(s => s.userId))];
@@ -3322,9 +3330,9 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         });
       }
       // Apply search filter
-      let filteredNew = filterStatuses(newStatuses);
-      allLoadedStatuses = [...allLoadedStatuses, ...filteredNew];
-      window.currentAllStatuses = allLoadedStatuses;
+      let filteredNew = filterStatuses(newStatuses, subTabKey);
+      allLoadedStatuses[subTabKey] = [...allLoadedStatuses[subTabKey], ...filteredNew];
+      window.currentAllStatuses = allLoadedStatuses[subTabKey];
       // Render new statuses
       for (let i = 0; i < filteredNew.length; i++) {
         const status = filteredNew[i];
@@ -3334,13 +3342,12 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
           postItem.className = 'status-post';
           postItem.setAttribute('data-status-id', status.statusId);
           let innerHTML = '';
-          let aiTargetId = status.statusId;
           let deleteHtml = '';
           if (status.userId === currentUser.uid) {
             deleteHtml = `<span onclick="deleteStatus('${status.statusId}')"><span class="material-icons">delete</span></span>`;
           }
           if (status.type === 'repost') {
-            const original = allLoadedStatuses.find(s => s.statusId === status.originalId);
+            const original = allLoadedStatuses[subTabKey].find(s => s.statusId === status.originalId);
             if (original && original.user) {
               const initial = status.user?.displayName ? status.user.displayName[0].toUpperCase() : 'U';
               let avatarHtml;
@@ -3468,9 +3475,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
               } catch (e) {
                 console.warn(`Failed to load counts for repost ${status.statusId}:`, e);
               }
-              aiTargetId = original.statusId;
               innerHTML = `
-                <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
                 ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
                 ${reposterHeader}
                 ${embedded}
@@ -3485,7 +3490,6 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
               `;
             } else {
               innerHTML = `
-                <button class="status-ai-btn" onclick="analyzeStatus('${status.statusId}')">AI</button>
                 ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
                 <div class="status-post-header">
                   <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
@@ -3586,7 +3590,6 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
               contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
             }
             innerHTML = `
-              <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
               ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
               <div class="status-post-header">
                 <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
@@ -3729,14 +3732,14 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       if (loadingEl) loadingEl.remove();
       // Update subtitle
       const subtitle = document.getElementById('status-subtitle');
-      if (currentStatusFilter && allLoadedStatuses.length > 0) {
-        const user = allLoadedStatuses[0].user;
+      if (currentStatusFilter && allLoadedStatuses[subTabKey].length > 0) {
+        const user = allLoadedStatuses[subTabKey][0].user;
         subtitle.textContent = `@${user?.displayName || 'Unknown'}'s posts`;
         subtitle.style.display = 'block';
       } else {
         subtitle.style.display = 'none';
       }
-      if (allLoadedStatuses.length === 0) {
+      if (allLoadedStatuses[subTabKey].length === 0) {
         let msg = 'No posts yet.';
         if (filter === 'images') msg = 'No image posts yet.';
         else if (filter === 'text') msg = 'No text posts yet.';
@@ -3751,8 +3754,8 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       showAlert('Failed to load posts. Please try refreshing.');
     }
   } finally {
-    loadingStatuses = false;
-    if (!silent) hideSpinner();
+    loadingStatuses[subTabKey] = false;
+    if (!silent) hideLoadingBar();
   }
 }
                     
@@ -3775,33 +3778,28 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     async function loadSuggestedUsers() {
       // Removed: No longer needed as section is removed
     }
-    async function loadFilteredStatuses(filter, silent = false) {
-      currentStatusSubTab = filter;
-      statusPage = 0;
-      hasMoreStatuses = true;
-      allLoadedStatuses = [];
-      const containerId = filter === 'all' ? 'statuses-list' : filter === 'images' ? 'images-list' : 'text-list';
+    async function loadFilteredStatuses(subTab, silent = false) {
+      currentStatusSubTab = subTab;
+      const containerId = subTab === 'all' ? 'statuses-list' : subTab === 'images' ? 'images-list' : 'text-list';
       const container = document.getElementById(containerId);
-      container.innerHTML = '';
       // Remove previous scroll listener if exists
       const oldListener = container._scrollListener;
       if (oldListener) {
         container.removeEventListener('scroll', oldListener);
       }
-      await loadStatuses(containerId, 'list', silent, filter);
-      // Add scroll listener for infinite scroll (only for 'all')
-      if (filter === 'all') {
-        const scrollHandler = throttle(() => {
-          if (loadingStatuses || !hasMoreStatuses) return;
-          const { scrollTop, scrollHeight, clientHeight } = container;
-          if (scrollTop + clientHeight >= scrollHeight - 200) {
-            statusPage++;
-            loadStatuses(containerId, 'list', true, null);
-          }
-        }, 300);
-        container.addEventListener('scroll', scrollHandler);
-        container._scrollListener = scrollHandler;
-      }
+      await loadStatuses(containerId, 'list', silent, subTab);
+      // Add scroll listener for infinite scroll
+      const scrollHandler = throttle(() => {
+        const subTabKey = subTab;
+        if (loadingStatuses[subTabKey] || !hasMoreStatuses[subTabKey]) return;
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        if (scrollTop + clientHeight >= scrollHeight - 200) {
+          statusPage[subTabKey]++;
+          loadStatuses(containerId, 'list', true, subTab);
+        }
+      }, 300);
+      container.addEventListener('scroll', scrollHandler);
+      container._scrollListener = scrollHandler;
     }
     window.loadTopStatuses = async (silent = false) => {
       await loadStatuses('statuses-carousel', 'carousel', silent);
@@ -4051,6 +4049,52 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }, (error) => {
         console.error('Error listening to statuses:', error);
       });
+      // Real-time like updates across tabs
+      const likesRef = ref(db, 'statuses');
+      onChildChanged(likesRef, async (snapshot) => {
+        const statusId = snapshot.key;
+        // Update like count and reactions in all loaded posts across tabs
+        ['all', 'images', 'text'].forEach(tab => {
+          allLoadedStatuses[tab].forEach(status => {
+            if (status.statusId === statusId) {
+              // Re-render the post or update specific elements
+              const post = document.querySelector(`[data-status-id="${statusId}"]`);
+              if (post) {
+                // Update likes count and icon
+                const likeSpan = post.querySelector('.status-actions span:first-child');
+                if (likeSpan) {
+                  const likesSnap = await get(ref(db, `statuses/${statusId}/likes`));
+                  const likes = Object.keys(likesSnap.val() || {}).length;
+                  const likeRef = ref(db, `statuses/${statusId}/likes/${currentUser.uid}`);
+                  const likeSnap = await get(likeRef);
+                  const isLiked = likeSnap.exists();
+                  const likeIcon = isLiked ? 'favorite' : 'favorite_border';
+                  likeSpan.innerHTML = `<span class="material-icons">${likeIcon}</span> ${likes}`;
+                  // Update reactions list if present
+                  const reactionsList = post.querySelector('.reactions-list');
+                  if (reactionsList && likes > 0) {
+                    // Fetch top likers and update
+                    const likerIds = Object.keys(likesSnap.val() || {});
+                    let likedUsers = [];
+                    if (likerIds.length > 0) {
+                      const userPromises = likerIds.slice(0, 5).map(id => get(ref(db, `users/${id}`)).then(s => s.val()));
+                      likedUsers = (await Promise.all(userPromises)).filter(u => u);
+                    }
+                    if (likedUsers.length > 0) {
+                      const userNames = likedUsers.map(u => u.displayName || 'User').join(', ');
+                      const othersText = likerIds.length > 5 ? ` and ${likerIds.length - 5} others` : '';
+                      reactionsList.innerHTML = `
+                        <span style="font-weight: 600; color: var(--text-secondary);">Liked by </span>
+                        <span style="color: var(--x-blue); font-weight: 600;">${userNames}</span>${othersText}
+                      `;
+                    }
+                  }
+                }
+              }
+            }
+          });
+        });
+      });
     }
     function setupFollowsListener() {
       if (followsListener) return;
@@ -4078,7 +4122,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     }
     async function removeChat(chatId, otherUid) {
       try {
-        showSpinner();
+        showLoadingBar();
         const currentChatsRef = ref(db, `users/${currentUser.uid}/chats/${otherUid}`);
         await set(currentChatsRef, null);
         const targetChatsRef = ref(db, `users/${otherUid}/chats/${currentUser.uid}`);
@@ -4090,7 +4134,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Error removing chat:', error);
         showAlert('Failed to remove friend.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
       }
     }
     function showConfirm(message, callback) {
@@ -4109,7 +4153,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     window.closeConfirm = closeConfirm;
     // Modified: Load only users from chats (followed users) for bottom sheet
     async function loadAllUsers() {
-      showSpinner();
+      showLoadingBar();
       const usersList = document.getElementById('users-list');
       usersList.innerHTML = '';
       if (currentUser) {
@@ -4156,7 +4200,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
           }
         }
       }
-      hideSpinner();
+      hideLoadingBar();
     }
     function openAddFriendsSheet() {
       const sheet = document.createElement('div');
@@ -4224,7 +4268,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     };
     // Full complete code for loadNotifications function
     async function loadNotifications(silent = false, loadMore = false) {
-      if (!silent) showSpinner();
+      if (!silent) showLoadingBar();
       const section = document.getElementById('notifications-section');
       if (!loadMore) {
         section.innerHTML = `
@@ -4331,7 +4375,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
           item.onclick = null; // Desktop doesn't navigate
         });
       }
-      if (!silent) hideSpinner();
+      if (!silent) hideLoadingBar();
     }
     function setupNotificationsScrollListener() {
       const notificationsSection = document.getElementById('notifications-section');
@@ -4353,7 +4397,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       await loadFilteredStatuses(currentStatusSubTab);
     }
     function showAllStatuses() {
-      const allStatuses = window.currentAllStatuses || allLoadedStatuses;
+      const allStatuses = window.currentAllStatuses || allLoadedStatuses[currentStatusSubTab];
       currentIndex = currentIndex % allStatuses.length;
       const modal = document.getElementById('status-modal');
       const prevBtn = document.getElementById('prev-status-btn');
@@ -4426,13 +4470,13 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
     }
     function goPrev() {
-      const allStatuses = window.currentAllStatuses || allLoadedStatuses;
+      const allStatuses = window.currentAllStatuses || allLoadedStatuses[currentStatusSubTab];
       const length = allStatuses.length;
       currentIndex = (currentIndex - 1 + length) % length;
       showStatus(currentIndex);
     }
     function goNext() {
-      const allStatuses = window.currentAllStatuses || allLoadedStatuses;
+      const allStatuses = window.currentAllStatuses || allLoadedStatuses[currentStatusSubTab];
       const length = allStatuses.length;
       currentIndex = (currentIndex + 1) % length;
       showStatus(currentIndex);
@@ -4486,13 +4530,34 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         const newIsLiked = !liked;
         const newIcon = newIsLiked ? 'favorite' : 'favorite_border';
         updateLikeButton(statusId);
-        const post = document.querySelector(`[data-status-id="${statusId}"]`);
-        if (post) {
-          const likeSpan = post.querySelector('.status-actions span:first-child');
-          if (likeSpan) {
-            likeSpan.innerHTML = `<span class="material-icons">${newIcon}</span> ${newLikes}`;
+        // Update across all tabs
+        ['all', 'images', 'text'].forEach(tab => {
+          const post = document.querySelector(`[data-status-id="${statusId}"]`);
+          if (post) {
+            const likeSpan = post.querySelector('.status-actions span:first-child');
+            if (likeSpan) {
+              likeSpan.innerHTML = `<span class="material-icons">${newIcon}</span> ${newLikes}`;
+            }
+            // Update reactions list
+            const reactionsList = post.querySelector('.reactions-list');
+            if (reactionsList && newLikes > 0) {
+              const likerIds = Object.keys(newLikesSnap.val() || {});
+              let likedUsers = [];
+              if (likerIds.length > 0) {
+                const userPromises = likerIds.slice(0, 5).map(id => get(ref(db, `users/${id}`)).then(s => s.val()));
+                likedUsers = (await Promise.all(userPromises)).filter(u => u);
+              }
+              if (likedUsers.length > 0) {
+                const userNames = likedUsers.map(u => u.displayName || 'User').join(', ');
+                const othersText = likerIds.length > 5 ? ` and ${likerIds.length - 5} others` : '';
+                reactionsList.innerHTML = `
+                  <span style="font-weight: 600; color: var(--text-secondary);">Liked by </span>
+                  <span style="color: var(--x-blue); font-weight: 600;">${userNames}</span>${othersText}
+                `;
+              }
+            }
           }
-        }
+        });
         showAlert(liked ? 'Like removed' : 'Post liked!');
       } catch (error) {
         console.error('Error toggling like:', error);
@@ -4614,7 +4679,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     };
     window.saveEditStatus = async () => {
       if (!currentEditStatusId) return;
-      showSpinner();
+      showLoadingBar();
       const captionInput = document.getElementById('edit-caption-input');
       const mediaInput = document.getElementById('edit-media-input');
       const progressDiv = document.getElementById('edit-upload-progress');
@@ -4687,7 +4752,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Edit failed:', error);
         showAlert(error.message || 'Failed to update post.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
         progressDiv.classList.add('hidden');
         progressBar.style.width = '0%';
         saveBtn.disabled = false;
@@ -4887,7 +4952,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }, duration);
     }
     async function showStatus(index) {
-      const allStatuses = window.currentAllStatuses || allLoadedStatuses;
+      const allStatuses = window.currentAllStatuses || allLoadedStatuses[currentStatusSubTab];
       if (index < 0 || index >= allStatuses.length) return;
       if (statusTimer) clearTimeout(statusTimer);
       currentIndex = index;
@@ -4985,7 +5050,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
     }
     function updateProgress() {
-      const allStatuses = window.currentAllStatuses || allLoadedStatuses;
+      const allStatuses = window.currentAllStatuses || allLoadedStatuses[currentStatusSubTab];
       const num = allStatuses.length;
       let progressHtml = '';
       for (let i = 0; i < num; i++) {
@@ -5060,7 +5125,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
     };
     window.uploadStatus = async () => {
-      showSpinner();
+      showLoadingBar();
       const progressDiv = document.getElementById('upload-progress');
       const progressBar = document.getElementById('progress-bar');
       let mediaUrls = [];
@@ -5161,7 +5226,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Upload failed:', error);
         showAlert(error.message || 'Failed to upload post.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
         progressDiv.classList.add('hidden');
         progressBar.style.width = '0%';
       }
@@ -5179,7 +5244,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       });
     }
     async function loadGroups() {
-      showSpinner();
+      showLoadingBar();
       const groupsList = document.getElementById('groups-list');
       groupsList.innerHTML = '';
       if (currentUser) {
@@ -5213,10 +5278,10 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
           }
         }
       }
-      hideSpinner();
+      hideLoadingBar();
     }
     async function loadUsersForGroup() {
-      showSpinner();
+      showLoadingBar();
       const usersList = document.getElementById('group-users-list');
       usersList.innerHTML = '';
       const usersRef = ref(db, 'users');
@@ -5249,7 +5314,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
           usersList.appendChild(div);
         });
       }
-      hideSpinner();
+      hideLoadingBar();
     }
     window.openCreateGroupModal = async () => {
       document.getElementById('create-group-modal').classList.add('active');
@@ -5273,7 +5338,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
       const memberIds = Array.from(selectedCheckboxes).map(cb => cb.value);
       try {
-        showSpinner();
+        showLoadingBar();
         const groupsRef = ref(db, 'groups');
         const newGroupRef = push(groupsRef);
         const groupId = newGroupRef.key;
@@ -5295,7 +5360,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Error creating group:', error);
         showAlert('Failed to create group.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
       }
     };
     async function toggleDarkMode() {
@@ -5375,7 +5440,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
       const oldName = currentUserData.displayName;
       try {
-        showSpinner();
+        showLoadingBar();
         const updates = {
           displayName: newName,
           bio: newBio
@@ -5407,14 +5472,14 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Error saving profile:', error);
         showAlert('Failed to save profile.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
       }
     }
     window.handleProfilePicUpload = async (event) => {
       const file = event.target.files[0];
       if (!file) return;
       try {
-        showSpinner();
+        showLoadingBar();
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
         const formData = new FormData();
@@ -5440,7 +5505,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Upload failed:', error);
         showAlert('Failed to upload photo.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
       }
     };
     async function loadUserPreferences() {
@@ -5571,14 +5636,14 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       }
     };
     async function loadSettings() {
-      showSpinner();
+      showLoadingBar();
       const settingsContent = document.getElementById('settings-content');
       if (currentUser) {
         const userRef = ref(db, `users/${currentUser.uid}`);
         const snapshot = await get(userRef);
         if (!snapshot.exists()) {
           showAlert('User data not found. Please log in again.');
-          hideSpinner();
+          hideLoadingBar();
           return;
         }
         currentUserData = snapshot.val();
@@ -5732,7 +5797,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         settingsContent.innerHTML = settingsHtml;
         await updatePermissionStates();
       }
-      hideSpinner();
+      hideLoadingBar();
     }
     async function openChat(chatId, otherUserId) {
       if (otherUserId) {
@@ -5904,7 +5969,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       if (!currentRepostStatusId) return;
       const caption = document.getElementById('repost-caption').value.trim();
       try {
-        showSpinner();
+        showLoadingBar();
         const statusRef = ref(db, `statuses/${currentRepostStatusId}`);
         const statusSnap = await get(statusRef);
         const originalStatus = statusSnap.val();
@@ -5932,11 +5997,8 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         console.error('Error reposting status:', error);
         showAlert('Failed to repost post.');
       } finally {
-        hideSpinner();
+        hideLoadingBar();
       }
-    };
-    window.analyzeStatus = (statusId) => {
-      window.location.href = `/ai.html?statusId=${statusId}`;
     };
     window.redirectToAI = () => {
       window.location.href = '/ai.html';
@@ -6075,7 +6137,7 @@ if (headerProfilePic) {
         });
       });
       const fab = document.getElementById('fab-btn');
-      fab.onclick = openAddFriendsSheet;
+      fab.onclick = openUploadSheet;
       document.getElementById('comment-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendComment();
       });
