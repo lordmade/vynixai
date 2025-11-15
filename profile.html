@@ -175,6 +175,10 @@
       display: inline-flex;
       align-items: center;
     }
+    .verified-icon {
+      font-size: 20px;
+      color: #1d9bf0;
+    }
     .main-content {
       padding: 84px 20px 20px;
       min-height: calc(100vh - 84px);
@@ -2595,9 +2599,37 @@
         padding: 84px 20px 20px;
       }
     }
+    #horizontal-spinner {
+      position: fixed;
+      top: 84px;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: transparent;
+      z-index: 101;
+      display: none;
+      overflow: hidden;
+    }
+    #horizontal-spinner.active {
+      display: block;
+    }
+    #spinner-segment {
+      display: block;
+      width: 200%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, var(--x-blue), transparent);
+      animation: shimmer 1.5s linear infinite;
+    }
+    @keyframes shimmer {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
   </style>
 </head>
 <body class="dark">
+  <div id="horizontal-spinner">
+    <div id="spinner-segment"></div>
+  </div>
   <header class="header">
     <button class="back-btn material-icons" onclick="window.history.back()">arrow_back</button>
     <div class="header-center">
@@ -2612,6 +2644,9 @@
     </div>
   </header>
   <main class="main-content">
+    <div id="horizontal-spinner">
+      <div id="spinner-segment"></div>
+    </div>
     <div id="profile-container">
       <!-- Dynamic profile content loaded here -->
     </div>
@@ -2624,7 +2659,24 @@
       <button class="profile-tab-item" data-tab="likes">Likes</button>
     </div>
 
-    
+    <div id="posts-tab" class="posts-section active">
+      <div id="posts-list" class="status-list"></div>
+    </div>
+    <div id="replies-tab" class="posts-section">
+      <div id="replies-list" class="status-list">
+        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Replies coming soon.</div>
+      </div>
+    </div>
+    <div id="media-tab" class="posts-section">
+      <div id="media-list" class="status-list">
+        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Media coming soon.</div>
+      </div>
+    </div>
+    <div id="likes-tab" class="posts-section">
+      <div id="likes-list" class="status-list">
+        <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Likes coming soon.</div>
+      </div>
+    </div>
   </main>
 
   <!-- Edit Profile Bottom Sheet -->
@@ -2692,10 +2744,18 @@
     let app, auth, db, analytics, currentUser, profileUser, profileUserId, currentUserFollows = {}, isOwnProfile = false;
     let currentEditType = '';
     let postsListener = null;
-    const verifiedIcon = `<span class="material-icons" style="font-size: 20px; color: #1d9bf0;">verified</span>`;
+    const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
-    const showSpinner = () => document.getElementById('spinner-overlay').classList.add('active');
-    const hideSpinner = () => document.getElementById('spinner-overlay').classList.remove('active');
+    const showSpinner = () => {
+      const spinner = document.getElementById('horizontal-spinner');
+      if (spinner) spinner.classList.add('active');
+    };
+
+    const hideSpinner = () => {
+      const spinner = document.getElementById('horizontal-spinner');
+      if (spinner) spinner.classList.remove('active');
+    };
+
     const showAlert = (message) => {
       const alert = document.getElementById('alert-message');
       alert.textContent = message;
@@ -2758,25 +2818,50 @@
     }
 
     async function loadPosts(tab = 'posts') {
+      showSpinner();
+      const statusesList = document.getElementById(`${tab}-list`);
+      statusesList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">Loading...</div>';
       if (postsListener) postsListener();
-      const postsList = document.getElementById(`${tab}-list`);
-      postsList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">No posts yet.</div>';
-      const postsRef = ref(db, 'posts');
-      const q = query(postsRef, orderByChild('userId'), equalTo(profileUserId), limitToLast(20));
-      postsListener = onValue(q, (snapshot) => {
-        const posts = [];
-        snapshot.forEach((child) => {
-          posts.unshift({ id: child.key, ...child.val() });
-        });
-        if (posts.length === 0) {
-          postsList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">No posts yet.</div>';
-        } else {
-          postsList.innerHTML = posts.map(post => renderPost(post)).join('');
+      try {
+        const statusesRef = ref(db, 'statuses');
+        const snapshot = await get(statusesRef);
+        let ownerStatuses = [];
+        if (snapshot.exists()) {
+          Object.entries(snapshot.val()).forEach(([id, s]) => {
+            const status = { id, ...s };
+            if (status.userId === profileUserId) {
+              ownerStatuses.push(status);
+            }
+          });
+          ownerStatuses.sort((a, b) => b.timestamp - a.timestamp);
+          ownerStatuses = ownerStatuses.slice(0, 20);
         }
-      }, (error) => {
-        console.error('Error loading posts:', error);
-        showAlert('Failed to load posts.');
-      });
+        if (ownerStatuses.length === 0) {
+          statusesList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">No statuses yet.</div>';
+        } else {
+          // Assign user data to each status
+          ownerStatuses.forEach(status => {
+            status.userName = profileUser.displayName;
+            status.photoURL = profileUser.photoURL;
+            status.verified = profileUser.verified;
+            status.businessMode = profileUser.businessMode;
+          });
+          statusesList.innerHTML = ownerStatuses.map(status => renderPost(status)).join('');
+        }
+        // Real-time listener for updates
+        postsListener = onValue(statusesRef, (snap) => {
+          // Re-run the filter and render on change (optimized: only if tab active)
+          if (document.getElementById(`${tab}-tab`).classList.contains('active')) {
+            // Quick re-render logic here if needed, but for simplicity, full reload on change
+            loadPosts(tab); // Recursive but throttled by Firebase
+          }
+        });
+      } catch (error) {
+        console.error('Error loading statuses:', error);
+        statusesList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">Failed to load statuses.</div>';
+      } finally {
+        hideSpinner();
+      }
     }
 
     async function loadProfileHeader() {
@@ -2846,7 +2931,13 @@
         e.target.classList.add('active');
         document.querySelectorAll('.posts-section').forEach(sec => sec.classList.remove('active'));
         document.getElementById(e.target.dataset.tab + '-tab').classList.add('active');
-        loadPosts(e.target.dataset.tab);
+        const tabName = e.target.dataset.tab;
+        if (tabName === 'posts') {
+          loadPosts('posts');
+        } else {
+          // Placeholder for other tabs
+          document.getElementById(`${tabName}-list`).innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">Coming soon.</div>';
+        }
       }
     });
 
