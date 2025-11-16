@@ -498,6 +498,9 @@
       font-size: 16px;
       box-sizing: border-box;
     }
+    .input-group input[type="file"] {
+      padding: 8px;
+    }
     .btn {
       width: 100%;
       padding: 12px;
@@ -513,6 +516,10 @@
     }
     .btn:hover {
       background: #0c7bb8;
+    }
+    .btn:disabled {
+      background: var(--text-secondary);
+      cursor: not-allowed;
     }
     .btn-secondary {
       background: var(--bg);
@@ -767,8 +774,8 @@
     </div>
     <div class="bottom-sheet-content">
       <div class="input-group">
-        <label for="channel-pic">Profile Image URL (optional)</label>
-        <input id="channel-pic" type="url" placeholder="Enter image URL">
+        <label for="channel-pic">Profile Image (optional)</label>
+        <input id="channel-pic" type="file" accept="image/*">
       </div>
       <div class="input-group">
         <label for="channel-name">Channel Name</label>
@@ -803,7 +810,7 @@
           </button>
         </div>
       </div>
-      <button class="btn" onclick="createChannel(event)">Create Channel</button>
+      <button id="create-channel-btn" class="btn" onclick="createChannel(event)">Create Channel</button>
     </div>
   </div>
   <div id="profile-modal" class="modal">
@@ -853,6 +860,10 @@
     let outsideClickHandler;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
+
+    // Cloudinary configuration - Replace with your actual cloud name and upload preset
+    const CLOUDINARY_CLOUD_NAME = 'your_cloud_name'; // Replace with your Cloudinary cloud name
+    const CLOUDINARY_UPLOAD_PRESET = 'your_upload_preset'; // Replace with your unsigned upload preset
 
     const showSpinner = () => {
       document.getElementById('spinner-overlay').classList.add('active');
@@ -1478,16 +1489,59 @@
       }
     }
 
+    async function uploadToCloudinary(file) {
+      if (!file) return null;
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+      try {
+        const response = await fetch(
+          `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+          {
+            method: 'POST',
+            body: formData,
+          }
+        );
+        if (!response.ok) {
+          throw new Error('Upload failed');
+        }
+        const data = await response.json();
+        return data.secure_url;
+      } catch (error) {
+        console.error('Cloudinary upload error:', error);
+        showAlert('Failed to upload image. Please try again.');
+        return null;
+      }
+    }
+
     async function createChannel(event) {
       if (event) event.stopPropagation();
       const name = document.getElementById('channel-name').value.trim();
       if (!name) return showAlert('Channel name required');
       const desc = document.getElementById('channel-desc').value.trim();
-      const pic = document.getElementById('channel-pic').value.trim();
+      const fileInput = document.getElementById('channel-pic');
+      const file = fileInput.files[0];
       const selectedCategoryBtn = document.querySelector('#channel-category-grid .category-btn.active');
       const category = selectedCategoryBtn ? selectedCategoryBtn.dataset.category : '';
       if (!category) return showAlert('Category required');
+
+      const createBtn = document.getElementById('create-channel-btn');
+      createBtn.disabled = true;
+      createBtn.textContent = 'Creating...';
+
       try {
+        let picUrl = null;
+        if (file) {
+          showSpinner();
+          picUrl = await uploadToCloudinary(file);
+          hideSpinner();
+          if (!picUrl) {
+            createBtn.disabled = false;
+            createBtn.textContent = 'Create Channel';
+            return;
+          }
+        }
+
         const channelId = push(ref(db, 'channels')).key;
         if (!channelId) throw new Error('Failed to generate channel ID');
         const initialMessage = `Welcome to ${name}!`;
@@ -1496,7 +1550,7 @@
           name,
           description: desc,
           creatorUid: currentUser.uid,
-          profilePic: pic || null,
+          profilePic: picUrl || null,
           category,
           lastMessage: encrypted,
           lastMessageTime: Date.now(),
@@ -1509,13 +1563,16 @@
         closeBottomSheet();
         document.getElementById('channel-name').value = '';
         document.getElementById('channel-desc').value = '';
-        document.getElementById('channel-pic').value = '';
+        fileInput.value = '';
         document.querySelector('#channel-category-grid .category-btn').classList.add('active');
         document.querySelectorAll('#channel-category-grid .category-btn:not(:first-child)').forEach(btn => btn.classList.remove('active'));
         await loadChannels();
       } catch (error) {
         console.error('Error creating channel:', error);
         showAlert(`Failed to create channel: ${error.message}`);
+      } finally {
+        createBtn.disabled = false;
+        createBtn.textContent = 'Create Channel';
       }
     }
 
