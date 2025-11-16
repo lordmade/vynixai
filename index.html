@@ -3863,50 +3863,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     }
     
           
-          async function loadFollowedUsersIntoChatList() {
-  const chatList = document.getElementById('chat-list');
-  chatList.innerHTML = '';
-  let followedUsers = [];
-  if (Object.keys(currentUserFollows || {}).length > 0) {
-    const followedUids = Object.keys(currentUserFollows);
-    const userPromises = followedUids.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
-    const userResults = await Promise.allSettled(userPromises);
-    followedUsers = userResults.filter(r => r.status === 'fulfilled').map(r => r.value);
-  }
-  if (followedUsers.length === 0) {
-    chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">Follow some users to start chatting!</p>';
-    return;
-  }
-  for (let i = 0; i < followedUsers.length; i++) {
-    const { uid, user } = followedUsers[i];
-    const displayName = user.displayName || 'User';
-    const initial = displayName[0].toUpperCase();
-    let avatarHtml;
-    if (user.photoURL) {
-      avatarHtml = `<img src="${user.photoURL}" alt="${displayName} avatar" class="chat-avatar" loading="lazy">`;
-    } else {
-      avatarHtml = `<div class="chat-avatar" style="background: var(--x-blue); color: #000000; font-size: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold;">${initial}</div>`;
-    }
-    let nameHtml = displayName;
-    if (user.verified) {
-      nameHtml += verifiedIcon;
-    }
-    const chatItem = document.createElement('div');
-    chatItem.className = 'chat-item potential-chat';
-    chatItem.setAttribute('data-uid', uid);
-    chatItem.onclick = () => startChat(uid);
-    chatItem.innerHTML = `
-      ${avatarHtml}
-      <div class="chat-info">
-        <div class="chat-name">${nameHtml}</div>
-        <div class="chat-preview">Start chat</div>
-      </div>
-      <div class="chat-time" style="color: var(--x-blue);">New</div>
-    `;
-    chatList.appendChild(chatItem);
-  }
-}
-async function updateChatsUI(snapshot) {
+          async function updateChatsUI(snapshot) {
   const chatList = document.getElementById('chat-list');
   chatList.innerHTML = '';
   totalUnread = 0;
@@ -4017,7 +3974,7 @@ async function updateChatsUI(snapshot) {
       setupTypingListener(otherUserId, chat.chatId);
     }
   } else {
-    await loadFollowedUsersIntoChatList();
+    chatList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No chats yet. Add friends to start!</p>';
   }
   updateNavUnread(totalUnread);
 }    
@@ -4121,6 +4078,74 @@ async function updateChatsUI(snapshot) {
       document.getElementById('confirm-modal').classList.remove('active');
     }
     window.closeConfirm = closeConfirm;
+    // Modified: Load only users from chats (followed users) for bottom sheet
+    async function loadAllUsers() {
+      showSpinner();
+      const usersList = document.getElementById('users-list');
+      usersList.innerHTML = '';
+      if (currentUser) {
+        // Load followed users
+        let followedUsers = [];
+        if (Object.keys(currentUserFollows || {}).length > 0) {
+          const followedUids = Object.keys(currentUserFollows);
+          const userPromises = followedUids.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
+          const userResults = await Promise.allSettled(userPromises);
+          followedUsers = userResults.filter(r => r.status === 'fulfilled').map(r => r.value);
+        }
+        if (followedUsers.length === 0) {
+          usersList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No followed users yet. Follow some to message!</p>';
+        } else {
+          for (let i = 0; i < followedUsers.length; i++) {
+            const user = followedUsers[i].user;
+            const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
+            let avatarHtml;
+            if (user?.photoURL) {
+              avatarHtml = `<img src="${user.photoURL}" alt="${user?.displayName} avatar" class="user-avatar" loading="lazy">`;
+            } else {
+              avatarHtml = `<div class="user-avatar" style="font-size: 24px;">${initial}</div>`;
+            }
+            let nameHtml = user?.displayName || 'User';
+            if (user?.verified) {
+              nameHtml += verifiedIcon;
+            }
+            const userCard = document.createElement('div');
+            userCard.className = 'user-card';
+            userCard.onclick = () => startChat(user.uid);
+            userCard.innerHTML = `
+              ${avatarHtml}
+              <div class="user-info">
+                <div class="user-name">${nameHtml}</div>
+                <div class="user-bio">${user.bio || 'No bio yet'}</div>
+              </div>
+              <button class="start-chat-btn" onclick="event.stopPropagation(); startChat('${user.uid}')">Message</button>
+            `;
+            usersList.appendChild(userCard);
+          }
+        }
+      }
+      hideSpinner();
+    }
+    function openAddFriendsSheet() {
+      const sheet = document.createElement('div');
+      sheet.className = 'bottom-sheet active';
+      sheet.id = 'add-friends-sheet';
+      sheet.innerHTML = `
+        <div class="bottom-sheet-header">
+          <h2 style="margin: 0; font-size: 24px; font-weight: 800; color: var(--text-primary);">Messages</h2>
+          <button onclick="closeAddFriendsSheet()" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 8px;"><span class="material-icons">close</span></button>
+        </div>
+        <div id="users-list" style="padding: 0 28px 24px;"></div>
+      `;
+      document.body.appendChild(sheet);
+      loadAllUsers();
+    }
+    window.closeAddFriendsSheet = () => {
+      const sheet = document.getElementById('add-friends-sheet');
+      if (sheet) {
+        sheet.classList.remove('active');
+        setTimeout(() => sheet.remove(), 600);
+      }
+    };
     window.startChat = async (targetUid) => {
       try {
         const chatId = [currentUser.uid, targetUid].sort().join('_');
@@ -4156,6 +4181,7 @@ async function updateChatsUI(snapshot) {
           });
           hasChats = true;
         }
+        closeAddFriendsSheet();
         openChat(chatId, targetUid);
         showAlert('Chat started!');
       } catch (error) {
@@ -5718,7 +5744,7 @@ async function updateChatsUI(snapshot) {
       if (subTab === 'chats') {
         const fab = document.getElementById('fab-btn');
         fab.innerHTML = `<span class="material-icons" style="font-size: 24px;">person_add</span>`;
-        fab.onclick = () => window.location.href='follow-users.html';
+        fab.onclick = openAddFriendsSheet;
       } else if (subTab === 'groups') {
         loadGroups();
         const fab = document.getElementById('fab-btn');
@@ -5787,7 +5813,7 @@ async function updateChatsUI(snapshot) {
           if (tab === 'chats') {
             switchSubTab('chats', null);
             fab.innerHTML = `<span class="material-icons" style="font-size: 24px;">person_add</span>`;
-            fab.onclick = () => window.location.href='follow-users.html';
+            fab.onclick = openAddFriendsSheet;
           } else if (tab === 'status') {
             fab.innerHTML = `<span class="material-icons" style="font-size: 24px;">edit</span>`;
             fab.onclick = openUploadSheet;
