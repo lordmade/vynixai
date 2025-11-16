@@ -423,17 +423,12 @@
     const db = getDatabase(app);
     let currentUser;
     let currentUserInfo;
-    let ownPrivateKey;
     let otherUserId;
     let otherUserInfo;
-    let otherPublicKey;
     let chatId;
     let messagesListener;
     let userListener;
-    let derivedKey;
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
-    const DB_NAME = 'GrokChatKeys';
-    const STORE_NAME = 'privateKeys';
     const showSpinner = () => {
       const spinner = document.getElementById('horizontal-spinner');
       if (spinner) spinner.classList.add('active');
@@ -463,103 +458,79 @@
       if (diffMin > 0) return `${diffMin}m`;
       return `${diffSec}s`;
     }
-    async function initIndexedDB() {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-        request.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            db.createObjectStore(STORE_NAME);
-          }
-        };
-      });
-    }
-    async function generateKeyPair() {
-      const keyPair = await crypto.subtle.generateKey(
-        {
-          name: "ECDH",
-          namedCurve: "P-256",
-        },
-        true,
-        ["deriveKey", "deriveBits"]
-      );
-      const publicKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-      const privateKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
-      const db = await initIndexedDB();
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      await store.put(privateKeyJwk, currentUser.uid);
-      await tx.complete;
-      return { publicKey: publicKeyJwk, privateKey: privateKeyJwk };
-    }
-    async function loadPrivateKey(uid) {
-      const db = await initIndexedDB();
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const key = await store.get(uid);
-      await tx.complete;
-      if (!key) return null;
-      return crypto.subtle.importKey("jwk", key, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]);
-    }
-    async function uploadPublicKey(publicKeyJwk) {
-      await update(ref(db, `users/${currentUser.uid}`), { publicKey: publicKeyJwk });
-    }
-    async function fetchPublicKey(userId) {
-      const userRef = ref(db, `users/${userId}/publicKey`);
-      const snap = await get(userRef);
-      if (!snap.exists()) throw new Error('Public key not found');
-      return crypto.subtle.importKey("jwk", snap.val(), { name: "ECDH", namedCurve: "P-256" }, true, []);
-    }
-    async function deriveSharedKey(privateKey, publicKey) {
-      return crypto.subtle.deriveKey(
-        { name: "ECDH", public: publicKey },
-        privateKey,
-        { name: "AES-GCM", length: 256 },
-        true,
-        ["encrypt", "decrypt"]
-      );
-    }
-    async function initE2EE() {
-      ownPrivateKey = await loadPrivateKey(currentUser.uid);
-      if (!ownPrivateKey) {
-        const { publicKey } = await generateKeyPair();
-        await uploadPublicKey(publicKey);
-        ownPrivateKey = await loadPrivateKey(currentUser.uid);
-      }
-      otherPublicKey = await fetchPublicKey(otherUserId);
-      derivedKey = await deriveSharedKey(ownPrivateKey, otherPublicKey);
-      showAlert('E2EE Initialized');
-    }
-    async function encryptMessage(text) {
-      const encoder = new TextEncoder();
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const data = encoder.encode(text);
-      const encrypted = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv },
-        derivedKey,
-        data
-      );
-      const ivB64 = btoa(String.fromCharCode(...iv));
-      const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
-      return JSON.stringify({ iv: ivB64, ciphertext: ciphertextB64 });
-    }
-    async function decryptMessage(encryptedStr) {
+    async function decryptMessage(encryptedStr, chatId) {
       try {
         const { iv, ciphertext } = JSON.parse(encryptedStr);
-        const decoder = new TextDecoder();
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw",
+          encoder.encode("grochat-secret-key-2025"),
+          { name: "PBKDF2" },
+          false,
+          ["deriveBits", "deriveKey"]
+        );
+        const salt = encoder.encode(chatId);
+        const key = await crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: 100000,
+            hash: "SHA-256"
+          },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          true,
+          ["decrypt"]
+        );
         const ivData = Uint8Array.from(atob(iv), c => c.charCodeAt(0));
         const data = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
         const decrypted = await crypto.subtle.decrypt(
           { name: "AES-GCM", iv: ivData },
-          derivedKey,
+          key,
           data
         );
-        return decoder.decode(decrypted);
+        return new TextDecoder().decode(decrypted);
       } catch (error) {
         console.error('Decryption failed:', error);
         return 'Decryption failed';
+      }
+    }
+    async function encryptMessage(message, chatId) {
+      try {
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw",
+          encoder.encode("grochat-secret-key-2025"),
+          { name: "PBKDF2" },
+          false,
+          ["deriveBits", "deriveKey"]
+        );
+        const salt = encoder.encode(chatId);
+        const key = await crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: 100000,
+            hash: "SHA-256"
+          },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          true,
+          ["encrypt"]
+        );
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const data = encoder.encode(message);
+        const encrypted = await crypto.subtle.encrypt(
+          { name: "AES-GCM", iv: iv },
+          key,
+          data
+        );
+        const ivB64 = btoa(String.fromCharCode(...iv));
+        const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+        return JSON.stringify({ iv: ivB64, ciphertext: ciphertextB64 });
+      } catch (error) {
+        console.error('Encryption failed:', error);
+        throw error;
       }
     }
     async function loadOwnProfile() {
@@ -577,7 +548,7 @@
       if (!otherUserId) return;
       showSpinner();
       const userRef = ref(db, `users/${otherUserId}`);
-      userListener = onValue(userRef, async (snap) => {
+      userListener = onValue(userRef, (snap) => {
         if (snap.exists()) {
           otherUserInfo = snap.val();
           const displayName = otherUserInfo.displayName || 'User';
@@ -592,12 +563,6 @@
           const initial = displayName[0].toUpperCase();
           const picContent = otherUserInfo.photoURL ? `<img src="${otherUserInfo.photoURL}" alt="${displayName}" loading="lazy">` : initial;
           document.getElementById('chat-profile-pic').innerHTML = picContent;
-          try {
-            await initE2EE();
-          } catch (error) {
-            console.error('E2EE init failed:', error);
-            showAlert('E2EE setup failed. Ensure both users have keys.');
-          }
         }
         hideSpinner();
       });
@@ -605,7 +570,7 @@
     function renderMessage(message, isSent) {
       let displayContent;
       if (message.type === 'text') {
-        displayContent = message.decrypted || message.message; // Fallback if not decrypted
+        displayContent = message.decrypted;
       } else if (message.type === 'image') {
         displayContent = `<img src="${message.message}" alt="Photo" style="max-width: 200px; border-radius: 10px; cursor: pointer;" onclick="window.open('${message.message}')">`;
       } else if (message.type === 'video') {
@@ -654,19 +619,17 @@
       const messagesRef = ref(db, `chats/${chatId}/messages`);
       const orderedRef = query(messagesRef, orderByChild('timestamp'), limitToLast(100));
       messagesListener = onValue(orderedRef, async (snapshot) => {
-        if (snapshot.exists() && derivedKey) {
+        if (snapshot.exists()) {
           let messages = Object.entries(snapshot.val()).map(([id, m]) => ({ id, ...m })).sort((a, b) => a.timestamp - b.timestamp);
           for (let i = 0; i < messages.length; i++) {
             const msg = messages[i];
             if (msg.type === 'text') {
-              msg.decrypted = await decryptMessage(msg.message);
+              msg.decrypted = await decryptMessage(msg.message, chatId);
             } else {
               msg.decrypted = msg.type === 'image' ? '[Photo]' : msg.type === 'video' ? '[Video]' : 'Media';
             }
           }
           updateMessages(messages);
-        } else if (!derivedKey) {
-          document.getElementById('messages-container').innerHTML = '<p style="text-align: center; color: var(--text-secondary);">Setting up secure chat...</p>';
         } else {
           document.getElementById('messages-container').innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No messages yet. Start the conversation!</p>';
         }
@@ -675,10 +638,10 @@
     window.sendMessage = async () => {
       const input = document.getElementById('message-input');
       const text = input.value.trim();
-      if (!text || !derivedKey) return;
+      if (!text) return;
       try {
         showSpinner();
-        const encrypted = await encryptMessage(text);
+        const encrypted = await encryptMessage(text, chatId);
         const messagesRef = ref(db, `chats/${chatId}/messages`);
         const newMessageRef = push(messagesRef);
         await set(newMessageRef, {
