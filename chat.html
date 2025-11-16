@@ -142,39 +142,11 @@
       font-size: 20px;
       color: #1d9bf0;
     }
-    .search-bar {
-      position: fixed;
-      top: 64px;
-      left: 0;
-      right: 0;
-      background: var(--header-bg);
-      border-bottom: 1px solid var(--border);
-      padding: 8px 20px;
-      z-index: 99;
-      display: none;
-    }
-    .search-bar.active {
-      display: block;
-    }
-    .search-input {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 24px;
-      padding: 8px 16px;
-      color: var(--text-primary);
-      width: 100%;
-    }
-    .search-input::placeholder {
-      color: var(--text-secondary);
-    }
     .main-content {
       padding: 84px 20px 120px;
       max-width: 600px;
       margin: 0 auto;
       transition: padding 0.3s ease;
-    }
-    .main-content.with-search {
-      padding-top: 124px;
     }
     .messages-container {
       flex: 1;
@@ -477,9 +449,6 @@
       .main-content {
         padding: 84px 16px 120px;
       }
-      .main-content.with-search {
-        padding-top: 116px;
-      }
     }
   </style>
 </head>
@@ -497,11 +466,7 @@
         </div>
       </div>
     </div>
-    <button class="input-icon material-icons" title="Search" onclick="toggleSearch()">search</button>
   </header>
-  <div class="search-bar" id="search-bar">
-    <input type="text" class="search-input" id="search-input" placeholder="Search messages" oninput="filterMessages()">
-  </div>
   <main class="main-content" id="main-content">
     <div class="messages-container" id="messages-container">
       <!-- Messages loaded here -->
@@ -510,6 +475,8 @@
   <div class="input-bar">
     <button class="input-icon material-icons" title="Attach" onclick="attachFile()">attach_file</button>
     <button class="input-icon material-icons" title="GIF" onclick="openGif()">gif</button>
+    <button class="input-icon material-icons" id="view-once-toggle" title="View once" onclick="toggleViewOnce()">visibility_off</button>
+    <button class="input-icon material-icons" id="disappearing-toggle" title="Disappearing messages" onclick="toggleDisappearing()">timer_off</button>
     <div class="input-group">
       <textarea id="message-input" placeholder="Start a message" onkeypress="handleKeyPress(event)"></textarea>
     </div>
@@ -569,7 +536,10 @@
     let longPressTimer;
     let allMessages = [];
     let filteredMessages = [];
+    let viewOnceEnabled = false;
+    let disappearingEnabled = false;
     const LONG_PRESS_DELAY = 500;
+    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
     const showSpinner = () => {
       const spinner = document.getElementById('horizontal-spinner');
@@ -587,23 +557,32 @@
         setTimeout(() => alert.classList.remove('active'), 3000);
       }
     };
-    function toggleSearch() {
-      const searchBar = document.getElementById('search-bar');
-      const mainContent = document.getElementById('main-content');
-      searchBar.classList.toggle('active');
-      mainContent.classList.toggle('with-search');
-      if (searchBar.classList.contains('active')) {
-        document.getElementById('search-input').focus();
+    async function deleteChat() {
+      showSpinner();
+      try {
+        await remove(ref(db, `chats/${chatId}`));
+        await remove(ref(db, `users/${currentUser.uid}/chats/${otherUserId}`));
+        await remove(ref(db, `users/${otherUserId}/chats/${currentUser.uid}`));
+        showAlert('Chat has been auto-deleted after 24 hours of inactivity.');
+        setTimeout(() => history.back(), 1500);
+      } catch (error) {
+        console.error('Failed to delete chat:', error);
+        showAlert('Error deleting chat.');
+      } finally {
+        hideSpinner();
       }
     }
-    function filterMessages() {
-      const query = document.getElementById('search-input').value.toLowerCase();
-      filteredMessages = allMessages.filter(msg => 
-        (msg.decrypted || '').toLowerCase().includes(query) ||
-        formatTimestamp(msg.timestamp).toLowerCase().includes(query)
-      );
-      updateMessages(filteredMessages.length > 0 ? filteredMessages : allMessages, true);
-    }
+    window.toggleViewOnce = () => {
+      viewOnceEnabled = !viewOnceEnabled;
+      const btn = document.getElementById('view-once-toggle');
+      btn.innerHTML = viewOnceEnabled ? 'visibility' : 'visibility_off';
+    };
+    window.toggleDisappearing = () => {
+      disappearingEnabled = !disappearingEnabled;
+      const btn = document.getElementById('disappearing-toggle');
+      btn.innerHTML = disappearingEnabled ? 'timer' : 'timer_off';
+      showAlert(disappearingEnabled ? 'Disappearing messages enabled (24h)' : 'Disappearing messages disabled');
+    };
     function formatTimestamp(timestamp) {
       const date = new Date(timestamp);
       const now = new Date();
@@ -728,17 +707,24 @@
     }
     function renderMessage(message, isSent, isSearch = false) {
       let displayContent;
-      if (message.type === 'text') {
-        displayContent = message.decrypted;
-        if (message.edited) {
-          displayContent += `<div class="edit-indicator">edited</div>`;
-        }
-      } else if (message.type === 'image') {
-        displayContent = `<img src="${message.message}" alt="Photo" style="max-width: 200px; border-radius: 10px; cursor: pointer;" onclick="window.open('${message.message}')">`;
-      } else if (message.type === 'video') {
-        displayContent = `<video src="${message.message}" controls style="max-width: 200px; border-radius: 10px;"></video>`;
+      const isViewOnce = message.viewOnce;
+      const isViewed = isViewOnce && !isSent && (!message.viewedBy || !message.viewedBy[currentUser.uid]);
+      if (isViewOnce && !isSent && !isViewed) {
+        const placeholder = message.type === 'image' ? 'Photo' : message.type === 'video' ? 'Video' : 'Message';
+        displayContent = `<div style="padding:12px 16px; font-style:italic; color:var(--text-secondary);">${placeholder} viewed once</div>`;
       } else {
-        displayContent = message.decrypted || 'Unknown message type';
+        if (message.type === 'text') {
+          displayContent = message.decrypted;
+          if (message.edited) {
+            displayContent += `<div class="edit-indicator">edited</div>`;
+          }
+        } else if (message.type === 'image') {
+          displayContent = `<img src="${message.message}" alt="Photo" style="max-width: 200px; border-radius: 10px; cursor: pointer;" onclick="window.open('${message.message}')">`;
+        } else if (message.type === 'video') {
+          displayContent = `<video src="${message.message}" controls style="max-width: 200px; border-radius: 10px;"></video>`;
+        } else {
+          displayContent = message.decrypted || 'Unknown message type';
+        }
       }
       const userInfo = isSent ? currentUserInfo : otherUserInfo;
       const initial = userInfo?.displayName?.[0]?.toUpperCase() || 'U';
@@ -751,8 +737,12 @@
       const bubbleClass = isSent ? 'message-sent' : 'message-received';
       const time = formatTimestamp(message.timestamp);
       let statusHtml = '';
-      if (isSent && message.type === 'text') {
-        statusHtml = '<span class="material-icons status-icon status-sent">done_all</span>';
+      if (isSent) {
+        if (isViewOnce && message.viewedBy?.[otherUserId]) {
+          statusHtml = '<span class="material-icons status-icon" style="color: var(--x-blue);">visibility</span>';
+        } else {
+          statusHtml = '<span class="material-icons status-icon status-sent">done_all</span>';
+        }
       }
       return `
         <div class="message-item ${bubbleClass}" data-message-id="${message.id}" data-is-sent="${isSent}" data-type="${message.type}" data-content="${message.type === 'text' ? message.decrypted : ''}" ${isSearch ? 'style="background: rgba(29,155,240,0.1);"' : ''}>
@@ -958,11 +948,26 @@
       }
       document.getElementById('context-menu').classList.remove('active');
     });
+    async function cleanupExpiredMessages(snapshot) {
+      if (!snapshot.exists()) return;
+      const messages = snapshot.val();
+      const now = Date.now();
+      const deletePromises = [];
+      Object.entries(messages).forEach(([id, msg]) => {
+        if (msg.expireAt && now > msg.expireAt) {
+          deletePromises.push(remove(ref(db, `chats/${chatId}/messages/${id}`)));
+        }
+      });
+      if (deletePromises.length > 0) {
+        await Promise.all(deletePromises);
+      }
+    }
     function setupMessagesListener() {
       if (messagesListener) off(messagesListener);
       const messagesRef = ref(db, `chats/${chatId}/messages`);
       const orderedRef = query(messagesRef, orderByChild('timestamp'), limitToLast(100));
       messagesListener = onValue(orderedRef, async (snapshot) => {
+        await cleanupExpiredMessages(snapshot);
         if (snapshot.exists()) {
           allMessages = Object.entries(snapshot.val()).map(([id, m]) => ({ id, ...m })).sort((a, b) => a.timestamp - b.timestamp);
           for (let i = 0; i < allMessages.length; i++) {
@@ -973,6 +978,12 @@
               msg.decrypted = msg.type === 'image' ? '[Photo]' : msg.type === 'video' ? '[Video]' : 'Media';
             }
           }
+          // Mark view once messages as viewed
+          allMessages.forEach(msg => {
+            if (msg.viewOnce && msg.senderId !== currentUser.uid && !msg.viewedBy?.[currentUser.uid]) {
+              update(ref(db, `chats/${chatId}/messages/${msg.id}/viewedBy`), { [currentUser.uid]: Date.now() });
+            }
+          });
           filteredMessages = allMessages;
           updateMessages(filteredMessages);
         } else {
@@ -986,6 +997,9 @@
       const input = document.getElementById('message-input');
       const text = input.value.trim();
       if (!text) return;
+      const isViewOnce = viewOnceEnabled;
+      const isDisappearing = disappearingEnabled;
+      const expireAt = isDisappearing ? Date.now() + TWENTY_FOUR_HOURS : null;
       try {
         showSpinner();
         const encrypted = await encryptMessage(text, chatId);
@@ -996,13 +1010,19 @@
           message: encrypted,
           type: 'text',
           timestamp: Date.now(),
-          status: 'sent'
+          status: 'sent',
+          viewOnce: isViewOnce,
+          expireAt: expireAt
         });
         const chatUpdate = { lastMessage: encrypted, lastMessageType: 'text', lastMessageTime: Date.now() };
         await update(ref(db, `users/${currentUser.uid}/chats/${otherUserId}`), chatUpdate);
         await update(ref(db, `users/${otherUserId}/chats/${currentUser.uid}`), chatUpdate);
         input.value = '';
         input.style.height = 'auto';
+        if (isViewOnce) {
+          viewOnceEnabled = false;
+          document.getElementById('view-once-toggle').innerHTML = 'visibility_off';
+        }
       } catch (error) {
         console.error('Failed to send message:', error);
         showAlert('Failed to send message.');
@@ -1017,6 +1037,9 @@
       input.onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        const isViewOnce = viewOnceEnabled;
+        const isDisappearing = disappearingEnabled;
+        const expireAt = isDisappearing ? Date.now() + TWENTY_FOUR_HOURS : null;
         showSpinner();
         const progressDiv = document.getElementById('media-progress');
         const progressBar = document.getElementById('media-progress-bar');
@@ -1040,7 +1063,7 @@
                 const data = JSON.parse(xhr.responseText);
                 const url = data.secure_url;
                 const type = file.type.startsWith('image/') ? 'image' : 'video';
-                sendMediaMessage(url, type);
+                sendMediaMessage(url, type, isViewOnce, expireAt);
                 resolve();
               } else {
                 reject(new Error(`Upload failed: ${xhr.statusText}`));
@@ -1060,7 +1083,7 @@
       };
       input.click();
     };
-    async function sendMediaMessage(url, type) {
+    async function sendMediaMessage(url, type, isViewOnce = false, expireAt = null) {
       try {
         const messagesRef = ref(db, `chats/${chatId}/messages`);
         const newMessageRef = push(messagesRef);
@@ -1069,11 +1092,17 @@
           message: url,
           type: type,
           timestamp: Date.now(),
-          status: 'sent'
+          status: 'sent',
+          viewOnce: isViewOnce,
+          expireAt: expireAt
         });
         const chatUpdate = { lastMessage: url, lastMessageType: type, lastMessageTime: Date.now() };
         await update(ref(db, `users/${currentUser.uid}/chats/${otherUserId}`), chatUpdate);
         await update(ref(db, `users/${otherUserId}/chats/${currentUser.uid}`), chatUpdate);
+        if (isViewOnce) {
+          viewOnceEnabled = false;
+          document.getElementById('view-once-toggle').innerHTML = 'visibility_off';
+        }
       } catch (error) {
         console.error('Failed to send media message:', error);
         showAlert('Failed to send media message.');
@@ -1120,6 +1149,15 @@
         chatId = urlParams.get('chatId');
         otherUserId = urlParams.get('userId');
         if (chatId && otherUserId) {
+          const myChatRef = ref(db, `users/${currentUser.uid}/chats/${otherUserId}`);
+          const snap = await get(myChatRef);
+          if (snap.exists()) {
+            const chatMeta = snap.val();
+            if (chatMeta.lastMessageTime && Date.now() - chatMeta.lastMessageTime > TWENTY_FOUR_HOURS) {
+              deleteChat();
+              return;
+            }
+          }
           loadProfileInfo();
           setupMessagesListener();
           setupSendButton();
