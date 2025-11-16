@@ -72,6 +72,11 @@
       justify-content: flex-start;
       padding: 0 20px;
       z-index: 10;
+      transition: transform 0.3s ease;
+      transform: translateY(0);
+    }
+    #app-header.hidden {
+      transform: translateY(-100%);
     }
     #app-header h1 {
       margin: 0;
@@ -85,6 +90,7 @@
       padding: 84px 20px 100px;
       min-height: calc(100vh - 160px);
       transition: padding 0.3s ease;
+      overflow-y: auto;
     }
     .search-container {
       margin-bottom: 20px;
@@ -451,6 +457,9 @@
     let currentUser;
     let currentUserFollows = {};
     let currentUserBlocked = {};
+    let prevUnread = {};
+    let uidToName = {};
+    let lastScrollTop = 0;
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -491,35 +500,126 @@
       return new Date(timestamp).toLocaleDateString();
     }
 
-    async function decryptMessage(encryptedStr, chatId) {
+    function playSound() {
+      if (!('AudioContext' in window)) return;
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.frequency.value = 800;
+      oscillator.type = 'sine';
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.2);
+    }
+
+    function showNewMessageNotification(name) {
+      showAlert(`New message from ${name}!`);
+    }
+
+    async function initKeys() {
+      const privKeyStr = localStorage.getItem(`privkey_${currentUser.uid}`);
+      if (!privKeyStr) {
+        const keypair = await crypto.subtle.generateKey(
+          { name: "ECDH", namedCurve: "P-256" },
+          true,
+          ["deriveBits", "deriveKey"]
+        );
+        const privJwk = await crypto.subtle.exportKey("jwk", keypair.privateKey);
+        localStorage.setItem(`privkey_${currentUser.uid}`, JSON.stringify(privJwk));
+        const pubJwk = await crypto.subtle.exportKey("jwk", keypair.publicKey);
+        await set(ref(db, `users/${currentUser.uid}/publicKey`), pubJwk);
+      }
+    }
+
+    async function deriveSharedKey(otherUid, chatId) {
+      const privJwkStr = localStorage.getItem(`privkey_${currentUser.uid}`);
+      if (!privJwkStr) throw new Error('Private key not found');
+      const privJwk = JSON.parse(privJwkStr);
+      const ownPriv = await crypto.subtle.importKey(
+        "jwk",
+        privJwk,
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        ["deriveBits"]
+      );
+
+      const otherPubSnap = await get(ref(db, `users/${otherUid}/publicKey`));
+      if (!otherPubSnap.exists()) throw new Error('Other user public key not found');
+      const otherPubJwk = otherPubSnap.val();
+      const otherPub = await crypto.subtle.importKey(
+        "jwk",
+        otherPubJwk,
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        []
+      );
+
+      const sharedBits = await crypto.subtle.deriveBits(
+        { name: "ECDH", public: otherPub },
+        ownPriv,
+        256
+      );
+
+      const sharedKey = await crypto.subtle.importKey(
+        "raw",
+        sharedBits,
+        { name: "HKDF" },
+        false,
+        ["deriveKey"]
+      );
+
+      const encoder = new TextEncoder();
+      const salt = encoder.encode(chatId);
+      const info = encoder.encode("VynixChatMessageKey");
+
+      const aesKey = await crypto.subtle.deriveKey(
+        {
+          name: "HKDF",
+          hash: "SHA-256",
+          salt: salt,
+          info: info
+        },
+        sharedKey,
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt", "decrypt"]
+      );
+
+      return aesKey;
+    }
+
+    async function encryptMessage(message, otherUid, chatId) {
+      try {
+        const aesKey = await deriveSharedKey(otherUid, chatId);
+        const encoder = new TextEncoder();
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const data = encoder.encode(message);
+        const encrypted = await crypto.subtle.encrypt(
+          { name: "AES-GCM", iv: iv },
+          aesKey,
+          data
+        );
+        const ivB64 = btoa(String.fromCharCode(...iv));
+        const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+        return JSON.stringify({ iv: ivB64, ciphertext: ciphertextB64 });
+      } catch (error) {
+        console.error('Encryption failed:', error);
+        throw error;
+      }
+    }
+
+    async function decryptMessage(encryptedStr, otherUid, chatId) {
       try {
         const { iv, ciphertext } = JSON.parse(encryptedStr);
         const ivBytes = Uint8Array.from(atob(iv), c => c.charCodeAt(0));
         const ciphertextBytes = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
-        const encoder = new TextEncoder();
-        const keyMaterial = await crypto.subtle.importKey(
-          "raw",
-          encoder.encode("grochat-secret-key-2025"),
-          { name: "PBKDF2" },
-          false,
-          ["deriveBits", "deriveKey"]
-        );
-        const salt = encoder.encode(chatId);
-        const key = await crypto.subtle.deriveKey(
-          {
-            name: "PBKDF2",
-            salt: salt,
-            iterations: 100000,
-            hash: "SHA-256"
-          },
-          keyMaterial,
-          { name: "AES-GCM", length: 256 },
-          true,
-          ["decrypt"]
-        );
+        const aesKey = await deriveSharedKey(otherUid, chatId);
         const decrypted = await crypto.subtle.decrypt(
           { name: "AES-GCM", iv: ivBytes },
-          key,
+          aesKey,
           ciphertextBytes
         );
         const decoder = new TextDecoder();
@@ -648,7 +748,7 @@
             let sortTime = 0;
             const tempChatId = [currentUser.uid, uid].sort().join('_');
             if (chat.lastMessage) {
-              lastMsg = await decryptMessage(chat.lastMessage, chat.chatId || tempChatId);
+              lastMsg = await decryptMessage(chat.lastMessage, uid, chat.chatId || tempChatId);
               lastTime = chat.lastMessageTime || 0;
             }
             if (chat.pinned) {
@@ -672,6 +772,7 @@
             if (user?.verified) {
               nameHtml += verifiedIcon;
             }
+            uidToName[uid] = user?.displayName || user?.email || 'User';
             const avatarWrapper = `
               <div class="avatar-wrapper">
                 ${avatarHtml}
@@ -720,7 +821,7 @@
                 const previewEl = document.getElementById(`preview-${uid}`);
                 const timeEl = document.getElementById(`time-${uid}`);
                 if (previewEl) {
-                  previewEl.textContent = await decryptMessage(chat.lastMessage, chat.chatId);
+                  previewEl.textContent = await decryptMessage(chat.lastMessage, uid, chat.chatId);
                 }
                 if (timeEl) {
                   timeEl.textContent = formatTime(chat.lastMessageTime);
@@ -737,6 +838,16 @@
             const unreadRef = ref(db, `users/${currentUser.uid}/chats/${uid}/unreadCount`);
             onValue(unreadRef, (snap) => {
               const count = snap.val() || 0;
+              if (!prevUnread[uid]) prevUnread[uid] = 0;
+              if (count > prevUnread[uid]) {
+                if ('vibrate' in navigator) {
+                  navigator.vibrate(200);
+                }
+                playSound();
+                const name = uidToName[uid] || uid;
+                showNewMessageNotification(name);
+              }
+              prevUnread[uid] = count;
               const el = document.getElementById(`unread-${uid}`);
               if (el) {
                 if (count > 0) {
@@ -747,6 +858,8 @@
                 }
               }
             });
+
+            prevUnread[uid] = 0;
           }
         }
       }
@@ -764,6 +877,19 @@
       });
     }
 
+    // Scroll-based header hide/show
+    const header = document.getElementById('app-header');
+    const mainContent = document.querySelector('.main-content');
+    mainContent.addEventListener('scroll', () => {
+      let st = mainContent.scrollTop;
+      if (st > lastScrollTop && st > 84) {
+        header.classList.add('hidden');
+      } else {
+        header.classList.remove('hidden');
+      }
+      lastScrollTop = st <= 0 ? 0 : st;
+    });
+
     async function startChat(targetUid, user) {
       try {
         const chatId = [currentUser.uid, targetUid].sort().join('_');
@@ -772,13 +898,14 @@
         const currentSnapshot = await get(currentChatsRef);
         if (!currentSnapshot.exists()) {
           const initialMessage = 'Say hi to start chatting!';
-          const encrypted = await encryptMessage(initialMessage, chatId);
+          const encrypted = await encryptMessage(initialMessage, targetUid, chatId);
           await set(currentChatsRef, {
             chatId,
             otherUserId: targetUid,
             lastMessage: encrypted,
             lastMessageType: 'text',
             lastMessageTime: Date.now(),
+            lastSenderId: currentUser.uid,
             unreadCount: 0
           });
           await set(targetChatsRef, {
@@ -787,6 +914,7 @@
             lastMessage: encrypted,
             lastMessageType: 'text',
             lastMessageTime: Date.now(),
+            lastSenderId: currentUser.uid,
             unreadCount: 0
           });
           const messagesRef = ref(db, `chats/${chatId}/messages`);
@@ -810,45 +938,6 @@
       } catch (error) {
         console.error('Error starting chat:', error);
         showAlert('Failed to start chat.');
-      }
-    }
-
-    async function encryptMessage(message, chatId) {
-      try {
-        const encoder = new TextEncoder();
-        const keyMaterial = await crypto.subtle.importKey(
-          "raw",
-          encoder.encode("grochat-secret-key-2025"),
-          { name: "PBKDF2" },
-          false,
-          ["deriveBits", "deriveKey"]
-        );
-        const salt = encoder.encode(chatId);
-        const key = await crypto.subtle.deriveKey(
-          {
-            name: "PBKDF2",
-            salt: salt,
-            iterations: 100000,
-            hash: "SHA-256"
-          },
-          keyMaterial,
-          { name: "AES-GCM", length: 256 },
-          true,
-          ["encrypt"]
-        );
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const data = encoder.encode(message);
-        const encrypted = await crypto.subtle.encrypt(
-          { name: "AES-GCM", iv: iv },
-          key,
-          data
-        );
-        const ivB64 = btoa(String.fromCharCode(...iv));
-        const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
-        return JSON.stringify({ iv: ivB64, ciphertext: ciphertextB64 });
-      } catch (error) {
-        console.error('Encryption failed:', error);
-        throw error;
       }
     }
 
@@ -878,6 +967,7 @@
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
+        await initKeys();
         // Set up presence
         const connectedRef = ref(db, '.info/connected');
         onValue(connectedRef, (snap) => {
