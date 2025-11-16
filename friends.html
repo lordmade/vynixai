@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-touch-fullscreen" content="yes">
-  <title>Friends - GrokChat</title>
+  <title>Friends - Vynix Chats</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
@@ -59,6 +59,27 @@
     }
     * {
       -webkit-touch-callout: none !important;
+    }
+    #app-header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 84px;
+      background: var(--header-bg);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 0 20px;
+      z-index: 10;
+      box-shadow: var(--shadow-sm);
+    }
+    #app-header h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--text-primary);
     }
     .main-content {
       padding: 84px 20px 100px;
@@ -159,6 +180,22 @@
       text-align: center;
       margin-left: 8px;
     }
+    .context-btn {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0 10px;
+      margin-left: auto;
+      display: flex;
+      align-items: flex-start;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    .user-card:hover .context-btn {
+      opacity: 1;
+    }
     .spinner-overlay {
       position: fixed;
       top: 0;
@@ -247,6 +284,21 @@
       width: 90%;
       border: 1px solid var(--border);
     }
+    .context-option {
+      padding: 16px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      font-size: 16px;
+      color: var(--text-primary);
+      transition: background-color 0.2s;
+      text-align: left;
+    }
+    .context-option:hover {
+      background: rgba(29, 155, 240, 0.1);
+    }
+    .context-option:last-child {
+      border-bottom: none;
+    }
     .profile-img {
       width: 120px;
       height: 120px;
@@ -329,6 +381,9 @@
       <div class="dot"></div>
     </div>
   </div>
+  <header id="app-header">
+    <h1>Vynix Chats</h1>
+  </header>
   <main class="main-content">
     <div class="search-container">
       <input type="text" id="search-input" placeholder="Search friends..." class="search-input">
@@ -345,11 +400,18 @@
       <div id="modal-username" class="profile-name"></div>
     </div>
   </div>
+  <div id="context-menu" class="modal">
+    <div class="modal-content" style="max-width: 280px; padding: 20px; text-align: left;">
+      <div class="context-option" data-action="delete">Delete Friend's Chats</div>
+      <div class="context-option" data-action="block">Block Friend</div>
+      <div class="context-option" data-action="pin">Pin to Top</div>
+    </div>
+  </div>
   <div id="alert-message" class="alert" role="alert" aria-live="polite"></div>
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, get, onValue, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, onValue, set, push, update, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -368,6 +430,7 @@
 
     let currentUser;
     let currentUserFollows = {};
+    let currentUserBlocked = {};
 
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
 
@@ -387,6 +450,17 @@
         setTimeout(() => alert.classList.remove('active'), 4000);
       }
     };
+
+    let currentUid;
+
+    function hideContextMenu() {
+      document.getElementById('context-menu').classList.remove('active');
+    }
+
+    function showContextMenu(uid) {
+      currentUid = uid;
+      document.getElementById('context-menu').classList.add('active');
+    }
 
     function formatTime(timestamp) {
       const now = Date.now();
@@ -443,6 +517,13 @@
       currentUserFollows = snap.val() || {};
     }
 
+    async function loadBlocked() {
+      if (!currentUser) return;
+      const blockedRef = ref(db, `users/${currentUser.uid}/blocked`);
+      const snap = await get(blockedRef);
+      currentUserBlocked = snap.val() || {};
+    }
+
     function openModal(user) {
       const modal = document.getElementById('profile-modal');
       const imgEl = document.getElementById('modal-profile-img');
@@ -480,15 +561,57 @@
       modal.classList.remove('active');
     }
 
+    async function deleteChats(uid) {
+      try {
+        await remove(ref(db, `users/${currentUser.uid}/chats/${uid}`));
+        showAlert("Friend's chats deleted.");
+        await loadAllUsers();
+      } catch (error) {
+        console.error('Error deleting chats:', error);
+        showAlert('Failed to delete chats.');
+      }
+    }
+
+    async function blockFriend(uid) {
+      try {
+        await set(ref(db, `users/${currentUser.uid}/blocked/${uid}`), true);
+        await remove(ref(db, `users/${currentUser.uid}/following/${uid}`));
+        showAlert('Friend blocked.');
+        await loadAllUsers();
+      } catch (error) {
+        console.error('Error blocking friend:', error);
+        showAlert('Failed to block friend.');
+      }
+    }
+
+    async function pinFriend(uid) {
+      try {
+        const chatRef = ref(db, `users/${currentUser.uid}/chats/${uid}`);
+        const snap = await get(chatRef);
+        let chatData = snap.val() || {
+          chatId: [currentUser.uid, uid].sort().join('_'),
+          otherUserId: uid,
+          lastMessageTime: 0,
+          unreadCount: 0
+        };
+        chatData.pinned = Date.now();
+        await set(chatRef, chatData);
+        showAlert('Friend pinned to top.');
+        await loadAllUsers();
+      } catch (error) {
+        console.error('Error pinning friend:', error);
+        showAlert('Failed to pin friend.');
+      }
+    }
+
     async function loadAllUsers() {
       showSpinner();
       const usersList = document.getElementById('users-list');
       usersList.innerHTML = '';
       if (currentUser) {
-        // Load followed users
         let followedUsers = [];
         if (Object.keys(currentUserFollows || {}).length > 0) {
-          const followedUids = Object.keys(currentUserFollows);
+          const followedUids = Object.keys(currentUserFollows).filter(uid => !currentUserBlocked[uid]);
           const userPromises = followedUids.map(uid => get(ref(db, `users/${uid}`)).then(snap => ({ uid, user: snap.val() })));
           const userResults = await Promise.allSettled(userPromises);
           followedUsers = userResults.filter(r => r.status === 'fulfilled').map(r => r.value);
@@ -496,23 +619,27 @@
         if (followedUsers.length === 0) {
           usersList.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 60px; font-size: 17px;">No friends yet. Follow some to message!</p>';
         } else {
-          // Enrich with chat data
           const chatPromises = followedUsers.map(async ({ uid, user }) => {
             const chatRef = ref(db, `users/${currentUser.uid}/chats/${uid}`);
             const chatSnap = await get(chatRef);
+            const chat = chatSnap.val() || {};
             let lastMsg = user.bio || 'Start a chat';
             let lastTime = 0;
-            if (chatSnap.exists()) {
-              const chat = chatSnap.val();
-              lastMsg = await decryptMessage(chat.lastMessage, chat.chatId);
-              lastTime = chat.lastMessageTime;
+            let sortTime = 0;
+            const tempChatId = [currentUser.uid, uid].sort().join('_');
+            if (chat.lastMessage) {
+              lastMsg = await decryptMessage(chat.lastMessage, chat.chatId || tempChatId);
+              lastTime = chat.lastMessageTime || 0;
             }
-            return { uid, user, lastMsg, lastTime };
+            if (chat.pinned) {
+              sortTime = chat.pinned;
+            } else {
+              sortTime = lastTime;
+            }
+            return { uid, user, lastMsg, lastTime, sortTime };
           });
           let enrichedUsers = await Promise.all(chatPromises);
-          // Sort by lastTime descending
-          enrichedUsers.sort((a, b) => b.lastTime - a.lastTime);
-          // Render
+          enrichedUsers.sort((a, b) => b.sortTime - a.sortTime);
           for (const { user, uid, lastMsg, lastTime } of enrichedUsers) {
             const initial = user?.displayName ? user.displayName[0].toUpperCase() : 'U';
             let avatarHtml;
@@ -535,17 +662,22 @@
                 <div class="last-preview" id="preview-${uid}">${lastMsg}</div>
                 ${lastTime ? `<div class="last-time" id="time-${uid}">${formatTime(lastTime)}</div>` : ''}
               </div>
+              <button class="context-btn" data-uid="${uid}">⋮</button>
             `;
             usersList.appendChild(userCard);
 
-            // Add profile modal click handler to avatar
+            const contextBtn = userCard.querySelector('.context-btn');
+            contextBtn.onclick = (e) => {
+              e.stopPropagation();
+              showContextMenu(uid);
+            };
+
             const avatar = userCard.querySelector('.user-avatar');
             avatar.onclick = (e) => {
               e.stopPropagation();
               openModal(user);
             };
 
-            // Realtime listener for chat updates
             const chatRef = ref(db, `users/${currentUser.uid}/chats/${uid}`);
             onValue(chatRef, async (snap) => {
               if (snap.exists()) {
@@ -567,7 +699,6 @@
               }
             });
 
-            // Realtime unread count listener
             const unreadRef = ref(db, `users/${currentUser.uid}/chats/${uid}/unreadCount`);
             onValue(unreadRef, (snap) => {
               const count = snap.val() || 0;
@@ -587,7 +718,6 @@
       hideSpinner();
     }
 
-    // Search functionality
     function setupSearch() {
       const searchInput = document.getElementById('search-input');
       searchInput.addEventListener('input', (e) => {
@@ -687,10 +817,34 @@
       }
     }
 
+    // Context menu setup
+    document.getElementById('context-menu').onclick = (e) => {
+      if (e.target.id === 'context-menu') {
+        hideContextMenu();
+      }
+    };
+
+    const contextOptions = document.querySelectorAll('#context-menu .context-option');
+    contextOptions.forEach(opt => {
+      opt.onclick = (e) => {
+        e.stopPropagation();
+        const action = opt.dataset.action;
+        if (action === 'delete') {
+          deleteChats(currentUid);
+        } else if (action === 'block') {
+          blockFriend(currentUid);
+        } else if (action === 'pin') {
+          pinFriend(currentUid);
+        }
+        hideContextMenu();
+      };
+    });
+
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
         await loadFollows();
+        await loadBlocked();
         await loadAllUsers();
         setupSearch();
       } else {
