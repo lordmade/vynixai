@@ -1,3 +1,4 @@
+<!-- Updated chat.html (formerly the main chat file): Fetches and Loads Trained Model -->
 <!DOCTYPE html>
 <html lang="en" dir="ltr">
 <head>
@@ -261,6 +262,33 @@
       stroke: var(--text-primary);
     }
 
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .spinner {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid var(--highlight);
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
     @media (min-width: 1024px) {
       .tab-container {
         display: none;
@@ -351,6 +379,9 @@
   </style>
 </head>
 <body>
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="spinner"></div>
+  </div>
   <main class="flex flex-col h-screen">
     <button id="hamburger-button" class="fixed top-4 left-4 w-10 h-10 bg-black rounded-full flex items-center justify-center shadow-lg hover:bg-gray-800 transition">
       <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
@@ -377,6 +408,12 @@
           </svg>
           <span>Settings</span>
         </a>
+        <a href="train.html" class="tab" data-tooltip="Train Model">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+          </svg>
+          <span>Train</span>
+        </a>
         <button id="new-conversation-button" class="tab" data-tooltip="New Chat">
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
             <path d="M12 4v8m0 0v8m8-8H4"/>
@@ -400,6 +437,12 @@
         </svg>
         Settings
       </a>
+      <a href="train.html" class="tab" id="train-tab-mobile">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+        </svg>
+        Train
+      </a>
       <button id="new-conversation-button-mobile" class="tab">
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
           <path d="M12 4v8m0 0v8m8-8H4"/>
@@ -417,8 +460,8 @@
           <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
         </svg>
       </button>
-      <input type="text" id="chat-input" placeholder="What's on your mind?" aria-label="Type your prompt">
-      <button id="send-button">
+      <input type="text" id="chat-input" placeholder="What's on your mind?" aria-label="Type your prompt" disabled>
+      <button id="send-button" disabled>
         <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M5 12l6-6m-6 6l6 6"/>
         </svg>
@@ -444,10 +487,12 @@
     const state = {
       messages: [],
       hasChatted: false,
-      conversationId: null
+      conversationId: null,
+      modelLoaded: false
     };
 
     const elements = {
+      loadingOverlay: document.getElementById('loading-overlay'),
       chatMessages: document.getElementById('chat-messages'),
       chatInput: document.getElementById('chat-input'),
       sendButton: document.getElementById('send-button'),
@@ -461,19 +506,7 @@
       imageUploadButton: document.getElementById('image-upload-button')
     };
 
-    let app, auth, db, net = new brain.recurrent.LSTM(), lastTrainingSnapshot = null;
-
-    const defaultTrainingData = [
-      { input: "hello", output: "Hey there!" },
-      { input: "how are you", output: "I'm doing great, thanks for asking!" },
-      { input: "what's up", output: "Just chilling in the cloud, you?" },
-      { input: "tell me a joke", output: "Why did the computer go to art school? It wanted to learn how to draw a better 'byte'!" },
-      { input: "goodbye", output: "Catch you later, pal!" },
-      { input: "what's your name", output: "I'm Vynix AI, your friendly chat buddy!" },
-      { input: "how's the weather", output: "No clue, I'm in the cloud! What's it like where you are?" },
-      { input: "who made you", output: "Katlego from Mokopane, South Africa, brought me to life!" },
-      { input: "help me", output: "Sure thing! What's on your mind?" }
-    ];
+    let app, auth, db, net;
 
     function normalizeText(text) {
       text = text.toLowerCase().trim();
@@ -486,87 +519,28 @@
       return synonyms[text] || text;
     }
 
-    function getClosestMatch(prompt, trainingData) {
-      const words = prompt.split(' ');
-      let bestMatch = null;
-      let maxOverlap = 0;
-
-      trainingData.forEach(({ input }) => {
-        const inputWords = input.split(' ');
-        const overlap = words.filter(word => inputWords.includes(word)).length;
-        if (overlap > maxOverlap) {
-          maxOverlap = overlap;
-          bestMatch = input;
-        }
-      });
-
-      return bestMatch;
-    }
-
-    function addTrainingData(input, output) {
-      if (!input || !output || input.length > 100 || output.length > 200) {
-        console.error('Invalid input/output: must be non-empty and within length limits');
-        return;
-      }
-      const patternsRef = ref(db, 'chatPatterns');
-      push(patternsRef, [{ input: normalizeText(input), output }]);
-      // Mini-train immediately
-      net.train([{ input: normalizeText(input), output }], { iterations: 20 });
-      console.log('Added new training data:', { input, output });
-    }
-
-    async function initializeBrainJS() {
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        const trainingData = [];
-        snapshot.forEach((child) => {
-          trainingData.push(...child.val());
-        });
-        const cappedData = trainingData.slice(-100); // Limit to last 100 entries
-        const newData = lastTrainingSnapshot
-          ? cappedData.filter(item => !lastTrainingSnapshot.some(prev => prev.input === item.input && prev.output === item.output))
-          : cappedData;
-
-        if (newData.length > 0) {
-          net.train(newData, {
-            iterations: 50,
-            errorThresh: 0.015,
-            log: true,
-            logPeriod: 10
-          });
-          console.log('Brain.js trained with', newData.length, 'new patterns');
-        }
-        lastTrainingSnapshot = cappedData;
-      });
-
-      // Restart listener every 5 minutes
-      setTimeout(() => {
-        initializeBrainJS();
-      }, 300000);
-    }
-
-    async function initializeFirebase() {
-      app = initializeApp(firebaseConfig);
-      auth = getAuth(app);
-      db = getDatabase(app);
-      const patternsRef = ref(db, 'chatPatterns');
-      onValue(patternsRef, (snapshot) => {
-        if (!snapshot.exists()) {
-          push(ref(db, 'chatPatterns'), defaultTrainingData);
-          console.log('Initialized chatPatterns with default data');
-        }
-      }, { onlyOnce: true });
-
-      onAuthStateChanged(auth, (user) => {
-        if (user) {
-          elements.chatInput.disabled = false;
-          elements.sendButton.disabled = false;
-          loadConversations();
-          elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}!`;
-          initializeBrainJS();
-        } else {
-          window.location.href = 'signup.html';
-        }
+    async function loadTrainedModel() {
+      const user = auth.currentUser;
+      if (!user) return false;
+      return new Promise((resolve) => {
+        const modelRef = ref(db, `users/${user.uid}/trainedModel`);
+        onValue(modelRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const modelJson = snapshot.val();
+            net = brain.recurrent.LSTM.fromJSON(modelJson);
+            state.modelLoaded = true;
+            elements.loadingOverlay.style.display = 'none';
+            elements.chatInput.disabled = false;
+            elements.sendButton.disabled = false;
+            resolve(true);
+          } else {
+            // Fallback: Create a basic untrained net or redirect to train
+            net = new brain.recurrent.LSTM();
+            state.modelLoaded = false;
+            elements.loadingOverlay.innerHTML = '<div class="text-center"><p>No trained model found. <a href="train.html" class="text-blue-500 underline">Train one first!</a></p><div class="spinner mt-4"></div></div>';
+            resolve(false);
+          }
+        }, { onlyOnce: true });
       });
     }
 
@@ -602,6 +576,9 @@
     }
 
     async function getAIResponse(prompt) {
+      if (!state.modelLoaded) {
+        return appendMessage('Please train a model first via the Train tab!', 'ai');
+      }
       if (!state.hasChatted) {
         state.hasChatted = true;
         elements.welcomeContainer.classList.add('hidden');
@@ -609,24 +586,9 @@
       const tempMsg = appendMessage('', 'ai', true);
       try {
         const normalizedPrompt = normalizeText(prompt);
-        let trainingData = [];
-        await new Promise(resolve => {
-          onValue(ref(db, 'chatPatterns'), (snapshot) => {
-            snapshot.forEach((child) => {
-              trainingData.push(...child.val());
-            });
-            resolve();
-          }, { onlyOnce: true });
-        });
-
         const response = net.run(normalizedPrompt);
         if (!response || response === 'undefined') {
-          const closestInput = getClosestMatch(normalizedPrompt, trainingData);
-          const fallback = closestInput
-            ? trainingData.find(item => item.input === closestInput).output
-            : 'Hmm, not sure what to say—teach me more!';
-          tempMsg.innerHTML = marked.parse(fallback);
-          tempMsg.textContent = fallback; // Fallback for safety
+          tempMsg.textContent = 'Hmm, not sure what to say—train me more!';
         } else {
           tempMsg.innerHTML = marked.parse(response);
         }
@@ -638,7 +600,7 @@
         state.messages.push({ content: tempMsg.textContent, sender: 'ai', timestamp: Date.now() });
         console.error('Brain.js Error:', error);
       }
-      saveConversation(); // Save after each AI response
+      saveConversation();
     }
 
     function saveConversation() {
@@ -739,6 +701,22 @@
 
     // Initialize Marked options
     marked.setOptions({ breaks: true });
+
+    async function initializeFirebase() {
+      app = initializeApp(firebaseConfig);
+      auth = getAuth(app);
+      db = getDatabase(app);
+
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          await loadTrainedModel();
+          elements.welcomeContainer.querySelector('h1').textContent = `Hey there, ${user.displayName || 'friend'}!`;
+        } else {
+          elements.loadingOverlay.style.display = 'none';
+          window.location.href = 'signup.html';
+        }
+      });
+    }
 
     document.addEventListener('DOMContentLoaded', initializeFirebase);
   </script>
