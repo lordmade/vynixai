@@ -2255,22 +2255,6 @@
     .follow-btn:hover {
       background: #0c84e4;
     }
-    .status-ai-btn {
-      position: absolute;
-      top: 12px;
-      right: 12px;
-      background: rgba(29, 155, 240, 0.8);
-      color: #ffffff;
-      border: none;
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      z-index: 10;
-    }
-    .status-ai-btn:hover {
-      background: var(--x-blue);
-    }
 
     /* Desktop Layout Adjustments */
     @media (min-width: 1024px) {
@@ -2557,7 +2541,6 @@ body.light .reactions-list {
           <!-- Text statuses loaded here -->
         </div>
       </div>
-      <button id="ai-fab" class="fab ai-fab" style="display: none;" onclick="redirectToAI()">Vynix</button>
     </div>
     <div class="tab-content" id="notifications-tab" role="tabpanel">
       <div class="notifications-section" id="notifications-section">
@@ -2704,6 +2687,7 @@ body.light .reactions-list {
       </div>
       <input type="file" id="media-input" accept="image/*,video/*" style="display: none;" onchange="handleMediaUpload(event)">
       <input type="file" id="audio-input" accept="audio/*" style="display: none;" onchange="handleMediaUpload(event)">
+      <div id="upload-media-preview" style="display:none; margin:20px 0;"></div>
       <div style="position: relative;">
         <textarea id="caption-input" placeholder="What's happening? Tag users with @username" style="display: none; min-height: 120px;"></textarea>
         <div id="mention-suggestions" class="mention-suggestions"></div>
@@ -2781,7 +2765,6 @@ body.light .reactions-list {
       cloudName: 'dqkujefxj',
       uploadPreset: 'banter_box'
     };
-    const GEMINI_API_KEY = 'AIzaSyBf_ez9GZeqgEsk6HYMamjqSOegjBRyBTg';
     let app, auth, db, analytics, currentUser;
     let hasChats = false;
     let totalUnread = 0;
@@ -2820,6 +2803,9 @@ body.light .reactions-list {
     let loadingMore = false;
     let currentEditStatusId = null;
     let currentEditMediaUrl = null;
+    let recordedAudioBlob = null;
+    let mediaRecorder;
+    let recordedChunks = [];
     const verifiedIcon = `<span class="material-icons verified-icon">verified</span>`;
     let showBottomNav = true;
     let lastScrollY = 0;
@@ -3346,7 +3332,6 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
             postItem.className = 'status-post';
             postItem.setAttribute('data-status-id', status.statusId);
             let innerHTML = '';
-            let aiTargetId = status.statusId;
             let deleteHtml = '';
             // Removed editHtml - now using long press
             if (status.userId === currentUser.uid) {
@@ -3488,9 +3473,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
                 } catch (e) {
                   console.warn(`Failed to load counts for repost ${status.statusId}:`, e);
                 }
-                aiTargetId = original.statusId;
                 innerHTML = `
-                  <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
                   ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
                   ${reposterHeader}
                   ${embedded}
@@ -3505,7 +3488,6 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
                 `;
               } else {
                 innerHTML = `
-                  <button class="status-ai-btn" onclick="analyzeStatus('${status.statusId}')">AI</button>
                   ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
                   <div class="status-post-header">
                     ${avatarHtml}
@@ -3611,7 +3593,6 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
                 contentHtml = `<div class="status-post-content">${highlightedContent}</div>`;
               }
               innerHTML = `
-                <button class="status-ai-btn" onclick="analyzeStatus('${aiTargetId}')">AI</button>
                 ${status.userId !== currentUser.uid ? `<button class="follow-btn" onclick="toggleFollow('${status.userId}', this)">${isFollowing ? 'Following' : 'Follow'}</button>` : ''}
                 <div class="status-post-header">
                   <div class="status-post-user-header" onclick="window.location.href=\`profile.html?uid=${status.userId}\`; event.stopPropagation();" style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer;">
@@ -5043,6 +5024,7 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       document.getElementById('caption-input').style.display = 'none';
       document.getElementById('media-input').style.display = 'none';
       document.getElementById('audio-input').style.display = 'none';
+      document.getElementById('upload-media-preview').style.display = 'none';
       document.getElementById('upload-btn').style.display = 'none';
       document.getElementById('upload-progress').classList.add('hidden');
       setupMentionSuggestions(document.getElementById('caption-input'));
@@ -5056,8 +5038,11 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
       const mediaInput = document.getElementById('media-input');
       const audioInput = document.getElementById('audio-input');
       const uploadBtn = document.getElementById('upload-btn');
+      const previewDiv = document.getElementById('upload-media-preview');
       captionInput.style.display = 'block';
       captionInput.value = '';
+      previewDiv.style.display = 'none';
+      recordedAudioBlob = null;
       if (type === 'text') {
         mediaInput.style.display = 'none';
         audioInput.style.display = 'none';
@@ -5065,9 +5050,10 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
         audioInput.value = '';
       } else if (type === 'audio') {
         mediaInput.style.display = 'none';
-        audioInput.style.display = 'block';
+        audioInput.style.display = 'none';
         mediaInput.value = '';
-        audioInput.click();
+        audioInput.value = '';
+        startAudioRecording();
       } else {
         mediaInput.style.display = 'block';
         audioInput.style.display = 'none';
@@ -5082,12 +5068,19 @@ async function loadStatuses(containerId, mode = 'carousel', silent = false, filt
     window.handleMediaUpload = (event) => {
       const file = event.target.files[0];
       if (file) {
+        const previewDiv = document.getElementById('upload-media-preview');
+        if (file.type.startsWith('audio/')) {
+          previewDiv.innerHTML = `<audio controls src="${URL.createObjectURL(file)}" style="width:100%; max-height:60px;"></audio>`;
+        } else if (file.type.startsWith('image/')) {
+          previewDiv.innerHTML = `<img src="${URL.createObjectURL(file)}" style="width:100%; max-height:300px; object-fit:contain; border-radius:20px;">`;
+        } else if (file.type.startsWith('video/')) {
+          previewDiv.innerHTML = `<video src="${URL.createObjectURL(file)}" controls style="width:100%; max-height:300px;"></video>`;
+        }
+        previewDiv.style.display = 'block';
         showAlert(`Selected ${file.name}`);
       }
     };
     // For live recording (optional fallback if file input not used)
-let mediaRecorder;
-let recordedChunks = [];
 window.startAudioRecording = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -5096,13 +5089,16 @@ window.startAudioRecording = async () => {
     mediaRecorder.ondataavailable = (e) => recordedChunks.push(e.data);
     mediaRecorder.onstop = () => {
       const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-      const url = URL.createObjectURL(blob);
-      const audioInput = document.getElementById('audio-input');
-      const dt = new DataTransfer();
-      const file = new File([blob], `voice-note-${Date.now()}.webm`, { type: 'audio/webm' });
-      dt.items.add(file);
-      audioInput.files = dt.files;
-      handleMediaUpload({ target: audioInput }); // Trigger upload preview if needed
+      recordedAudioBlob = blob;
+      // Show preview
+      const previewDiv = document.getElementById('upload-media-preview');
+      if(previewDiv){
+        previewDiv.innerHTML = `<audio controls src="${URL.createObjectURL(blob)}" style="width:100%; max-height:60px;"></audio>`;
+        previewDiv.style.display = 'block';
+      }
+      // Show post button if not already
+      document.getElementById('upload-btn').style.display = 'block';
+      stream.getTracks().forEach(track => track.stop());
     };
     mediaRecorder.start();
     showAlert('Recording... (stop in 60s or add stop button)');
@@ -5127,42 +5123,49 @@ window.startAudioRecording = async () => {
             return;
           }
         } else {
-          const files = document.getElementById(type === 'audio' ? 'audio-input' : 'media-input').files;
-          if (files.length === 0) {
-            showAlert('Please select or record a file.');
+          let file = null;
+          if (type === 'audio' && recordedAudioBlob) {
+            file = new File([recordedAudioBlob], 'voice-note.webm', { type: 'audio/webm' });
+          } else {
+            const files = document.getElementById(type === 'audio' ? 'audio-input' : 'media-input').files;
+            if (files.length === 0) {
+              showAlert('Please select or record a file.');
+              return;
+            }
+            file = files[0];
+          }
+          if (!file) {
+            showAlert('No file to upload.');
             return;
           }
           progressDiv.classList.remove('hidden');
           progressBar.style.width = '0%';
-          for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            await new Promise((resolve, reject) => {
-              const xhr = new XMLHttpRequest();
-              xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
-              const formData = new FormData();
-              formData.append('file', file);
-              formData.append('upload_preset', cloudinaryConfig.uploadPreset);
-              formData.append('resource_type', type === 'audio' ? 'video' : 'auto'); // Cloudinary treats audio as video resource
-              xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable) {
-                  const percent = Math.round((e.loaded / e.total) * 100 / files.length + (i / files.length * 100));
-                  progressBar.style.width = percent + '%';
-                }
-              });
-              xhr.onload = () => {
-                if (xhr.status === 200) {
-                  const data = JSON.parse(xhr.responseText);
-                  mediaUrls.push(data.secure_url);
-                  progressBar.style.width = ((i + 1) / files.length * 100) + '%';
-                  resolve();
-                } else {
-                  reject(new Error(`Upload failed: ${xhr.statusText}`));
-                }
-              };
-              xhr.onerror = () => reject(new Error('Upload error'));
-              xhr.send(formData);
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudinaryConfig.cloudName}/upload`);
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('upload_preset', cloudinaryConfig.uploadPreset);
+          formData.append('resource_type', type === 'audio' ? 'video' : 'auto');
+          await new Promise((resolve, reject) => {
+            xhr.upload.addEventListener('progress', (e) => {
+              if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percent + '%';
+              }
             });
-          }
+            xhr.onload = () => {
+              if (xhr.status === 200) {
+                const data = JSON.parse(xhr.responseText);
+                mediaUrls.push(data.secure_url);
+                progressBar.style.width = '100%';
+                resolve();
+              } else {
+                reject(new Error(`Upload failed: ${xhr.statusText}`));
+              }
+            };
+            xhr.onerror = reject;
+            xhr.send(formData);
+          });
           if (mediaUrls.length === 0) {
             throw new Error('Failed to get media URL.');
           }
@@ -5920,12 +5923,6 @@ window.startAudioRecording = async () => {
         }
         // No auto toggleSlide() here
       }
-      // AI FAB toggle
-      if (tab === 'status') {
-        toggleAIFab(true);
-      } else {
-        toggleAIFab(false);
-      }
       // Control floating load more button visibility
       const floatingLoadMore = document.getElementById('floating-load-more');
       if (floatingLoadMore) {
@@ -5996,12 +5993,6 @@ window.startAudioRecording = async () => {
         hideSpinner();
       }
     };
-    window.analyzeStatus = (statusId) => {
-      window.location.href = `/ai.html?statusId=${statusId}`;
-    };
-    window.redirectToAI = () => {
-      window.location.href = '/ai.html';
-    };
     window.toggleFollow = async (otherUid, btn) => {
       if (!currentUser) return;
       try {
@@ -6027,12 +6018,6 @@ window.startAudioRecording = async () => {
         showAlert('Failed to update follow status.');
       }
     };
-    function toggleAIFab(visible) {
-      const aiFab = document.getElementById('ai-fab');
-      if (aiFab) {
-        aiFab.style.display = visible ? 'flex' : 'none';
-      }
-    }
     window.toggleSlide = () => {
       const menu = document.getElementById('slide-menu');
       const overlay = document.getElementById('slide-overlay');
