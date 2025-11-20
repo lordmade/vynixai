@@ -25,9 +25,6 @@
     .menu-btn svg { width: 1rem; height: 1rem; stroke: var(--text-primary); }
     .v-logo { width: 36px; height: 36px; background: #000; border-radius: 10px; display: flex; align-items: center; justify-content: center; padding: 4px; }
     .v-logo svg { width: 22px; height: 22px; fill: white; }
-    .api-status { font-size: 0.75rem; font-weight: 600; }
-    .api-connected { color: #10b981; }
-    .api-failed { color: #ef4444; }
     .welcome-container { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; margin-top: 3rem; }
     .welcome-container h1 { font-size: 1.25rem; font-weight: 600; color: #1E1E1E; }
     .hidden { display: none; }
@@ -66,19 +63,16 @@
 </head>
 <body>
   <main class="flex flex-col h-screen">
-    <!-- Header with V logo + API status -->
+    <!-- Header with V logo -->
     <div class="header-container">
       <button id="menu-btn" class="menu-btn">
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         <span>Menu</span>
       </button>
-      <div class="flex items-center gap-3">
-        <div id="api-status" class="api-status">Checking xAI API...</div>
-        <div class="v-logo">
-          <svg viewBox="0 0 24 24">
-            <path fill="#fff" d="M19.75 2.25h3L12 21.75h-3L1.25 2.25h3l7.5 17.19z"/>
-          </svg>
-        </div>
+      <div class="v-logo">
+        <svg viewBox="0 0 24 24">
+          <path fill="#fff" d="M19.75 2.25h3L12 21.75h-3L1.25 2.25h3l7.5 17.19z"/>
+        </svg>
       </div>
     </div>
 
@@ -132,7 +126,6 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, onValue, push, set, remove, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-    import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -144,46 +137,9 @@
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getDatabase(app);
-    const remoteConfig = getRemoteConfig(app);
-    remoteConfig.settings.minimumFetchIntervalMillis = 3600000;
-
-    let xaiApiKey = null;
-    let apiWorking = false;
-
-    // Fetch and test xAI API
-    async function loadXaiApi() {
-      try {
-        await fetchAndActivate(remoteConfig);
-        xaiApiKey = getString(remoteConfig, 'XAI_API_KEY') || null;
-
-        if (xaiApiKey && xaiApiKey.startsWith('xai-')) {
-          const test = await fetch('https://api.x.ai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${xaiApiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: "grok-beta",
-              messages: [{ role: "user", content: "ping" }],
-              max_tokens: 1
-            })
-          });
-          apiWorking = test.ok;
-        }
-      } catch (err) {
-        apiWorking = false;
-      } finally {
-        document.getElementById('api-status').innerHTML = apiWorking 
-          ? `<span class="api-connected">Grok API: Connected ✅</span>`
-          : `<span class="api-failed">Grok API: Not working ❌</span>`;
-      }
-    }
-
-    loadXaiApi();
+    initializeApp(firebaseConfig);
+    const auth = getAuth();
+    const db = getDatabase();
 
     const el = {
       messages: document.getElementById('chat-messages'),
@@ -267,30 +223,6 @@
       return jaro + prefix * 0.1 * (1 - jaro);
     }
 
-    async function getGrokReply(message) {
-      if (!apiWorking || !xaiApiKey) return null;
-      try {
-        const response = await fetch('https://api.x.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${xaiApiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: "grok-beta",
-            messages: [{ role: "user", content: message }],
-            temperature: 0.7,
-            max_tokens: 500
-          })
-        });
-        if (!response.ok) return null;
-        const data = await response.json();
-        return data.choices[0].message.content.trim();
-      } catch {
-        return null;
-      }
-    }
-
     function getReply(message) {
       const msg = message.toLowerCase().trim();
       let best = null;
@@ -312,7 +244,18 @@
       return "I'm still learning about that! Check back soon ❤️";
     }
 
-    async function send() {
+    function saveMessage(text, sender) {
+      if (!currentConvId) return;
+      push(ref(db, `users/${userId}/conversations/${currentConvId}/messages`), {
+        text, sender, timestamp: Date.now()
+      });
+    }
+
+    function generateTitle(firstMessage) {
+      return firstMessage.trim().slice(0, 30) + (firstMessage.length > 30 ? '...' : '');
+    }
+
+    function send() {
       const text = el.input.value.trim();
       if (!text) return;
 
@@ -327,22 +270,11 @@
 
       el.input.value = '';
 
-      // Try Grok first
-      const grokReply = await getGrokReply(text);
-      const reply = grokReply || getReply(text);
-      addMessage(reply, 'ai');
-      saveMessage(reply, 'ai');
-    }
-
-    function saveMessage(text, sender) {
-      if (!currentConvId) return;
-      push(ref(db, `users/${userId}/conversations/${currentConvId}/messages`), {
-        text, sender, timestamp: Date.now()
-      });
-    }
-
-    function generateTitle(firstMessage) {
-      return firstMessage.trim().slice(0, 30) + (firstMessage.length > 30 ? '...' : '');
+      setTimeout(() => {
+        const reply = getReply(text);
+        addMessage(reply, 'ai');
+        saveMessage(reply, 'ai');
+      }, 400 + Math.random() * 400);
     }
 
     function startNewConversation() {
