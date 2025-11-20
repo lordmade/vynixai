@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Vynix AI</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -158,7 +157,6 @@
     };
 
     let pairs = [];
-    let net = new brain.recurrent.LSTM(); // Local ML model
     let conversations = {};
     let currentConvId = null;
     let userId = null;
@@ -225,45 +223,23 @@
       return jaro + prefix * 0.1 * (1 - jaro);
     }
 
-    // Train local model whenever pairs change
-    function trainLocalModel() {
-      if (pairs.length < 10) return;
-      const trainingData = pairs.map(p => ({
-        input: p.trigger.toLowerCase(),
-        output: p.reply
-      }));
-      net.train(trainingData, {
-        iterations: Math.min(300, pairs.length * 5),
-        errorThresh: 0.008,
-        log: false
-      });
-    }
-
     function getReply(message) {
       const msg = message.toLowerCase().trim();
+      let best = null;
+      let bestScore = 0;
 
-      // 1. Exact match
-      const exact = pairs.find(p => p.trigger.toLowerCase() === msg);
-      if (exact) return exact.reply;
-
-      // 2. Fuzzy match
-      let bestScore = 0, bestReply = null;
       for (const p of pairs) {
-        const score = jaroWinkler(msg, p.trigger.toLowerCase());
+        const score = jaroWinkler(msg, p.trigger.toLowerCase().trim());
         if (score > bestScore) {
           bestScore = score;
-          bestReply = p.reply;
+          best = p.reply;
         }
       }
-      if (bestScore >= 0.85) return bestReply;
 
-      // 3. Creative fallback using brain.js
-      try {
-        const creative = net.run(msg);
-        if (creative && creative.trim().length > 3) {
-          return creative.trim();
-        }
-      } catch (e) {}
+      if (bestScore >= 0.85) return best;
+      if (pairs.some(p => msg.includes(p.trigger.toLowerCase().trim()) || p.trigger.toLowerCase().trim().includes(msg))) {
+        return pairs.find(p => msg.includes(p.trigger.toLowerCase().trim()) || p.trigger.toLowerCase().trim().includes(msg)).reply;
+      }
 
       return "I'm still learning about that! Check back soon ❤️";
     }
@@ -370,14 +346,12 @@
         });
     }
 
-    // Load all pairs and train brain.js model
     onValue(ref(db, 'pairs'), snap => {
       pairs = [];
       const data = snap.val() || {};
       Object.values(data).forEach(p => {
         if (p.trigger && p.reply) pairs.push({ trigger: p.trigger.trim(), reply: p.reply.trim() });
       });
-      trainLocalModel();
     });
 
     function loadUserData(uid) {
