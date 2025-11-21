@@ -37,7 +37,7 @@
     #chat-messages { margin: 5rem 1rem 6rem 1rem; padding: 1rem; overflow-y: auto; max-height: calc(100vh - 11rem); -webkit-overflow-scrolling: touch; }
     .message { max-width: 70%; padding: 0.75rem 1.25rem; border-radius: 1.5rem; margin: 0.5rem 1rem; word-wrap: break-word; box-shadow: 0 3px 10px rgba(0,0,0,0.2); animation: slideIn 0.3s ease-out; position: relative; display: inline-block; }
     .message.user { background: linear-gradient(135deg, var(--user-msg-bg), #C7D2FE); color: #1E1E1E; margin-left: auto; border-bottom-right-radius: 0.25rem; }
-    .message.ai { background: linear-gradient(135deg, var(--ai-msg-bg), #2D3748); color: var(--text-primary); margin-right: auto; border-bottom-left-radius: 0.25rem; }
+    .message.ai { background: linear-gradient(135deg, var(--ai-msg-bg), #2D3748); color: var(--text-primary); margin-right: auto auto; border-bottom-left-radius: 0.25rem; }
     .message-time { font-size: 0.65rem; opacity: 0.6; margin-top: 0.35rem; text-align: right; }
     .message-time.ai { text-align: left; }
     .sidebar { position: fixed; top: 0; left: -100%; width: 280px; height: 100vh; background: white; box-shadow: 2px 0 10px rgba(0,0,0,0.1); transition: left 0.3s ease; z-index: 40; overflow-y: auto; }
@@ -75,7 +75,6 @@
           <path fill="#fff" d="M19.75 2.25h3L12 21.75h-3L1.25 2.25h3l7.5 17.19z"/>
         </svg>
       </div>
-      <!-- Connection indicator -->
       <div id="api-status"></div>
     </div>
 
@@ -97,7 +96,6 @@
       </button>
     </div>
 
-    <!-- Sidebar & Alert (unchanged) -->
     <div id="sidebar" class="sidebar">
       <div class="sidebar-header">
         <div class="v-logo">
@@ -144,7 +142,6 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    // Remote Config
     let xaiApiKey = null;
     let xaiEndpoint = "https://api.x.ai/v1/chat/completions";
     const statusDot = document.getElementById('api-status');
@@ -160,23 +157,20 @@
       try {
         await fetchAndActivate(remoteConfig);
         xaiApiKey = getString(remoteConfig, 'xai_api_key').trim();
-        const fetchedEndpoint = getString(remoteConfig, 'xai_endpoint').trim();
-        if (fetchedEndpoint) xaiEndpoint = fetchedEndpoint;
+        const fetched = getString(remoteConfig, 'xai_endpoint').trim();
+        if (fetched) xaiEndpoint = fetched;
 
         if (xaiApiKey && xaiApiKey.length > 10) {
           statusDot.classList.add('connected');
-          console.log("✅ xAI API connected!");
-        } else {
-          throw new Error("API key missing or too short");
-        }
+          console.log("✅ xAI API ready – powered by Grok-3");
+        } else throw new Error("Invalid key");
       } catch (err) {
-        console.error("Remote Config / xAI init failed:", err);
-        statusDot.style.background = 'red';
+        console.error("Remote Config failed:", err);
       }
     }
 
     async function getReplyFromXai(message) {
-      if (!xaiApiKey) return "API not connected yet – check Remote Config";
+      if (!xaiApiKey) return "API key not loaded yet…";
 
       try {
         const response = await fetch(xaiEndpoint, {
@@ -186,15 +180,16 @@
             "Authorization": `Bearer ${xaiApiKey}`
           },
           body: JSON.stringify({
-            model: "grok-beta",
+            model: "grok-3",           // ← Current working model (Nov 2025)
             messages: [{ role: "user", content: message }],
-            temperature: 0.7
+            temperature: 0.7,
+            stream: false              // ← Required
           })
         });
 
         if (!response.ok) {
           const err = await response.text();
-          throw new Error(`HTTP ${response.status}: ${err}`);
+          throw new Error(`xAI ${response.status}: ${err}`);
         }
 
         const data = await response.json();
@@ -205,7 +200,6 @@
       }
     }
 
-    // UI Elements
     const el = {
       messages: document.getElementById('chat-messages'),
       input: document.getElementById('chat-input'),
@@ -226,20 +220,15 @@
     let userId = null;
     let pendingDeleteId = null;
 
-    document.addEventListener('click', (e) => {
+    document.addEventListener('click', e => {
       if (!el.sidebar.contains(e.target) && !el.menuBtn.contains(e.target)) {
         el.sidebar.classList.remove('open');
       }
     });
 
-    el.menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      el.sidebar.classList.toggle('open');
-    });
+    el.menuBtn.addEventListener('click', e => { e.stopPropagation(); el.sidebar.classList.toggle('open'); });
 
-    function formatTime(ts) {
-      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
+    function formatTime(ts) { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
 
     function addMessage(text, sender, timestamp = Date.now()) {
       const div = document.createElement('div');
@@ -255,19 +244,14 @@
 
     function saveMessage(text, sender) {
       if (!currentConvId) return;
-      push(ref(db, `users/${userId}/conversations/${currentConvId}/messages`), {
-        text, sender, timestamp: Date.now()
-      });
+      push(ref(db, `users/${userId}/conversations/${currentConvId}/messages`), { text, sender, timestamp: Date.now() });
     }
 
-    function generateTitle(firstMessage) {
-      return firstMessage.trim().slice(0, 30) + (firstMessage.length > 30 ? '...' : '');
-    }
+    function generateTitle(msg) { return msg.trim().slice(0, 30) + (msg.length > 30 ? '...' : ''); }
 
     async function send() {
       const text = el.input.value.trim();
       if (!text) return;
-
       if (!currentConvId) startNewConversation();
 
       addMessage(text, 'user');
@@ -301,56 +285,36 @@
       el.welcome.classList.add('hidden');
       if (data.messages) {
         Object.entries(data.messages)
-          .sort(([,a], [,b]) => a.timestamp - b.timestamp)
+          .sort(([,a],[,b]) => a.timestamp - b.timestamp)
           .forEach(([, m]) => addMessage(m.text, m.sender, m.timestamp));
       }
       renderSidebar();
     }
 
-    function showDeleteAlert(convId) {
-      pendingDeleteId = convId;
-      el.overlay.classList.add('show');
-      el.alert.classList.add('show');
-    }
-
-    function hideDeleteAlert() {
-      el.overlay.classList.remove('show');
-      el.alert.classList.remove('show');
-      pendingDeleteId = null;
-    }
-
+    function showDeleteAlert(id) { pendingDeleteId = id; el.overlay.classList.add('show'); el.alert.classList.add('show'); }
+    function hideDeleteAlert() { el.overlay.classList.remove('show'); el.alert.classList.remove('show'); pendingDeleteId = null; }
     function confirmDelete() {
       if (pendingDeleteId) {
         remove(ref(db, `users/${userId}/conversations/${pendingDeleteId}`));
-        if (pendingDeleteId === currentConvId) {
-          el.messages.innerHTML = '';
-          el.welcome.classList.remove('hidden');
-          currentConvId = null;
-        }
-        hideDeleteAlert();
-        renderSidebar();
+        if (pendingDeleteId === currentConvId) { el.messages.innerHTML = ''; el.welcome.classList.remove('hidden'); currentConvId = null; }
+        hideDeleteAlert(); renderSidebar();
       }
     }
 
     function renderSidebar() {
       el.convList.innerHTML = '';
       Object.entries(conversations)
-        .sort(([,a], [,b]) => b.createdAt - a.createdAt)
+        .sort(([,a],[,b]) => b.createdAt - a.createdAt)
         .forEach(([id, conv]) => {
           const div = document.createElement('div');
           div.className = `conv-item ${id === currentConvId ? 'active' : ''}`;
-          div.innerHTML = `
-            <span>${conv.title || "New Chat"}</span>
+          div.innerHTML = `<span>${conv.title || "New Chat"}</span>
             <button class="delete-conv" data-id="${id}">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
               </svg>
-            </button>
-          `;
-          div.querySelector('.delete-conv').addEventListener('click', (e) => {
-            e.stopPropagation();
-            showDeleteAlert(id);
-          });
+            </button>`;
+          div.querySelector('.delete-conv').addEventListener('click', e => { e.stopPropagation(); showDeleteAlert(id); });
           div.addEventListener('click', () => loadConversation(id, conv));
           el.convList.appendChild(div);
         });
@@ -361,15 +325,13 @@
       onValue(ref(db, `users/${uid}/conversations`), snap => {
         conversations = snap.val() || {};
         renderSidebar();
-        if (!currentConvId && Object.keys(conversations).length > 0) {
-          const latest = Object.entries(conversations)
-            .sort(([,a], [,b]) => b.createdAt - a.createdAt)[0];
+        if (!currentConvId && Object.keys(conversations).length) {
+          const latest = Object.entries(conversations).sort(([,a],[,b]) => b.createdAt - a.createdAt)[0];
           loadConversation(latest[0], latest[1]);
         }
       });
     }
 
-    // Event listeners
     el.newConvSidebar.addEventListener('click', startNewConversation);
     el.send.addEventListener('click', send);
     el.input.addEventListener('keypress', e => e.key === 'Enter' && send());
@@ -377,14 +339,11 @@
     el.alertConfirm.addEventListener('click', confirmDelete);
     el.overlay.addEventListener('click', hideDeleteAlert);
 
-    // Start everything
     onAuthStateChanged(auth, user => {
       if (user) {
         loadUserData(user.uid);
-        initXaiConfig();  // This loads your API key from Remote Config
-      } else {
-        signInAnonymously(auth);
-      }
+        initXaiConfig();
+      } else signInAnonymously(auth);
     });
   </script>
 </body>
