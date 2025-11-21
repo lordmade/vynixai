@@ -57,13 +57,14 @@
     #alert-cancel { background: #6b7280; color: white; padding: 0.75rem 1.5rem; border-radius: 1rem; font-weight: 600; }
     .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 99; display: none; }
     .overlay.show { display: block; }
+    #api-status { position: absolute; right: 16px; top: 16px; width: 12px; height: 12px; border-radius: 50%; background: red; box-shadow: 0 0 8px red; transition: all 0.4s; }
+    #api-status.connected { background: lime; box-shadow: 0 0 15px lime; }
     @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   </style>
 </head>
 <body>
   <main class="flex flex-col h-screen">
-    <!-- Header with V logo -->
     <div class="header-container">
       <button id="menu-btn" class="menu-btn">
         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -74,6 +75,8 @@
           <path fill="#fff" d="M19.75 2.25h3L12 21.75h-3L1.25 2.25h3l7.5 17.19z"/>
         </svg>
       </div>
+      <!-- Connection indicator -->
+      <div id="api-status"></div>
     </div>
 
     <div class="welcome-container" id="welcome-container">
@@ -94,7 +97,7 @@
       </button>
     </div>
 
-    <!-- Sidebar -->
+    <!-- Sidebar & Alert (unchanged) -->
     <div id="sidebar" class="sidebar">
       <div class="sidebar-header">
         <div class="v-logo">
@@ -110,7 +113,6 @@
       <div id="conv-list" class="mt-4"></div>
     </div>
 
-    <!-- Custom Alert -->
     <div id="overlay" class="overlay"></div>
     <div id="custom-alert">
       <h3 class="text-xl font-bold mb-4">Delete Conversation?</h3>
@@ -126,6 +128,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, onValue, push, set, remove, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getRemoteConfig, getString, fetchAndActivate } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -137,10 +140,72 @@
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
-    initializeApp(firebaseConfig);
-    const auth = getAuth();
-    const db = getDatabase();
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
 
+    // Remote Config
+    let xaiApiKey = null;
+    let xaiEndpoint = "https://api.x.ai/v1/chat/completions";
+    const statusDot = document.getElementById('api-status');
+
+    async function initXaiConfig() {
+      const remoteConfig = getRemoteConfig(app);
+      remoteConfig.settings.minimumFetchIntervalMillis = 3600000;
+      remoteConfig.defaultConfig = {
+        xai_api_key: "",
+        xai_endpoint: "https://api.x.ai/v1/chat/completions"
+      };
+
+      try {
+        await fetchAndActivate(remoteConfig);
+        xaiApiKey = getString(remoteConfig, 'xai_api_key').trim();
+        const fetchedEndpoint = getString(remoteConfig, 'xai_endpoint').trim();
+        if (fetchedEndpoint) xaiEndpoint = fetchedEndpoint;
+
+        if (xaiApiKey && xaiApiKey.length > 10) {
+          statusDot.classList.add('connected');
+          console.log("✅ xAI API connected!");
+        } else {
+          throw new Error("API key missing or too short");
+        }
+      } catch (err) {
+        console.error("Remote Config / xAI init failed:", err);
+        statusDot.style.background = 'red';
+      }
+    }
+
+    async function getReplyFromXai(message) {
+      if (!xaiApiKey) return "API not connected yet – check Remote Config";
+
+      try {
+        const response = await fetch(xaiEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${xaiApiKey}`
+          },
+          body: JSON.stringify({
+            model: "grok-beta",
+            messages: [{ role: "user", content: message }],
+            temperature: 0.7
+          })
+        });
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`HTTP ${response.status}: ${err}`);
+        }
+
+        const data = await response.json();
+        return data.choices[0].message.content.trim();
+      } catch (err) {
+        console.error("xAI error:", err);
+        return "Sorry, something went wrong with the AI right now.";
+      }
+    }
+
+    // UI Elements
     const el = {
       messages: document.getElementById('chat-messages'),
       input: document.getElementById('chat-input'),
@@ -156,7 +221,6 @@
       alertConfirm: document.getElementById('alert-confirm')
     };
 
-    let pairs = [];
     let conversations = {};
     let currentConvId = null;
     let userId = null;
@@ -174,74 +238,19 @@
     });
 
     function formatTime(ts) {
-      const d = new Date(ts);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
     function addMessage(text, sender, timestamp = Date.now()) {
       const div = document.createElement('div');
       div.className = `message ${sender}`;
       div.innerHTML = text.replace(/\n/g, '<br>');
-
       const time = document.createElement('div');
       time.className = `message-time ${sender}`;
       time.textContent = formatTime(timestamp);
-
       div.appendChild(time);
       el.messages.appendChild(div);
       el.messages.scrollTop = el.messages.scrollHeight;
-    }
-
-    function jaroWinkler(a, b) {
-      a = a.toLowerCase(); b = b.toLowerCase();
-      if (a === b) return 1;
-      const lenA = a.length, lenB = b.length;
-      if (!lenA || !lenB) return 0;
-      const matchWindow = Math.max(0, Math.floor(Math.max(lenA, lenB) / 2) - 1);
-      const aMatches = Array(lenA).fill(false);
-      const bMatches = Array(lenB).fill(false);
-      let matches = 0, transpositions = 0;
-
-      for (let i = 0; i < lenA; i++) {
-        const start = Math.max(0, i - matchWindow);
-        const end = Math.min(i + matchWindow + 1, lenB);
-        for (let j = start; j < end; j++) {
-          if (bMatches[j] || a[i] !== b[j]) continue;
-          aMatches[i] = bMatches[j] = true;
-          matches++; break;
-        }
-      }
-      if (!matches) return 0;
-      let k = 0;
-      for (let i = 0; i < lenA; i++) if (aMatches[i]) {
-        while (!bMatches[k]) k++;
-        if (a[i] !== b[k++]) transpositions++;
-      }
-      const jaro = (matches/lenA + matches/lenB + (matches - transpositions/2)/matches) / 3;
-      let prefix = 0;
-      for (let i = 0; i < Math.min(4, lenA, lenB); i++) if (a[i] === b[i]) prefix++; else break;
-      return jaro + prefix * 0.1 * (1 - jaro);
-    }
-
-    function getReply(message) {
-      const msg = message.toLowerCase().trim();
-      let best = null;
-      let bestScore = 0;
-
-      for (const p of pairs) {
-        const score = jaroWinkler(msg, p.trigger.toLowerCase().trim());
-        if (score > bestScore) {
-          bestScore = score;
-          best = p.reply;
-        }
-      }
-
-      if (bestScore >= 0.85) return best;
-      if (pairs.some(p => msg.includes(p.trigger.toLowerCase().trim()) || p.trigger.toLowerCase().trim().includes(msg))) {
-        return pairs.find(p => msg.includes(p.trigger.toLowerCase().trim()) || p.trigger.toLowerCase().trim().includes(msg)).reply;
-      }
-
-      return "I'm still learning about that! Check back soon ❤️";
     }
 
     function saveMessage(text, sender) {
@@ -255,7 +264,7 @@
       return firstMessage.trim().slice(0, 30) + (firstMessage.length > 30 ? '...' : '');
     }
 
-    function send() {
+    async function send() {
       const text = el.input.value.trim();
       if (!text) return;
 
@@ -269,12 +278,12 @@
       }
 
       el.input.value = '';
+      addMessage("Typing...", 'ai');
 
-      setTimeout(() => {
-        const reply = getReply(text);
-        addMessage(reply, 'ai');
-        saveMessage(reply, 'ai');
-      }, 400 + Math.random() * 400);
+      const reply = await getReplyFromXai(text);
+      el.messages.lastElementChild.remove();
+      addMessage(reply, 'ai');
+      saveMessage(reply, 'ai');
     }
 
     function startNewConversation() {
@@ -319,6 +328,7 @@
           currentConvId = null;
         }
         hideDeleteAlert();
+        renderSidebar();
       }
     }
 
@@ -346,14 +356,6 @@
         });
     }
 
-    onValue(ref(db, 'pairs'), snap => {
-      pairs = [];
-      const data = snap.val() || {};
-      Object.values(data).forEach(p => {
-        if (p.trigger && p.reply) pairs.push({ trigger: p.trigger.trim(), reply: p.reply.trim() });
-      });
-    });
-
     function loadUserData(uid) {
       userId = uid;
       onValue(ref(db, `users/${uid}/conversations`), snap => {
@@ -367,6 +369,7 @@
       });
     }
 
+    // Event listeners
     el.newConvSidebar.addEventListener('click', startNewConversation);
     el.send.addEventListener('click', send);
     el.input.addEventListener('keypress', e => e.key === 'Enter' && send());
@@ -374,9 +377,14 @@
     el.alertConfirm.addEventListener('click', confirmDelete);
     el.overlay.addEventListener('click', hideDeleteAlert);
 
+    // Start everything
     onAuthStateChanged(auth, user => {
-      if (user) loadUserData(user.uid);
-      else signInAnonymously(auth);
+      if (user) {
+        loadUserData(user.uid);
+        initXaiConfig();  // This loads your API key from Remote Config
+      } else {
+        signInAnonymously(auth);
+      }
     });
   </script>
 </body>
