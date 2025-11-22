@@ -34,14 +34,24 @@
     .message.user .content { background: linear-gradient(135deg, #E0E7FF, #C7D2FE); color: #1E1E1E; }
     .message.ai .content { background: linear-gradient(135deg, #1C2526, #2D3748); color: white; }
 
-    .message-controls {
-      display: flex; gap: 8px; margin-top: 6px; opacity: 0; transition: opacity 0.2s;
+    /* ---- icon controls inside bubble ---- */
+    .msg-icon-group {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      opacity: 0;
+      transition: opacity 0.2s;
     }
-    .message.ai:hover .message-controls { opacity: 1; }
-    .msg-btn {
-      width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s;
+    .message.ai:hover .msg-icon-group { opacity: 1; }
+    .msg-icon {
+      width: 28px; height: 28px; border-radius: 50%; background: rgba(255,255,255,0.2);
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      transition: background 0.2s, transform 0.15s;
     }
-    .msg-btn:hover { background: rgba(255,255,255,0.4); transform: scale(1.1); }
+    .msg-icon:hover { background: rgba(255,255,255,0.4); transform: scale(1.1); }
 
     .input-bar { position: fixed; bottom: 0; left: 0; right: 0; padding: 0.75rem 1rem; background: var(--bg); border-top: 1px solid #ddd; z-index: 20; }
     .input-container { background: var(--card-bg); border-radius: 1.5rem; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
@@ -187,7 +197,7 @@
       } else {
         els.slideName.textContent = userProfile.name;
         els.slideProfile.textContent = userProfile.name[0].toUpperCase();
-        els.slideGrade.textContent = `Grade \( {userProfile.grade} • \){userProfile.role.charAt(0).toUpperCase() + userProfile.role.slice(1)}`;
+        els.slideGrade.textContent = `Grade ${userProfile.grade} • ${userProfile.role.charAt(0).toUpperCase() + userProfile.role.slice(1)}`;
       }
     }
 
@@ -205,14 +215,14 @@
     // Tokens
     async function loadTokens() {
       const today = new Date().toISOString().slice(0,10);
-      const snap = await get(ref(db, `tokenUsage/\( {userId}/ \){today}`));
+      const snap = await get(ref(db, `tokenUsage/${userId}/${today}`));
       todayTokens = snap.val() || 0;
       els.tokenCount.textContent = `${todayTokens.toLocaleString()} / 15,000`;
       els.tokenFill.style.width = `${(todayTokens / DAILY_LIMIT) * 100}%`;
     }
     async function addTokens(n) {
       const today = new Date().toISOString().slice(0,10);
-      await set(ref(db, `tokenUsage/\( {userId}/ \){today}`), increment(n));
+      await set(ref(db, `tokenUsage/${userId}/${today}`), increment(n));
       todayTokens += n;
       loadTokens();
     }
@@ -227,7 +237,7 @@
 
     // AI + Voice + Copy
     async function getReply(msg) {
-      const system = `You are StudyBuddy, a fun and kind tutor for \( {userProfile.name}, a Grade \){userProfile.grade} ${userProfile.role} in South Africa. Speak clearly and encouragingly.`;
+      const system = `You are StudyBuddy, a fun and kind tutor for ${userProfile.name}, a Grade ${userProfile.grade} ${userProfile.role} in South Africa. Speak clearly and encouragingly.`;
       const res = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST", headers: { "Authorization": `Bearer ${xaiApiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ model: "grok-3", messages: [{role:"system",content:system}, ...history.slice(-15), {role:"user",content:msg}], temperature: 0.7 })
@@ -244,9 +254,10 @@
       div.className = `message ${sender}`;
       div.innerHTML = `
         <div class="content">${marked.parse(text)}</div>
-        ${sender === 'ai' ? `<div class="message-controls">
-          <button class="msg-btn copy-btn" title="Copy">Copy</button>
-          <button class="msg-btn voice-btn" title="Read aloud">Speaker</button>
+        ${sender === 'ai' ? `
+        <div class="msg-icon-group">
+          <button class="msg-icon copy-btn" title="Copy">${copyIcon()}</button>
+          <button class="msg-icon voice-btn" title="Read aloud">${speakerIcon()}</button>
         </div>` : ''}
       `;
       els.chatPane.appendChild(div);
@@ -255,12 +266,28 @@
 
       if (sender === 'ai') {
         div.querySelector('.copy-btn').onclick = () => { navigator.clipboard.writeText(text); alert("Copied!"); };
-        div.querySelector('.voice-btn').onclick = () => {
-          const utter = new SpeechSynthesisUtterance(text);
-          utter.lang = 'en-ZA';
-          speechSynthesis.speak(utter);
-        };
+        div.querySelector('.voice-btn').onclick = () => speakHuman(text);
       }
+    }
+
+    function copyIcon() {
+      return `<svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 00-2 2v14h2V3h12V1zm3 4H8a2 2 0 00-2 2v14a2 2 0 002 2h11a2 2 0 002-2V7a2 2 0 00-2-2zm0 16H8V7h11v14z"/></svg>`;
+    }
+    function speakerIcon() {
+      return `<svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 000-3v3zM16 4.5a7.5 7.5 0 000 15v-1.5a6 6 0 000-12V4.5z"/></svg>`;
+    }
+
+    function speakHuman(text) {
+      const utter = new SpeechSynthesisUtterance();
+      utter.text = text.split('.').join('. '); // tiny pause
+      utter.lang = 'en-ZA';
+      utter.rate = 0.92;
+      utter.pitch = 0.96;
+      // pick SA voice if available
+      const voices = speechSynthesis.getVoices();
+      const v = voices.find(v => v.lang === 'en-ZA');
+      if (v) utter.voice = v;
+      speechSynthesis.speak(utter);
     }
 
     async function send() {
