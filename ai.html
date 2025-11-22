@@ -8,7 +8,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
   <style>
@@ -169,7 +168,7 @@
         color: white; font-weight: 700; font-size: .8rem; text-align: center;
     }
 
-    /* ---------- OVERLAY & TOAST ---------- */
+    /* ---------- OVERLAY & TOAST ---------- -->
     #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); opacity: 0; visibility: hidden; transition: all .3s; z-index: 35; }
     #overlay.on { opacity: 1; visibility: visible; }
     #toast {
@@ -198,6 +197,18 @@
   </style>
 </head>
 <body>
+
+  <!-- ROLE PICKER (first load only) -->
+  <div id="roleModal" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div class="bg-white rounded-2xl p-6 max-w-md w-11/12 text-center">
+      <h2 class="text-2xl font-bold mb-4">Welcome to StudyBuddy</h2>
+      <p class="mb-6 text-gray-600">I am a...</p>
+      <div class="flex gap-4 justify-center">
+        <button id="pickStudent" class="px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Student (R29/mo)</button>
+        <button id="pickTeacher" class="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">Teacher (R199/mo)</button>
+      </div>
+    </div>
+  </div>
 
   <!-- TOP BAR (same icons) -->
   <header class="top-bar">
@@ -322,6 +333,9 @@
     const hiddenFile = document.getElementById('hiddenFile');
     const fileName = document.getElementById('fileName');
     const inputBar = document.getElementById('inputBar');
+    const roleModal = document.getElementById('roleModal');
+    const pickStudent = document.getElementById('pickStudent');
+    const pickTeacher = document.getElementById('pickTeacher');
 
     let xaiApiKey = null;
     let userId = null;
@@ -329,63 +343,89 @@
     let conversations = {};
     let history = [];
     let todayTokensUsed = 0;
-    let isPro = false;
     let currentImage = null;
+    let userRole = null; // 'student' | 'teacher'
 
-    const DAILY_LIMIT = 15000;
-    const PRO_LIMIT = 1000000;
+    // ---------- TIERED PRICING ----------
+    const TIER = {
+      student: { monthly: 29, yearly: 1499, tokens: 15000, name: 'Student' },
+      teacher: { monthly: 199, yearly: 1499, tokens: 50000, name: 'Teacher' }
+    };
 
-    const SYSTEM_PROMPT = `You are StudyBuddy — the kindest, smartest tutor for Grades 1–12 in South Africa.
-You help with homework, explain concepts, and make learning fun.
-- Auto-detect grade level from question
-- Use simple language for younger kids, deeper for teens
-- Always ask: "Got it? Want another example?"
-- Celebrate wins with emojis
-- For photos: solve step-by-step like a real teacher
-You are warm, patient, and never boring.`;
-
-    marked.setOptions({ breaks: true, gfm: true, highlight: (code, lang) => Prism.languages[lang] ? Prism.highlight(code, Prism.languages[lang], lang) : code });
-
-    function renderMarkdown(text) {
-      let html = marked.parse(text);
-      return html.replace(/<pre><code class="language-([^"]+)">([\s\S]*?)<\/code><\/pre>/g,
-        '<pre><code class="language-$1">$2</code><button class="code-copy-btn">Copy</button></pre>');
+    // ---------- ROLE PICKER ----------
+    async function askRoleOnce() {
+        const snap = await get(ref(db, `users/${userId}/role`));
+        if (snap.exists()) { userRole = snap.val(); return; }
+        roleModal.style.display = 'flex';
+        return new Promise(res => {
+            pickStudent.onclick = () => { userRole = 'student'; res(); };
+            pickTeacher.onclick = () => { userRole = 'teacher'; res(); };
+        }).then(() => {
+            roleModal.style.display = 'none';
+            return set(ref(db, `users/${userId}/role`), userRole);
+        });
     }
 
-    async function initRemote() {
-      const rc = getRemoteConfig(app);
-      await fetchAndActivate(rc);
-      xaiApiKey = getString(rc, 'xai_api_key').trim();
-      if (xaiApiKey) document.getElementById('api-status').classList.add('connected');
+    // ---------- DAILY RESET (client-side) ----------
+    async function resetIfNeeded() {
+        const today = new Date().toISOString().slice(0,10);
+        const last = await get(ref(db, `users/${userId}/lastReset`));
+        if (last.val() !== today) {
+            await set(ref(db, `users/${userId}/lastReset`), today);
+            await set(ref(db, `users/${userId}/usage/${today}`), 0);
+            todayTokensUsed = 0;
+            updateTokenUI();
+        }
     }
 
-    async function loadUsage() {
-      const today = new Date().toISOString().slice(0,10);
-      const snap = await get(ref(db, `usage/${userId}/${today}`));
-      todayTokensUsed = snap.val() || 0;
-      updateTokenUI();
-    }
-
+    // ---------- TOKEN UI ----------
     function updateTokenUI() {
-        const limit = isPro ? PRO_LIMIT : DAILY_LIMIT;
+        const limit = TIER[userRole]?.tokens || 15000;
         tokenCount.textContent = `${todayTokensUsed.toLocaleString()} / ${limit.toLocaleString()}`;
         tokenFill.style.width = `${(todayTokensUsed / limit) * 100}%`;
-        userPlanBadge.textContent = isPro ? 'Pro • 1M tokens/mo' : 'Free • 15K tokens/day';
+        userPlanBadge.textContent = `${TIER[userRole]?.name || 'Free'} • ${limit.toLocaleString()} tokens/day`;
     }
 
     async function addUsage(input, output) {
         todayTokensUsed += input + output;
         const today = new Date().toISOString().slice(0,10);
-        await set(ref(db, `usage/${userId}/${today}`), todayTokensUsed);
+        await set(ref(db, `users/${userId}/usage/${today}`), todayTokensUsed);
         updateTokenUI();
-        if (!isPro && todayTokensUsed >= DAILY_LIMIT) upgradeModal.classList.add('show');
+        if (todayTokensUsed >= (TIER[userRole]?.tokens || 15000)) showUpgrade();
     }
 
-    function estimateTokens(str) { return Math.ceil(str.length / 3.8); }
+    // ---------- UPGRADE MODAL (tiered) ----------
+    function showUpgrade() {
+        const monthly = TIER[userRole].monthly;
+        const yearly = TIER[userRole].yearly;
+        document.querySelector('.modal-title').textContent = `Upgrade to ${TIER[userRole].name} Pro`;
+        document.querySelector('.modal-content p').textContent = `Unlimited tutoring · Homework photos · All subjects`;
+        mockCheckout.textContent = `Start Free Trial → R${monthly}/mo or R${yearly}/yr`;
+        upgradeModal.classList.add('show');
+    }
 
+    // ---------- LESSON PLAN GENERATOR (teacher only) ----------
+    async function generateLessonPlan(topic, grade) {
+        if (userRole !== 'teacher') return null;
+        const prompt = `Write a complete, printable lesson plan for South African Grade ${grade} on "${topic}".
+Include:
+1. Learning objectives (3 bullet points)
+2. 45-minute timeline (introduction, activity, consolidation, assessment)
+3. Simple assessment rubric (1-4 scale)
+4. One homework question with memo`;
+        const messages = [{ role: 'user', content: prompt }];
+        const res = await fetch("https://api.x.ai/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${xaiApiKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ model: "grok-3", messages, temperature: 0.4 })
+        }).then(r => r.json());
+        return res.choices?.[0]?.message?.content || 'Lesson plan unavailable';
+    }
+
+    // ---------- CORE CHAT ----------
     async function getReply(userMsg) {
         const messages = [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: `You are StudyBuddy – a ${userRole} assistant for Grades 1-12 in South Africa.` },
             ...history.slice(-20).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.text })),
             { role: "user", content: userMsg }
         ];
@@ -401,10 +441,7 @@ You are warm, patient, and never boring.`;
         }
 
         const inputTokens = estimateTokens(JSON.stringify(messages));
-        if (!isPro && todayTokensUsed + inputTokens > DAILY_LIMIT) {
-            upgradeModal.classList.add('show');
-            return "Daily limit reached! Upgrade to Pro for unlimited access.";
-        }
+        if (todayTokensUsed + inputTokens > (TIER[userRole]?.tokens || 15000)) { showUpgrade(); return "Limit reached."; }
 
         const res = await fetch("https://api.x.ai/v1/chat/completions", {
             method: "POST",
@@ -588,7 +625,7 @@ You are warm, patient, and never boring.`;
         }
     });
 
-    // ---------- AUTH ----------
+    // ---------- AUTH + ROLE + RESET ----------
     onAuthStateChanged(auth, async user => {
         if (!user) {
             window.location.href = "login.html";
@@ -596,6 +633,8 @@ You are warm, patient, and never boring.`;
         }
         userId = user.uid;
         await initRemote();
+        await resetIfNeeded();
+        await askRoleOnce();
         await loadUsage();
         await loadProfile();
         onValue(ref(db, `users/${userId}/conversations`), snap => {
