@@ -280,22 +280,6 @@
     </div>
   </div>
 
-  <!-- WEEK-1 GRADE MODAL -->
-  <div id="gradeModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
-    <div class="bg-white rounded-2xl p-6 w-72 shadow-2xl">
-      <h3 class="font-bold text-lg mb-2">Welcome to StudyBuddy 👋</h3>
-      <p class="text-sm text-gray-600 mb-4">Which grade are you in?</p>
-      <select id="gradeSelect" class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-teal-500">
-        <option disabled selected value="">Pick your grade</option>
-        <option>Grade 1</option><option>Grade 2</option><option>Grade 3</option>
-        <option>Grade 4</option><option>Grade 5</option><option>Grade 6</option>
-        <option>Grade 7</option><option>Grade 8</option><option>Grade 9</option>
-        <option>Grade 10</option><option>Grade 11</option><option>Grade 12</option>
-      </select>
-      <button onclick="saveGrade()" class="mt-5 w-full bg-gradient-to-r from-emerald-600 to-teal-600 text-white py-2 rounded-lg font-semibold">Start learning 🚀</button>
-    </div>
-  </div>
-
   <!-- ---------- Firebase ---------- -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
@@ -341,7 +325,6 @@
     const hiddenFile = document.getElementById('hiddenFile');
     const fileName = document.getElementById('fileName');
     const inputBar = document.getElementById('inputBar');
-    const gradeModal = document.getElementById('gradeModal');
 
     let xaiApiKey = null;
     let userId = null;
@@ -351,10 +334,12 @@
     let todayTokensUsed = 0;
     let isPro = false;
     let currentImage = null;
-    let userGrade = null;
 
     const DAILY_LIMIT = 15000;
     const PRO_LIMIT = 1000000;
+
+    // --- learner profile ---
+    let learnerProfile = { name: null, grade: null, role: null };   // ← NEW
 
     let SYSTEM_PROMPT = `You are StudyBuddy — the kindest, smartest tutor for Grades 1–12 in South Africa.
 You help with homework, explain concepts, and make learning fun.
@@ -404,9 +389,16 @@ You are warm, patient, and never boring.`;
 
     function estimateTokens(str) { return Math.ceil(str.length / 3.8); }
 
+    // ---------- profile-aware reply ----------
     async function getReply(userMsg) {
+        // 1️⃣  If we still need info, ask casually
+        if (!learnerProfile.name || !learnerProfile.grade || !learnerProfile.role) {
+            return askMissingInfo(userMsg);
+        }
+
+        // 2️⃣  Normal call
         const messages = [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: buildDynamicPrompt() },
             ...history.slice(-20).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.text })),
             { role: "user", content: userMsg }
         ];
@@ -437,6 +429,22 @@ You are warm, patient, and never boring.`;
         window.lastCapsCode = detectCaps(userMsg);
         await addUsage(inputTokens, estimateTokens(reply));
         return reply;
+    }
+
+    function buildDynamicPrompt() {
+        let p = SYSTEM_PROMPT;
+        if (learnerProfile.name) p += `\nLearner's name: ${learnerProfile.name}.`;
+        if (learnerProfile.grade) p += `\nLearner is in ${learnerProfile.grade}.`;
+        if (learnerProfile.role) p += `\nAccount type: ${learnerProfile.role}.`;
+        return p;
+    }
+
+    function askMissingInfo(msg) {
+        let missing = [];
+        if (!learnerProfile.name) missing.push('name');
+        if (!learnerProfile.grade) missing.push('grade');
+        if (!learnerProfile.role) missing.push('role (student, parent or teacher)');
+        return `Before we dive in, could you quickly tell me your ${missing.join(' and ')}? 😊`;
     }
 
     function addMessage(text, sender, timestamp = Date.now(), typing = false) {
@@ -501,6 +509,19 @@ You are warm, patient, and never boring.`;
       btn.parentElement.innerHTML = `<span class="text-xs text-teal-300">Thanks for the feedback!</span>`;
     }
 
+    // ---------- parse profile from chat ----------
+    function extractProfile(txt) {
+        // name
+        const nameMatch = txt.match(/my name is (\w+)/i);
+        if (nameMatch) learnerProfile.name = nameMatch[1];
+        // grade
+        const grMatch = txt.match(/\b(grade\s?\d{1,2})\b/i);
+        if (grMatch) learnerProfile.grade = grMatch[1].replace(/\s+/,'');
+        // role
+        const roleMatch = txt.match(/\b(i am|i'm)\s+(a\s+)?(student|parent|teacher)/i);
+        if (roleMatch) learnerProfile.role = roleMatch[3].toLowerCase();
+    }
+
     async function send() {
         const text = chatInput.value.trim();
         if (!text && !currentImage) return;
@@ -511,6 +532,10 @@ You are warm, patient, and never boring.`;
 
         saveMessage(text || "[Photo]", 'user');
         history.push({ sender: 'user', text: text || "[Photo]" });
+
+        // try to extract name/grade/role before answering
+        extractProfile(text);
+
         chatInput.value = '';
         currentImage = null;
         fileName.textContent = '';
@@ -522,6 +547,11 @@ You are warm, patient, and never boring.`;
         addMessage(reply, 'ai');
         history.push({ sender: 'ai', text: reply });
         saveMessage(reply, 'ai');
+
+        // persist profile if complete
+        if (learnerProfile.name || learnerProfile.grade || learnerProfile.role) {
+            await set(ref(db, `users/${userId}/profile`), learnerProfile);
+        }
     }
 
     uploadBtnInner.onclick = () => hiddenFile.click();
@@ -595,23 +625,9 @@ You are warm, patient, and never boring.`;
         slideName.textContent = data.displayName || 'Student';
         slideProfile.textContent = (data.displayName || 'S')[0].toUpperCase();
         isPro = data.plan === 'pro';
-        const gSnap = await get(ref(db, `users/${userId}/grade`));
-        userGrade = gSnap.val() || null;
-        if (!userGrade) gradeModal.classList.remove('hidden');
-        else patchSystemPrompt();
+        const pSnap = await get(ref(db, `users/${userId}/profile`));
+        learnerProfile = pSnap.val() || { name: null, grade: null, role: null };
         updateTokenUI();
-    }
-    function patchSystemPrompt() {
-        if (userGrade) SYSTEM_PROMPT += `\nThe learner is in ${userGrade}.`;
-    }
-    async function saveGrade() {
-      const sel = document.getElementById('gradeSelect');
-      if (!sel.value) return;
-      userGrade = sel.value;
-      await set(ref(db, `users/${userId}/grade`), userGrade);
-      patchSystemPrompt();
-      gradeModal.classList.add('hidden');
-      toast(`Awesome! We’ll tune lessons for ${userGrade}.`);
     }
     function toast(msg, dur = 2500) {
         const t = document.getElementById('toast');
