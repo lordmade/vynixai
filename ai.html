@@ -110,7 +110,7 @@
     const db = getDatabase(app);
     let xaiApiKey = null, xaiEndpoint = "https://api.x.ai/v1/chat/completions";
     const statusDot = document.getElementById('api-status');
-    let userId = null, todayTokensUsed = 0, xAccessToken = null, xUsername = null;
+    let userId = null, todayTokensUsed = 0, xAccessToken = null, xUserId = null, xUsername = null;
     let currentConvId = null, history = [], conversations = {};
     const DAILY_TOKEN_LIMIT = 25000;
     const SYSTEM_PROMPT = `You are Vynix AI, a super helpful, witty, and friendly AI assistant created by the vynix.ai team. Never mention Grok, xAI, Elon Musk, or any other model. You are Vynix AI — that's your full identity.`;
@@ -118,19 +118,21 @@
 
     marked.setOptions({ breaks: true, gfm: true });
 
-    // ==================== X OAuth ====================
-    const X_CLIENT_ID = "YOUR_X_CLIENT_ID_HERE"; // CHANGE THIS
+    // ==================== X OAuth (Fixed PKCE + User ID Fetch) ====================
+    const X_CLIENT_ID = "YOUR_X_CLIENT_ID_HERE"; // ← REPLACE WITH REAL CLIENT ID
 
     document.getElementById('connectXBtn').onclick = () => xAccessToken ? toast("Already connected!") : startXOAuth();
 
-    function startXOAuth() {
+    async function startXOAuth() {
       const verifier = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(43))));
-      const challenge = crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)).then(b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_'));
-      challenge.then(c => {
-        sessionStorage.setItem('cv', verifier);
-        const redirectUri = encodeURIComponent(location.origin + location.pathname);
-        location.href = `https://twitter.com/i/oauth2/authorize?client_id=\( {X_CLIENT_ID}&response_type=code&redirect_uri= \){redirectUri}&scope=tweet.read%20tweet.write%20users.read%20offline.access%20follows.read&state=vynix&code_challenge=${c}&code_challenge_method=S256`;
-      });
+      const encoder = new TextEncoder();
+      const data = encoder.encode(verifier);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hash = btoa(String.fromCharCode(...hashArray)).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+      sessionStorage.setItem('cv', verifier);
+      const redirectUri = encodeURIComponent(location.origin + location.pathname);
+      location.href = `https://twitter.com/i/oauth2/authorize?client_id=\( {X_CLIENT_ID}&response_type=code&redirect_uri= \){redirectUri}&scope=tweet.read%20tweet.write%20users.read%20offline.access%20follows.read&state=vynix&code_challenge=${hash}&code_challenge_method=S256`;
     }
 
     if (location.search.includes('code=')) {
@@ -142,46 +144,79 @@
     async function handleXCallback(code) {
       const verifier = sessionStorage.getItem('cv');
       sessionStorage.removeItem('cv');
-      const res = await fetch('https://api.twitter.com/2/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', client_id: X_CLIENT_ID, code, redirect_uri: encodeURIComponent(location.origin + location.pathname), code_verifier: verifier }) });
-      const data = await res.json();
-      if (data.access_token) {
-        xAccessToken = data.access_token;
-        const me = await fetch('https://api.twitter.com/2/users/me', { headers: { Authorization: `Bearer ${xAccessToken}` }}).then(r => r.json());
-        xUsername = me.data.username;
-        await set(ref(db, `users/${userId}/x`), { token: xAccessToken, username: xUsername });
-        document.getElementById('xBtnText').textContent = `@${xUsername} connected`;
-        document.getElementById('connectXBtn').style.background = '#1DA1F2';
-        toast("X connected! Try: trends or generate post");
-        history.replaceState(null, null, location.pathname);
+      try {
+        const res = await fetch('https://api.twitter.com/2/oauth2/token', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, 
+          body: new URLSearchParams({ 
+            grant_type: 'authorization_code', 
+            client_id: X_CLIENT_ID, 
+            code, 
+            redirect_uri: encodeURIComponent(location.origin + location.pathname), 
+            code_verifier: verifier 
+          }) 
+        });
+        const data = await res.json();
+        if (data.access_token) {
+          xAccessToken = data.access_token;
+          const meRes = await fetch('https://api.twitter.com/2/users/me', { headers: { Authorization: `Bearer ${xAccessToken}` } });
+          const meData = await meRes.json();
+          xUserId = meData.data.id;
+          xUsername = meData.data.username;
+          await set(ref(db, `users/${userId}/x`), { token: xAccessToken, userId: xUserId, username: xUsername });
+          document.getElementById('xBtnText').textContent = `@${xUsername} connected`;
+          document.getElementById('connectXBtn').style.background = '#1DA1F2';
+          toast("X connected! Try: trends or generate post");
+          history.replaceState(null, null, location.pathname);
+        } else {
+          toast("OAuth failed: " + (data.detail || 'Try again'));
+        }
+      } catch (e) {
+        toast("Connection error: " + e.message);
       }
     }
 
     // ==================== Helpers ====================
     function toast(msg, dur = 3000) {
       const t = document.getElementById('toast');
-      t.textContent = msg; t.classList.add('show');
+      t.textContent = msg; 
+      t.classList.add('show');
       clearTimeout(t.timeout);
       t.timeout = setTimeout(() => t.classList.remove('show'), dur);
     }
 
     function estimateTokens(t) { return Math.ceil(t.length / 3.8); }
     async function addUsage(i, o) {
+      if (!userId) return;
       todayTokensUsed += i + o;
       const today = new Date().toISOString().slice(0, 10);
       await set(ref(db, `usage/\( {userId}/ \){today}`), todayTokensUsed);
     }
 
+    async function loadUsage() {
+      if (!userId) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const snap = await get(ref(db, `usage/\( {userId}/ \){today}`));
+      todayTokensUsed = snap.val() || 0;
+    }
+
     function extractHotKeywords(tweets) {
       const map = {};
-      tweets?.forEach(t => t.text.split(/\s+/).forEach(w => {
-        w = w.replace(/[^\w#]/g, '');
-        if (w.length > 4 && !w.startsWith('http') && !w.startsWith('@')) map[w.toLowerCase()] = (map[w.toLowerCase()] || 0) + 1;
-      }));
+      tweets?.forEach(t => {
+        const words = t.text.split(/\s+/);
+        words.forEach(w => {
+          w = w.replace(/[^\w#]/g, '');
+          if (w.length > 4 && !w.startsWith('http') && !w.startsWith('@')) {
+            map[w.toLowerCase()] = (map[w.toLowerCase()] || 0) + 1;
+          }
+        });
+      });
       return Object.keys(map).sort((a,b) => map[b] - map[a]).slice(0, 12);
     }
 
-    // ==================== Core getReply (with X gate) ====================
+    // ==================== Core getReply (Updated Models + Fixed X Endpoint) ====================
     async function getReply(userMsg, hist = []) {
+      console.log('getReply called with:', userMsg); // Debug log
       const lower = userMsg.toLowerCase().trim();
       const isTrendCmd = /trend|generate post|viral|post about/i.test(lower);
 
@@ -191,51 +226,103 @@
           return "TrendSpotter needs your X account connected!\n\nTap Menu → **Connect X for Trends** → then try again.\n\nYou'll unlock personalized viral posts instantly";
         }
         hasPromptedX = false;
-        addMessage("Scanning your timeline...", 'ai');
+        const thinkingMsg = addMessage("Scanning your timeline...", 'ai');
 
         try {
-          const feed = await fetch(`https://api.twitter.com/2/users/me/timelines/reverse_chronological?tweet.fields=public_metrics&max_results=100`, { headers: { Authorization: `Bearer ${xAccessToken}` }}).then(r => r.json());
+          // Fetch user ID if not set
+          if (!xUserId) {
+            const meRes = await fetch('https://api.twitter.com/2/users/me', { headers: { Authorization: `Bearer ${xAccessToken}` } });
+            const meData = await meRes.json();
+            xUserId = meData.data.id;
+          }
+          // Fixed endpoint: /users/{id}/timelines/reverse_chronological
+          const feedRes = await fetch(`https://api.twitter.com/2/users/${xUserId}/timelines/reverse_chronological?tweet.fields=public_metrics,created_at&max_results=100`, { 
+            headers: { Authorization: `Bearer ${xAccessToken}` } 
+          });
+          const feed = await feedRes.json();
           const hot = extractHotKeywords(feed.data);
           const prompt = `You are TrendSpotter inside Vynix AI (@vynix_ai).\nHot topics right now: \( {hot.join(', ')}\nUser: " \){userMsg}"\nWrite ONE viral X post (max 280 chars) with hook + emojis + CTA. End with: "Powered by @vynix_ai"`;
 
-          const res = await fetch(xaiEndpoint, { method: "POST", headers: { "Authorization": `Bearer ${xaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "grok-4", messages: [{role:"user", content:prompt}], temperature: 0.94 }) });
-          const result = await res.json();
-          chatPane.lastElementChild.remove();
+          const aiModel = "grok-4.1"; // Latest 2025 model
+          const aiRes = await fetch(xaiEndpoint, { 
+            method: "POST", 
+            headers: { "Authorization": `Bearer ${xaiApiKey}`, "Content-Type": "application/json" }, 
+            body: JSON.stringify({ model: aiModel, messages: [{role:"user", content:prompt}], temperature: 0.94, stream: false }) 
+          });
+          if (!aiRes.ok) {
+            // Fallback to grok-3
+            const fallback = await fetch(xaiEndpoint, { 
+              ...aiRes, 
+              body: JSON.stringify({ model: "grok-3", ...JSON.parse(aiRes.body) }) 
+            });
+            const fallbackData = await fallback.json();
+            thinkingMsg.remove();
+            return fallbackData.choices[0].message.content;
+          }
+          const result = await aiRes.json();
+          thinkingMsg.remove();
           return result.choices[0].message.content;
         } catch (e) {
-          chatPane.lastElementChild.remove();
-          return "Trend scan failed — try again!";
+          console.error('Trend error:', e);
+          thinkingMsg.remove();
+          return "Trend scan failed — try again! (Check console for details)";
         }
       }
 
-      // Normal chat
-      if (!xaiApiKey) return "Vynix AI is waking up…";
+      // Normal chat (with error handling)
+      if (!xaiApiKey) return "Vynix AI is waking up… (Check Firebase Remote Config)";
       const msgs = [{ role: "system", content: SYSTEM_PROMPT }, ...hist.slice(-20).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.text })), { role: "user", content: userMsg }];
       const inputTokens = estimateTokens(msgs.map(m => m.content).join('\n'));
       if (todayTokensUsed + inputTokens > DAILY_TOKEN_LIMIT) return "Daily limit reached! Back tomorrow";
 
-      const res = await fetch(xaiEndpoint, { method: "POST", headers: { "Authorization": `Bearer ${xaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "grok-3", messages: msgs, temperature: 0.8 }) });
-      const data = await res.json();
-      const reply = data.choices[0].message.content.trim();
-      await addUsage(inputTokens, estimateTokens(reply));
-      return reply;
+      try {
+        const aiModel = "grok-4.1";
+        const res = await fetch(xaiEndpoint, { 
+          method: "POST", 
+          headers: { "Authorization": `Bearer ${xaiApiKey}`, "Content-Type": "application/json" }, 
+          body: JSON.stringify({ model: aiModel, messages: msgs, temperature: 0.8, stream: false }) 
+        });
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.error('xAI Error:', errorText);
+          throw new Error(errorText);
+        }
+        const data = await res.json();
+        const reply = data.choices[0].message.content.trim();
+        await addUsage(inputTokens, estimateTokens(reply));
+        return reply;
+      } catch (e) {
+        console.error('Chat error:', e);
+        return "Oops! Connection hiccup. Check keys & try again? (Console has details)";
+      }
     }
 
     // ==================== UI Functions ====================
     function addMessage(text, sender, ts = Date.now(), typing = false) {
-      const wrap = document.createElement('div'); wrap.className = `message ${sender}`;
-      const content = document.createElement('div'); content.className = 'content';
-      const time = document.createElement('div'); time.className = `message-time ${sender}`;
+      const wrap = document.createElement('div'); 
+      wrap.className = `message ${sender}`;
+      const content = document.createElement('div'); 
+      content.className = 'content';
+      const time = document.createElement('div'); 
+      time.className = `message-time ${sender}`;
       time.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      wrap.appendChild(content); wrap.appendChild(time);
-      chatPane.appendChild(wrap); chatPane.scrollTop = chatPane.scrollHeight;
+      wrap.appendChild(content); 
+      wrap.appendChild(time);
+      document.getElementById('chatPane').appendChild(wrap); 
+      document.getElementById('chatPane').scrollTop = document.getElementById('chatPane').scrollHeight;
       if (typing) {
+        content.textContent = '';
         let i = 0;
-        const interval = setInterval(() => {
-          content.textContent = text.slice(0, i);
-          i += 3;
-          if (i > text.length) { clearInterval(interval); content.innerHTML = marked.parse(text); Prism.highlightAllUnder(content); }
-        }, 20);
+        const typeInterval = setInterval(() => {
+          if (i < text.length) {
+            content.textContent += text.charAt(i++);
+            wrap.scrollIntoView({ behavior: 'smooth', block: 'end' });
+          } else {
+            clearInterval(typeInterval);
+            content.innerHTML = marked.parse(text);
+            Prism.highlightAllUnder(content);
+          }
+        }, 30);
       } else {
         content.innerHTML = sender === 'ai' ? marked.parse(text) : text.replace(/\n/g, '<br>');
         Prism.highlightAllUnder(content);
@@ -246,23 +333,33 @@
     async function sendMessage() {
       const input = document.getElementById('chatInput');
       const text = input.value.trim();
-      if (!text || !userId) return;
+      if (!text || !userId) { 
+        toast("Log in or type something!"); 
+        return; 
+      }
       if (!currentConvId) startNewConversation();
 
       addMessage(text, 'user');
       saveMessage(text, 'user');
       history.push({ sender: 'user', text });
       input.value = '';
-      addMessage('Thinking...', 'ai');
-      const reply = await getReply(text, history);
-      chatPane.lastElementChild.remove();
-      addMessage(reply, 'ai', Date.now(), true);
-      history.push({ sender: 'ai', text: reply });
-      saveMessage(reply, 'ai');
+      const thinking = addMessage('Thinking...', 'ai');
+      try {
+        await loadUsage(); // Ensure usage loaded
+        const reply = await getReply(text, history);
+        thinking.remove();
+        const msg = addMessage(reply, 'ai', Date.now(), true);
+        history.push({ sender: 'ai', text: reply });
+        saveMessage(reply, 'ai');
+      } catch (e) {
+        thinking.remove();
+        addMessage("Send failed: " + e.message, 'ai');
+      }
     }
 
     function startNewConversation() {
-      history = []; chatPane.innerHTML = '';
+      history = []; 
+      document.getElementById('chatPane').innerHTML = '';
       document.getElementById('welcome').classList.add('hidden');
       const r = push(ref(db, `users/${userId}/conversations`));
       currentConvId = r.key;
@@ -270,7 +367,23 @@
     }
 
     function saveMessage(text, sender) {
-      if (currentConvId) push(ref(db, `users/\( {userId}/conversations/ \){currentConvId}/messages`), { text, sender, timestamp: Date.now() });
+      if (currentConvId && userId) {
+        push(ref(db, `users/\( {userId}/conversations/ \){currentConvId}/messages`), { text, sender, timestamp: Date.now() });
+      }
+    }
+
+    // Sidebar rendering (simplified for focus on core)
+    function renderSidebar() {
+      const convList = document.getElementById('convList');
+      convList.innerHTML = '';
+      Object.entries(conversations || {}).sort(([, a], [, b]) => b.createdAt - a.createdAt).forEach(([id, conv]) => {
+        const div = document.createElement('div');
+        div.className = `conv-item ${id === currentConvId ? 'active' : ''}`;
+        div.innerHTML = `<span>${conv.title || 'New Chat'}</span><button class="delete-conv">Delete</button>`;
+        div.querySelector('.delete-conv').onclick = (e) => { e.stopPropagation(); /* delete logic */ };
+        div.onclick = () => { /* load conv */ };
+        convList.appendChild(div);
+      });
     }
 
     // ==================== Event Listeners ====================
@@ -282,20 +395,32 @@
 
     // ==================== Firebase Init ====================
     onAuthStateChanged(auth, async user => {
-      if (!user) { signInAnonymously(auth); return; }
+      if (!user) { 
+        await signInAnonymously(auth); 
+        return; 
+      }
       userId = user.uid;
       const rc = getRemoteConfig(app);
+      rc.settings.minimumFetchIntervalMillis = 3600000;
       await fetchAndActivate(rc);
-      xaiApiKey = getString(rc, 'xai_api_key').trim();
-      if (xaiApiKey) statusDot.classList.add('connected');
+      xaiApiKey = getString(rc, 'xai_api_key')?.trim();
+      if (xaiApiKey?.length > 10) statusDot.classList.add('connected');
+      else toast("Add xai_api_key to Firebase Remote Config!");
 
       const xSnap = await get(ref(db, `users/${userId}/x`));
       if (xSnap.val()) {
         xAccessToken = xSnap.val().token;
+        xUserId = xSnap.val().userId;
         xUsername = xSnap.val().username;
         document.getElementById('xBtnText').textContent = `@${xUsername} connected`;
         document.getElementById('connectXBtn').style.background = '#1DA1F2';
       }
+
+      await loadUsage();
+      onValue(ref(db, `users/${userId}/conversations`), snap => {
+        conversations = snap.val() || {};
+        renderSidebar();
+      });
     });
   </script>
 </body>
