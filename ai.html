@@ -299,34 +299,78 @@ async function decrypt(b64) {
     }
 
     async function loadConversations() {
-  const snap = await get(ref(db, `users/${userId}/conversations`));
-  const list = els.sidebar.querySelector('#convList') || document.createElement('div');
-  list.id = 'convList'; list.className = 'flex-1 overflow-y-auto px-4 mt-4';
-  list.innerHTML = '';
+  const convList = document.getElementById('convList');
+  convList.innerHTML = '<p class="text-gray-500 text-center text-sm py-8">Loading chats...</p>';
 
-  if (!snap.exists()) {
-    list.innerHTML = '<p class="text-gray-500 text-center text-sm">No past chats</p>';
-  } else {
-    const convs = Object.entries(snap.val()).sort((a, b) => (b[1].lastMessage || 0) - (a[1].lastMessage || 0));
-    convs.forEach(([id, c]) => {
-      const div = document.createElement('div');
-      div.className = 'p-3 rounded-lg hover:bg-gray-100 cursor-pointer text-sm';
-      div.innerHTML = `
-        <div class="font-medium truncate">${c.title || "New Chat"}</div>
-        <div class="text-gray-500 text-xs truncate">${c.preview || "No preview"}</div>
-      `;
-      div.onclick = async () => {
-        currentConvId = id;
-        history = JSON.parse(await decrypt(c.historyEncrypted));
-        els.chatPane.innerHTML = '<div id="welcome" class="text-center text-gray-700"><h1 class="text-xl font-bold">Loading chat...</h1></div>';
-        els.welcome.classList.remove('hidden');
-        setTimeout(renderHistory, 100); // small delay for UX
-        els.overlay.click();
-      };
-      list.appendChild(div);
-    });
+  const snap = await get(ref(db, `users/${userId}/conversations`));
+  
+  convList.innerHTML = ''; // clear loading
+
+  if (!snap.exists() || Object.keys(snap.val()).length === 0) {
+    convList.innerHTML = '<p class="text-gray-500 text-center text-sm py-8">No past chats yet</p>';
+    return;
   }
-  els.sidebar.appendChild(list);
+
+  // Sort by last message time (newest first)
+  const conversations = Object.entries(snap.val())
+    .sort((a, b) => (b[1].lastMessage || 0) - (a[1].lastMessage || 0));
+
+  conversations.forEach(([id, convo]) => {
+    const div = document.createElement('div');
+    div.className = 'p-3 rounded-lg hover:bg-gray-100 cursor-pointer transition mb-2 border border-transparent hover:border-gray-300';
+    
+    // Highlight active conversation
+    if (id === currentConvId) {
+      div.classList.add('bg-teal-50', 'border-teal-300');
+    }
+
+    div.innerHTML = `
+      <div class="font-medium text-sm truncate">${convo.title || "New Chat"}</div>
+      <div class="text-xs text-gray-500 truncate mt-1">${convo.preview || "No messages"}</div>
+    `;
+
+    div.onclick = async () => {
+      // Update active state
+      document.querySelectorAll('#convList > div').forEach(d => {
+        d.classList.remove('bg-teal-50', 'border-teal-300');
+        d.classList.add('hover:bg-gray-100');
+      });
+      div.classList.add('bg-teal-50', 'border-teal-300');
+
+      currentConvId = id;
+
+      // Decrypt and load history
+      try {
+        const decrypted = await decrypt(convo.historyEncrypted);
+        history = JSON.parse(decrypted);
+      } catch (e) {
+        alert("Could not load this chat (corrupted or old key)");
+        return;
+      }
+
+      // Clear and render chat
+      els.chatPane.innerHTML = '';
+      els.welcome.classList.add('hidden');
+
+      history.forEach(msg => {
+        if (msg.role === "user") {
+          const content = typeof msg.content === "string" ? msg.content : "Image uploaded";
+          if (msg.content?.includes?.('http')) {
+            addMessage(`<img src="${msg.content}" class="rounded-lg max-w-full mt-2">`, 'user');
+          } else {
+            addMessage(content, 'user');
+          }
+        } else if (msg.role === "assistant") {
+          addMessage(msg.content, 'ai');
+        }
+      });
+
+      els.chatPane.scrollTop = els.chatPane.scrollHeight;
+      els.overlay.click(); // close sidebar
+    };
+
+    convList.appendChild(div);
+  });
 }
 
 function renderHistory() {
@@ -440,6 +484,7 @@ if (currentConvId) {
     preview: reply.slice(0, 80) + (reply.length > 80 ? "..." : "")
   };
   await set(ref(db, `users/\( {userId}/conversations/ \){currentConvId}`), convoData);
+  loadConversations(); // ← ADD THIS to refresh sidebar instantly
 }
     }
 
@@ -447,8 +492,14 @@ if (currentConvId) {
     els.chatInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
     els.menuBtn.onclick = () => { els.sidebar.classList.add('open'); els.overlay.classList.add('on'); };
     els.overlay.onclick = () => { els.sidebar.classList.remove('open'); els.overlay.classList.remove('on'); };
-    els.newConvBtn.onclick = () => { els.overlay.click(); history = []; els.chatPane.innerHTML = ''; els.welcome.classList.remove('hidden'); currentConvId = null; };
-
+    els.newConvBtn.onclick = async () => {
+  currentConvId = null;
+  history = [];
+  els.chatPane.innerHTML = '';
+  document.getElementById('welcome').classList.remove('hidden');
+  els.overlay.click();
+  loadConversations(); // refresh sidebar highlight
+};
     els.uploadBtnInner.onclick = () => els.hiddenFile.click();
     els.hiddenFile.onchange = async () => {
       const file = els.hiddenFile.files[0];
