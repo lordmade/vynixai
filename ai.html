@@ -156,7 +156,14 @@
       <div id="slideGrade">Grade ? • Role ?</div>
     </div>
     <button id="newConvBtn" class="mx-4 mt-4 bg-gradient-to-r from-teal-500 to-emerald-600 text-white py-3 rounded-xl font-bold">+ New Session</button>
-    <div class="p-4 text-sm">
+
+    <!-- Past conversations list (this is the line you asked for) -->
+    <div id="convList" class="flex-1 overflow-y-auto px-4 mt-4">
+      <!-- conversations will be injected here by JavaScript -->
+    </div>
+
+    <!-- Token usage at the very bottom (still visible when scrolling) -->
+    <div class="p-4 border-t border-gray-200 text-sm">
       <div class="flex justify-between mb-2"><span>Tokens today</span><span id="tokenCount">0 / 15,000</span></div>
       <div class="h-2 bg-gray-200 rounded-full overflow-hidden"><div id="tokenFill" class="h-full bg-gradient-to-r from-teal-500 to-emerald-600" style="width:0%"></div></div>
     </div>
@@ -231,6 +238,31 @@
       loadProfile();
     };
 
+
+    // Simple but strong client-side encryption (AES-GCM)
+const ENC_KEY = "studybuddy2025sa"; // In production: derive from user password or use Web Crypto properly
+
+async function encrypt(text) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(ENC_KEY.padEnd(32, "0")), "AES-GCM", false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = enc.encode(text);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
+  return btoa(String.fromCharCode(...iv, ...new Uint8Array(encrypted)));
+}
+
+async function decrypt(b64) {
+  try {
+    const dec = new TextDecoder();
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(ENC_KEY.padEnd(32, "0")), "AES-GCM", false, ["decrypt"]);
+    const data = Uint8Array.from(atob(b64).split("").map(c => c.charCodeAt(0)));
+    const iv = data.slice(0, 12);
+    const ciphertext = data.slice(12);
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+    return dec.decode(decrypted);
+  } catch (e) { return "[Encrypted chat – unable to decrypt]"; }
+}
+
     // Tokens
     async function loadTokens() {
       const today = new Date().toISOString().slice(0,10);
@@ -265,6 +297,60 @@
       addTokens(estimate(reply.length));
       return reply;
     }
+
+    async function loadConversations() {
+  const snap = await get(ref(db, `users/${userId}/conversations`));
+  const list = els.sidebar.querySelector('#convList') || document.createElement('div');
+  list.id = 'convList'; list.className = 'flex-1 overflow-y-auto px-4 mt-4';
+  list.innerHTML = '';
+
+  if (!snap.exists()) {
+    list.innerHTML = '<p class="text-gray-500 text-center text-sm">No past chats</p>';
+  } else {
+    const convs = Object.entries(snap.val()).sort((a, b) => (b[1].lastMessage || 0) - (a[1].lastMessage || 0));
+    convs.forEach(([id, c]) => {
+      const div = document.createElement('div');
+      div.className = 'p-3 rounded-lg hover:bg-gray-100 cursor-pointer text-sm';
+      div.innerHTML = `
+        <div class="font-medium truncate">${c.title || "New Chat"}</div>
+        <div class="text-gray-500 text-xs truncate">${c.preview || "No preview"}</div>
+      `;
+      div.onclick = async () => {
+        currentConvId = id;
+        history = JSON.parse(await decrypt(c.historyEncrypted));
+        els.chatPane.innerHTML = '<div id="welcome" class="text-center text-gray-700"><h1 class="text-xl font-bold">Loading chat...</h1></div>';
+        els.welcome.classList.remove('hidden');
+        setTimeout(renderHistory, 100); // small delay for UX
+        els.overlay.click();
+      };
+      list.appendChild(div);
+    });
+  }
+  els.sidebar.appendChild(list);
+}
+
+function renderHistory() {
+  els.chatPane.innerHTML = '';
+  els.welcome.classList.add('hidden');
+  history.forEach(msg => {
+    if (msg.role === "user") {
+      const text = typeof msg.content === "string" ? msg.content : "Image uploaded";
+      addMessage(text, 'user');
+    } else if (msg.role === "assistant") {
+      addMessage(msg.content, 'ai');
+    }
+  });
+}
+
+// Call this after auth + profile load
+onAuthStateChanged(auth, async user => {
+  if (!user) { location.href = "login.html"; return; }
+  userId = user.uid;
+  await initRemote();
+  await loadProfile();
+  await loadTokens();
+  await loadConversations(); // ← ADD THIS LINE
+});
 
     function estimate(n) { return Math.ceil(n / 3.8) * 2; }
 
@@ -345,6 +431,16 @@ const reply = await getReply(text || "Explain this homework");
 document.getElementById('typingBubble')?.remove();  // removes the dots
 addMessage(reply, 'ai');
       history.push({role: "assistant", content: reply});
+      // Save encrypted conversation
+if (currentConvId) {
+  const convoData = {
+    title: history.find(m => m.role === "user")?.content.slice(0, 50) || "New Chat",
+    historyEncrypted: await encrypt(JSON.stringify(history)),
+    lastMessage: serverTimestamp(),
+    preview: reply.slice(0, 80) + (reply.length > 80 ? "..." : "")
+  };
+  await set(ref(db, `users/\( {userId}/conversations/ \){currentConvId}`), convoData);
+}
     }
 
     els.sendBtn.onclick = send;
