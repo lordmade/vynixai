@@ -69,7 +69,7 @@
       cursor: pointer;
     }
 
-    /* Grok Pill Tabs */
+    /* Tabs */
     .tabs {
       position: fixed;
       top: 68px;
@@ -99,16 +99,6 @@
       background: linear-gradient(135deg, #8b5cf6, #ec4899);
       color: white;
     }
-
-    /* Chat & Voice Panes */
-    #chatPane, #voicePane {
-      flex: 1;
-      overflow-y: auto;
-      padding: 100px 16px 120px;
-      -webkit-overflow-scrolling: touch;
-    }
-    #voicePane { display: none; flex-direction: column; align-items: center; justify-content: center; gap: 2rem; }
-    #voicePane.active { display: flex; }
 
     /* Messages */
     .message {
@@ -141,9 +131,9 @@
     }
     .ai-actions {
       display: flex;
-      gap: 12px;
+      gap: 10px;
       margin-top: 8px;
-      opacity: 0.8;
+      opacity: 0.9;
     }
     .action-btn {
       width: 36px; height: 36px;
@@ -154,6 +144,27 @@
       transition: all 0.2s;
     }
     .action-btn:hover { background: #e2e8f0; transform: scale(1.1); }
+    .whatsapp-btn { background: #25d366 !important; color: white !important; }
+
+    /* Thinking Dots */
+    .thinking {
+      display: flex;
+      gap: 8px;
+      padding: 14px 18px;
+      background: #f8fafc;
+      border-radius: 18px 18px 18px 4px;
+      border: 1px solid #e2e8f0;
+      width: fit-content;
+    }
+    .dot {
+      width: 10px; height: 10px;
+      background: #8b5cf6;
+      border-radius: 50%;
+      animation: pulse 1.4s infinite;
+    }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes pulse { 0%,100% { opacity: 0.4; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
 
     /* Voice Mode */
     .voice-avatar {
@@ -215,6 +226,17 @@
       display: flex; align-items: center; justify-content: center;
     }
 
+    /* Bottom Sheet */
+    .bottom-sheet {
+      position: fixed; bottom: -100%; left: 0; right: 0;
+      background: white; border-radius: 1.5rem 1.5rem 0 0;
+      padding: 1.5rem; box-shadow: 0 -10px 40px rgba(0,0,0,0.2);
+      transition: bottom 0.4s cubic-bezier(0.32,0.72,0,1); z-index: 200;
+      max-height: 92dvh; overflow-y: auto;
+    }
+    .bottom-sheet.active { bottom: 0; }
+    .sheet-handle { width: 40px; height: 5px; background: #ddd; border-radius: 3px; margin: 0 auto 1rem; }
+
     /* Toast */
     #customAlert {
       position: fixed; top: 20px; left: 50%;
@@ -270,14 +292,31 @@
     </div>
   </div>
 
+  <!-- Upgrade Bottom Sheet -->
+  <div id="upgradeSheet" class="bottom-sheet">
+    <div class="sheet-handle"></div>
+    <button onclick="document.getElementById('upgradeSheet').classList.remove('active')" class="absolute top-4 right-4 text-2xl text-gray-400">×</button>
+    <div class="text-center px-6">
+      <h2 class="text-3xl font-black mb-3">Never Run Out Again</h2>
+      <p class="text-lg text-gray-600 mb-6">Upgrade to <strong>Unlimited</strong> — just <strong>R79/month</strong></p>
+      <div class="inline-block bg-gradient-to-r from-purple-600 to-pink-600 text-white px-10 py-7 rounded-2xl shadow-2xl mb-8">
+        <div class="text-6xl font-black">R79</div>
+        <div class="text-xl opacity-90">per month</div>
+      </div>
+      <button id="mockUpgrade" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold text-2xl py-6 rounded-3xl shadow-2xl hover:scale-105 active:scale-95">
+        Yes! Upgrade Me Now – R79/month
+      </button>
+    </div>
+  </div>
+
   <!-- Toast -->
   <div id="customAlert"></div>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, set, get, child, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
-    import { getRemoteConfig, fetchAndActivate, getString, getBoolean } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
+    import { getDatabase, ref, set, get, child } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     lucide.createIcons();
     const { jsPDF } = window.jspdf;
@@ -303,6 +342,7 @@
     let isPremium = false;
     let recognition = null;
     let isRecording = false;
+    let thinkingMessage = null;
 
     const els = {
       chatPane: document.getElementById('chatPane'),
@@ -313,6 +353,8 @@
       uploadBtn: document.getElementById('uploadBtn'),
       hiddenFile: document.getElementById('hiddenFile'),
       tokenCount: document.getElementById('tokenCount'),
+      upgradeSheet: document.getElementById('upgradeSheet'),
+      upgradePill: document.getElementById('upgradePill'),
       voiceStatus: document.getElementById('voiceStatus'),
       voiceMicBtn: document.getElementById('voiceMicBtn'),
       voiceAvatar: document.getElementById('voiceAvatar'),
@@ -335,7 +377,7 @@
     async function deductTokens(amount) {
       if (isPremium) return true;
       if (dailyTokens < amount) {
-        customAlert("Out of tokens! Upgrade for R79/month");
+        els.upgradeSheet.classList.add('active');
         return false;
       }
       dailyTokens -= amount;
@@ -357,6 +399,34 @@
       } catch { }
     }
 
+    // WhatsApp Share
+    function shareToWhatsApp(text, imageUrl = null) {
+      let message = "Vynix Buddy Answer:\n\n" + text.replace(/<[^>]*>/g, '').trim();
+      if (imageUrl) message += `\n\nImage: ${imageUrl}`;
+      const encoded = encodeURIComponent(message);
+      window.open(`https://wa.me/?text=${encoded}`, '_blank');
+      customAlert("Opening WhatsApp...");
+    }
+
+    // Show Thinking Dots
+    function showThinking() {
+      if (thinkingMessage) thinkingMessage.remove();
+      thinkingMessage = document.createElement('div');
+      thinkingMessage.className = 'message ai flex flex-col';
+      thinkingMessage.innerHTML = `
+        <div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      `;
+      els.chatPane.appendChild(thinkingMessage);
+      els.chatPane.scrollTop = els.chatPane.scrollHeight;
+    }
+
+    function hideThinking() {
+      if (thinkingMessage) {
+        thinkingMessage.remove();
+        thinkingMessage = null;
+      }
+    }
+
     // Tab Switching
     els.tabs.forEach(tab => {
       tab.addEventListener('click', () => {
@@ -371,7 +441,10 @@
     });
 
     function initSpeechRecognition() {
-      if (!('webkitSpeechRecognition' in window)) return;
+      if (!('webkitSpeechRecognition' in window)) {
+        customAlert("Voice not supported on this browser");
+        return;
+      }
       recognition = new webkitSpeechRecognition();
       recognition.lang = 'en-ZA';
       recognition.continuous = false;
@@ -380,7 +453,6 @@
         isRecording = true;
         els.voiceStatus.textContent = "Listening...";
         els.voiceAvatar.classList.add('voice-listening');
-        els.voiceMicBtn.classList.add('recording');
         els.voiceMicBtn.innerHTML = `<i data-lucide="square" class="w-12 h-12"></i>`;
         lucide.createIcons();
       };
@@ -390,11 +462,11 @@
         await processVoiceInput(text);
       };
 
+      recognition.onerror = () => customAlert("Couldn't hear you — try again");
       recognition.onend = () => {
         isRecording = false;
         els.voiceStatus.textContent = "Ready to help";
         els.voiceAvatar.classList.remove('voice-listening', 'voice-speaking');
-        els.voiceMicBtn.classList.remove('recording');
         els.voiceMicBtn.innerHTML = `<i data-lucide="mic" class="w-12 h-12"></i>`;
         lucide.createIcons();
       };
@@ -404,8 +476,10 @@
 
     async function processVoiceInput(text) {
       if (!(await deductTokens(estimateTokens(text)))) return;
-      els.voiceStatus.textContent = "Thinking...";
+      showThinking();
       const reply = await getReply(text);
+      hideThinking();
+      addMessage(reply, 'ai', reply);
       els.voiceStatus.textContent = "Speaking...";
       els.voiceAvatar.classList.add('voice-speaking');
       await playVoiceResponse(reply);
@@ -443,15 +517,17 @@
       } catch { }
     }
 
-    function addMessage(content, sender, plainText = '') {
+    function addMessage(content, sender, plainText = '', imageUrl = null) {
       const div = document.createElement('div');
       div.className = `message ${sender} flex flex-col`;
       const time = formatTime();
+      const hasImage = content.includes('<img');
       const actions = sender === 'ai' ? `
         <div class="ai-actions">
           <button class="action-btn copy-btn"><i data-lucide="copy"></i></button>
           <button class="action-btn voice-btn"><i data-lucide="volume-2"></i></button>
           <button class="action-btn pdf-btn"><i data-lucide="download"></i></button>
+          <button class="action-btn whatsapp-btn"><i data-lucide="share-2"></i></button>
           <button class="action-btn like-btn"><i data-lucide="thumbs-up"></i></button>
           <button class="action-btn dislike-btn"><i data-lucide="thumbs-down"></i></button>
         </div>` : '';
@@ -475,6 +551,9 @@
           doc.setFontSize(11); doc.text(doc.splitTextToSize((plainText || content).replace(/[#*`>]/g, ''), 170), 20, 35);
           doc.save(`Vynix_${new Date().toISOString().slice(0,10)}.pdf`);
         });
+        div.querySelector('.whatsapp-btn')?.addEventListener('click', () => {
+          shareToWhatsApp(plainText || content, hasImage ? imageUrl : null);
+        });
         div.querySelector('.like-btn')?.addEventListener('click', () => customAlert("Thanks!"));
         div.querySelector('.dislike-btn')?.addEventListener('click', () => customAlert("We'll improve!"));
       }
@@ -486,16 +565,18 @@
       if (!(await deductTokens(estimateTokens(text)))) return;
 
       if (currentImage) {
-        addMessage(`<img src="${currentImage}" class="rounded-lg max-w-full" alt="Homework">`, 'user');
+        addMessage(`<img src="${currentImage}" class="rounded-lg max-w-full" alt="Homework">`, 'user', '', currentImage);
         history.push({ role: "user", content: currentImage });
-        text = "Explain this homework";
+        text = "Explain this homework step by step";
       } else {
         addMessage(text, 'user');
         history.push({ role: "user", content: text });
       }
 
       els.chatInput.value = ''; currentImage = null;
+      showThinking();
       const reply = await getReply(text);
+      hideThinking();
       addMessage(reply, 'ai', reply);
       history.push({ role: "assistant", content: reply });
     };
@@ -519,6 +600,8 @@
         customAlert("Image ready! Tap send");
       }
     };
+
+    els.upgradePill.onclick = () => els.upgradeSheet.classList.add('active');
 
     onAuthStateChanged(auth, async (user) => {
       if (!user) { location.href = "login.html"; return; }
