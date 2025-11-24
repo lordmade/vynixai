@@ -16,6 +16,9 @@
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 
+  <!-- Yoco SDK -->
+  <script src="https://js.yoco.com/sdk/v1/yoco.min.js"></script>
+
   <style>
     *{box-sizing:border-box}
     body{font-family:'Inter',sans-serif;background:#fff;color:#0f172a;margin:0;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
@@ -156,8 +159,8 @@
         <div class="text-6xl font-black">R79</div>
         <div class="text-xl opacity-90">per month</div>
       </div>
-      <button id="mockUpgrade" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold text-2xl py-6 rounded-3xl shadow-2xl hover:scale-105 active:scale-95">
-        Yes! Upgrade Me Now – R79/month
+      <button id="yocoPayBtn" class="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold text-2xl py-6 rounded-3xl shadow-2xl hover:scale-105 active:scale-95">
+        <i data-lucide="credit-card" class="w-6 h-6 inline mr-2"></i>Pay with Yoco
       </button>
     </div>
   </div>
@@ -168,7 +171,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-    import { getDatabase, ref, set, get, child } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+    import { getDatabase, ref, set, get, child, push } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
     import { getRemoteConfig, fetchAndActivate, getString } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
 
     lucide.createIcons();
@@ -197,6 +200,7 @@
     let isRecording = false;
     let thinkingMessage = null;
     let deferredPrompt;
+    let yocoInstance = null; // Yoco SDK instance
 
     const els = {
       chatPane: document.getElementById('chatPane'),
@@ -215,7 +219,8 @@
       tabs: document.querySelectorAll('.tab'),
       installPopup: document.getElementById('installPopup'),
       installBtn: document.getElementById('installBtn'),
-      dismissInstall: document.getElementById('dismissInstall')
+      dismissInstall: document.getElementById('dismissInstall'),
+      yocoPayBtn: document.getElementById('yocoPayBtn')
     };
 
     // PWA Install Prompt
@@ -424,17 +429,18 @@
       div.className = `message ${sender} flex flex-col`;
       const time = formatTime();
       const hasImage = content.includes('<img');
+      const messageId = push(ref(db, `users/${auth.currentUser.uid}/messages`)).key;
       const actions = sender === 'ai' ? `
         <div class="ai-actions">
           <button class="action-btn copy-btn" aria-label="Copy"><i data-lucide="copy" class="w-4 h-4"></i></button>
           <button class="action-btn voice-btn" aria-label="Listen"><i data-lucide="volume-2" class="w-4 h-4"></i></button>
           <button class="action-btn pdf-btn" aria-label="Download PDF"><i data-lucide="file-text" class="w-4 h-4"></i></button>
           <button class="action-btn whatsapp-btn" aria-label="Share on WhatsApp"><i data-lucide="message-circle" class="w-4 h-4"></i></button>
-          <button class="action-btn like-btn" aria-label="Like"><i data-lucide="thumbs-up" class="w-4 h-4"></i></button>
-          <button class="action-btn dislike-btn" aria-label="Dislike"><i data-lucide="thumbs-down" class="w-4 h-4"></i></button>
+          <button class="action-btn like-btn" aria-label="Like" data-message-id="${messageId}"><i data-lucide="thumbs-up" class="w-4 h-4"></i></button>
+          <button class="action-btn dislike-btn" aria-label="Dislike" data-message-id="${messageId}"><i data-lucide="thumbs-down" class="w-4 h-4"></i></button>
         </div>` : '';
       div.innerHTML = `
-        <div class="content">${sender === 'ai' ? marked.parse(content) : content.replace(/\n/g, '<br>')}</div>
+        <div class="content" id="msg-${messageId}">${sender === 'ai' ? marked.parse(content) : content.replace(/\n/g, '<br>')}</div>
         ${actions}
         <div class="timestamp">${time}</div>`;
       els.chatPane.appendChild(div);
@@ -469,7 +475,18 @@
         div.querySelector('.whatsapp-btn')?.addEventListener('click', () => {
           shareToWhatsApp(plainText || content, hasImage ? imageUrl : null);
         });
+        div.querySelector('.like-btn')?.addEventListener('click', async (e) => {
+          const msgId = e.currentTarget.dataset.messageId;
+          await set(ref(db, `users/${auth.currentUser.uid}/feedback/${msgId}`), { type: 'like', timestamp: Date.now() });
+          customAlert("Thanks for the like!");
+        });
+        div.querySelector('.dislike-btn')?.addEventListener('click', async (e) => {
+          const msgId = e.currentTarget.dataset.messageId;
+          await set(ref(db, `users/${auth.currentUser.uid}/feedback/${msgId}`), { type: 'dislike', timestamp: Date.now() });
+          customAlert("We'll improve!");
+        });
       }
+      return messageId;
     }
 
     els.sendBtn.onclick = async () => {
@@ -524,12 +541,86 @@
 
     els.upgradePill.onclick = () => els.upgradeSheet.classList.add('active');
 
+    // Yoco Payment
+    async function initYoco() {
+      yocoInstance = new YocoSDK({
+        publicKey: 'pk_test_8spexN6fvG5BJ1kMuV3l' // Replace with your live public key
+      });
+    }
+
+    async function handleYocoPayment() {
+      if (!yocoInstance) {
+        customAlert("Payment system not ready");
+        return;
+      }
+
+      const result = await yocoInstance.popup({
+        amountInCents: 7900, // R79.00
+        currency: 'ZAR',
+        name: 'Vynix Buddy Premium',
+        description: 'Unlimited tokens for 1 month',
+        callbackUrl: window.location.href, // Yoco will redirect back here
+        metadata: {
+          userId: auth.currentUser.uid,
+          product: 'premium-monthly'
+        }
+      });
+
+      if (result.error) {
+        customAlert("Payment failed: " + result.error.message);
+      } else if (result.redirect) {
+        // Redirect to Yoco payment page
+        window.location.href = result.redirect;
+      } else if (result.success) {
+        // Payment successful
+        await activatePremium();
+      }
+    }
+
+    async function activatePremium() {
+      await set(ref(db, `users/${auth.currentUser.uid}/premium`), {
+        active: true,
+        since: Date.now(),
+        expires: Date.now() + (30 * 24 * 60 * 60 * 1000) // 30 days
+      });
+      isPremium = true;
+      dailyTokens = 999999999;
+      els.tokenCount.textContent = "∞";
+      els.upgradeSheet.classList.remove('active');
+      customAlert("🎉 Premium activated!");
+    }
+
+    // Check for successful payment on page load
     onAuthStateChanged(auth, async (user) => {
       if (!user) { location.href = "login.html"; return; }
+      
+      // Initialize Yoco
+      await initYoco();
+      
+      // Check if user just completed payment
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('yocoPaymentSuccess') === 'true') {
+        await activatePremium();
+        // Clean up URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
       await fetchAndActivate(rc);
       xaiKey = getString(rc, 'xai_api_key')?.trim();
       elevenlabsKey = getString(rc, 'elevenlabs_api_key')?.trim();
       await loadTokens();
+
+      // Check premium status
+      const premiumSnap = await get(child(ref(db), `users/${user.uid}/premium`));
+      if (premiumSnap.exists()) {
+        const premiumData = premiumSnap.val();
+        if (premiumData.active && premiumData.expires > Date.now()) {
+          isPremium = true;
+          dailyTokens = 999999999;
+          els.tokenCount.textContent = "∞";
+        }
+      }
+
       const snap = await get(child(ref(db), `users/${user.uid}/profile`));
       userProfile = snap.val();
       if (!userProfile) {
@@ -538,6 +629,9 @@
         addMessage(`Welcome back, ${userProfile.name}! Ready for Grade ${userProfile.grade} today?`, 'ai');
       }
     });
+
+    // Yoco Pay Button
+    els.yocoPayBtn.addEventListener('click', handleYocoPayment);
   </script>
 </body>
 </html>
