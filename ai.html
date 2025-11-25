@@ -39,7 +39,7 @@
     .input-container{background:#f9fafb;border:1px solid #d1d5db;border-radius:1.5rem;padding:.75rem 1rem;display:flex;align-items:flex-end;gap:.75rem;box-shadow:0 1px 3px rgba(0,0,0,.1)}
     .input-container:focus-within{border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.15)}
     #chatInput{flex:1;background:transparent;border:none;outline:none;font-size:1rem;resize:none;max-height:120px;line-height:1.5}
-    .send-btn{width:44px;height:44px;border-radius:50%;background:#8b5cf6;display:flex;align-items:center;justify-content:center;transition:all .2s}
+    .send-btn{width:44px;height:44px;border-radius:50%;background:#8b5cf6;display:flex;align-items:center;justify-content:center}
     .send-btn:disabled{background:#9ca3af}
     .upload-btn{width:44px;height:44px;border-radius:50%;background:#e5e7eb;display:flex;align-items:center;justify-content:center}
     .token-bar{position:fixed;top:0;left:0;right:0;background:#8b5cf6;color:#fff;padding:.6rem 1rem;font-size:.9rem;text-align:center;z-index:50;display:flex;align-items:center;justify-content:center;gap:.5rem}
@@ -49,9 +49,6 @@
     /* Custom Alert (Toast) */
     #customAlert{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-150%);background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%);color:#fff;padding:1rem 1.5rem;border-radius:9999px;font-weight:600;box-shadow:0 10px 25px rgba(0,0,0,.25);z-index:9999;transition:transform .3s ease}
     #customAlert.show{transform:translateX(-50%) translateY(0)}
-    /* Mic/Send toggle */
-    .mic-icon, .send-icon { transition: opacity 0.2s; }
-    .mic-icon.hidden, .send-icon.hidden { opacity: 0; pointer-events: none; }
   </style>
 </head>
 <body>
@@ -76,10 +73,7 @@
       <button class="upload-btn" id="uploadBtn" aria-label="Attach image"><i data-lucide="paperclip"></i></button>
       <input type="file" id="hiddenFile" accept="image/*" hidden>
       <textarea id="chatInput" placeholder="Ask me anything..." rows="1" aria-label="Chat input"></textarea>
-      <button id="sendBtn" class="send-btn" aria-label="Send">
-        <i data-lucide="mic" class="mic-icon"></i>
-        <i data-lucide="send" class="send-icon hidden"></i>
-      </button>
+      <button id="sendBtn" class="send-btn" disabled aria-label="Send"><i data-lucide="send" class="text-white"></i></button>
     </div>
   </div>
 
@@ -144,8 +138,6 @@
     let waitingForProfile = false;
     let dailyTokens = 15000;
     let isPremium = false;
-    let voiceQueries = 3; // Voice queries per day
-    let voiceQueryMode = false; // Track if current query is voice-to-voice
 
     const els = {
       chatPane: document.getElementById('chatPane'),
@@ -158,9 +150,7 @@
       mockUpgrade: document.getElementById('mockUpgrade'),
       upgradePill: document.getElementById('upgradePill'),
       papersSheet: document.getElementById('papersSheet'),
-      papersContent: document.getElementById('papersContent'),
-      micIcon: document.querySelector('.mic-icon'),
-      sendIcon: document.querySelector('.send-icon')
+      papersContent: document.getElementById('papersContent')
     };
 
     /* ----------  CUSTOM TOAST  ---------- */
@@ -202,28 +192,6 @@
       } catch { dailyTokens = 15000; els.tokenCount.textContent = dailyTokens.toLocaleString(); }
     }
 
-    /* ----------  VOICE QUERY LIMITS  ---------- */
-    async function loadVoiceQueries() {
-      try {
-        if (isPremium) { voiceQueries = 999; return; }
-        const snap = await get(child(ref(db), `users/${auth.currentUser.uid}/voiceQueries`));
-        const data = snap.val(); const now = Date.now(); const oneDay = 24 * 60 * 60 * 1000;
-        if (!data || (now - (data.lastReset || 0) > oneDay)) {
-          voiceQueries = 3;
-          await set(ref(db, `users/${auth.currentUser.uid}/voiceQueries`), { count: voiceQueries, lastReset: now });
-        } else voiceQueries = data.count || 3;
-      } catch { voiceQueries = 3; }
-    }
-
-    async function deductVoiceQuery() {
-      if (isPremium) return true;
-      if (voiceQueries <= 0) { els.upgradeSheet.classList.add('active'); return false; }
-      voiceQueries--;
-      await set(ref(db, `users/${auth.currentUser.uid}/voiceQueries`), { count: voiceQueries, lastReset: Date.now() });
-      return true;
-    }
-    /* ----------  END VOICE QUERY LIMITS  ---------- */
-
     /* ---- Yoco upgrade ---- */
     function loadYocoScript() {
       if (window.YocoSDK) return Promise.resolve();
@@ -248,7 +216,7 @@
         });
         if (result?.paymentResult?.status === 'successful') {
           await update(ref(db, `users/${auth.currentUser.uid}`), { premium: true, premiumSince: new Date().toISOString() });
-          isPremium = true; await loadTokens(); await loadVoiceQueries(); els.upgradeSheet.classList.remove('active');
+          isPremium = true; await loadTokens(); els.upgradeSheet.classList.remove('active');
           customAlert("Payment successful! You're now on Unlimited!");
         }
       } catch (e) { customAlert("Payment cancelled or failed."); }
@@ -269,130 +237,223 @@
       if (e.target === els.upgradeSheet) els.upgradeSheet.classList.remove('active');
     });
 
-    /* ----------  MIC/SEND TOGGLE & SPEECH RECOGNITION  ---------- */
-    let recognition = null;
-    
-    // Check for Web Speech API
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = false;
-      recognition.lang = 'en-ZA';
+    /* ----------  NEW: AI EXAM GENERATOR  ---------- */
+    async function generateExamPaper(subject, grade, topic) {
+      const marks = 50; // 5 questions, 10 marks each
+      const prompt = `Generate a CAPS exam paper for ${subject} Grade ${grade} on the topic: "${topic}".
       
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        els.chatInput.value = transcript;
-        els.chatInput.style.height = 'auto';
-        els.chatInput.style.height = els.chatInput.scrollHeight + 'px';
-        els.chatInput.focus();
-        voiceQueryMode = true; // Enable auto-play for this query
-        customAlert("Voice recorded! Tap send or press Enter.");
-      };
+      REQUIREMENTS:
+      - Exactly 5 TOUGH questions testing deep understanding
+      - Total marks: ${marks} (10 marks per question)
+      - Each question must have clear sub-parts (a), (b), (c) where relevant
+      - Use proper mathematical notation (write formulas clearly)
+      - Include diagrams or descriptions where needed
+      - Provide detailed memorandum with FULL solutions
+      - Separate question paper and memorandum with "---MEMO---"
+      - Format clearly with spacing between questions
       
-      recognition.onerror = () => {
-        customAlert("Voice recognition failed. Try again.");
-        els.micIcon.classList.remove('hidden');
-        els.sendIcon.classList.add('hidden');
-      };
+      FORMAT:
+      COVER: Subject, Grade, Topic, Time, Marks
+      INSTRUCTIONS
+      QUESTION 1 (10 marks): [Tough question on ${topic}]
+      QUESTION 2 (10 marks): [Tough question on ${topic}]
+      QUESTION 3 (10 marks): [Tough question on ${topic}]
+      QUESTION 4 (10 marks): [Tough question on ${topic}]
+      QUESTION 5 (10 marks): [Tough question on ${topic}]
+      ---MEMO---
+      MEMORANDUM with detailed solutions for all 5 questions.`;
       
-      recognition.onend = () => {
-        // Icons will be handled by focus/blur
-      };
+      addThinking();
+      const cost = 2500; // Heavy generation
+      if (!(await deductTokens(cost))) {
+        removeThinking();
+        return null;
+      }
+
+      try {
+        const res = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "grok-3", messages: [{role:"user",content:prompt}], max_tokens: 8000, temperature: 0.7 })
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || null;
+      } catch (e) {
+        console.error(e);
+        return null;
+      } finally {
+        removeThinking();
+      }
     }
 
-    // Toggle icons based on focus
-    els.chatInput.addEventListener('focus', () => {
-      els.micIcon.classList.add('hidden');
-      els.sendIcon.classList.remove('hidden');
-      els.sendBtn.disabled = !els.chatInput.value.trim();
-    });
-    
-    els.chatInput.addEventListener('blur', () => {
-      if (!els.chatInput.value.trim()) {
-        els.micIcon.classList.remove('hidden');
-        els.sendIcon.classList.add('hidden');
-      }
-    });
-    
-    // Mic click handler
-    els.sendBtn.addEventListener('click', async () => {
-      if (!els.chatInput.value.trim() && els.micIcon.classList.contains('hidden') === false) {
-        // Mic mode
-        if (!(await deductVoiceQuery())) return;
-        if (recognition) {
-          recognition.start();
-          customAlert("Listening...");
-        } else {
-          customAlert("Voice not supported in this browser");
+    function showPastPapersSheet() {
+      const grade = userProfile?.grade || "12";
+      const name = userProfile?.name || "learner";
+      
+      // Show form in the bottom sheet
+      els.papersContent.innerHTML = `
+        <h3 class="text-xl font-bold mb-4">Generate CAPS Practice Paper</h3>
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">Subject</label>
+            <select id="subjectSelect" class="w-full border rounded-lg p-2 bg-white">
+              <option value="Mathematics">Mathematics</option>
+              <option value="Physical Sciences">Physical Sciences</option>
+              <option value="Life Sciences">Life Sciences</option>
+              <option value="Accounting">Accounting</option>
+              <option value="Business Studies">Business Studies</option>
+              <option value="Geography">Geography</option>
+              <option value="History">History</option>
+              <option value="English HL">English HL</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Topic (e.g., Calculus, Chemical Equilibrium)</label>
+            <input type="text" id="topicInput" class="w-full border rounded-lg p-2" placeholder="Enter specific topic">
+          </div>
+          <button id="generatePaperBtn" class="w-full bg-purple-600 text-white font-semibold py-3 rounded-xl hover:bg-purple-700 transition">Generate 5 Tough Questions + Memo</button>
+        </div>
+      `;
+      els.papersSheet.classList.add('active');
+      
+      // Add event listener to the generate button
+      document.getElementById('generatePaperBtn').addEventListener('click', async () => {
+        const subject = document.getElementById('subjectSelect').value;
+        const topic = document.getElementById('topicInput').value.trim();
+        
+        if (!topic) {
+          customAlert("Please enter a topic");
+          return;
         }
-      } else {
-        // Send mode
-        send();
-      }
-    });
-    /* ----------  END MIC/SEND TOGGLE  ---------- */
-
-    /* ----------  AUTO-PLAY AI RESPONSE  ---------- */
-    async function playVoiceFromMessage(messageDiv, text) {
-      if (!elevenlabsKey) return;
-      const btn = messageDiv.querySelector('.voice-btn');
-      const icon = btn?.querySelector('i');
-      if (!btn || !icon) return;
-      
-      const originalIcon = 'volume-2';
-      icon.setAttribute('data-lucide', 'loader-2');
-      lucide.createIcons();
-      btn.disabled = true;
-      
-      try {
-        const voiceId = 'pNInz6obpgDQGcFmaJgB';
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-          method: 'POST',
-          headers: {
-            'Accept': 'audio/mpeg',
-            'Content-Type': 'application/json',
-            'xi-api-key': elevenlabsKey
-          },
-          body: JSON.stringify({
-            text: text,
-            model_id: 'eleven_monolingual_v1',
-            voice_settings: { stability: 0.5, similarity_boost: 0.5 }
-          })
+        
+        els.papersSheet.classList.remove('active');
+        
+        const examText = await generateExamPaper(subject, grade, topic);
+        
+        if (!examText) {
+          customAlert("Failed to generate paper. Check your internet or tokens.");
+          return;
+        }
+        
+        const [qp, memo] = examText.split("---MEMO---");
+        
+        // Create professional PDF
+        const doc = new jsPDF();
+        
+        // Cover Page
+        doc.setFontSize(22);
+        doc.setTextColor(139, 92, 246); // purple
+        doc.text("VYNIX BUDDY", 105, 30, {align:"center"});
+        doc.setTextColor(0, 0, 0);
+        doc.setFontSize(18);
+        doc.text("CAPS PRACTICE PAPER", 105, 45, {align:"center"});
+        doc.setFontSize(14);
+        doc.text(`${subject} - Grade ${grade}`, 105, 60, {align:"center"});
+        doc.text(`Topic: ${topic}`, 105, 75, {align:"center"});
+        doc.setFontSize(12);
+        doc.text(`Generated on ${new Date().toLocaleDateString('en-ZA')}`, 105, 90, {align:"center"});
+        doc.text(`Good luck, ${name}!`, 105, 105, {align:"center"});
+        
+        // Question Paper
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.text("QUESTION PAPER", 105, 20, {align:"center"});
+        doc.setFontSize(12);
+        doc.text(`Subject: ${subject} | Grade: ${grade} | Topic: ${topic}`, 15, 35);
+        doc.text(`Time: 1 hour | Marks: 50`, 15, 45);
+        doc.text("Instructions: Answer all questions. Show all working.", 15, 55);
+        
+        // Format questions nicely
+        let yPos = 70;
+        let qNum = 1;
+        
+        // Split by "QUESTION X:" pattern
+        const questions = (qp || examText).split(/QUESTION \d+:/gi).filter(q => q.trim());
+        
+        questions.slice(0, 5).forEach(q => {
+          if (yPos > 240) { // New page if needed
+            doc.addPage();
+            yPos = 20;
+          }
+          
+          // Question header
+          doc.setFontSize(12);
+          doc.setFont(undefined, "bold");
+          const marks = 10;
+          doc.text(`Question ${qNum} (${marks} marks)`, 15, yPos);
+          doc.setFont(undefined, "normal");
+          yPos += 8;
+          
+          // Clean up mathematical notation for readability
+          let cleanQ = q.trim()
+            .replace(/\*\*/g, '') // Remove markdown bold
+            .replace(/\*/g, '')   // Remove markdown italics
+            .replace(/\$/g, '')   // Remove LaTeX markers
+            .replace(/\^(\d+)/g, 'to the power of $1') // x^2 -> x to the power of 2
+            .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '$1 over $2') // \frac{a}{b} -> a over b
+            .replace(/\\sqrt\{([^}]+)\}/g, 'square root of $1') // \sqrt{x} -> square root of x
+            .replace(/\\int/g, 'integral of') // \int -> integral of
+            .replace(/\\sum/g, 'sum of') // \sum -> sum of
+            .replace(/\\theta/g, 'theta') // \theta -> theta
+            .replace(/\\pi/g, 'pi') // \pi -> pi
+            .replace(/\\div/g, 'divided by') // \div -> divided by
+            .replace(/\\times/g, 'times'); // \times -> times
+          
+          // Format sub-questions with bullets or letters
+          cleanQ = cleanQ.replace(/\(([a-z])\)/g, '    ($1)'); // Indent sub-questions
+          
+          // Split into lines
+          const lines = doc.splitTextToSize(cleanQ, 170);
+          lines.forEach(line => {
+            if (yPos > 270) {
+              doc.addPage();
+              yPos = 20;
+            }
+            doc.text(line, 20, yPos);
+            yPos += 6;
+          });
+          
+          yPos += 8; // Space between questions
+          qNum++;
         });
         
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        // Memorandum
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.text("MEMORANDUM", 105, 20, {align:"center"});
+        doc.setFontSize(12);
         
-        const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
+        // Clean memorandum
+        const cleanMemo = (memo || "No memorandum generated.")
+          .replace(/\*\*/g, '')
+          .replace(/\*/g, '')
+          .replace(/\$/g, '')
+          .replace(/\^(\d+)/g, 'to the power of $1')
+          .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '$1 over $2')
+          .replace(/\\sqrt\{([^}]+)\}/g, 'square root of $1')
+          .replace(/\\int/g, 'integral of')
+          .replace(/\\sum/g, 'sum of')
+          .replace(/\\theta/g, 'theta')
+          .replace(/\\pi/g, 'pi')
+          .replace(/\\div/g, 'divided by')
+          .replace(/\\times/g, 'times');
         
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl);
-          icon.setAttribute('data-lucide', originalIcon);
-          lucide.createIcons();
-          btn.disabled = false;
-          voiceQueryMode = false; // Reset mode
-        };
+        const memoLines = doc.splitTextToSize(cleanMemo, 180);
+        let memoY = 35;
+        memoLines.forEach(line => {
+          if (memoY > 270) {
+            doc.addPage();
+            memoY = 20;
+          }
+          doc.text(line, 15, memoY);
+          memoY += 6;
+        });
         
-        audio.onerror = () => {
-          URL.revokeObjectURL(audioUrl);
-          icon.setAttribute('data-lucide', originalIcon);
-          lucide.createIcons();
-          btn.disabled = false;
-          voiceQueryMode = false;
-        };
-        
-        await audio.play();
-      } catch (err) {
-        console.error(err);
-        icon.setAttribute('data-lucide', originalIcon);
-        lucide.createIcons();
-        btn.disabled = false;
-        voiceQueryMode = false;
-      }
+        doc.save(`CAPS_${subject.replace(/\s/g,"_")}_Grade${grade}_${topic.replace(/\s/g,"_")}.pdf`);
+        customAlert("Practice paper downloaded!");
+      });
     }
-    /* ----------  END AUTO-PLAY  ---------- */
+    /* ----------  END AI EXAM GENERATOR  ---------- */
 
     const viewport = window.visualViewport || window;
     function handleKeyboard() {
@@ -406,7 +467,7 @@
     els.chatInput.addEventListener('input', () => {
       els.chatInput.style.height = 'auto';
       els.chatInput.style.height = els.chatInput.scrollHeight + 'px';
-      els.sendBtn.disabled = !els.chatInput.value.trim();
+      els.sendBtn.disabled = !els.chatInput.value.trim() && !currentImage;
     });
 
     els.uploadBtn.onclick = () => els.hiddenFile.click();
@@ -476,7 +537,7 @@
               },
               body: JSON.stringify({
                 text: text,
-                model_id: 'eleven_monolinglingual_v1',
+                model_id: 'eleven_monolingual_v1',
                 voice_settings: { stability: 0.5, similarity_boost: 0.5 }
               })
             });
@@ -522,11 +583,6 @@
 
         /* NEW: Past Papers button */
         div.querySelector('.papers-btn')?.addEventListener('click', showPastPapersSheet);
-
-        // Auto-play if voice-to-voice mode
-        if (voiceQueryMode && sender === 'ai') {
-          setTimeout(() => playVoiceFromMessage(div, plainText || content), 500);
-        }
       }
     }
 
@@ -558,13 +614,6 @@
         history.push({ role: "user", content: text });
       }
       els.chatInput.value = ''; currentImage = null; els.sendBtn.disabled = true; els.chatInput.style.height = 'auto';
-      
-      // Reset icons to mic after sending
-      setTimeout(() => {
-        els.micIcon.classList.remove('hidden');
-        els.sendIcon.classList.add('hidden');
-      }, 100);
-      
       addThinking();
       const reply = await getReply(text);
       removeThinking();
@@ -637,11 +686,12 @@
       yocoEnabled = getBoolean(rc, 'yoco_enabled');
     }
 
+    els.sendBtn.onclick = send;
+
     onAuthStateChanged(auth, async (user) => {
       if (!user) { location.href = "login.html"; return; }
       await init();
       await loadTokens();
-      await loadVoiceQueries();
       await checkAndAskProfile();
     });
   </script>
