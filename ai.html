@@ -36,13 +36,14 @@
     .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
     @keyframes pulse{0%,100%{opacity:.4;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
     .input-bar{position:fixed;bottom:0;left:0;right:0;padding:.75rem;padding-bottom:calc(.75rem + env(safe-area-inset-bottom));background:#fff;border-top:1px solid #e5e7eb;box-shadow:0 -4px 20px rgba(0,0,0,.08);z-index:100}
-    .input-container{background:#f9fafb;border:1px solid #d1d5db;border-radius:1.5rem;padding:.75rem 1rem;display:flex;align-items:flex-end;gap:.5rem;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    .input-container{background:#f9fafb;border:1px solid #d1d5db;border-radius:1.5rem;padding:.75rem 1rem;display:flex;align-items:center;gap:.5rem;box-shadow:0 1px 3px rgba(0,0,0,.1)}
     .input-container:focus-within{border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.15)}
     #chatInput{flex:1;background:transparent;border:none;outline:none;font-size:1rem;resize:none;max-height:120px;line-height:1.5}
     .send-btn{width:44px;height:44px;border-radius:50%;background:#8b5cf6;display:flex;align-items:center;justify-content:center}
-    .send-btn:disabled{background:#9ca3af}
+    .send-btn:disabled{background:#9ca3af;cursor:not-allowed}
     .upload-btn{width:44px;height:44px;border-radius:50%;background:#e5e7eb;display:flex;align-items:center;justify-content:center}
-    #imagePreview{width:40px;height:40px;border-radius:.5rem;object-fit:cover;margin-right:.5rem;display:none}
+    #filePreview{width:40px;height:40px;border-radius:.5rem;object-fit:cover;margin-right:.5rem;display:none;flex-shrink:0}
+    .doc-preview{width:40px;height:40px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:.5rem;display:none;align-items:center;justify-content:center;flex-shrink:0}
     .token-bar{position:fixed;top:0;left:0;right:0;background:#8b5cf6;color:#fff;padding:.6rem 1rem;font-size:.9rem;text-align:center;z-index:50;display:flex;align-items:center;justify-content:center;gap:.5rem}
     .bottom-sheet{position:fixed;bottom:-100%;left:0;right:0;background:#fff;border-radius:1.5rem 1.5rem 0 0;padding:1.5rem;box-shadow:0 -10px 40px rgba(0,0,0,.25);transition:bottom .4s cubic-bezier(.32,.72,0,1);z-index:200;max-height:92dvh;overflow-y:auto}
     .bottom-sheet.active{bottom:0}
@@ -70,9 +71,10 @@
   <!-- Input Bar -->
   <div class="input-bar">
     <div class="input-container">
-      <button class="upload-btn" id="uploadBtn" aria-label="Attach image"><i data-lucide="paperclip"></i></button>
-      <input type="file" id="hiddenFile" accept="image/*" hidden>
-      <img id="imagePreview" alt="Preview">
+      <button class="upload-btn" id="uploadBtn" aria-label="Attach file"><i data-lucide="paperclip"></i></button>
+      <input type="file" id="hiddenFile" accept="image/*,.pdf,.doc,.docx" hidden>
+      <img id="filePreview" alt="File preview">
+      <div class="doc-preview" id="docPreview"><i data-lucide="file-text" width="20" height="20"></i></div>
       <textarea id="chatInput" placeholder="Ask me anything..." rows="1" aria-label="Chat input"></textarea>
       <button id="sendBtn" class="send-btn" disabled aria-label="Send"><i data-lucide="send" class="text-white"></i></button>
     </div>
@@ -136,6 +138,7 @@
     let yocoEnabled = false;
     let history = [];
     let currentImage = null;
+    let currentFile = null;
     let waitingForProfile = false;
     let dailyTokens = 15000;
     let isPremium = false;
@@ -146,7 +149,8 @@
       sendBtn: document.getElementById('sendBtn'),
       uploadBtn: document.getElementById('uploadBtn'),
       hiddenFile: document.getElementById('hiddenFile'),
-      imagePreview: document.getElementById('imagePreview'),
+      filePreview: document.getElementById('filePreview'),
+      docPreview: document.getElementById('docPreview'),
       tokenCount: document.getElementById('tokenCount'),
       upgradeSheet: document.getElementById('upgradeSheet'),
       mockUpgrade: document.getElementById('mockUpgrade'),
@@ -453,25 +457,69 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
     els.chatInput.addEventListener('input', () => {
       els.chatInput.style.height = 'auto';
       els.chatInput.style.height = els.chatInput.scrollHeight + 'px';
-      els.sendBtn.disabled = !els.chatInput.value.trim() && !currentImage;
+      updateSendButton();
     });
 
+    function updateSendButton() {
+      const hasText = els.chatInput.value.trim().length > 0;
+      const hasFile = currentImage !== null || currentFile !== null;
+      els.sendBtn.disabled = !hasText && !hasFile;
+    }
+
     els.uploadBtn.onclick = () => els.hiddenFile.click();
+    
     els.hiddenFile.onchange = async (e) => {
       const file = e.target.files[0];
       if (!file) return;
+      
+      // Show preview immediately
+      const isImage = file.type.startsWith('image/');
+      if (isImage) {
+        els.filePreview.src = URL.createObjectURL(file);
+        els.filePreview.style.display = 'block';
+        els.docPreview.style.display = 'none';
+      } else {
+        els.docPreview.style.display = 'flex';
+        els.filePreview.style.display = 'none';
+      }
+      
+      // Upload to Cloudinary
       const fd = new FormData();
       fd.append('file', file);
       fd.append('upload_preset', 'studybuddy');
-      const res = await fetch("https://api.cloudinary.com/v1_1/dhvzhirjf/upload", { method: "POST", body: fd });
-      const data = await res.json();
-      if (data.secure_url) {
-        currentImage = data.secure_url;
-        els.imagePreview.src = data.secure_url;
-        els.imagePreview.style.display = 'block';
-        els.sendBtn.disabled = false;
+      fd.append('resource_type', 'auto');
+      
+      try {
+        customAlert("Uploading file...", 2000);
+        const res = await fetch("https://api.cloudinary.com/v1_1/dqkujefxj/upload", { 
+          method: "POST", 
+          body: fd 
+        });
+        const data = await res.json();
+        
+        if (data.secure_url) {
+          currentImage = data.secure_url;
+          currentFile = file;
+          updateSendButton();
+          customAlert("File uploaded successfully!");
+        } else {
+          customAlert("Upload failed. Please try again.");
+          hidePreview();
+        }
+      } catch (e) {
+        console.error("Cloudinary upload error:", e);
+        customAlert("Upload error. Check your connection.");
+        hidePreview();
       }
     };
+
+    function hidePreview() {
+      els.filePreview.style.display = 'none';
+      els.docPreview.style.display = 'none';
+      currentImage = null;
+      currentFile = null;
+      updateSendButton();
+    }
 
     function addMessage(content, sender, plainText = '') {
       const div = document.createElement('div');
@@ -622,10 +670,7 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
         history.push({ role: "user", content: text });
       }
       els.chatInput.value = ''; 
-      els.imagePreview.style.display = 'none';
-      els.imagePreview.src = '';
-      currentImage = null; 
-      els.sendBtn.disabled = true; 
+      hidePreview();
       els.chatInput.style.height = 'auto';
       addThinking();
       const reply = await getReply(text);
