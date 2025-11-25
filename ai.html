@@ -237,31 +237,7 @@
       if (e.target === els.upgradeSheet) els.upgradeSheet.classList.remove('active');
     });
 
-    /* ----------  NEW: PAST PAPERS  ---------- */
-    const pastPapers = {
-      "Mathematics": {
-        "Paper 1": [
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Mathematics%20P1%20Eng.pdf",
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Mathematics%20P1%20Memo.pdf"
-        ],
-        "Paper 2": [
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Mathematics%20P2%20Eng.pdf",
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Mathematics%20P2%20Memo.pdf"
-        ]
-      },
-      "Physical Sciences": {
-        "Paper 1": [
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Physical%20Sciences%20P1%20Eng.pdf",
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Physical%20Sciences%20P1%20Memo.pdf"
-        ],
-        "Paper 2": [
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Physical%20Sciences%20P2%20Eng.pdf",
-          "https://www.education.gov.za/Portals/0/CD/National%20Curriculum%20Statements%20and%20Vocational/2024%20Nov%20NSC%20Exams/Physical%20Sciences%20P2%20Memo.pdf"
-        ]
-      }
-      // Add more subjects here in the same pattern
-    };
-
+    /* ----------  NEW: AI EXAM GENERATOR  ---------- */
     function detectSubject() {
       const recent = history.slice(-10).map(m => m.content.toLowerCase()).join(" ");
       const map = {
@@ -278,48 +254,81 @@
       return null;
     }
 
-    /* force-download helper */
-    function directDownload(url, filename) {
-      fetch(url)
-        .then(r => r.blob())
-        .then(blob => {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(a.href);
-          customAlert("Download started");
-        })
-        .catch(() => customAlert("Download failed – try again"));
+    async function generateExamPaper(subject, grade) {
+      const marks = subject.includes("Math") || subject.includes("Physical") ? 150 : 100;
+      const prompt = `Generate a COMPLETE full-length CAPS ${subject} Grade ${grade} exam paper worth ${marks} marks with FULL detailed memorandum. Include cover page, sections, all questions, and full solutions. Use ---MEMO--- to separate paper and memo. Never shorten.`;
+      
+      addThinking();
+      const cost = 2000; // Heavy generation
+      if (!(await deductTokens(cost))) {
+        removeThinking();
+        return null;
+      }
+
+      try {
+        const res = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "grok-3", messages: [{role:"user",content:prompt}], max_tokens: 8000 })
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || null;
+      } catch (e) {
+        console.error(e);
+        return null;
+      } finally {
+        removeThinking();
+      }
     }
 
-    function showPastPapersSheet() {
+    async function showPastPapersSheet() {
       const grade = userProfile?.grade || "12";
       const name = userProfile?.name || "learner";
       let subject = detectSubject();
       if (!subject) {
         subject = prompt(`Hi ${name}! Which Grade ${grade} subject?`, "Mathematics") || "Mathematics";
       }
-      const papers = pastPapers[subject];
-      let html = `<h3 class="text-xl font-bold mb-4">Grade ${grade} ${subject} – 2024 NSC Past Papers</h3>`;
-      if (papers) {
-        Object.entries(papers).forEach(([paper, [qp, memo]]) => {
-          html += `
-            <div class="mb-4 border rounded-xl p-3">
-              <div class="font-semibold mb-2">${paper}</div>
-              <button onclick="directDownload('${qp}', '${subject.replace(/\s/g,'_')}_${paper.replace(/\s/g,'_')}_QP.pdf')" class="inline-block mr-3 text-purple-700 underline">Question Paper</button>
-              <button onclick="directDownload('${memo}', '${subject.replace(/\s/g,'_')}_${paper.replace(/\s/g,'_')}_Memo.pdf')" class="inline-block text-purple-700 underline">Memorandum</button>
-            </div>`;
-        });
-      } else {
-        html += `<p class="text-gray-600">No official papers yet for ${subject}. Ask me to generate a mock paper instead!</p>`;
-      }
-      els.papersContent.innerHTML = html;
+
+      els.papersContent.innerHTML = `<div class="text-center py-8"><div class="thinking"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div><p class="mt-4 text-gray-600">Generating your ${subject} paper...</p></div>`;
       els.papersSheet.classList.add('active');
+
+      const examText = await generateExamPaper(subject, grade);
+      
+      if (!examText) {
+        els.papersContent.innerHTML = `<p class="text-red-600">Failed to generate paper. Check your internet.</p>`;
+        return;
+      }
+
+      const [qp, memo] = examText.split("---MEMO---");
+      const doc = new jsPDF();
+      
+      // Cover page
+      doc.setFontSize(18);
+      doc.text(`${subject} - Grade ${grade}`, 105, 40, {align:"center"});
+      doc.setFontSize(14);
+      doc.text("CAPS Exam Practice Paper", 105, 55, {align:"center"});
+      doc.text(`Generated by Vynix Buddy`, 105, 70, {align:"center"});
+      doc.text(`${new Date().toLocaleDateString('en-ZA')}`, 105, 85, {align:"center"});
+      
+      // Question paper
+      doc.addPage();
+      doc.setFontSize(16);
+      doc.text("QUESTION PAPER", 105, 20, {align:"center"});
+      doc.setFontSize(11);
+      doc.text(doc.splitTextToSize(qp || examText, 180), 15, 35);
+      
+      // Memorandum
+      doc.addPage();
+      doc.setFontSize(16);
+      doc.text("MEMORANDUM", 105, 20, {align:"center"});
+      doc.setFontSize(11);
+      doc.text(doc.splitTextToSize(memo || "No memo generated.", 180), 15, 35);
+      
+      doc.save(`CAPS_${subject.replace(/\s/g,"_")}_Grade${grade}.pdf`);
+      els.papersSheet.classList.remove('active');
+      customAlert("Exam paper downloaded!");
     }
-    /* ----------  END PAST PAPERS  ---------- */
+    /* ----------  END AI EXAM GENERATOR  ---------- */
 
     const viewport = window.visualViewport || window;
     function handleKeyboard() {
