@@ -354,23 +354,35 @@
       return true;
     }
 
-    async function loadTokens() {
-      try {
-        const userSnap = await get(child(ref(db), `users/${auth.currentUser.uid}`));
-        const userData = userSnap.val();
-        if (userData?.premium) {
-          isPremium = true; dailyTokens = 999999;
-          document.querySelector('.token-bar').innerHTML = `<div class="flex items-center justify-center gap-3"><span>Unlimited access • Premium</span></div>`;
-          els.tokenCount.textContent = 'Unlimited'; return;
-        }
-        const snap = await get(child(ref(db), `users/${auth.currentUser.uid}/tokens`));
-        const data = snap.val(); const now = Date.now(); const oneDay = 24 * 60 * 60 * 1000;
-        if (!data || (now - (data.lastReset || 0) > oneDay)) {
-          dailyTokens = 15000; await set(ref(db, `users/${auth.currentUser.uid}/tokens`), { daily: dailyTokens, lastReset: now });
-        } else dailyTokens = data.daily || 15000;
-        els.tokenCount.textContent = dailyTokens.toLocaleString();
-      } catch { dailyTokens = 15000; els.tokenCount.textContent = dailyTokens.toLocaleString(); }
+    // Replace your entire loadTokens() function with this:
+async function loadTokens() {
+  try {
+    const userSnap = await get(child(ref(db), `users/${auth.currentUser.uid}`));
+    const userData = userSnap.val();
+    if (userData?.premium) {
+      isPremium = true; dailyTokens = 999999;
+      document.querySelector('.token-bar').innerHTML = `<div class="flex items-center justify-center gap-3"><span>Unlimited access • Premium</span></div>`;
+      els.tokenCount.textContent = 'Unlimited'; return;
     }
+
+    const snap = await get(child(ref(db), `users/${auth.currentUser.uid}/tokens`));
+    const data = snap.val();
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+
+    if (!data || (now - Number(data.lastReset || 0)) > oneDay) {
+      dailyTokens = 15000;
+      await set(ref(db, `users/${auth.currentUser.uid}/tokens`), { daily: dailyTokens, lastReset: now });
+    } else {
+      dailyTokens = data.daily || 15000;
+    }
+    els.tokenCount.textContent = dailyTokens.toLocaleString();
+  } catch (e) {
+    console.error(e);
+    dailyTokens = 15000;
+    els.tokenCount.textContent = dailyTokens.toLocaleString();
+  }
+}
 
     function loadYocoScript() {
       if (window.YocoSDK) return Promise.resolve();
@@ -828,54 +840,86 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
     }
     function removeThinking() { document.getElementById('thinking')?.remove(); }
 
-    async function send() {
-      if (waitingForProfile) return;
-      let text = els.chatInput.value.trim();
-      if (!text && !currentImage) return;
-      const cost = currentImage ? 1500 : estimateTokens(text);
-      if (!(await deductTokens(cost))) {
-        addMessage("You've run out of tokens today! Upgrade to unlimited for just R79/month.", 'ai');
-        return;
-      }
-      if (currentImage) {
-        addMessage(`<img src="${currentImage}" class="rounded-lg max-w-full" alt="User upload">`, 'user');
-        history.push({ role: "user", content: `[Image: ${currentImage}]` });
-        if (!text) text = "Explain what's in this image";
-      } else {
-        addMessage(text, 'user');
-        history.push({ role: "user", content: text });
-      }
-      els.chatInput.value = ''; 
-      hidePreview();
-      els.chatInput.style.height = 'auto';
-      addThinking();
-      const reply = await getReply(text);
-      removeThinking();
-      addMessage(reply, 'ai', reply);
-      history.push({ role: "assistant", content: reply });
-    }
+   // Replace your entire send() function with this:
+async function send() {
+  if (waitingForProfile) return;
+  let text = els.chatInput.value.trim();
+  if (!text && !currentImage) return;
 
-    async function getReply(msg) {
-      if (!xaiKey) return "Connecting to Grok...";
-      const roleText = userProfile ? `${userProfile.role} (Grade ${userProfile.grade})` : "learner";
-      const systemPrompt = `You are Vynix Buddy, a warm, expert CAPS tutor for South Africa. You are helping ${userProfile?.name || "a student"} who is a ${roleText}. Always use their name naturally. Be encouraging and explain step-by-step.`;
-      try {
-        const res = await fetch("https://api.x.ai/v1/chat/completions", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "grok-3",
-            messages: [{ role: "system", content: systemPrompt }, ...history.slice(-15), { role: "user", content: msg }],
-            temperature: 0.7
-          })
-        });
-        const data = await res.json();
-        return data.choices?.[0]?.message?.content || "I'm thinking...";
-      } catch (e) {
-        console.error(e);
-        return "No internet connection. Please check your network.";
-      }
-    }
+  const cost = currentImage ? 1500 : estimateTokens(text);
+  if (!(await deductTokens(cost))) {
+    addMessage("You've run out of tokens today! Upgrade to unlimited for just R79/month.", 'ai');
+    return;
+  }
+
+  // Build proper multimodal message
+  const userMessage = {
+    role: "user",
+    content: currentImage ? [
+      { type: "text", text: text || "Explain this image / answer the question in it." },
+      { type: "image_url", image_url: { url: currentImage } }
+    ] : text
+  };
+
+  if (currentImage) {
+    addMessage(`<img src="${currentImage}" class="rounded-lg max-w-full" alt="Uploaded image">`, 'user');
+  } else {
+    addMessage(text, 'user');
+  }
+
+  history.push(userMessage);
+  els.chatInput.value = '';
+  hidePreview();
+  els.chatInput.style.height = 'auto';
+  addThinking();
+
+  // Use vision model only when image is present
+  const model = currentImage ? "grok-2-vision-1212" : "grok-4-1-fast-non-reasoning";
+
+  try {
+    const res = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: model,
+        messages: [{ role: "system", content: systemPrompt }, ...history.slice(-15)],
+        temperature: 0.7,
+        max_tokens: 4000
+      })
+    });
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content || "I'm thinking...";
+    removeThinking();
+    addMessage(reply, 'ai', reply);
+    history.push({ role: "assistant", content: reply });
+  } catch (e) {
+    removeThinking();
+    addMessage("No internet or server error. Try again.", 'ai');
+  }
+}
+
+    // Replace your entire getReply() function with this:
+async function getReply(msg) {
+  if (!xaiKey) return "Connecting to Grok...";
+  const roleText = userProfile ? `${userProfile.role} (Grade ${userProfile.grade})` : "learner";
+  const systemPrompt = `You are Vynix Buddy, a warm, expert CAPS tutor for South Africa. You are helping ${userProfile?.name || "a student"} who is a ${roleText}. Always use their name naturally. Be encouraging and explain step-by-step.`;
+  try {
+    const res = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "grok-4-1-fast-non-reasoning",
+        messages: [{ role: "system", content: systemPrompt }, ...history.slice(-15), { role: "user", content: msg }],
+        temperature: 0.7
+      })
+    });
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "I'm thinking...";
+  } catch (e) {
+    console.error(e);
+    return "No internet connection. Please check your network.";
+  }
+}
 
     async function checkAndAskProfile() {
       const snap = await get(child(ref(db), `users/${auth.currentUser.uid}/profile`));
