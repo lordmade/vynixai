@@ -1347,27 +1347,30 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
     }
     
     // ─────── MAIN SEND FUNCTION ───────
-    async function send() {
+        async function send() {
       if (waitingForProfile) return;
       let text = els.chatInput.value.trim();
       if (!text && !currentImage) return;
-
       const cost = currentImage ? 1500 : estimateTokens(text);
       if (!(await deductTokens(cost))) {
         addMessage("You've run out of tokens today! Upgrade to unlimited for just R79/month.", 'ai');
         return;
       }
 
-      if (currentImage) {
-        addMessage(`<img src="${currentImage}" class="rounded-lg max-w-full" alt="User upload">`, 'user');
-        history.push({ role: "user", content: `[Image: ${currentImage}]` });
-        if (!text) text = "Explain what's in this image";
-      } else {
-        addMessage(text, 'user');
-        history.push({ role: "user", content: text });
+      // ─────── ADD & SAVE USER MESSAGE (TEXT OR IMAGE) ───────
+      const userMessageContent = currentImage ? currentImage : text;
+      const displayContent = currentImage 
+        ? `<img src="${currentImage}" class="rounded-lg max-w-full" alt="Uploaded image">` 
+        : text;
+
+      addMessage(displayContent, 'user');
+      history.push({ role: "user", content: userMessageContent });
+
+      if (currentImage && !text.trim()) {
+        text = "Explain what's in this image";
       }
 
-      await saveMessage(text); // Save user message
+      await saveMessage(userMessageContent);   // ← FIXED: saves image URL cleanly
 
       els.chatInput.value = '';
       hidePreview();
@@ -1378,8 +1381,7 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
       removeThinking();
       addMessage(reply, 'ai', reply);
       history.push({ role: "assistant", content: reply });
-
-      await saveMessage(text, reply); // Save AI reply
+      await saveMessage(text, reply); // AI reply (second param = reply)
     }
     
     // ─────── AI RESPONSE ───────
@@ -1575,26 +1577,60 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
     }
     
     async function loadConversationHistory(convoId) {
-      const snap = await get(ref(db, `users/${auth.currentUser.uid}/conversations/${convoId}/messages`));
-      const messages = snap.val();
-      els.chatPane.innerHTML = `<div class="text-center mt-28 text-gray-600 px-4">
-        <h1 class="text-4xl font-black mb-2 text-purple-600">Vynix Buddy</h1>
-        <p class="text-lg">Loading your chat...</p>
-      </div>`;
+  const snap = await get(ref(db, `users/${auth.currentUser.uid}/conversations/${convoId}/messages`));
+  const messages = snap.val();
 
-      if (!messages) {
-        history = [];
-        return;
+  els.chatPane.innerHTML = '';
+  history = [];
+
+  if (!messages) {
+    startNewChat();
+    return;
+  }
+
+  const messageArray = Object.values(messages).sort((a, b) => a.timestamp - b.timestamp);
+
+  messageArray.forEach(msg => {
+    const isUser = msg.role === 'user';
+    let content;
+
+    if (isUser) {
+      if (msg.content.startsWith('http') && (msg.content.includes('.jpg') || msg.content.includes('.png') || msg.content.includes('.jpeg') || msg.content.includes('.webp'))) {
+        content = `<img src="${msg.content}" class="rounded-lg max-w-full" alt="Uploaded image">`;
+      } else {
+        content = escapeHtml(msg.content).replace(/\n/g, '<br>');
       }
-
-      history = Object.values(messages);
-      els.chatPane.innerHTML = '';
-      history.forEach(msg => {
-        const isUser = msg.role === 'user';
-        const content = isUser ? msg.content : marked.parse(msg.content);
-        addMessage(content, isUser ? 'user' : 'ai', isUser ? '' : msg.content);
-      });
+    } else {
+      content = marked.parse(msg.content || '');
     }
+
+    history.push(msg);
+
+    const div = document.createElement('div');
+    div.className = `message ${isUser ? 'user' : 'ai'}`;
+    const time = new Date(msg.timestamp).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
+
+    if (!isUser) {
+      div.innerHTML = `
+        <div class="content">${content}</div>
+        <div class="ai-actions">
+          <button class="action-btn copy-btn" aria-label="Copy"><i data-lucide="copy"></i></button>
+          <button class="action-btn voice-btn" aria-label="Listen"><i data-lucide="volume-2"></i></button>
+          <button class="action-btn pdf-btn" aria-label="Download PDF"><i data-lucide="download"></i></button>
+          <button class="action-btn papers-btn" aria-label="Past Papers"><i data-lucide="file-text" class="text-purple-700"></i></button>
+          <button class="action-btn mark-btn" aria-label="Mark My Work"><i data-lucide="check-square" class="text-green-600"></i></button>
+        </div>
+        <div class="timestamp">${time}</div>`;
+    } else {
+      div.innerHTML = `<div class="content">${content}</div><div class="timestamp">${time}</div>`;
+    }
+
+    els.chatPane.appendChild(div);
+  });
+
+  lucide.createIcons();
+  els.chatPane.scrollTop = els.chatPane.scrollHeight;
+}
     
     async function saveMessage(userMsg, aiReply = null) {
       if (!auth.currentUser) return;
