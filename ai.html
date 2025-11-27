@@ -1347,43 +1347,42 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
     }
     
     // ─────── MAIN SEND FUNCTION ───────
-       // ─────── MAIN SEND FUNCTION ───────
-async function send() {
-  if (waitingForProfile) return;
-  let text = els.chatInput.value.trim();
-  if (!text && !currentImage) return;
-  const cost = currentImage ? 1500 : estimateTokens(text);
-  if (!(await deductTokens(cost))) {
-    addMessage("You've run out of tokens today! Upgrade to unlimited for just R79/month.", 'ai');
-    return;
-  }
+        async function send() {
+      if (waitingForProfile) return;
+      let text = els.chatInput.value.trim();
+      if (!text && !currentImage) return;
+      const cost = currentImage ? 1500 : estimateTokens(text);
+      if (!(await deductTokens(cost))) {
+        addMessage("You've run out of tokens today! Upgrade to unlimited for just R79/month.", 'ai');
+        return;
+      }
 
-  // ─────── ADD & SAVE USER MESSAGE (TEXT OR IMAGE) ───────
-  const userMessageContent = currentImage ? currentImage : text;
-  const displayContent = currentImage 
-    ? `<img src="${currentImage}" class="rounded-lg max-w-full" alt="Uploaded image">` 
-    : text;
+      // ─────── ADD & SAVE USER MESSAGE (TEXT OR IMAGE) ───────
+      const userMessageContent = currentImage ? currentImage : text;
+      const displayContent = currentImage 
+        ? `<img src="${currentImage}" class="rounded-lg max-w-full" alt="Uploaded image">` 
+        : text;
 
-  addMessage(displayContent, 'user');
-  history.push({ role: "user", content: userMessageContent });
+      addMessage(displayContent, 'user');
+      history.push({ role: "user", content: userMessageContent });
 
-  if (currentImage && !text.trim()) {
-    text = "Explain what's in this image";
-  }
+      if (currentImage && !text.trim()) {
+        text = "Explain what's in this image";
+      }
 
-  await saveMessage(userMessageContent);   // ✅ Saves user message ONCE
+      await saveMessage(userMessageContent);   // ← FIXED: saves image URL cleanly
 
-  els.chatInput.value = '';
-  hidePreview();
-  els.chatInput.style.height = 'auto';
-  addThinking();
+      els.chatInput.value = '';
+      hidePreview();
+      els.chatInput.style.height = 'auto';
+      addThinking();
 
-  const reply = await getReply(text);
-  removeThinking();
-  addMessage(reply, 'ai', reply);
-  history.push({ role: "assistant", content: reply });
-  await saveMessage(null, reply); // ✅ FIXED: Only save AI reply now
-}
+      const reply = await getReply(text);
+      removeThinking();
+      addMessage(reply, 'ai', reply);
+      history.push({ role: "assistant", content: reply });
+      await saveMessage(text, reply); // AI reply (second param = reply)
+    }
     
     // ─────── AI RESPONSE ───────
     async function getReply(msg) {
@@ -1633,37 +1632,29 @@ async function send() {
   els.chatPane.scrollTop = els.chatPane.scrollHeight;
 }
     
-   async function saveMessage(userMsg, aiReply = null) {
-  if (!auth.currentUser) return;
+    async function saveMessage(userMsg, aiReply = null) {
+      if (!auth.currentUser) return;
 
-  let convoRef;
-  if (!currentConvoId) {
-    // Use whichever message is available for the title
-    const titleSource = userMsg || aiReply || '';
-    convoRef = push(ref(db, `users/${auth.currentUser.uid}/conversations`));
-    currentConvoId = convoRef.key;
-    await set(convoRef, {
-      title: titleSource.slice(0, 40) + (titleSource.length > 40 ? '...' : ''),
-      createdAt: Date.now(),
-      lastMessageAt: Date.now()
-    });
-  } else {
-    convoRef = ref(db, `users/${auth.currentUser.uid}/conversations/${currentConvoId}`);
-    await update(convoRef, { lastMessageAt: Date.now() });
-  }
+      let convoRef;
+      if (!currentConvoId) {
+        convoRef = push(ref(db, `users/${auth.currentUser.uid}/conversations`));
+        currentConvoId = convoRef.key;
+        await set(convoRef, {
+          title: userMsg.slice(0, 40) + (userMsg.length > 40 ? '...' : ''),
+          createdAt: Date.now(),
+          lastMessageAt: Date.now()
+        });
+      } else {
+        convoRef = ref(db, `users/${auth.currentUser.uid}/conversations/${currentConvoId}`);
+        await update(convoRef, { lastMessageAt: Date.now() }); // FIXED: use update()
+      }
 
-  const messagesRef = child(convoRef, 'messages');
-  
-  // ✅ Only save user message if provided
-  if (userMsg) {
-    await push(messagesRef, { role: 'user', content: userMsg, timestamp: Date.now() });
-  }
-  
-  // ✅ Only save AI reply if provided
-  if (aiReply) {
-    await push(messagesRef, { role: 'assistant', content: aiReply, timestamp: Date.now() });
-  }
-}
+      const messagesRef = child(convoRef, 'messages');
+      await push(messagesRef, { role: 'user', content: userMsg, timestamp: Date.now() });
+      if (aiReply) {
+        await push(messagesRef, { role: 'assistant', content: aiReply, timestamp: Date.now() });
+      }
+    }
     
     // ─────── SIDEBAR CONTROLS ───────
     function openSidebar() {
