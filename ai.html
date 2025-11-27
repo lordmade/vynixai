@@ -856,16 +856,36 @@ CAPS ALIGNMENT: [Reference to assessment standard]`;
       }
     }
     async function checkAndAskProfile() {
-      const snap = await get(child(ref(db), `users/${auth.currentUser.uid}/profile`));
-      userProfile = snap.val();
-      if (!userProfile) {
-        waitingForProfile = true;
-        addMessage("Sawubona! I'm Vynix Buddy, your personal CAPS tutor.\n\nMay I know your name?", 'ai');
-      } else {
-        addMessage(`Welcome back, ${userProfile.name}! Ready for Grade ${userProfile.grade} today?`, 'ai');
-        waitingForProfile = false;
-      }
-    }
+  // First get the Auth displayName (set during signup)
+  const authUser = auth.currentUser;
+  const authName = authUser?.displayName?.trim();
+
+  // Then check custom profile in Realtime Database
+  const snap = await get(child(ref(db), `users/${auth.currentUser.uid}/profile`));
+  const dbProfile = snap.val();
+
+  // Merge: prefer DB profile, fall back to Auth displayName
+  userProfile = dbProfile || {};
+
+  // If name not in DB yet, save the one from signup
+  if (!userProfile.name && authName) {
+    userProfile.name = authName;
+    // Optionally save it to DB so it's consistent
+    await set(ref(db, `users/${auth.currentUser.uid}/profile/name`), authName);
+  }
+
+  // If still no profile data → start onboarding
+  if (!userProfile.name || !userProfile.grade || !userProfile.role) {
+    waitingForProfile = true;
+    addMessage("Sawubona! I'm Vynix Buddy, your personal CAPS tutor.\n\nMay I know your name?", 'ai');
+  } else {
+    addMessage(`Welcome back, ${userProfile.name}! Ready for Grade ${userProfile.grade} today?`, 'ai');
+    waitingForProfile = false;
+  }
+
+  // Update the profile dropdown immediately
+  updateProfileDisplay();
+}
     els.chatInput.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -906,10 +926,18 @@ const dropdownName = document.getElementById('dropdownName');
 const dropdownGrade = document.getElementById('dropdownGrade');
 
 function updateProfileDisplay() {
-  if (!userProfile) return;
-  const name = userProfile.name || "Student";
+  if (!userProfile?.name) {
+    userInitial.textContent = '?';
+    userName.textContent = 'Student';
+    userGrade.textContent = '—';
+    dropdownName.textContent = 'Student';
+    dropdownGrade.textContent = '—';
+    return;
+  }
+
+  const name = userProfile.name.trim();
   const initial = name.charAt(0).toUpperCase();
-  const grade = userProfile.grade ? `Grade ${userProfile.grade}` : "Not set";
+  const grade = userProfile.grade ? `Grade ${userProfile.grade}` : 'Not set';
 
   userInitial.textContent = initial;
   userName.textContent = name;
