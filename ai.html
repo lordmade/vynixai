@@ -728,6 +728,7 @@
     import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
     import { getDatabase, ref, set, get, child, update } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
     import { getRemoteConfig, fetchAndActivate, getString, getBoolean } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js";
+    import { getDatabase, ref, onValue, push, remove, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
     lucide.createIcons();
     const { jsPDF } = window.jspdf;
     const app = initializeApp({
@@ -1401,7 +1402,7 @@ updateProfileDisplay();
 
 
 
-    // ─────── CONVERSATIONS SIDEBAR ───────
+// ─────── CONVERSATIONS SIDEBAR + FIREBASE SAVE/LOAD ───────
 const sidebar = document.getElementById('convoSidebar');
 const overlay = document.getElementById('sidebarOverlay');
 const openMobile = document.getElementById('openSidebarMobile');
@@ -1409,18 +1410,37 @@ const closeBtn = document.getElementById('closeSidebar');
 const desktopToggle = document.getElementById('desktopSidebarToggle');
 const convoList = document.getElementById('conversationsList');
 
-// Sample conversations (replace with real data later)
-let conversations = [
-  { id: '1', title: 'Grade 12 Calculus Help', time: '10:34 AM', active: true },
-  { id: '2', title: 'Physical Sciences Past Paper', time: 'Yesterday' },
-  { id: '3', title: 'How to balance equations?', time: '2 days ago' },
-];
+const db = getDatabase(app);
+let conversations = [];
+let currentConvoId = null;  // tracks which conversation is active
 
+// Load all conversations for the current user
+function loadConversations() {
+  if (!auth.currentUser) return;
+  const convosRef = ref(db, `users/${auth.currentUser.uid}/conversations`);
+  onValue(convosRef, (snapshot) => {
+    const data = snapshot.val();
+    conversations = data ? Object.keys(data).map(key => ({
+      id: key,
+      ...data[key],
+      time: new Date(data[key].lastMessageAt || data[key].createdAt).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
+    })).sort((a, b) => (b.lastMessageAt || b.createdAt) - (a.lastMessageAt || a.createdAt)) : [];
+
+    renderConversations();
+  });
+}
+
+// Render conversations list
 function renderConversations() {
+  if (conversations.length === 0) {
+    convoList.innerHTML = `<div class="p-8 text-center text-gray-500">No chats yet. Start a new one!</div>`;
+    return;
+  }
+
   convoList.innerHTML = conversations.map(c => `
-    <div class="convo-item ${c.active ? 'active' : ''}" data-id="${c.id}">
+    <div class="convo-item ${c.id === currentConvoId ? 'active' : ''}" data-id="${c.id}">
       <i data-lucide="message-square" class="w-5 h-5 text-purple-500"></i>
-      <div class="title">${c.title}</div>
+      <div class="title">${escapeHtml(c.title || 'New Chat')}</div>
       <div class="timestamp">${c.time}</div>
       <button class="delete-btn">
         <i data-lucide="trash-2" class="w-5 h-5"></i>
@@ -1430,32 +1450,103 @@ function renderConversations() {
 
   lucide.createIcons();
 
-  // Delete handler
+  // Delete conversation
   document.querySelectorAll('.delete-btn').forEach(btn => {
-    btn.onclick = (e) => {
+    btn.onclick = async (e) => {
       e.stopPropagation();
       const item = btn.closest('.convo-item');
       const id = item.dataset.id;
-      if (confirm('Delete this chat?')) {
-        conversations = conversations.filter(c => c.id !== id);
-        renderConversations();
+      if (confirm('Delete this chat permanently?')) {
+        await remove(ref(db, `users/${auth.currentUser.uid}/conversations/${id}`));
+        if (currentConvoId === id) {
+          currentConvoId = null;
+          startNewChat();
+        }
       }
     };
   });
 
-  // Click to load chat
+  // Select conversation
   document.querySelectorAll('.convo-item').forEach(item => {
-    item.onclick = (e) => {
+    item.onclick = async (e) => {
       if (e.target.closest('.delete-btn')) return;
+      const id = item.dataset.id;
+      currentConvoId = id;
+      await loadConversationHistory(id);
       document.querySelectorAll('.convo-item').forEach(i => i.classList.remove('active'));
       item.classList.add('active');
-      // TODO: Load this conversation's history
       closeSidebar();
     };
   });
 }
 
-// Open/Close
+// Create new conversation
+async function startNewChat() {
+  els.chatPane.innerHTML = `<div class="text-center mt-28 text-gray-600 px-4">
+    <h1 class="text-4xl font-black mb-2 text-purple-600">Vynix Buddy</h1>
+    <p class="text-lg">Your CAPS AI Tutor • Grades 1–12 • South Africa</p>
+  </div>`;
+  history = [];
+  currentConvoId = null;
+  customAlert("New chat started!");
+}
+
+// Load chat history from Firebase
+async function loadConversationHistory(convoId) {
+  const snap = await get(ref(db, `users/${auth.currentUser.uid}/conversations/${convoId}/messages`));
+  const messages = snap.val();
+  els.chatPane.innerHTML = `<div class="text-center mt-28 text-gray-600 px-4">
+    <h1 class="text-4xl font-black mb-2 text-purple-600">Vynix Buddy</h1>
+    <p class="text-lg">Loading your chat...</p>
+  </div>`;
+
+  if (!messages) {
+    history = [];
+    return;
+  }
+
+  history = Object.values(messages);
+  els.chatPane.innerHTML = '';
+  history.forEach(msg => {
+    const isUser = msg.role === 'user';
+    const content = isUser ? msg.content : marked.parse(msg.content);
+    addMessage(content, isUser ? 'user' : 'ai', isUser ? '' : msg.content);
+  });
+}
+
+// Save message and update conversation title/timestamp
+async function saveMessage(userMsg, aiReply = null) {
+  if (!auth.currentUser) return;
+
+  let convoRef;
+  if (!currentConvoId) {
+    convoRef = push(ref(db, `users/${auth.currentUser.uid}/conversations`));
+    currentConvoId = convoRef.key;
+    await set(convoRef, {
+      title: userMsg.slice(0, 40) + (userMsg.length > 40 ? '...' : ''),
+      createdAt: Date.now(),
+      lastMessageAt: Date.now()
+    });
+  } else {
+    convoRef = ref(db, `users/${auth.currentUser.uid}/conversations/${currentConvoId}`);
+    await set(child(convoRef, 'lastMessageAt'), Date.now());
+  }
+
+  const messagesRef = child(convoRef, 'messages');
+  await push(messagesRef, { role: 'user', content: userMsg, timestamp: Date.now() });
+  if (aiReply) {
+    await push(messagesRef, { role: 'assistant', content: aiReply, timestamp: Date.now() });
+  }
+}
+
+// Helper: escape HTML
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Open/Close Sidebar
 function openSidebar() {
   sidebar.classList.add('translate-x-0');
   overlay.classList.remove('hidden');
@@ -1472,20 +1563,56 @@ openMobile.onclick = openSidebar;
 closeBtn.onclick = closeSidebar;
 overlay.onclick = closeSidebar;
 desktopToggle.onclick = () => sidebar.classList.toggle('open');
-
-// New Chat
 document.getElementById('newChatBtn').onclick = () => {
-  els.chatPane.innerHTML = `<div class="text-center mt-28 text-gray-600 px-4">
-    <h1 class="text-4xl font-black mb-2 text-purple-600">Vynix Buddy</h1>
-    <p class="text-lg">Your CAPS AI Tutor • Grades 1–12 • South Africa</p>
-  </div>`;
-  history = [];
+  startNewChat();
   closeSidebar();
-  customAlert("New chat started!");
 };
 
-// Initial render
-renderConversations();
+// Override your existing send() function to save to Firebase
+const originalSend = send;
+window.send = async function() {
+  if (waitingForProfile) return;
+  let text = els.chatInput.value.trim();
+  if (!text && !currentImage) return;
+
+  const cost = currentImage ? 1500 : estimateTokens(text);
+  if (!(await deductTokens(cost))) {
+    addMessage("You've run out of tokens today! Upgrade to unlimited for just R79/month.", 'ai');
+    return;
+  }
+
+  if (currentImage) {
+    addMessage(`<img src="${currentImage}" class="rounded-lg max-w-full" alt="User upload">`, 'user');
+    history.push({ role: "user", content: `[Image: ${currentImage}]` });
+    if (!text) text = "Explain what's in this image";
+  } else {
+    addMessage(text, 'user');
+    history.push({ role: "user", content: text });
+  }
+
+  await saveMessage(text);  // Save user message immediately
+
+  els.chatInput.value = '';
+  hidePreview();
+  els.chatInput.style.height = 'auto';
+  addThinking();
+
+  const reply = await getReply(text);
+  removeThinking();
+  addMessage(reply, 'ai', reply);
+  history.push({ role: "assistant", content: reply });
+
+  await saveMessage(text, reply);  // Save AI reply + update timestamp
+};
+
+// Start loading conversations when user is authenticated
+onAuthStateChanged(auth, async (user) => {
+  if (!user) { location.href = "login.html"; return; }
+  await init();
+  await loadTokens();
+  await checkAndAskProfile();
+  loadConversations();  // ← This starts everything
+});
     
     els.sendBtn.onclick = send;
     onAuthStateChanged(auth, async (user) => {
