@@ -395,10 +395,19 @@
       color: var(--text2);
       margin-left: auto;
     }
-    .status-content img,
-    .status-content video {
+    /* FIXED-SIZE media container */
+    .status-media-box {
       width: 100%;
-      display: block;
+      aspect-ratio: 9 / 16;        /* same size for every card */
+      max-height: 55vh;            /* never too tall */
+      overflow: hidden;
+      background: #000;
+    }
+    .status-media-box img,
+    .status-media-box video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
     .status-text {
       padding: 12px 14px;
@@ -457,7 +466,6 @@
 
     <!-- Status -->
     <div id="status" class="tab">
-      <!-- old grid removed – now vertical feed -->
       <div id="status-feed"></div>
     </div>
 
@@ -822,62 +830,53 @@
     /* ---------- status feed ---------- */
     const loadStatus = () => {
       const feed = document.getElementById('status-feed');
-      onValue(ref(db, 'status'), async (snap) => {
+      // 1️⃣  fetch once to build the cards
+      get(ref(db, 'status')).then(async (snap) => {
+        if (!snap.exists()) return feed.innerHTML = '<p class="text-secondary text-center mt-10">No status yet</p>';
         feed.innerHTML = '';
-        for (const child of snap.val() ? Object.entries(snap.val()) : []) {
-          const [key, val] = child;
+        for (const [key, val] of Object.entries(snap.val())) {
           if (Date.now() - val.timestamp > 24 * 3600 * 1000) continue;
           const userSnap = await get(ref(db, `users/${val.uid}`));
           const user = userSnap.val() || {};
           const post = document.createElement('div');
           post.className = 'status-post';
+          post.dataset.key = key;
           post.innerHTML = `
             <div class="status-header">
               <img src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
               <div>
                 <div class="name">${user.displayName || 'Unknown'}</div>
-                <div class="preview">${new Date(val.timestamp).toLocaleString()}</div>
+                <div class="preview">${timeAgo(val.timestamp)}</div>
               </div>
               <span class="status-time">${timeAgo(val.timestamp)}</span>
             </div>
             ${val.media ? `
-              <div class="status-content">
+              <div class="status-media-box">
                 ${['mp4','mov','webm'].includes(val.media.split('.').pop().toLowerCase())
-                  ? `<video controls src="${val.media}"></video>`
+                  ? `<video controls muted loop playsinline src="${val.media}"></video>`
                   : `<img src="${val.media}" />`}
-                ${val.caption ? `<div class="status-text">${val.caption}</div>` : ''}
               </div>
+              ${val.caption ? `<div class="status-text">${val.caption}</div>` : ''}
             ` : `<div class="status-text">${val.text}</div>`}
             <div class="status-bar">
               <button class="like-btn" data-key="${key}">
                 <span class="material-icons">favorite</span>
-                <span class="like-count-${key}">0</span>
+                <span class="like-count">0</span>
               </button>
               <button class="comment-btn" data-key="${key}">
                 <span class="material-icons">comment</span>
-                <span class="comment-count-${key}">0</span>
+                <span class="comment-count">0</span>
               </button>
             </div>
           `;
           feed.appendChild(post);
-          // like listener
-          onValue(ref(db, `status/${key}/likes`), (s) => {
-            const likes = s.val() || {};
-            post.querySelector(`.like-count-${key}`).textContent = Object.keys(likes).length;
-            post.querySelector('.like-btn').classList.toggle('liked', likes[uid]);
-          });
-          // comment listener
-          onValue(ref(db, `status/${key}/comments`), (s) => {
-            const comments = s.val() || {};
-            post.querySelector(`.comment-count-${key}`).textContent = Object.keys(comments).length;
-          });
+          // 2️⃣  attach lightweight listeners that ONLY update counters
+          likeListener(key);
+          commentListener(key);
           // like action
-          post.querySelector('.like-btn').onclick = async (e) => {
+          post.querySelector('.like-btn').onclick = (e) => {
             e.stopPropagation();
-            const likedRef = ref(db, `status/${key}/likes/${uid}`);
-            const liked = await get(likedRef);
-            if (liked.exists()) await set(likedRef, null);
-            else await set(likedRef, true);
+            toggleLike(key);
           };
           // comment action
           post.querySelector('.comment-btn').onclick = (e) => {
@@ -892,12 +891,42 @@
       });
     };
 
+    const likeListener = (key) => {
+      onValue(ref(db, `status/${key}/likes`), (s) => {
+        const likes = s.val() || {};
+        const cnt = Object.keys(likes).length;
+        const card = document.querySelector(`.status-post[data-key="${key}"]`);
+        if (!card) return;
+        const btn = card.querySelector('.like-btn');
+        const span = btn.querySelector('.like-count');
+        span.textContent = cnt;
+        btn.classList.toggle('liked', likes[uid]);
+      });
+    };
+
+    const commentListener = (key) => {
+      onValue(ref(db, `status/${key}/comments`), (s) => {
+        const comments = s.val() || {};
+        const cnt = Object.keys(comments).length;
+        const card = document.querySelector(`.status-post[data-key="${key}"]`);
+        if (!card) return;
+        card.querySelector('.comment-count').textContent = cnt;
+      });
+    };
+
+    const toggleLike = async (key) => {
+      const likedRef = ref(db, `status/${key}/likes/${uid}`);
+      const liked = await get(likedRef);
+      if (liked.exists()) await set(likedRef, null);
+      else await set(likedRef, true);
+    };
+
     const timeAgo = (ts) => {
       const s = Math.floor((Date.now() - ts) / 1000);
       if (s < 60) return 'now';
-      if (s < 3600) return Math.floor(s / 60) + 'm';
-      if (s < 86400) return Math.floor(s / 3600) + 'h';
-      return Math.floor(s / 86400) + 'd';
+      if (s < 3600) return `${Math.floor(s / 60)} m ago`;
+      if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+      return `${Math.floor(s / 86400)} d ago`;
     };
 
     /* ---------- comments ---------- */
@@ -933,22 +962,6 @@
       const key = push(ref(db, `status/${currentStatusKey}/comments`)).key;
       await set(ref(db, `status/${currentStatusKey}/comments/${key}`), { uid, text, timestamp: serverTimestamp() });
       input.value = '';
-    };
-
-    /* ---------- media upload ---------- */
-    document.getElementById('media-upload').onchange = async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const caption = prompt('Caption (optional):') || '';
-      toast('Uploading…');
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('upload_preset', UPLOAD_PRESET);
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method: 'POST', body: fd });
-      const { secure_url } = await res.json();
-      const key = push(ref(db, 'status')).key;
-      await set(ref(db, `status/${key}`), { media: secure_url, caption, uid, timestamp: serverTimestamp() });
-      toast('Status added!');
     };
 
     /* ---------- nav ---------- */
