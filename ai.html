@@ -92,6 +92,16 @@
   0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.6); }
   70% { box-shadow: 0 0 0 10px rgba(139, 92, 246, 0); }
 }
+    #voiceRipple { animation: ripple 1.5s infinite; pointer-events: none; }
+@keyframes ripple {
+  0% { transform: scale(0.8); opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.recording-pulse { animation: pulseGlow 1.5s infinite; }
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7); }
+  70% { box-shadow: 0 0 0 16px rgba(139, 92, 246, 0); }
+}
   </style>
 </head>
 <body>
@@ -138,22 +148,35 @@
   <div class="input-bar">
     <!-- REPLACE YOUR CURRENT .input-container WITH THIS ENTIRE BLOCK -->
 <div class="input-container">
+<!-- REPLACE ENTIRE .input-container WITH THIS -->
+<div class="input-container items-center">
   <button class="upload-btn" id="uploadBtn"><i data-lucide="paperclip"></i></button>
   <input type="file" id="hiddenFile" accept="image/*,.pdf,.doc,.docx" hidden>
 
-  <!-- Voice Button (new) -->
-  <button id="voiceBtn" class="upload-btn relative">
-    <i data-lucide="mic" id="micIcon"></i>
-    <i data-lucide="mic-off" id="micOffIcon" class="hidden"></i>
-    <div id="voiceRipple" class="absolute inset-0 rounded-full border-4 border-purple-400 opacity-75 hidden"></div>
-  </button>
+  <!-- Recorded audio preview (appears after recording) -->
+  <div id="audioPreview" class="hidden mx-2 flex-1 flex items-center gap-3 bg-white rounded-2xl px-4 py-2 border border-purple-200">
+    <button id="playPreviewBtn" class="text-purple-600"><i data-lucide="play"></i></button>
+    <div class="flex-1 h-8 bg-purple-100 rounded-full overflow-hidden">
+      <div id="audioWave" class="h-full bg-gradient-to-r from-purple-500 to-pink-500" style="width:0%"></div>
+    </div>
+    <span id="audioTime" class="text-sm text-gray-600">0:00</span>
+    <button id="cancelAudioBtn" class="text-red-500"><i data-lucide="x"></i></button>
+  </div>
 
-  <textarea id="chatInput" placeholder="Ask me anything... or hold the mic 🎤" rows="1"></textarea>
+  <!-- Main input + mic -->
+  <div id="inputRow" class="flex-1 flex items-center gap-3">
+    <textarea id="chatInput" placeholder="Ask me anything..." rows="1" class="flex-1"></textarea>
+    
+    <button id="voiceBtn" class="upload-btn relative">
+      <i data-lucide="mic" id="micIcon"></i>
+      <i data-lucide="mic-off" id="micOffIcon" class="hidden"></i>
+      <div id="voiceRipple" class="absolute inset-0 rounded-full border-4 border-purple-400 opacity-75 hidden"></div>
+    </button>
+  </div>
 
-  <button id="sendBtn" class="send-btn" disabled>
-    <i data-lucide="send" class="text-white"></i>
-  </button>
+  <button id="sendBtn" class="send-btn" disabled><i data-lucide="send" class="text-white"></i></button>
 </div>
+  </div>
   </div>
 
   <!-- UPGRADE SHEET -->
@@ -583,80 +606,200 @@
     };
 
 
-// ====== VOICE NOTE INPUT (South African kids will LOVE this) ======
-let recognition = null;
-let isRecording = false;
 
-if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SpeechRecognition();
-  recognition.lang = 'en-ZA'; // South African English
-  recognition.continuous = false;
-  recognition.interimResults = true;
+  // ===== WHATSAPP-STYLE VOICE NOTES (send + receive) =====
+let recorder = null;
+let audioBlob = null;
+let audioUrl = null;
+let chunks = [];
 
-  const voiceBtn = document.getElementById('voiceBtn');
-  const micIcon = document.getElementById('micIcon');
-  const micOffIcon = document.getElementById('micOffIcon');
-  const ripple = document.getElementById('voiceRipple');
+const voiceBtn = document.getElementById('voiceBtn');
+const micIcon = document.getElementById('micIcon');
+const micOffIcon = document.getElementById('micOffIcon');
+const ripple = document.getElementById('voiceRipple');
+const audioPreview = document.getElementById('audioPreview');
+const inputRow = document.getElementById('inputRow');
+const playPreviewBtn = document.getElementById('playPreviewBtn');
+const cancelAudioBtn = document.getElementById('cancelAudioBtn');
+const audioTime = document.getElementById('audioTime');
+let recordingStartTime = 0;
+let timerInterval = null;
 
-  recognition.onresult = (e) => {
-    const transcript = Array.from(e.results)
-      .map(result => result[0].transcript)
-      .join('');
-    els.chatInput.value = transcript;
-    els.sendBtn.disabled = false;
-  };
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recorder = new MediaRecorder(stream);
+    chunks = [];
 
-  recognition.onerror = () => {
-    stopRecording();
-    customAlert("Voice not recognized – try again!");
-  };
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = () => {
+      audioBlob = new Blob(chunks, { type: 'audio/webm' });
+      audioUrl = URL.createObjectURL(audioBlob);
+      showAudioPreview();
+      stream.getTracks().forEach(t => t.stop());
+    };
 
-  recognition.onend = stopRecording;
-
-  function startRecording() {
-    if (isRecording) return;
-    isRecording = true;
-    recognition.start();
+    recorder.start();
+    recordingStartTime = Date.now();
     voiceBtn.classList.add('recording-pulse', 'bg-red-500');
     micIcon.classList.add('hidden');
     micOffIcon.classList.remove('hidden');
     ripple.classList.remove('hidden');
-    els.chatInput.placeholder = "Listening... speak now 🎤";
+
+    timerInterval = setInterval(() => {
+      const secs = Math.floor((Date.now() - recordingStartTime) / 1000);
+      voiceBtn.title = `${secs}s – release to send`;
+    }, 500);
+
+  } catch (err) {
+    customAlert("Microphone access denied");
   }
+}
 
-  function stopRecording() {
-    isRecording = false;
-    recognition.stop();
-    voiceBtn.classList.remove('recording-pulse', 'bg-red-500');
-    micIcon.classList.remove('hidden');
-    micOffIcon.classList.add('hidden');
-    ripple.classList.add('hidden');
-    els.chatInput.placeholder = "Ask me anything... or hold the mic 🎤";
+function stopRecording() {
+  if (recorder && recorder.state === 'recording') {
+    recorder.stop();
   }
+  clearInterval(timerInterval);
+  voiceBtn.classList.remove('recording-pulse', 'bg-red-500');
+  micIcon.classList.remove('hidden');
+  micOffIcon.classList.add('hidden');
+  ripple.classList.add('hidden');
+  voiceBtn.title = "";
+}
 
-  // Hold to record (perfect for WhatsApp generation)
-  voiceBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    startRecording();
-  });
+function showAudioPreview() {
+  inputRow.classList.add('hidden');
+  audioPreview.classList.remove('hidden');
+  els.sendBtn.disabled = false;
+  updateWaveAndTime();
+}
 
-  voiceBtn.addEventListener('pointerup', stopRecording);
-  voiceBtn.addEventListener('pointerleave', stopRecording); // for desktop
+function cancelRecording() {
+  audioBlob = null;
+  audioUrl = null;
+  audioPreview.classList.add('hidden');
+  inputRow.classList.remove('hidden');
+  els.sendBtn.disabled = !els.chatInput.value.trim();
+}
 
-  // Also allow tap-to-start, tap-again-to-stop on mobile
-  voiceBtn.addEventListener('click', (e) => {
-    if (!isRecording) {
-      e.preventDefault();
-      startRecording();
+// Preview controls
+cancelAudioBtn.onclick = cancelRecording;
+playPreviewBtn.onclick = () => {
+  const audio = new Audio(audioUrl);
+  audio.play();
+};
+
+// Timer + wave animation while recording
+function updateWaveAndTime() {
+  const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
+  audioTime.textContent = `0:${duration.toString().padStart(2, '0')}`;
+  document.getElementById('audioWave').style.width = '100%';
+}
+
+// Pointer events for perfect WhatsApp feel
+voiceBtn.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  startRecording();
+});
+
+voiceBtn.addEventListener('pointerup', e => {
+  e.preventDefault();
+  stopRecording();
+});
+
+voiceBtn.addEventListener('pointercancel', stopRecording);
+voiceBtn.addEventListener('pointerleave', stopRecording);
+
+// Modified send() function – detects if sending voice note
+const originalSend = send;
+async function send() {
+  let text = els.chatInput.value.trim();
+
+  // CASE 1: Sending voice note
+  if (audioBlob) {
+    // Show voice note bubble
+    const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
+    addMessage(`
+      <div class="bg-white p-3 rounded-2xl rounded-br-md shadow-md max-w-xs">
+        <audio controls src="${audioUrl}" class="w-full"></audio>
+        <div class="text-xs text-gray-500 text-right mt-1">${duration}s</div>
+      </div>
+    `, 'user');
+
+    // Upload to Cloudinary
+    customAlert("Sending voice note...");
+    const fd = new FormData();
+    fd.append('file', audioBlob, 'voice.webm');
+    fd.append('upload_preset', 'banter_box');
+
+    const res = await fetch("https://api.cloudinary.com/v1_1/dqkujefxj/video/upload", {
+      method: "POST", body: fd
+    });
+    const data = await res.json();
+
+    if (data.secure_url) {
+      history.push({ role: "user", content: `[Voice note: ${data.secure_url}]` });
+      cancelRecording();
+      addThinking();
+      const reply = await getReply(`[Voice message attached: ${data.secure_url}]`);
+      removeThinking();
+      await replyWithVoiceNote(reply); // ← AI replies with voice!
+      history.push({ role: "assistant", content: reply });
     }
-  });
+    return;
+  }
+
+  // CASE 2: Normal text message (unchanged)
+  if (!text && !currentImage) return;
+  // ... rest of your original send() logic
+  await originalSend();
+}
+
+// AI replies with voice note (ElevenLabs)
+async function replyWithVoiceNote(text) {
+  if (!isPremium && userPlan !== 'unlimited') {
+    addMessage(text, 'ai', text);
+    return;
+  }
+
+  addMessage(`
+    <div class="content bg-gradient-to-br from-purple-50 to-pink-50 p-4 rounded-2xl rounded-tl-md shadow-lg max-w-xs">
+      <div class="flex items-center gap-3 mb-2">
+        <i data-lucide="volume-2" class="text-purple-600"></i>
+        <span class="text-sm font-medium text-purple-700">Voice reply</span>
+      </div>
+      <audio controls class="w-full" id="aiVoiceAudio"></audio>
+      <div class="text-xs text-gray-600 mt-2">${marked.parse(text)}</div>
+    </div>
+    <div class="timestamp">${formatTime()}</div>
+  `, 'ai', text);
 
   lucide.createIcons();
-} else {
-  // Hide voice button if not supported
-  document.getElementById('voiceBtn')?.remove();
+
+  try {
+    const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/ErXwobaYiN019PkySvjV/stream", {
+      method: "POST",
+      headers: {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": elevenlabsKey
+      },
+      body: JSON.stringify({
+        text: text.replace(/[#*`>~\[\]]/g, ''),
+        model_id: "eleven_turbo_v2",
+        voice_settings: { stability: 0.7, similarity_boost: 0.8 }
+      })
+    });
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    document.getElementById('aiVoiceAudio').src = url;
+  } catch {
+    customAlert("Voice reply failed");
+  }
 }
+  
 
                                                                    
 
