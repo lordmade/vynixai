@@ -146,6 +146,7 @@
       font-size: 12px;
       color: var(--text2);
       transition: .2s;
+      position: relative;
     }
     .nav-item.active {
       color: var(--accent);
@@ -447,6 +448,68 @@
       display: grid;
       place-items: center;
     }
+
+    /* ---------- custom confirm ---------- */
+    #custom-confirm {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.55);
+      z-index: 300;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    #custom-confirm.show {
+      display: flex;
+    }
+    .confirm-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      width: 84%;
+      max-width: 300px;
+      text-align: center;
+    }
+    .confirm-box h3 {
+      margin-bottom: 12px;
+      font-weight: 700;
+    }
+    .confirm-box p {
+      margin-bottom: 20px;
+      color: var(--text2);
+    }
+    .confirm-box button {
+      width: 48%;
+      padding: 10px 0;
+      border: none;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+    .confirm-box .cancel {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .confirm-box .delete {
+      background: var(--accent);
+      color: #fff;
+      margin-left: 4%;
+    }
+
+    /* ---------- unread badge on chats tab ---------- */
+    #chats-badge {
+      position: absolute;
+      top: 6px;
+      right: 24%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 5px;
+      border-radius: 10px;
+      display: none;
+    }
   </style>
 </head>
 <body class="light">
@@ -498,7 +561,10 @@
 
   <!-- bottom nav -->
   <nav class="bottom-nav">
-    <div class="nav-item active" data-tab="chats"><span class="material-icons">chat</span>Chats</div>
+    <div class="nav-item active" data-tab="chats">
+      <span class="material-icons">chat</span>Chats
+      <span id="chats-badge">0</span>
+    </div>
     <div class="nav-item" data-tab="channels"><span class="material-icons">dvr</span>Channels</div>
     <div class="nav-item" data-tab="status"><span class="material-icons">circle</span>Status</div>
     <div class="nav-item" data-tab="settings"><span class="material-icons">settings</span>Settings</div>
@@ -554,6 +620,7 @@
       <button id="close-comments" class="material-icons text-2xl">close</button>
     </div>
     <div id="comments-list" class="sheet-content"></div>
+    <!-- fixed input row -->
     <div class="sheet-header">
       <input id="comment-input" class="search" placeholder="Write a comment…">
       <button id="send-comment" class="material-icons text-accent">send</button>
@@ -576,6 +643,18 @@
         <span class="material-icons">favorite</span>
         <span id="like-count">0</span>
       </button>
+    </div>
+  </div>
+
+  <!-- custom confirm -->
+  <div id="custom-confirm">
+    <div class="confirm-box">
+      <h3 id="confirm-title">Confirm</h3>
+      <p id="confirm-msg">Are you sure?</p>
+      <div>
+        <button class="cancel" id="confirm-cancel">Cancel</button>
+        <button class="delete" id="confirm-delete">Delete</button>
+      </div>
     </div>
   </div>
 
@@ -604,6 +683,7 @@
 
     let uid;
     let currentStatusKey; // for viewer & comments
+    let totalUnread = 0;
 
     /* ---------- helpers ---------- */
     const toast = (msg) => {
@@ -629,6 +709,13 @@
       } catch { return '…'; }
     };
 
+    /* ---------- sound ---------- */
+    const playMsgSound = () => {
+      const a = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDsiUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBTGH0fPTgjMGHm7A7+OZURE';
+      a.volume = 0.3;
+      a.play().catch(() => {});
+    };
+
     /* ---------- bottom-sheet helpers ---------- */
     const openSheet = (id) => document.getElementById(id).classList.add('open');
     const closeSheet = (id) => document.getElementById(id).classList.remove('open');
@@ -636,6 +723,23 @@
     document.getElementById('close-sheet').onclick = () => closeSheet('sheet');
     document.getElementById('close-status-sheet').onclick = () => closeSheet('status-sheet');
     document.getElementById('close-comments').onclick = () => closeSheet('comments-sheet');
+
+    /* ---------- custom confirm ---------- */
+    let confirmResolve;
+    const customConfirm = (title, msg) => {
+      document.getElementById('confirm-title').textContent = title;
+      document.getElementById('confirm-msg').textContent = msg;
+      document.getElementById('custom-confirm').classList.add('show');
+      return new Promise(res => confirmResolve = res);
+    };
+    document.getElementById('confirm-cancel').onclick = () => {
+      document.getElementById('custom-confirm').classList.remove('show');
+      confirmResolve(false);
+    };
+    document.getElementById('confirm-delete').onclick = () => {
+      document.getElementById('custom-confirm').classList.remove('show');
+      confirmResolve(true);
+    };
 
     /* ---------- add-friends sheet ---------- */
     const loadAllUsers = async () => {
@@ -707,13 +811,14 @@
     // camera status (placeholder)
     document.getElementById('status-camera-btn').onclick = () => toast('Camera coming soon');
 
-    /* ---------- chats ---------- */
+    /* ---------- chats + unread badge + sound ---------- */
     const loadChats = async () => {
       const list = document.getElementById('chat-list');
       list.innerHTML = '';
       const folSnap = await get(ref(db, `users/${uid}/following`));
       if (!folSnap.exists()) return list.innerHTML = '<p class="text-secondary text-center mt-10">Follow friends to chat</p>';
       const uids = Object.keys(folSnap.val());
+      totalUnread = 0;
       for (const id of uids) {
         const uSnap = await get(ref(db, `users/${id}`));
         const user = uSnap.val();
@@ -734,18 +839,36 @@
         card.onclick = () => startChat(id, user);
         list.appendChild(card);
 
+        // last message
         onValue(ref(db, `users/${uid}/chats/${id}/lastMessage`), async (s) => {
           if (s.exists()) {
             const msg = await decrypt(s.val(), [uid, id].sort().join('_'));
             document.getElementById(`prev-${id}`).textContent = msg;
           }
         });
+        // unread count + sound
         onValue(ref(db, `users/${uid}/chats/${id}/unreadCount`), (s) => {
           const cnt = s.val() || 0;
           const badge = document.getElementById(`unread-${id}`);
           badge.style.display = cnt ? 'inline' : 'none';
           badge.textContent = cnt > 99 ? '99+' : cnt;
+          // update total
+          totalUnread = 0;
+          uids.forEach(i => {
+            const c = (document.getElementById(`unread-${i}`)?.textContent || 0) * 1;
+            totalUnread += c;
+          });
+          const b = document.getElementById('chats-badge');
+          if (totalUnread) {
+            b.textContent = totalUnread > 99 ? '99+' : totalUnread;
+            b.style.display = 'inline';
+          } else {
+            b.style.display = 'none';
+          }
+          // sound on new message (not from me)
+          if (cnt > 0 && document.hidden === false) playMsgSound();
         });
+        // status dot
         onValue(ref(db, 'status'), (snap) => {
           let has = false;
           snap.forEach((ch) => {
@@ -953,7 +1076,8 @@
     };
 
     const deleteStatus = async (key) => {
-      if (!confirm('Delete this status?')) return;
+      const yes = await customConfirm('Delete Status', 'Are you sure you want to delete this status?');
+      if (!yes) return;
       await remove(ref(db, `status/${key}`));
       toast('Status deleted');
       statusArray = statusArray.filter(i => i.key !== key);
@@ -996,7 +1120,8 @@
     };
 
     window.deleteComment = async (statusKey, commentKey) => {
-      if (!confirm('Delete this comment?')) return;
+      const yes = await customConfirm('Delete Comment', 'Are you sure you want to delete this comment?');
+      if (!yes) return;
       await remove(ref(db, `status/${statusKey}/comments/${commentKey}`));
       toast('Comment deleted');
     };
@@ -1024,51 +1149,6 @@
       const key = push(ref(db, 'status')).key;
       await set(ref(db, `status/${key}`), { media: secure_url, caption, uid, timestamp: serverTimestamp() });
       toast('Status added!');
-      // prepend to local cache and re-render
-      const user = auth.currentUser;
-      const post = document.createElement('div');
-      post.className = 'status-post';
-      post.dataset.key = key;
-      post.innerHTML = `
-        <div class="status-header">
-          <img src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
-          <div>
-            <div class="name">${user.displayName || 'You'}</div>
-            <div class="preview">${timeAgo(Date.now())}</div>
-          </div>
-          <span class="status-time">${timeAgo(Date.now())}</span>
-          <button class="owner-trash material-icons" data-key="${key}">delete</button>
-        </div>
-        <div class="status-media-box">
-          ${['mp4','mov','webm'].includes(secure_url.split('.').pop().toLowerCase())
-            ? `<video controls muted loop playsinline src="${secure_url}"></video>`
-            : `<img src="${secure_url}" />`}
-        </div>
-        ${caption ? `<div class="status-text">${caption}</div>` : ''}
-        <div class="status-bar">
-          <button class="like-btn" data-key="${key}">
-            <span class="material-icons">favorite</span>
-            <span class="like-count">0</span>
-          </button>
-          <button class="comment-btn" data-key="${key}">
-            <span class="material-icons">comment</span>
-            <span class="comment-count">0</span>
-          </button>
-        </div>
-      `;
-      post.querySelector('.owner-trash').onclick = (e) => { e.stopPropagation(); deleteStatus(key); };
-      likeListener(key);
-      commentListener(key);
-      post.querySelector('.like-btn').onclick = (e) => { e.stopPropagation(); toggleLike(key); };
-      post.querySelector('.comment-btn').onclick = (e) => {
-        e.stopPropagation();
-        currentStatusKey = key;
-        openSheet('comments-sheet');
-        loadComments(key);
-      };
-      post.onclick = () => openViewer(key);
-      statusArray.unshift({ key, timestamp: Date.now(), node: post });
-      renderFeed();
     };
 
     /* ---------- nav ---------- */
