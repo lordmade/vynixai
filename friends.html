@@ -5,12 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <title>Vynix</title>
+  <title>Vynix – Status Gallery</title>
 
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
+
+  <!-- Material Icons -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 
   <style>
@@ -324,21 +329,36 @@
       color: var(--accent);
     }
 
-    /* status upload fab */
-    #status-fab {
-      position: fixed;
-      bottom: 80px;
-      right: 20px;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      box-shadow: var(--glow);
+    /* status media grid inside sheet */
+    #media-grid {
       display: grid;
-      place-items: center;
-      z-index: 20;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 8px;
+      max-height: 50vh;
+      overflow-y: auto;
+    }
+    #media-grid img,
+    #media-grid video {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 2px solid transparent;
+      cursor: pointer;
+    }
+    #media-grid .selected {
+      border-color: var(--accent);
+      box-shadow: var(--glow);
+    }
+    #status-caption {
+      width: 100%;
+      padding: 12px 16px;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      font-size: 14px;
     }
   </style>
 </head>
@@ -397,7 +417,7 @@
     <div class="nav-item" data-tab="settings"><span class="material-icons">settings</span>Settings</div>
   </nav>
 
-  <!-- bottom-sheet -->
+  <!-- bottom-sheet (friends) -->
   <div id="sheet" class="bottom-sheet">
     <div class="sheet-header">
       <span class="font-semibold">Add friends</span>
@@ -406,16 +426,26 @@
     <div id="sheet-list" class="sheet-content"></div>
   </div>
 
-  <!-- status upload bottom-sheet -->
+  <!-- status media picker sheet -->
   <div id="status-sheet" class="bottom-sheet">
     <div class="sheet-header">
-      <span class="font-semibold">Create Status</span>
+      <span class="font-semibold">Select Photos / Videos</span>
       <button id="close-status-sheet" class="material-icons text-2xl">close</button>
     </div>
-    <div class="sheet-content">
-      <button id="status-text-btn" class="w-full py-3 rounded-xl border border-accent text-accent font-semibold mb-3">Text Status</button>
-      <button id="status-media-btn" class="w-full py-3 rounded-xl bg-accent text-white font-semibold">Photo/Video Status</button>
-      <input id="media-upload" type="file" accept="image/*,video/*" style="display:none;">
+    <div class="sheet-content !p-0">
+      <input id="status-caption" type="text" placeholder="Add a caption…">
+      <div id="media-grid"></div>
+      <div class="p-3">
+        <button id="upload-selected" class="w-full py-3 rounded-xl bg-accent text-white font-semibold">
+          Upload <span id="selected-count">0</span>
+        </button>
+      </div>
+      <!-- Text status button inside the same sheet -->
+      <div class="px-3 pb-3">
+        <button id="status-text-btn" class="w-full py-3 rounded-xl border border-accent text-accent font-semibold">
+          Text Status
+        </button>
+      </div>
     </div>
   </div>
 
@@ -438,7 +468,10 @@
     </div>
   </div>
 
-  <!-- firebase -->
+  <!-- hidden fallback file input -->
+  <input id="media-upload" type="file" accept="image/*,video/*" multiple style="display:none;">
+
+  <!-- Firebase module script -->
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
@@ -488,7 +521,7 @@
       } catch { return '…'; }
     };
 
-    /* ---------- bottom-sheet ---------- */
+    /* ---------- bottom-sheet helpers ---------- */
     const openSheet = () => document.getElementById('sheet').classList.add('open');
     const closeSheet = () => document.getElementById('sheet').classList.remove('open');
     document.getElementById('close-sheet').onclick = closeSheet;
@@ -497,6 +530,129 @@
     const closeStatusSheet = () => document.getElementById('status-sheet').classList.remove('open');
     document.getElementById('close-status-sheet').onclick = closeStatusSheet;
 
+    /* ---------- device media gallery ---------- */
+    const grid          = document.getElementById('media-grid');
+    const captionInput  = document.getElementById('status-caption');
+    const uploadBtn     = document.getElementById('upload-selected');
+    const selectedCount = document.getElementById('selected-count');
+    let selectedFiles   = [];                       // File objects
+
+    /* open sheet → load camera roll */
+    document.getElementById('status-fab').onclick = () => {
+      openStatusSheet();
+      loadCameraRoll();
+    };
+
+    /* native camera-roll reader (images + videos) */
+    async function loadCameraRoll() {
+      grid.innerHTML = '<div class="col-span-3 text-center text-sm p-4">Loading…</div>';
+      selectedFiles  = [];
+      updateCount();
+
+      /* request read permission */
+      try {
+        const opts = { types: [{ description: 'Images & Videos',
+                                 accept: { 'image/*': ['.jpg','.jpeg','.png','.gif','.webp'],
+                                          'video/*': ['.mp4','.mov','.webm'] } }],
+                       multiple: true };
+        const handle = await window.showOpenFilePicker(opts);
+        const files  = await Promise.all(handle.map(h => h.getFile()));
+        renderThumbs(files);
+      } catch (e) {
+        /* fallback to legacy <input> */
+        document.getElementById('media-upload').click();
+      }
+    }
+
+    /* render thumbnails */
+    function renderThumbs(files) {
+      grid.innerHTML = '';
+      files.forEach((file, idx) => {
+        const url  = URL.createObjectURL(file);
+        const item = document.createElement('div');
+        item.className = 'relative';
+
+        const media = file.type.startsWith('video')
+                      ? document.createElement('video')
+                      : document.createElement('img');
+        media.src = url;
+        if (file.type.startsWith('video')) media.muted = true;
+        media.className = 'rounded-md';
+        item.appendChild(media);
+
+        item.onclick = () => toggleSelect(file, item);
+        grid.appendChild(item);
+      });
+    }
+
+    /* toggle selection */
+    function toggleSelect(file, item) {
+      const idx = selectedFiles.indexOf(file);
+      if (idx > -1) {
+        selectedFiles.splice(idx, 1);
+        item.classList.remove('selected');
+      } else {
+        selectedFiles.push(file);
+        item.classList.add('selected');
+      }
+      updateCount();
+    }
+
+    /* update counter */
+    function updateCount() {
+      selectedCount.textContent = selectedFiles.length;
+      uploadBtn.disabled = selectedFiles.length === 0;
+    }
+
+    /* upload selected */
+    uploadBtn.onclick = async () => {
+      if (!selectedFiles.length) return;
+      closeStatusSheet();
+      toast('Uploading…');
+      const caption = captionInput.value.trim();
+
+      for (const file of selectedFiles) {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('upload_preset', UPLOAD_PRESET);
+        try {
+          const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method: 'POST', body: fd });
+          const { secure_url } = await res.json();
+          const key = push(ref(db, 'status')).key;
+          await set(ref(db, `status/${key}`), {
+            media: secure_url,
+            caption,
+            uid,
+            timestamp: serverTimestamp()
+          });
+        } catch (e) {
+          toast('Upload failed');
+          return;
+        }
+      }
+      toast(`${selectedFiles.length} status added!`);
+      captionInput.value = '';
+      selectedFiles = [];
+    };
+
+    /* text status button inside the same sheet */
+    document.getElementById('status-text-btn').onclick = async () => {
+      closeStatusSheet();
+      const text = prompt('Your text status:');
+      if (!text) return;
+      const key = push(ref(db, 'status')).key;
+      await set(ref(db, `status/${key}`), { text, uid, timestamp: serverTimestamp() });
+      toast('Text status added!');
+    };
+
+    /* fallback file input change */
+    document.getElementById('media-upload').onchange = async (e) => {
+      const files = Array.from(e.target.files);
+      if (!files.length) return;
+      renderThumbs(files);
+    };
+
+    /* ---------- friends sheet ---------- */
     const loadAllUsers = async () => {
       const list = document.getElementById('sheet-list');
       list.innerHTML = 'Loading…';
@@ -532,24 +688,6 @@
       loadAllUsers();
     };
 
-    document.getElementById('status-fab').onclick = () => {
-      openStatusSheet();
-    };
-
-    document.getElementById('status-text-btn').onclick = async () => {
-      closeStatusSheet();
-      const text = prompt('Your text status:');
-      if (!text) return;
-      const key = push(ref(db, 'status')).key;
-      await set(ref(db, `status/${key}`), { text, uid, timestamp: serverTimestamp() });
-      toast('Text status added!');
-    };
-
-    document.getElementById('status-media-btn').onclick = () => {
-      closeStatusSheet();
-      document.getElementById('media-upload').click();
-    };
-
     /* ---------- chats ---------- */
     const loadChats = async () => {
       const list = document.getElementById('chat-list');
@@ -575,28 +713,24 @@
           <span id="unread-${id}" class="unread" style="display:none;"></span>
         `;
         card.onclick = () => startChat(id, user);
-        // profile pic click → modal
         card.querySelector('.avatar').onclick = (e) => {
           e.stopPropagation();
           openProfileModal(user);
         };
         list.appendChild(card);
 
-        // last message
         onValue(ref(db, `users/${uid}/chats/${id}/lastMessage`), async (s) => {
           if (s.exists()) {
             const msg = await decrypt(s.val(), [uid, id].sort().join('_'));
             document.getElementById(`prev-${id}`).textContent = msg;
           }
         });
-        // unread
         onValue(ref(db, `users/${uid}/chats/${id}/unreadCount`), (s) => {
           const cnt = s.val() || 0;
           const badge = document.getElementById(`unread-${id}`);
           badge.style.display = cnt ? 'inline' : 'none';
           badge.textContent = cnt > 99 ? '99+' : cnt;
         });
-        // status dot
         onValue(ref(db, 'status'), (snap) => {
           let has = false;
           snap.forEach((ch) => {
@@ -711,7 +845,7 @@
       }
     };
 
-    /* ---------- status ---------- */
+    /* ---------- status load ---------- */
     const loadStatus = () => {
       const grid = document.getElementById('status-grid');
       onValue(ref(db, 'status'), (snap) => {
@@ -732,22 +866,6 @@
       });
     };
 
-    // media status
-    document.getElementById('media-upload').onchange = async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const caption = prompt('Caption (optional):') || '';
-      toast('Uploading…');
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('upload_preset', UPLOAD_PRESET);
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method: 'POST', body: fd });
-      const { secure_url } = await res.json();
-      const key = push(ref(db, 'status')).key;
-      await set(ref(db, `status/${key}`), { media: secure_url, caption, uid, timestamp: serverTimestamp() });
-      toast('Status added!');
-    };
-
     /* ---------- nav ---------- */
     document.querySelectorAll('.nav-item').forEach((el) => {
       el.addEventListener('click', () => {
@@ -756,9 +874,7 @@
         const tab = el.dataset.tab;
         document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
         document.getElementById(tab).classList.add('active');
-        // show FAB only in chats
-        document.getElementById('add-fab').style.display = tab === 'chats' ? 'grid' : 'none';
-        // show status FAB only in status
+        document.getElementById('add-fab').style.display   = tab === 'chats'  ? 'grid' : 'none';
         document.getElementById('status-fab').style.display = tab === 'status' ? 'grid' : 'none';
       });
     });
