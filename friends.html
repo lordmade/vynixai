@@ -211,6 +211,31 @@
         to { opacity: 1; transform: translate(-50%, 0); }
     }
 
+    /* ---- overlay spinner ---- */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(255,255,255,.85);
+      z-index: 300;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #overlay.hidden {
+      display: none;
+    }
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
     /* bottom-sheet */
     .bottom-sheet {
       position: fixed;
@@ -343,6 +368,11 @@
 </head>
 <body class="light">
 
+  <!-- overlay spinner -->
+  <div id="overlay">
+    <div class="spinner"></div>
+  </div>
+
   <!-- header -->
   <header id="header">
     <h1>Vynix</h1>
@@ -451,7 +481,6 @@
     let uid;
     let statusIndex = 0;
     let statusList = [];
-    let progressInterval;
 
     /* ---------- helpers ---------- */
     const toast = (msg) => {
@@ -477,18 +506,22 @@
       } catch { return '…'; }
     };
 
+    /* ---------- spinner ---------- */
+    const showOverlay = () => document.getElementById('overlay').classList.remove('hidden');
+    const hideOverlay = () => document.getElementById('overlay').classList.add('hidden');
+
     /* ---------- bottom-sheet ---------- */
     const openSheet = () => document.getElementById('sheet').classList.add('open');
     const closeSheet = () => document.getElementById('sheet').classList.remove('open');
     document.getElementById('close-sheet').onclick = closeSheet;
 
     const loadAllUsers = async () => {
+      showOverlay();
       const list = document.getElementById('sheet-list');
-      list.innerHTML = 'Loading…';
+      list.innerHTML = '';
       const snap = await get(ref(db, 'users'));
       const followingSnap = await get(ref(db, `users/${uid}/following`));
       const following = followingSnap.val() || {};
-      list.innerHTML = '';
       snap.forEach((child) => {
         if (child.key === uid) return;
         const user = child.val();
@@ -501,6 +534,7 @@
         `;
         list.appendChild(row);
       });
+      hideOverlay();
       document.querySelectorAll('.follow-btn').forEach((btn) => {
         btn.onclick = async (e) => {
           const id = e.target.dataset.uid;
@@ -519,10 +553,15 @@
 
     /* ---------- chats ---------- */
     const loadChats = async () => {
+      showOverlay();
       const list = document.getElementById('chat-list');
       list.innerHTML = '';
       const folSnap = await get(ref(db, `users/${uid}/following`));
-      if (!folSnap.exists()) return list.innerHTML = '<p class="text-secondary text-center mt-10">Follow friends to chat</p>';
+      if (!folSnap.exists()) {
+        list.innerHTML = '<p class="text-secondary text-center mt-10">Follow friends to chat</p>';
+        hideOverlay();
+        return;
+      }
       const uids = Object.keys(folSnap.val());
       for (const id of uids) {
         const uSnap = await get(ref(db, `users/${id}`));
@@ -542,28 +581,24 @@
           <span id="unread-${id}" class="unread" style="display:none;"></span>
         `;
         card.onclick = () => startChat(id, user);
-        // profile pic click → modal
         card.querySelector('.avatar').onclick = (e) => {
           e.stopPropagation();
           openProfileModal(user);
         };
         list.appendChild(card);
 
-        // last message
         onValue(ref(db, `users/${uid}/chats/${id}/lastMessage`), async (s) => {
           if (s.exists()) {
             const msg = await decrypt(s.val(), [uid, id].sort().join('_'));
             document.getElementById(`prev-${id}`).textContent = msg;
           }
         });
-        // unread
         onValue(ref(db, `users/${uid}/chats/${id}/unreadCount`), (s) => {
           const cnt = s.val() || 0;
           const badge = document.getElementById(`unread-${id}`);
           badge.style.display = cnt ? 'inline' : 'none';
           badge.textContent = cnt > 99 ? '99+' : cnt;
         });
-        // status dot
         onValue(ref(db, `status`), (snap) => {
           let has = false;
           snap.forEach((ch) => {
@@ -572,6 +607,7 @@
           document.getElementById(`dot-${id}`).style.display = has ? 'block' : 'none';
         });
       }
+      hideOverlay();
     };
 
     const startChat = (tid, user) => {
@@ -625,6 +661,9 @@
 
     let currentStatusKey = '';
     let currentUserLiked = false;
+    let statusList = [];
+    let statusIndex = 0;
+    let progressTimeout;
 
     const showViewer = (list, startIndex) => {
       statusList = list;
@@ -636,7 +675,7 @@
     const renderCurrent = () => {
       const item = statusList[statusIndex];
       currentStatusKey = item.key;
-      const { media, text, caption, uid: author, timestamp } = item.val();
+      const { media, text, caption } = item.val();
 
       // progress
       progressBar.style.transition = 'none';
@@ -644,6 +683,8 @@
       void progressBar.offsetWidth;
       progressBar.style.transition = 'width 5s linear';
       progressBar.style.width = '100%';
+      clearTimeout(progressTimeout);
+      progressTimeout = setTimeout(nextStatus, 5000);
 
       // content
       contentBox.innerHTML = '';
@@ -677,7 +718,6 @@
 
       // likes
       onValue(ref(db, `status/${currentStatusKey}/likes`), (s) => {
-        const count = (s.val() || {})[uid] ? 1 : 0;
         const total = Object.keys(s.val() || {}).length;
         likeCount.textContent = total;
         currentUserLiked = (s.val() || {})[uid];
@@ -698,7 +738,7 @@
       viewer.classList.remove('active');
       progressBar.style.transition = 'none';
       progressBar.style.width = '0%';
-      clearTimeout(progressInterval);
+      clearTimeout(progressTimeout);
     };
 
     document.getElementById('viewer-close').onclick = closeViewer;
@@ -711,7 +751,6 @@
       }
     };
 
-    // auto-advance
     viewer.addEventListener('click', (e) => {
       if (e.target.tagName === 'VIDEO') return;
       nextStatus();
@@ -722,14 +761,12 @@
       const grid = document.getElementById('status-grid');
       onValue(ref(db, 'status'), (snap) => {
         grid.innerHTML = '';
-        // group by user
         const map = {};
         snap.forEach((child) => {
           const author = child.val().uid;
           if (!map[author]) map[author] = [];
           map[author].push(child);
         });
-        // render one thumb per user (latest)
         Object.keys(map).forEach((author) => {
           const list = map[author].sort((a, b) => b.val().timestamp - a.val().timestamp);
           const latest = list[0];
