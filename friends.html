@@ -1091,6 +1091,131 @@
       return 'Today';
     };
 
+    /* ---------- Chat Friends Loading ---------- */
+    const loadChats = async () => {
+      const list = document.getElementById('chat-list');
+      list.innerHTML = '';
+      
+      // Get all users for chat (not just following)
+      const usersSnap = await get(ref(db, 'users'));
+      const currentUserSnap = await get(ref(db, `users/${uid}`));
+      const currentUser = currentUserSnap.val();
+      
+      if (!usersSnap.exists()) {
+        list.innerHTML = '<p class="text-secondary text-center mt-10">No users found</p>';
+        return;
+      }
+      
+      // Get following list for status dots
+      const followingSnap = await get(ref(db, `users/${uid}/following`));
+      const following = followingSnap.val() || {};
+      
+      let hasFriends = false;
+      
+      usersSnap.forEach((child) => {
+        if (child.key === uid) return; // Skip current user
+        
+        const user = child.val();
+        hasFriends = true;
+        
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <div class="avatar-wrapper">
+            <img class="avatar" src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
+            <span id="dot-${child.key}" class="status-dot"></span>
+          </div>
+          <div class="flex-1">
+            <div class="name">${user.displayName || user.email}</div>
+            <div id="prev-${child.key}" class="preview">Tap to chat</div>
+          </div>
+          <span id="unread-${child.key}" class="unread" style="display:none;"></span>
+        `;
+        
+        card.onclick = () => startChat(child.key, user);
+        // profile pic click → modal
+        card.querySelector('.avatar').onclick = (e) => {
+          e.stopPropagation();
+          openProfileModal(user);
+        };
+        list.appendChild(card);
+
+        // Setup real-time listeners
+        const chatId = [uid, child.key].sort().join('_');
+        
+        // Last message
+        onValue(ref(db, `chats/${chatId}/lastMessage`), async (s) => {
+          if (s.exists()) {
+            const msg = await decrypt(s.val(), chatId);
+            document.getElementById(`prev-${child.key}`).textContent = msg;
+          }
+        });
+        
+        // Unread count
+        onValue(ref(db, `users/${uid}/chats/${child.key}/unreadCount`), (s) => {
+          const cnt = s.val() || 0;
+          const badge = document.getElementById(`unread-${child.key}`);
+          badge.style.display = cnt ? 'inline' : 'none';
+          badge.textContent = cnt > 99 ? '99+' : cnt;
+        });
+        
+        // Status dot
+        onValue(ref(db, 'status'), (snap) => {
+          let has = false;
+          snap.forEach((ch) => {
+            if (ch.val().uid === child.key && Date.now() - ch.val().timestamp < 24 * 3600 * 1000) has = true;
+          });
+          document.getElementById(`dot-${child.key}`).style.display = has ? 'block' : 'none';
+        });
+      });
+      
+      if (!hasFriends) {
+        list.innerHTML = '<p class="text-secondary text-center mt-10">No other users found</p>';
+      }
+    };
+
+    const startChat = (tid, user) => {
+      const params = new URLSearchParams({
+        chatId: [uid, tid].sort().join('_'),
+        userId: tid,
+        username: user.displayName || '',
+        avatar: user.photoURL || '',
+        verified: !!user.verified,
+        isGroup: false
+      });
+      location.href = `chat.html?${params.toString()}`;
+    };
+
+    /* ---------- profile modal ---------- */
+    let modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black/60 flex items-center justify-center z-50 hidden';
+    modal.innerHTML = `
+      <div class="bg-card rounded-2xl p-6 w-11/12 max-w-sm">
+        <img id="modal-img" class="w-32 h-32 rounded-full mx-auto mb-4 object-cover">
+        <div id="modal-name" class="text-center text-lg font-bold"></div>
+        <button class="block mt-4 mx-auto px-4 py-2 rounded-full bg-accent text-white" onclick="closeProfileModal()">Close</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    window.openProfileModal = (user) => {
+      document.getElementById('modal-img').src = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`;
+      document.getElementById('modal-name').textContent = user.displayName || user.email;
+      modal.classList.remove('hidden');
+    };
+    window.closeProfileModal = () => modal.classList.add('hidden');
+
+    /* ---------- search ---------- */
+    document.getElementById('search').addEventListener('input', (e) => {
+      const term = e.target.value.toLowerCase();
+      document.querySelectorAll('#chat-list .card').forEach((card) => {
+        const name = card.querySelector('.name').textContent.toLowerCase();
+        card.style.display = name.includes(term) ? '' : 'none';
+      });
+    });
+
+    /* ---------- trivia card ---------- */
+    document.getElementById('trivia-card').onclick = () => (location.href = 'trivia.html');
+
     /* ---------- bottom-sheet ---------- */
     const openSheet = () => document.getElementById('sheet').classList.add('open');
     const closeSheet = () => document.getElementById('sheet').classList.remove('open');
