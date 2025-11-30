@@ -175,16 +175,61 @@
       grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
       gap: 12px;
     }
-    .status-thumb {
-      aspect-ratio: 9 / 16;
-      object-fit: cover;
-      border-radius: 12px;
-      border: 2px solid transparent;
+    .status-card {
       position: relative;
+      aspect-ratio: 9 / 16;
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: .2s;
     }
-    .status-thumb.new {
+    .status-card:hover {
+      transform: scale(1.02);
+    }
+    .status-card.new {
       border-color: var(--accent);
       box-shadow: var(--glow);
+    }
+    .status-card-cover {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .status-card-text {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 16px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .status-user-avatar {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      object-fit: cover;
+      z-index: 10;
+    }
+    .status-count {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      z-index: 10;
     }
     #media-upload {
       display: none;
@@ -325,72 +370,39 @@
       font-weight: 600;
     }
 
-    /* status viewer modal */
-    #status-viewer {
-      position: fixed;
-      inset: 0;
-      background: #000;
-      z-index: 200;
-      display: none;
-      flex-direction: column;
-    }
-    #status-viewer.active {
-      display: flex;
-    }
-    .viewer-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 16px;
-      background: #000;
-      color: #fff;
-    }
-    .viewer-header img {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      object-fit: cover;
-    }
+    /* Status Viewer Swipe */
     .viewer-body {
-      flex: 1;
+      touch-action: pan-y;
+      user-select: none;
+    }
+    .viewer-content-wrapper {
       display: flex;
+      transition: transform 0.3s ease;
+      width: 100%;
+      height: 100%;
+    }
+    .viewer-slide {
+      min-width: 100%;
+      display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
       padding: 16px;
-      flex-direction: column;
     }
-    .viewer-body img,
-    .viewer-body video {
-      max-width: 100%;
-      max-height: 100%;
-      border-radius: 12px;
-    }
-    .viewer-footer {
+    .viewer-indicators {
       display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 12px 16px;
-      background: #000;
-      color: #fff;
+      gap: 6px;
+      margin-top: 16px;
     }
-    .like-btn {
-      background: none;
-      border: none;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .viewer-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.3);
+      transition: background 0.3s;
     }
-    .like-btn.liked {
-      color: var(--accent);
-    }
-    .delete-btn {
-      background: none;
-      border: none;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      margin-left: auto;
+    .viewer-indicator.active {
+      background: var(--accent);
     }
 
     /* Pill buttons for status sheet */
@@ -420,19 +432,6 @@
     }
     .pill-btn:hover {
       transform: scale(1.02);
-    }
-
-    /* Status card user avatar */
-    .status-user-avatar {
-      position: absolute;
-      top: 8px;
-      left: 8px;
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      border: 2px solid #fff;
-      object-fit: cover;
-      z-index: 10;
     }
 
     /* status upload fab */
@@ -570,7 +569,14 @@
       <div id="viewer-name"></div>
       <span class="material-icons ml-auto" id="close-viewer">close</span>
     </div>
-    <div class="viewer-body" id="viewer-content"></div>
+    <div class="viewer-body" id="viewer-body">
+      <div class="viewer-content-wrapper" id="viewer-content-wrapper">
+        <!-- Slides will be dynamically added here -->
+      </div>
+      <div class="viewer-indicators" id="viewer-indicators">
+        <!-- Indicators will be dynamically added here -->
+      </div>
+    </div>
     <div class="viewer-footer">
       <button class="like-btn" id="like-btn">
         <span class="material-icons">favorite</span>
@@ -606,7 +612,8 @@
     const db = getDatabase(app);
 
     let uid;
-    let currentStatusKey;
+    let currentUserStatuses = [];
+    let currentStatusIndex = 0;
 
     /* ---------- helpers ---------- */
     const toast = (msg) => {
@@ -646,6 +653,62 @@
         return new TextDecoder().decode(dec);
       } catch { return '…'; }
     };
+
+    /* ---------- Swipe Handler ---------- */
+    class SwipeHandler {
+      constructor(element, onSwipeLeft, onSwipeRight) {
+        this.element = element;
+        this.onSwipeLeft = onSwipeLeft;
+        this.onSwipeRight = onSwipeRight;
+        this.startX = 0;
+        this.startY = 0;
+        this.endX = 0;
+        this.endY = 0;
+        this.minSwipeDistance = 50;
+        
+        this.element.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: true });
+        this.element.addEventListener('touchend', this.handleTouchEnd.bind(this), { passive: true });
+        this.element.addEventListener('mousedown', this.handleMouseDown.bind(this));
+        this.element.addEventListener('mouseup', this.handleMouseUp.bind(this));
+      }
+
+      handleTouchStart(e) {
+        this.startX = e.touches[0].clientX;
+        this.startY = e.touches[0].clientY;
+      }
+
+      handleTouchEnd(e) {
+        this.endX = e.changedTouches[0].clientX;
+        this.endY = e.changedTouches[0].clientY;
+        this.handleSwipe();
+      }
+
+      handleMouseDown(e) {
+        this.startX = e.clientX;
+        this.startY = e.clientY;
+      }
+
+      handleMouseUp(e) {
+        this.endX = e.clientX;
+        this.endY = e.clientY;
+        this.handleSwipe();
+      }
+
+      handleSwipe() {
+        const deltaX = this.endX - this.startX;
+        const deltaY = this.endY - this.startY;
+        
+        // Only handle horizontal swipes
+        if (Math.abs(deltaX) < Math.abs(deltaY)) return;
+        if (Math.abs(deltaX) < this.minSwipeDistance) return;
+        
+        if (deltaX > 0) {
+          this.onSwipeRight();
+        } else {
+          this.onSwipeLeft();
+        }
+      }
+    }
 
     /* ---------- bottom-sheet ---------- */
     const openSheet = () => document.getElementById('sheet').classList.add('open');
@@ -821,64 +884,163 @@
     /* ---------- trivia card ---------- */
     document.getElementById('trivia-card').onclick = () => (location.href = 'trivia.html');
 
-    /* ---------- status viewer ---------- */
-    const openViewer = async (key) => {
-      currentStatusKey = key;
-      const snap = await get(ref(db, `status/${key}`));
-      if (!snap.exists()) return;
-      const { media, text, uid: author, caption } = snap.val();
-      const userSnap = await get(ref(db, `users/${author}`));
-      const user = userSnap.val();
-      document.getElementById('viewer-name').textContent = user.displayName || user.email;
-      document.getElementById('viewer-avatar').src = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`;
-      const content = document.getElementById('viewer-content');
-      content.innerHTML = '';
-      if (media) {
-        const ext = media.split('.').pop().toLowerCase();
-        if (['mp4', 'mov', 'webm'].includes(ext)) {
-          const v = document.createElement('video');
-          v.src = media;
-          v.controls = true;
-          v.autoplay = true;
-          content.appendChild(v);
-        } else {
-          const img = document.createElement('img');
-          img.src = media;
-          content.appendChild(img);
-        }
-        if (caption) {
-          const cap = document.createElement('div');
-          cap.className = 'text-white text-center mt-3';
-          cap.textContent = caption;
-          content.appendChild(cap);
-        }
-      } else {
-        const div = document.createElement('div');
-        div.className = 'text-white text-xl';
-        div.textContent = text;
-        content.appendChild(div);
-      }
+    /* ---------- Status Viewer with Swipe ---------- */
+    let swipeHandler;
+    
+    const showStatusSlide = (index) => {
+      const wrapper = document.getElementById('viewer-content-wrapper');
+      const indicators = document.querySelectorAll('.viewer-indicator');
       
-      // Show delete button only for owner
+      if (!wrapper || currentUserStatuses.length === 0) return;
+      
+      // Update active indicator
+      indicators.forEach((indicator, i) => {
+        indicator.classList.toggle('active', i === index);
+      });
+      
+      // Transform wrapper to show current slide
+      wrapper.style.transform = `translateX(-${index * 100}%)`;
+      
+      // Update current status key for likes/deletes
+      currentStatusKey = currentUserStatuses[index].key;
+      
+      // Update like status
+      updateLikeStatus(currentStatusKey);
+      
+      // Show/hide delete button based on ownership
       const deleteBtn = document.getElementById('delete-btn');
-      if (author === uid) {
+      if (currentUserStatuses[index].uid === uid) {
         deleteBtn.style.display = 'flex';
       } else {
         deleteBtn.style.display = 'none';
       }
-      
-      // likes
-      onValue(ref(db, `status/${key}/likes`), (s) => {
+    };
+
+    const nextStatus = () => {
+      if (currentUserStatuses.length <= 1) return;
+      currentStatusIndex = (currentStatusIndex + 1) % currentUserStatuses.length;
+      showStatusSlide(currentStatusIndex);
+    };
+
+    const prevStatus = () => {
+      if (currentUserStatuses.length <= 1) return;
+      currentStatusIndex = (currentStatusIndex - 1 + currentUserStatuses.length) % currentUserStatuses.length;
+      showStatusSlide(currentStatusIndex);
+    };
+
+    const updateLikeStatus = (statusKey) => {
+      onValue(ref(db, `status/${statusKey}/likes`), (s) => {
         const likes = s.val() || {};
         const count = Object.keys(likes).length;
         document.getElementById('like-count').textContent = count;
         document.getElementById('like-btn').classList.toggle('liked', likes[uid]);
       });
+    };
+
+    const openViewer = async (userId) => {
+      // Get all statuses for this user
+      const snap = await get(ref(db, 'status'));
+      currentUserStatuses = [];
+      
+      snap.forEach((child) => {
+        const status = child.val();
+        if (status.uid === userId && Date.now() - status.timestamp < 24 * 3600 * 1000) {
+          currentUserStatuses.push({ key: child.key, ...status });
+        }
+      });
+      
+      if (currentUserStatuses.length === 0) return;
+      
+      // Sort by timestamp (newest first)
+      currentUserStatuses.sort((a, b) => b.timestamp - a.timestamp);
+      
+      // Get user info
+      const userSnap = await get(ref(db, `users/${userId}`));
+      const user = userSnap.val();
+      
+      document.getElementById('viewer-name').textContent = user.displayName || user.email;
+      document.getElementById('viewer-avatar').src = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`;
+      
+      // Create slides
+      const wrapper = document.getElementById('viewer-content-wrapper');
+      const indicators = document.getElementById('viewer-indicators');
+      wrapper.innerHTML = '';
+      indicators.innerHTML = '';
+      
+      currentUserStatuses.forEach((status, index) => {
+        // Create slide
+        const slide = document.createElement('div');
+        slide.className = 'viewer-slide';
+        
+        if (status.media) {
+          const ext = status.media.split('.').pop().toLowerCase();
+          if (['mp4', 'mov', 'webm'].includes(ext)) {
+            const v = document.createElement('video');
+            v.src = status.media;
+            v.controls = true;
+            v.autoplay = index === 0;
+            slide.appendChild(v);
+          } else {
+            const img = document.createElement('img');
+            img.src = status.media;
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '70vh';
+            img.style.borderRadius = '12px';
+            slide.appendChild(img);
+          }
+          if (status.caption) {
+            const cap = document.createElement('div');
+            cap.className = 'text-white text-center mt-3';
+            cap.textContent = status.caption;
+            slide.appendChild(cap);
+          }
+        } else {
+          const div = document.createElement('div');
+          div.className = 'text-white text-xl';
+          div.textContent = status.text;
+          slide.appendChild(div);
+        }
+        
+        wrapper.appendChild(slide);
+        
+        // Create indicator
+        const indicator = document.createElement('div');
+        indicator.className = 'viewer-indicator';
+        if (index === 0) indicator.classList.add('active');
+        indicators.appendChild(indicator);
+      });
+      
+      // Reset index
+      currentStatusIndex = 0;
+      currentStatusKey = currentUserStatuses[0].key;
+      
+      // Setup swipe handler
+      if (swipeHandler) {
+        // Remove previous handler
+      }
+      swipeHandler = new SwipeHandler(
+        document.getElementById('viewer-body'),
+        nextStatus, // swipe left
+        prevStatus  // swipe right
+      );
+      
+      // Show viewer
       document.getElementById('status-viewer').classList.add('active');
+      
+      // Update like status and delete button
+      updateLikeStatus(currentStatusKey);
+      const deleteBtn = document.getElementById('delete-btn');
+      if (currentUserStatuses[0].uid === uid) {
+        deleteBtn.style.display = 'flex';
+      } else {
+        deleteBtn.style.display = 'none';
+      }
     };
 
     document.getElementById('close-viewer').onclick = () => {
       document.getElementById('status-viewer').classList.remove('active');
+      currentUserStatuses = [];
+      currentStatusIndex = 0;
     };
 
     document.getElementById('like-btn').onclick = async () => {
@@ -898,41 +1060,80 @@
         await remove(ref(db, `status/${currentStatusKey}`));
         toast('Status deleted!');
         document.getElementById('status-viewer').classList.remove('active');
+        loadStatus(); // Reload status grid
       });
     };
 
-    /* ---------- status ---------- */
+    /* ---------- Status Grouping ---------- */
     const loadStatus = () => {
       const grid = document.getElementById('status-grid');
-      onValue(ref(db, 'status'), (snap) => {
+      onValue(ref(db, 'status'), async (snap) => {
         grid.innerHTML = '';
-        snap.forEach(async (child) => {
-          const { media, uid: author, timestamp, text } = child.val();
-          if (Date.now() - timestamp > 24 * 3600 * 1000) return;
+        
+        // Group statuses by user
+        const userStatuses = {};
+        const userPromises = [];
+        
+        snap.forEach((child) => {
+          const status = child.val();
+          if (Date.now() - status.timestamp < 24 * 3600 * 1000) {
+            if (!userStatuses[status.uid]) {
+              userStatuses[status.uid] = [];
+              // Get user info
+              userPromises.push(
+                get(ref(db, `users/${status.uid}`)).then(userSnap => ({
+                  uid: status.uid,
+                  user: userSnap.val()
+                }))
+              );
+            }
+            userStatuses[status.uid].push({ key: child.key, ...status });
+          }
+        });
+        
+        // Get all user data
+        const userDataMap = {};
+        const userResults = await Promise.all(userPromises);
+        userResults.forEach(({ uid, user }) => {
+          userDataMap[uid] = user;
+        });
+        
+        // Create status cards for each user
+        Object.entries(userStatuses).forEach(([userId, statuses]) => {
+          // Sort by timestamp (newest first)
+          statuses.sort((a, b) => b.timestamp - a.timestamp);
           
-          // Get user data for avatar
-          const userSnap = await get(ref(db, `users/${author}`));
-          const user = userSnap.val();
+          const user = userDataMap[userId];
+          if (!user) return;
           
-          const div = document.createElement('div');
-          div.className = 'relative';
+          const card = document.createElement('div');
+          card.className = 'status-card new';
           
-          // Add user avatar
-          const avatarImg = user?.photoURL || `https://ui-avatars.com/api/?name=${user?.displayName || 'U'}&background=05d9e8&color=fff`;
+          const latestStatus = statuses[0];
+          const avatarImg = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`;
           
-          if (media) {
-            div.innerHTML = `
+          if (latestStatus.media) {
+            card.innerHTML = `
               <img class="status-user-avatar" src="${avatarImg}" alt="User avatar">
-              <img class="status-thumb new" src="${media}" />
+              <img class="status-card-cover" src="${latestStatus.media}" alt="Status" />
+              <div class="status-count">
+                <span class="material-icons" style="font-size: 14px;">burst_mode</span>
+                ${statuses.length}
+              </div>
             `;
           } else {
-            div.innerHTML = `
+            card.innerHTML = `
               <img class="status-user-avatar" src="${avatarImg}" alt="User avatar">
-              <div class="status-thumb new flex items-center justify-center text-sm p-2">${text}</div>
+              <div class="status-card-cover status-card-text">${latestStatus.text}</div>
+              <div class="status-count">
+                <span class="material-icons" style="font-size: 14px;">burst_mode</span>
+                ${statuses.length}
+              </div>
             `;
           }
-          div.onclick = () => openViewer(child.key);
-          grid.appendChild(div);
+          
+          card.onclick = () => openViewer(userId);
+          grid.appendChild(card);
         });
       });
     };
