@@ -377,6 +377,7 @@
       border-radius: 16px;
       margin-bottom: 12px;
       overflow: hidden;
+      position: relative;
     }
     .status-header {
       display: flex;
@@ -398,8 +399,8 @@
     /* FIXED-SIZE media container */
     .status-media-box {
       width: 100%;
-      aspect-ratio: 9 / 16;        /* same size for every card */
-      max-height: 55vh;            /* never too tall */
+      aspect-ratio: 9 / 16;
+      max-height: 55vh;
       overflow: hidden;
       background: #000;
     }
@@ -431,6 +432,20 @@
     }
     .status-bar button.liked {
       color: var(--accent);
+    }
+    /* owner delete buttons */
+    .owner-trash {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: rgba(0,0,0,.45);
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
     }
   </style>
 </head>
@@ -513,10 +528,8 @@
       </div>
       <!-- panels -->
       <div id="text-panel" class="swipe-panel active">
-        <button id="status-text-btn" class="pill-btn">
-          <span class="material-icons">short_text</span>
-          Text Status
-        </button>
+        <textarea id="text-status-input" class="search w-full mb-3" rows="3" placeholder="What's happening?"></textarea>
+        <button id="text-status-send" class="pill-btn">Post Text Status</button>
       </div>
       <div id="media-panel" class="swipe-panel">
         <button id="status-media-btn" class="pill-btn">
@@ -570,7 +583,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, get, onValue, push, set, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, onValue, push, set, remove, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const CLOUD_NAME = 'dqkujefxj';
     const UPLOAD_PRESET = 'banter_box';
@@ -674,13 +687,14 @@
       };
     });
 
-    // text status
-    document.getElementById('status-text-btn').onclick = async () => {
+    // text status (inside sheet)
+    document.getElementById('text-status-send').onclick = async () => {
+      const text = document.getElementById('text-status-input').value.trim();
+      if (!text) return toast('Write something first');
       closeSheet('status-sheet');
-      const text = prompt('Your text status:');
-      if (!text) return;
       const key = push(ref(db, 'status')).key;
       await set(ref(db, `status/${key}`), { text, uid, timestamp: serverTimestamp() });
+      document.getElementById('text-status-input').value = '';
       toast('Text status added!');
     };
 
@@ -785,6 +799,9 @@
           v.src = media;
           v.controls = true;
           v.autoplay = true;
+          v.muted = true;
+          v.loop = true;
+          v.playsinline = true;
           content.appendChild(v);
         } else {
           const img = document.createElement('img');
@@ -828,67 +845,81 @@
     };
 
     /* ---------- status feed ---------- */
-    const loadStatus = () => {
+    let statusArray = []; // local cache
+
+    const renderFeed = (shuffle = false) => {
       const feed = document.getElementById('status-feed');
-      // 1️⃣  fetch once to build the cards
-      get(ref(db, 'status')).then(async (snap) => {
-        if (!snap.exists()) return feed.innerHTML = '<p class="text-secondary text-center mt-10">No status yet</p>';
-        feed.innerHTML = '';
-        for (const [key, val] of Object.entries(snap.val())) {
-          if (Date.now() - val.timestamp > 24 * 3600 * 1000) continue;
-          const userSnap = await get(ref(db, `users/${val.uid}`));
-          const user = userSnap.val() || {};
-          const post = document.createElement('div');
-          post.className = 'status-post';
-          post.dataset.key = key;
-          post.innerHTML = `
-            <div class="status-header">
-              <img src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
-              <div>
-                <div class="name">${user.displayName || 'Unknown'}</div>
-                <div class="preview">${timeAgo(val.timestamp)}</div>
-              </div>
-              <span class="status-time">${timeAgo(val.timestamp)}</span>
+      feed.innerHTML = '';
+      if (shuffle) statusArray = shuffleArray([...statusArray]);
+      statusArray.forEach(item => feed.appendChild(item.node));
+    };
+
+    const shuffleArray = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+
+    const loadStatus = async () => {
+      const feed = document.getElementById('status-feed');
+      const snap = await get(ref(db, 'status'));
+      if (!snap.exists()) return feed.innerHTML = '<p class="text-secondary text-center mt-10">No status yet</p>';
+      statusArray = [];
+      for (const [key, val] of Object.entries(snap.val())) {
+        if (Date.now() - val.timestamp > 24 * 3600 * 1000) continue;
+        const userSnap = await get(ref(db, `users/${val.uid}`));
+        const user = userSnap.val() || {};
+        const post = document.createElement('div');
+        post.className = 'status-post';
+        post.dataset.key = key;
+        post.innerHTML = `
+          <div class="status-header">
+            <img src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
+            <div>
+              <div class="name">${user.displayName || 'Unknown'}</div>
+              <div class="preview">${timeAgo(val.timestamp)}</div>
             </div>
-            ${val.media ? `
-              <div class="status-media-box">
-                ${['mp4','mov','webm'].includes(val.media.split('.').pop().toLowerCase())
-                  ? `<video controls muted loop playsinline src="${val.media}"></video>`
-                  : `<img src="${val.media}" />`}
-              </div>
-              ${val.caption ? `<div class="status-text">${val.caption}</div>` : ''}
-            ` : `<div class="status-text">${val.text}</div>`}
-            <div class="status-bar">
-              <button class="like-btn" data-key="${key}">
-                <span class="material-icons">favorite</span>
-                <span class="like-count">0</span>
-              </button>
-              <button class="comment-btn" data-key="${key}">
-                <span class="material-icons">comment</span>
-                <span class="comment-count">0</span>
-              </button>
+            <span class="status-time">${timeAgo(val.timestamp)}</span>
+            ${val.uid === uid ? `<button class="owner-trash material-icons" data-key="${key}">delete</button>` : ''}
+          </div>
+          ${val.media ? `
+            <div class="status-media-box">
+              ${['mp4','mov','webm'].includes(val.media.split('.').pop().toLowerCase())
+                ? `<video controls muted loop playsinline src="${val.media}"></video>`
+                : `<img src="${val.media}" />`}
             </div>
-          `;
-          feed.appendChild(post);
-          // 2️⃣  attach lightweight listeners that ONLY update counters
-          likeListener(key);
-          commentListener(key);
-          // like action
-          post.querySelector('.like-btn').onclick = (e) => {
-            e.stopPropagation();
-            toggleLike(key);
-          };
-          // comment action
-          post.querySelector('.comment-btn').onclick = (e) => {
-            e.stopPropagation();
-            currentStatusKey = key;
-            openSheet('comments-sheet');
-            loadComments(key);
-          };
-          // open viewer on post tap
-          post.onclick = () => openViewer(key);
-        }
-      });
+            ${val.caption ? `<div class="status-text">${val.caption}</div>` : ''}
+          ` : `<div class="status-text">${val.text}</div>`}
+          <div class="status-bar">
+            <button class="like-btn" data-key="${key}">
+              <span class="material-icons">favorite</span>
+              <span class="like-count">0</span>
+            </button>
+            <button class="comment-btn" data-key="${key}">
+              <span class="material-icons">comment</span>
+              <span class="comment-count">0</span>
+            </button>
+          </div>
+        `;
+        // owner delete
+        const trash = post.querySelector('.owner-trash');
+        if (trash) trash.onclick = (e) => { e.stopPropagation(); deleteStatus(key); };
+        // like / comment / viewer
+        likeListener(key);
+        commentListener(key);
+        post.querySelector('.like-btn').onclick = (e) => { e.stopPropagation(); toggleLike(key); };
+        post.querySelector('.comment-btn').onclick = (e) => {
+          e.stopPropagation();
+          currentStatusKey = key;
+          openSheet('comments-sheet');
+          loadComments(key);
+        };
+        post.onclick = () => openViewer(key);
+        statusArray.push({ key, timestamp: val.timestamp, node: post });
+      }
+      renderFeed(true); // shuffle on first load
     };
 
     const likeListener = (key) => {
@@ -921,6 +952,14 @@
       else await set(likedRef, true);
     };
 
+    const deleteStatus = async (key) => {
+      if (!confirm('Delete this status?')) return;
+      await remove(ref(db, `status/${key}`));
+      toast('Status deleted');
+      statusArray = statusArray.filter(i => i.key !== key);
+      renderFeed();
+    };
+
     const timeAgo = (ts) => {
       const s = Math.floor((Date.now() - ts) / 1000);
       if (s < 60) return 'now';
@@ -948,11 +987,18 @@
               <div class="preview">${cv.text}</div>
             </div>
             <span class="text-xs text-secondary">${timeAgo(cv.timestamp)}</span>
+            ${cv.uid === uid ? `<button class="material-icons text-sm text-accent ml-2" onclick="deleteComment('${statusKey}','${ck}')">delete</button>` : ''}
           `;
           list.appendChild(row);
         }
         list.scrollTop = list.scrollHeight;
       });
+    };
+
+    window.deleteComment = async (statusKey, commentKey) => {
+      if (!confirm('Delete this comment?')) return;
+      await remove(ref(db, `status/${statusKey}/comments/${commentKey}`));
+      toast('Comment deleted');
     };
 
     document.getElementById('send-comment').onclick = async () => {
@@ -962,6 +1008,67 @@
       const key = push(ref(db, `status/${currentStatusKey}/comments`)).key;
       await set(ref(db, `status/${currentStatusKey}/comments/${key}`), { uid, text, timestamp: serverTimestamp() });
       input.value = '';
+    };
+
+    /* ---------- media upload ---------- */
+    document.getElementById('media-upload').onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const caption = prompt('Caption (optional):') || '';
+      toast('Uploading…');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('upload_preset', UPLOAD_PRESET);
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method: 'POST', body: fd });
+      const { secure_url } = await res.json();
+      const key = push(ref(db, 'status')).key;
+      await set(ref(db, `status/${key}`), { media: secure_url, caption, uid, timestamp: serverTimestamp() });
+      toast('Status added!');
+      // prepend to local cache and re-render
+      const user = auth.currentUser;
+      const post = document.createElement('div');
+      post.className = 'status-post';
+      post.dataset.key = key;
+      post.innerHTML = `
+        <div class="status-header">
+          <img src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
+          <div>
+            <div class="name">${user.displayName || 'You'}</div>
+            <div class="preview">${timeAgo(Date.now())}</div>
+          </div>
+          <span class="status-time">${timeAgo(Date.now())}</span>
+          <button class="owner-trash material-icons" data-key="${key}">delete</button>
+        </div>
+        <div class="status-media-box">
+          ${['mp4','mov','webm'].includes(secure_url.split('.').pop().toLowerCase())
+            ? `<video controls muted loop playsinline src="${secure_url}"></video>`
+            : `<img src="${secure_url}" />`}
+        </div>
+        ${caption ? `<div class="status-text">${caption}</div>` : ''}
+        <div class="status-bar">
+          <button class="like-btn" data-key="${key}">
+            <span class="material-icons">favorite</span>
+            <span class="like-count">0</span>
+          </button>
+          <button class="comment-btn" data-key="${key}">
+            <span class="material-icons">comment</span>
+            <span class="comment-count">0</span>
+          </button>
+        </div>
+      `;
+      post.querySelector('.owner-trash').onclick = (e) => { e.stopPropagation(); deleteStatus(key); };
+      likeListener(key);
+      commentListener(key);
+      post.querySelector('.like-btn').onclick = (e) => { e.stopPropagation(); toggleLike(key); };
+      post.querySelector('.comment-btn').onclick = (e) => {
+        e.stopPropagation();
+        currentStatusKey = key;
+        openSheet('comments-sheet');
+        loadComments(key);
+      };
+      post.onclick = () => openViewer(key);
+      statusArray.unshift({ key, timestamp: Date.now(), node: post });
+      renderFeed();
     };
 
     /* ---------- nav ---------- */
