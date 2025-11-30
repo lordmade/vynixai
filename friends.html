@@ -264,6 +264,65 @@
       font-size: 13px;
       font-weight: 600;
     }
+
+    /* status viewer */
+    #status-viewer {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      z-index: 200;
+      display: none;
+      flex-direction: column;
+    }
+    #status-viewer.active {
+      display: flex;
+    }
+    .viewer-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: #000;
+      color: #fff;
+    }
+    .viewer-header img {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+    .viewer-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .viewer-body img,
+    .viewer-body video {
+      max-width: 100%;
+      max-height: 100%;
+      border-radius: 12px;
+    }
+    .viewer-footer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: #000;
+      color: #fff;
+    }
+    .like-btn {
+      background: none;
+      border: none;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .like-btn.liked {
+      color: var(--accent);
+    }
   </style>
 </head>
 <body class="light">
@@ -336,11 +395,27 @@
   <!-- toast -->
   <div id="alert" class="alert"></div>
 
+  <!-- status viewer -->
+  <div id="status-viewer">
+    <div class="viewer-header">
+      <img id="viewer-avatar">
+      <div id="viewer-name"></div>
+      <span class="material-icons ml-auto" id="close-viewer">close</span>
+    </div>
+    <div class="viewer-body" id="viewer-content"></div>
+    <div class="viewer-footer">
+      <button class="like-btn" id="like-btn">
+        <span class="material-icons">favorite</span>
+        <span id="like-count">0</span>
+      </button>
+    </div>
+  </div>
+
   <!-- firebase -->
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, get, onValue, push, set, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, onValue, push, set, serverTimestamp, increment } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const CLOUD_NAME = 'dqkujefxj';      // ← replace
     const UPLOAD_PRESET = 'banter_box';  // ← replace
@@ -360,6 +435,7 @@
     const db = getDatabase(app);
 
     let uid;
+    let currentStatusKey;
 
     /* ---------- helpers ---------- */
     const toast = (msg) => {
@@ -472,7 +548,7 @@
           badge.textContent = cnt > 99 ? '99+' : cnt;
         });
         // status dot
-        onValue(ref(db, `status`), (snap) => {
+        onValue(ref(db, 'status'), (snap) => {
           let has = false;
           snap.forEach((ch) => {
             if (ch.val().uid === id && Date.now() - ch.val().timestamp < 24 * 3600 * 1000) has = true;
@@ -524,6 +600,68 @@
     /* ---------- trivia card ---------- */
     document.getElementById('trivia-card').onclick = () => (location.href = 'trivia.html');
 
+    /* ---------- status viewer ---------- */
+    const openViewer = async (key) => {
+      currentStatusKey = key;
+      const snap = await get(ref(db, `status/${key}`));
+      if (!snap.exists()) return;
+      const { media, text, uid: author, caption } = snap.val();
+      const userSnap = await get(ref(db, `users/${author}`));
+      const user = userSnap.val();
+      document.getElementById('viewer-name').textContent = user.displayName || user.email;
+      document.getElementById('viewer-avatar').src = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`;
+      const content = document.getElementById('viewer-content');
+      content.innerHTML = '';
+      if (media) {
+        const ext = media.split('.').pop().toLowerCase();
+        if (['mp4', 'mov', 'webm'].includes(ext)) {
+          const v = document.createElement('video');
+          v.src = media;
+          v.controls = true;
+          v.autoplay = true;
+          content.appendChild(v);
+        } else {
+          const img = document.createElement('img');
+          img.src = media;
+          content.appendChild(img);
+        }
+        if (caption) {
+          const cap = document.createElement('div');
+          cap.className = 'text-white text-center mt-3';
+          cap.textContent = caption;
+          content.appendChild(cap);
+        }
+      } else {
+        const div = document.createElement('div');
+        div.className = 'text-white text-xl';
+        div.textContent = text;
+        content.appendChild(div);
+      }
+      // likes
+      onValue(ref(db, `status/${key}/likes`), (s) => {
+        const likes = s.val() || {};
+        const count = Object.keys(likes).length;
+        document.getElementById('like-count').textContent = count;
+        document.getElementById('like-btn').classList.toggle('liked', likes[uid]);
+      });
+      document.getElementById('status-viewer').classList.add('active');
+    };
+
+    document.getElementById('close-viewer').onclick = () => {
+      document.getElementById('status-viewer').classList.remove('active');
+    };
+
+    document.getElementById('like-btn').onclick = async () => {
+      if (!currentStatusKey) return;
+      const likedRef = ref(db, `status/${currentStatusKey}/likes/${uid}`);
+      const likedSnap = await get(likedRef);
+      if (likedSnap.exists()) {
+        await set(likedRef, null);
+      } else {
+        await set(likedRef, true);
+      }
+    };
+
     /* ---------- status ---------- */
     const loadStatus = () => {
       const grid = document.getElementById('status-grid');
@@ -544,8 +682,6 @@
         });
       });
     };
-
-    const openViewer = (key) => { toast('Status viewer not built yet'); };
 
     // text status
     document.getElementById('text-status').onclick = async () => {
