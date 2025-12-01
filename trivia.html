@@ -119,6 +119,8 @@
       margin-bottom: 16px;
       animation: fadeIn 0.3s ease;
       position: relative;
+      -webkit-user-select: none;
+      user-select: none;
     }
     .message-bubble-wrapper {
       max-width: 75%;
@@ -145,7 +147,7 @@
       line-height: 1.4;
       position: relative;
       cursor: pointer;
-      user-select: text;
+      user-select: none;
     }
     .message-received .message-bubble {
       background: var(--chat-bubble-received);
@@ -334,12 +336,111 @@
       width: 0%;
       transition: width 0.3s ease;
     }
+    
+    /* Reaction Picker Styles */
+    #reaction-picker {
+      position: fixed;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 8px;
+      box-shadow: var(--shadow-md);
+      z-index: 1002;
+      display: none;
+      gap: 8px;
+      transform: translateY(-10px);
+      opacity: 0;
+      transition: all 0.2s ease;
+    }
+    
+    #reaction-picker.active {
+      display: flex;
+      transform: translateY(0);
+      opacity: 1;
+    }
+    
+    .reaction-btn {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 50%;
+      transition: transform 0.1s ease, background 0.2s ease;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .reaction-btn:hover {
+      transform: scale(1.2);
+      background: rgba(255, 42, 109, 0.1);
+    }
+    
+    .reaction-btn:active {
+      transform: scale(0.9);
+    }
+    
+    /* Reactions Display on Messages */
+    .message-reactions {
+      display: flex;
+      gap: 4px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+    
+    .reaction {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.05);
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    
+    .message-sent .reaction {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    
+    .reaction-count {
+      font-size: 10px;
+      font-weight: 600;
+    }
+    
+    .reaction.user-reacted {
+      background: var(--accent);
+      color: #ffffff;
+    }
+    
+    /* Dark mode adjustments */
+    body.dark .reaction {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    
+    body.dark .message-sent .reaction {
+      background: rgba(0, 0, 0, 0.2);
+    }
+    
     @media (max-width: 768px) {
       .main-content {
         padding: 84px 16px 120px;
       }
       .message-bubble-wrapper {
         max-width: 85%;
+      }
+      #reaction-picker {
+        gap: 4px;
+        padding: 6px;
+      }
+      .reaction-btn {
+        font-size: 20px;
+        width: 36px;
+        height: 36px;
       }
     }
   </style>
@@ -372,10 +473,20 @@
   </div>
   <div id="alert-message" class="alert" role="alert" aria-live="polite"></div>
 
+  <!-- Reaction Picker -->
+  <div id="reaction-picker">
+    <button class="reaction-btn" data-emoji="❤️">❤️</button>
+    <button class="reaction-btn" data-emoji="😂">😂</button>
+    <button class="reaction-btn" data-emoji="😮">😮</button>
+    <button class="reaction-btn" data-emoji="😢">😢</button>
+    <button class="reaction-btn" data-emoji="😡">😡</button>
+    <button class="reaction-btn" data-emoji="👍">👍</button>
+  </div>
+
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off, query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, set, push, update, off, query, orderByChild, limitToLast, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -399,6 +510,15 @@
     let participants = new Map();
     
     const verifiedIcon = `<span class="material-icons" style="font-size: 14px; color: var(--accent); vertical-align: middle;">verified</span>`;
+    
+    // Long press handling
+    let longPressTimer = null;
+    let currentMessageId = null;
+    let touchStartY = 0;
+    
+    // Reaction picker
+    const reactionPicker = document.getElementById('reaction-picker');
+    const reactionButtons = document.querySelectorAll('.reaction-btn');
     
     const decrypt = async (enc, roomId) => {
       try {
@@ -470,7 +590,6 @@
           participants.clear();
           const participantData = snapshot.val();
           
-          // Load all participant details
           const userPromises = Object.keys(participantData).map(async (userId) => {
             const userRef = ref(db, `users/${userId}`);
             const userSnap = await get(userRef);
@@ -490,18 +609,113 @@
       });
     };
     
+    // Long press handlers
+    function setupMessageInteractions() {
+      const messagesContainer = document.getElementById('messages-container');
+      
+      messagesContainer.addEventListener('touchstart', handlePressStart, { passive: false });
+      messagesContainer.addEventListener('touchend', handlePressEnd);
+      messagesContainer.addEventListener('touchmove', handlePressEnd);
+      messagesContainer.addEventListener('touchcancel', handlePressEnd);
+      messagesContainer.addEventListener('mousedown', handlePressStart);
+      messagesContainer.addEventListener('mouseup', handlePressEnd);
+      messagesContainer.addEventListener('mouseleave', handlePressEnd);
+    }
+    
+    function handlePressStart(e) {
+      const messageItem = e.target.closest('.message-item');
+      if (!messageItem) return;
+      
+      const messageId = messageItem.dataset.messageId;
+      if (!messageId) return;
+      
+      currentMessageId = messageId;
+      touchStartY = e.touches ? e.touches[0].clientY : e.clientY;
+      
+      // Start timer
+      longPressTimer = setTimeout(() => {
+        showReactionPicker(e, messageItem);
+      }, 500);
+      
+      e.preventDefault();
+    }
+    
+    function handlePressEnd(e) {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    }
+    
+    function showReactionPicker(e, messageItem) {
+      const rect = messageItem.getBoundingClientRect();
+      const top = rect.top - 70; // Position above message
+      const left = Math.min(rect.left + rect.width / 2, window.innerWidth - 150); // Prevent overflow
+      
+      reactionPicker.style.top = `${top}px`;
+      reactionPicker.style.left = `${left}px`;
+      reactionPicker.style.transform = 'translateX(-50%)';
+      reactionPicker.classList.add('active');
+      
+      // Auto-hide after 3 seconds
+      setTimeout(() => {
+        if (reactionPicker.classList.contains('active')) {
+          reactionPicker.classList.remove('active');
+        }
+      }, 3000);
+    }
+    
+    function hideReactionPicker() {
+      reactionPicker.classList.remove('active');
+      currentMessageId = null;
+    }
+    
+    // Reaction button handlers
+    reactionButtons.forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const emoji = btn.dataset.emoji;
+        await addReaction(currentMessageId, emoji);
+        hideReactionPicker();
+      });
+    });
+    
+    async function addReaction(messageId, emoji) {
+      try {
+        await set(ref(db, `rooms/${roomId}/messages/${messageId}/reactions/${currentUser.uid}`), emoji);
+      } catch (error) {
+        console.error('Failed to add reaction:', error);
+        showAlert('Failed to add reaction');
+      }
+    }
+    
+    // Toggle/remove reaction
+    window.toggleReaction = async (messageId, emoji) => {
+      try {
+        const reactionRef = ref(db, `rooms/${roomId}/messages/${messageId}/reactions/${currentUser.uid}`);
+        const currentReaction = (await get(reactionRef)).val();
+        
+        if (currentReaction === emoji) {
+          await remove(reactionRef);
+        } else {
+          await set(reactionRef, emoji);
+        }
+      } catch (error) {
+        console.error('Failed to toggle reaction:', error);
+        showAlert('Failed to update reaction');
+      }
+    };
+    
     const renderMessage = async (message) => {
-      // FIX: Fetch sender data if not in cache yet
+      // FIX: Fetch sender data if not in cache
       let sender = participants.get(message.senderId);
       
-      // If not cached, fetch immediately
       if (!sender && message.senderId) {
         try {
           const userRef = ref(db, `users/${message.senderId}`);
           const userSnap = await get(userRef);
           if (userSnap.exists()) {
             sender = userSnap.val();
-            // Cache it
             participants.set(message.senderId, sender);
           }
         } catch (e) {
@@ -509,7 +723,6 @@
         }
       }
       
-      // Fallback
       if (!sender) {
         sender = { 
           displayName: 'Anonymous', 
@@ -551,6 +764,24 @@
         ? `<div class="sender-name">${sender.displayName || 'Anonymous'} ${sender.verified ? verifiedIcon : ''}</div>` 
         : '';
       
+      // Render reactions
+      const reactions = message.reactions || {};
+      const reactionCounts = {};
+      const userReaction = reactions[currentUser.uid];
+      
+      Object.values(reactions).forEach(emoji => {
+        reactionCounts[emoji] = (reactionCounts[emoji] || 0) + 1;
+      });
+      
+      const reactionsHtml = Object.entries(reactionCounts)
+        .map(([emoji, count]) => `
+          <div class="reaction ${userReaction === emoji ? 'user-reacted' : ''}" 
+               onclick="toggleReaction('${message.id}', '${emoji}')">
+            ${emoji}
+            <span class="reaction-count">${count}</span>
+          </div>
+        `).join('');
+      
       const avatarInitial = sender.displayName?.[0]?.toUpperCase() || 'U';
       const avatarContent = sender.photoURL 
         ? `<img src="${sender.photoURL}" alt="${sender.displayName}" loading="lazy">` 
@@ -564,6 +795,7 @@
             <div class="message-bubble">
               ${displayContent}
               <div class="message-time">${time} ${statusHtml}</div>
+              ${reactionsHtml ? `<div class="message-reactions">${reactionsHtml}</div>` : ''}
             </div>
           </div>
         </div>
@@ -734,12 +966,10 @@
       }
     };
     
-    // FIX: Setup send button to work
     const setupInput = () => {
       const input = document.getElementById('message-input');
       const sendBtn = document.getElementById('send-btn');
       
-      // Explicitly set the onclick handler
       sendBtn.onclick = sendMessage;
       
       input.addEventListener('input', () => {
@@ -758,7 +988,7 @@
       showSpinner();
       
       try {
-        // Add current user to participants map immediately
+        // Add current user to participants immediately
         const userRef = ref(db, `users/${currentUser.uid}`);
         const userSnap = await get(userRef);
         if (userSnap.exists()) {
@@ -781,7 +1011,6 @@
           set(myStatusRef, 'offline');
         });
         
-        // Keep user online
         setInterval(() => {
           set(myStatusRef, 'online');
         }, 60000);
@@ -789,6 +1018,14 @@
         loadParticipants();
         setupMessagesListener();
         setupInput();
+        setupMessageInteractions();
+        
+        // Hide reaction picker when clicking outside
+        document.addEventListener('click', (e) => {
+          if (!reactionPicker.contains(e.target) && !e.target.closest('.message-item')) {
+            hideReactionPicker();
+          }
+        });
         
       } catch (error) {
         console.error('Failed to initialize chat:', error);
