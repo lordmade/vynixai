@@ -1,15 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <title>Global Chat - Vynix</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <title>Vynix Trivia – Global Chat</title>
+
+  <!-- Tailwind + Icons -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+  <!-- Firebase 10.14.1 -->
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js"></script>
-  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
+
+  <!-- POP sound (base64) -->
+  <audio id="popSound" preload="auto" src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWT" type="audio/wav"></audio>
+
   <style>
     :root {
       --bg: #ffffff;
@@ -18,11 +26,8 @@
       --text-secondary: #536471;
       --border: #e1e8ed;
       --accent: #ff2a6d;
-      --header-bg: #ffffff;
       --chat-bubble-sent: #ff2a6d;
       --chat-bubble-received: #f7f9fa;
-      --status-online: #128c7e;
-      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
       --glow: 0 0 10px rgba(255, 42, 109, .35);
     }
     body.dark {
@@ -61,7 +66,7 @@
       align-items: center;
       justify-content: space-between;
       height: 64px;
-      box-shadow: var(--shadow-sm);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
       transition: background-color 0.3s ease;
     }
     .header-left {
@@ -342,6 +347,50 @@
         max-width: 85%;
       }
     }
+    /* Trivia button in input bar */
+    #triviaBtn {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 12px;
+      border-radius: 50%;
+      transition: color 0.2s ease;
+      min-width: 44px;
+    }
+    #triviaBtn:hover {
+      color: var(--accent);
+    }
+    /* Trivia options */
+    .trivia-options button {
+      display: block;
+      width: 100%;
+      margin: 4px 0;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card-bg);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .trivia-options button:hover {
+      background: rgba(255, 42, 109, 0.1);
+    }
+    .trivia-options button.disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    .trivia-options.revealed button.correct {
+      background: #128c7e;
+      color: #fff;
+    }
+    .trivia-answer {
+      margin-top: 6px;
+      font-size: 13px;
+      color: var(--accent);
+    }
   </style>
 </head>
 <body class="light">
@@ -349,22 +398,23 @@
     <div class="header-left">
       <button class="back-btn material-icons" onclick="location.href='index.html'">arrow_back</button>
       <div class="room-info">
-        <div class="room-name-header">Global Chat</div>
+        <div class="room-name-header">Trivia Chat</div>
         <div class="room-participants" id="online-count">Loading...</div>
       </div>
     </div>
+    <button id="triviaBtn" class="material-icons" title="Request trivia">quiz</button>
   </header>
 
-  <main class="main-content" id="main-content">
-    <div class="messages-container" id="messages-container"></div>
+  <main class="main-content">
+    <div id="messages-container" class="messages-container"></div>
   </main>
 
   <div class="input-bar">
     <button class="input-icon material-icons" title="Attach" onclick="attachFile()">attach_file</button>
     <div class="input-group">
-      <textarea id="message-input" placeholder="Message to everyone..." onkeypress="handleKeyPress(event)"></textarea>
+      <textarea id="message-input" placeholder="Message to everyone..." rows="1"></textarea>
     </div>
-    <button class="send-btn material-icons" id="send-btn" title="Send">send</button>
+    <button id="send-btn" class="send-btn material-icons" title="Send">send</button>
   </div>
 
   <div id="horizontal-spinner">
@@ -373,437 +423,316 @@
   <div id="alert-message" class="alert" role="alert" aria-live="polite"></div>
 
   <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-    import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, off, query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
-    
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js ';
+    import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js ';
+    import { getDatabase, ref, onValue, get, set, push, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js ';
+    import { getRemoteConfig, fetchAndActivate, getString, getBoolean } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js ';
+
+    /* =====  CONFIG  ===== */
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
-      databaseURL: "https://fire-b-a8878.firebaseio.com",
+      databaseURL: "https://fire-b-a8878.firebaseio.com ",
       projectId: "fire-b-a8878",
       storageBucket: "fire-b-a8878.firebasestorage.app",
       messagingSenderId: "658673187627",
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
-    
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
-    
-    let currentUser;
-    let roomId = 'global-room';
-    let messagesListener;
-    let participantsListener;
+
+    /* =====  GLOBALS  ===== */
+    const roomId = 'global-room';
+    const TRIVIA_BOT_UID = 'trivia-bot';
+    let currentUser = null;
+    let messagesListener = null;
+    let participantsListener = null;
     let allMessages = [];
     let participants = new Map();
-    
-    const verifiedIcon = `<span class="material-icons" style="font-size: 14px; color: var(--accent); vertical-align: middle;">verified</span>`;
-    
-    const decrypt = async (enc, roomId) => {
-      try {
-        const { iv, ciphertext } = JSON.parse(enc);
-        const ivBuf = Uint8Array.from(atob(iv), c => c.charCodeAt(0));
-        const cipherBuf = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
-        const encoder = new TextEncoder();
-        const keyMat = await crypto.subtle.importKey('raw', encoder.encode('vynix-2025'), { name: 'PBKDF2' }, false, ['deriveKey']);
-        const key = await crypto.subtle.deriveKey(
-          { name: 'PBKDF2', salt: encoder.encode(roomId), iterations: 100000, hash: 'SHA-256' },
-          keyMat, { name: 'AES-GCM', length: 256 }, true, ['decrypt']
-        );
-        const dec = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBuf }, key, cipherBuf);
-        return new TextDecoder().decode(dec);
-      } catch { return '…'; }
-    };
-    
-    const encrypt = async (message, roomId) => {
-      try {
-        const encoder = new TextEncoder();
-        const keyMat = await crypto.subtle.importKey('raw', encoder.encode('vynix-2025'), { name: 'PBKDF2' }, false, ['deriveKey']);
-        const key = await crypto.subtle.deriveKey(
-          { name: 'PBKDF2', salt: encoder.encode(roomId), iterations: 100000, hash: 'SHA-256' },
-          keyMat, { name: 'AES-GCM', length: 256 }, true, ['encrypt']
-        );
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const data = encoder.encode(message);
-        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, data);
-        const ivB64 = btoa(String.fromCharCode(...iv));
-        const ciphertextB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
-        return JSON.stringify({ iv: ivB64, ciphertext: ciphertextB64 });
-      } catch (error) {
-        console.error('Encryption failed:', error);
-        throw error;
-      }
-    };
-    
-    const showSpinner = () => document.getElementById('horizontal-spinner').classList.add('active');
-    const hideSpinner = () => document.getElementById('horizontal-spinner').classList.remove('active');
-    const showAlert = (message) => {
-      const alert = document.getElementById('alert-message');
-      alert.textContent = message;
-      alert.classList.add('active');
-      setTimeout(() => alert.classList.remove('active'), 3000);
-    };
-    
-    const formatTime = (timestamp) => {
-      const now = Date.now();
-      const diff = now - timestamp;
-      const minutes = Math.floor(diff / 60000);
-      const hours = Math.floor(diff / 3600000);
-      const days = Math.floor(diff / 86400000);
-      
-      if (days > 0) return new Date(timestamp).toLocaleDateString('en-US', { weekday: 'long' });
-      if (hours > 0) return `${hours}h`;
-      if (minutes > 0) return `${minutes}m`;
-      return 'Just now';
-    };
-    
-    const updateOnlineCount = () => {
-      const onlineCount = Array.from(participants.values()).filter(p => p.status === 'online').length;
-      document.getElementById('online-count').textContent = `${onlineCount} online`;
-    };
-    
-    const loadParticipants = () => {
-      const participantsRef = ref(db, `rooms/${roomId}/participants`);
-      participantsListener = onValue(participantsRef, async (snapshot) => {
-        if (snapshot.exists()) {
+    let xaiKey = null;
+    let triviaEnabled = false;
+    let triviaRoundId = null;
+    let triviaAnswered = false;
+
+    /* =====  HELPERS  ===== */
+    const popSound = document.getElementById('popSound');
+    function playPop() { popSound.currentTime = 0; popSound.play().catch(() => {}); }
+    function showSpinner() { document.getElementById('horizontal-spinner').classList.add('active'); }
+    function hideSpinner() { document.getElementById('horizontal-spinner').classList.remove('active'); }
+    function showAlert(msg) {
+      const box = document.getElementById('alert-message');
+      box.textContent = msg;
+      box.classList.add('active');
+      setTimeout(() => box.classList.remove('active'), 3000);
+    }
+    function formatTime() { return new Date().toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' }); }
+
+    /* =====  RTB LISTENERS  ===== */
+    function loadParticipants() {
+      const ref = dbRef(db, `rooms/${roomId}/participants`);
+      participantsListener = onValue(ref, async (snap) => {
+        if (snap.exists()) {
           participants.clear();
-          const participantData = snapshot.val();
-          
-          // Load all participant details
-          const userPromises = Object.keys(participantData).map(async (userId) => {
-            const userRef = ref(db, `users/${userId}`);
-            const userSnap = await get(userRef);
-            if (userSnap.exists()) {
-              participants.set(userId, {
-                ...userSnap.val(),
-                status: participantData[userId].status || 'offline'
-              });
-            }
+          const data = snap.val();
+          const promises = Object.keys(data).map(async (uid) => {
+            const uSnap = await get(dbRef(db, `users/${uid}`));
+            if (uSnap.exists()) participants.set(uid, { ...uSnap.val(), status: data[uid].status || 'offline' });
           });
-          
-          await Promise.all(userPromises);
+          await Promise.all(promises);
           updateOnlineCount();
-        } else {
-          updateOnlineCount();
-        }
+        } else updateOnlineCount();
       });
-    };
-    
-    const renderMessage = async (message) => {
-      // FIX: Fetch sender data if not in cache yet
-      let sender = participants.get(message.senderId);
-      
-      // If not cached, fetch immediately
-      if (!sender && message.senderId) {
-        try {
-          const userRef = ref(db, `users/${message.senderId}`);
-          const userSnap = await get(userRef);
-          if (userSnap.exists()) {
-            sender = userSnap.val();
-            // Cache it
-            participants.set(message.senderId, sender);
-          }
-        } catch (e) {
-          console.warn('Failed to fetch user:', e);
-        }
-      }
-      
-      // Fallback
-      if (!sender) {
-        sender = { 
-          displayName: 'Anonymous', 
-          photoURL: null, 
-          verified: false,
-          status: 'offline'
-        };
-      }
-      
-      const isSent = message.senderId === currentUser.uid;
-      let displayContent;
-      const isViewOnce = message.viewOnce;
-      const isViewed = isViewOnce && !isSent && message.viewedBy?.[currentUser.uid];
-      
-      if (isViewOnce && isViewed) {
-        const placeholder = message.type === 'image' ? 'Photo' : message.type === 'video' ? 'Video' : 'Message';
-        displayContent = `<div style="padding:12px 16px; font-style:italic; color:var(--text-secondary);">${placeholder} viewed</div>`;
-      } else {
-        if (message.type === 'text') {
-          displayContent = message.decrypted;
-          if (message.edited) displayContent += `<div class="edit-indicator">edited</div>`;
-        } else if (message.type === 'image') {
-          displayContent = `<img src="${message.message}" alt="Photo" style="max-width: 200px; border-radius: 10px; cursor: pointer;" onclick="window.open('${message.message}')">`;
-        } else if (message.type === 'video') {
-          displayContent = `<video src="${message.message}" controls style="max-width: 200px; border-radius: 10px;"></video>`;
-        } else {
-          displayContent = message.decrypted || 'Media';
-        }
-      }
-      
+    }
+    function updateOnlineCount() {
+        const n = Array.from(participants.values()).filter(p => p.status === 'online').length;
+        document.getElementById('online-count').textContent = `${n} online`;
+    }
+
+    /* =====  MESSAGE RENDER  ===== */
+    async function renderMessage(msg) {
+      const sender = participants.get(msg.senderId) || { displayName: 'Anonymous', photoURL: null, verified: false };
+      const isSent = msg.senderId === currentUser.uid;
       const bubbleClass = isSent ? 'message-sent' : 'message-received';
-      const time = formatTime(message.timestamp);
-      let statusHtml = '';
-      if (isSent) {
-        statusHtml = '<span class="material-icons status-icon status-sent">done_all</span>';
+      const time = formatTime();
+      let inner = '';
+
+      if (msg.type === 'trivia') {
+        const q = msg.message;
+        const revealed = msg.revealed || false;
+        inner = `
+          <div class="message-bubble">
+            <strong>Trivia Question:</strong><br>${q.q}<br><br>
+            <div class="trivia-options ${revealed ? 'revealed' : ''}" data-correct="${q.correct}">
+              ${q.options.map((o,i)=>`
+                <button class="trivia-btn ${msg.answered?'disabled':''}" data-index="${i}" onclick="submitAnswer('${msg.id}',${i},${q.correct})">
+                  ${o}
+                </button>`).join('')}
+            </div>
+            ${revealed?`<div class="trivia-answer">Correct: <b>${q.options[q.correct]}</b></div>`:''}
+          </div>`;
+      } else {
+        inner = `<div class="message-bubble">${msg.decrypted || msg.message}</div>`;
       }
-      
-      const senderNameHtml = !isSent 
-        ? `<div class="sender-name">${sender.displayName || 'Anonymous'} ${sender.verified ? verifiedIcon : ''}</div>` 
-        : '';
-      
+
       const avatarInitial = sender.displayName?.[0]?.toUpperCase() || 'U';
-      const avatarContent = sender.photoURL 
-        ? `<img src="${sender.photoURL}" alt="${sender.displayName}" loading="lazy">` 
-        : avatarInitial;
-      
+      const avatarContent = sender.photoURL ? `<img src="${sender.photoURL}" alt="">` : avatarInitial;
       return `
-        <div class="message-item ${bubbleClass}" data-message-id="${message.id}" data-sender-id="${message.senderId}" data-type="${message.type}" data-content="${message.type === 'text' ? message.decrypted : ''}">
+        <div class="message-item ${bubbleClass}" data-message-id="${msg.id}" data-sender-id="${msg.senderId}">
           <div class="message-avatar">${avatarContent}</div>
           <div class="message-bubble-wrapper">
-            ${senderNameHtml}
-            <div class="message-bubble">
-              ${displayContent}
-              <div class="message-time">${time} ${statusHtml}</div>
-            </div>
+            ${!isSent ? `<div class="sender-name">${sender.displayName || 'Anonymous'} ${sender.verified ? '✓' : ''}</div>` : ''}
+            ${inner}
+            <div class="message-time">${time}</div>
           </div>
-        </div>
-      `;
-    };
-    
-    const updateMessages = async (messages) => {
-      const container = document.getElementById('messages-container');
-      container.innerHTML = '';
-      let lastDate = null;
-      
-      for (const msg of messages) {
-        const msgDate = new Date(msg.timestamp).toLocaleDateString('en-US', { weekday: 'long' });
-        if (msgDate !== lastDate) {
-          container.innerHTML += `<div class="message-date">${msgDate}</div>`;
-          lastDate = msgDate;
-        }
-        container.innerHTML += await renderMessage(msg);
-      }
-      
-      if (messages.length === 0) {
-        container.innerHTML = '<p style="text-align: center; color: var(--text-secondary); margin-top: 40px;">No messages yet. Be the first to say hi!</p>';
-      }
-      container.scrollTop = container.scrollHeight;
-    };
-    
-    const setupMessagesListener = () => {
-      if (messagesListener) off(messagesListener);
-      
-      const messagesRef = ref(db, `rooms/${roomId}/messages`);
-      const orderedRef = query(messagesRef, orderByChild('timestamp'), limitToLast(100));
-      
-      messagesListener = onValue(orderedRef, async (snapshot) => {
-        if (snapshot.exists()) {
-          allMessages = Object.entries(snapshot.val())
-            .map(([id, m]) => ({ id, ...m }))
-            .sort((a, b) => a.timestamp - b.timestamp);
-          
-          // Decrypt messages
-          for (const msg of allMessages) {
-            if (msg.type === 'text' && !msg.decrypted) {
-              msg.decrypted = await decrypt(msg.message, roomId);
-            }
-          }
-          
-          await updateMessages(allMessages);
-        } else {
-          allMessages = [];
-          document.getElementById('messages-container').innerHTML = '<p style="text-align: center; color: var(--text-secondary); margin-top: 40px;">No messages yet. Be the first to say hi!</p>';
-        }
-      });
-    };
-    
-    window.sendMessage = async () => {
-      const input = document.getElementById('message-input');
-      const text = input.value.trim();
-      if (!text) return;
-      
-      try {
+        </div>`;
+    }
+
+    /* =====  TRIVIA SPECIFIC  ===== */
+    async function submitAnswer(roundId, picked, correct) {
+        if (triviaAnswered) return;
+        const uid = currentUser.uid;
+        const ansRef = dbRef(db, `rooms/${roomId}/trivia/answers/${roundId}/${uid}`);
+        const snap = await get(ansRef);
+        if (snap.exists()) return;
+        triviaAnswered = true;
+        await set(ansRef, { index: picked, correct: picked === correct, scored: false });
+        showAlert(picked === correct ? '✅ Correct!' : '❌ Wrong answer');
+        document.querySelectorAll(`[data-message-id="${roundId}"] .trivia-btn`).forEach(b => b.classList.add('disabled'));
+    }
+    window.submitAnswer = submitAnswer;
+
+    /* =====  TRIVIA BANK (client generates once per week)  ===== */
+    const weekKey = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
+
+    async function ensureTriviaBank() {
+        const week = weekKey();
+        const bankRef = dbRef(db, `triviaBank/${week}`);
+        const snap = await get(bankRef);
+        if (snap.exists() && Object.keys(snap.val()).length >= 35) return; // already full
+        if (!xaiKey) return;
         showSpinner();
+        try {
+            const prompt = `Generate 35 fresh trivia questions (easy-medium). Return ONLY a JSON array like:
+[{"q":"…","options":["…","…","…","…"],"correct":0}, …]`;
+            const res = await fetch("https://api.x.ai/v1/chat/completions ", {
+                method: "POST",
+                headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ model: "grok-beta", messages: [{ role: "user", content: prompt }], max_tokens: 8000, temperature: 0.9 })
+            });
+            const raw = (await res.json())?.choices?.[0]?.message?.content?.trim();
+            if (!raw) throw new Error("bad response");
+            const arr = JSON.parse(raw);
+            if (!Array.isArray(arr) || arr.length < 35) throw new Error("short array");
+            const updates = {};
+            arr.forEach((q, i) => (updates[i] = { ...q, used: false }));
+            await set(bankRef, updates);
+        } catch (e) {
+            console.warn("Trivia bank gen failed", e);
+        } finally {
+            hideSpinner();
+        }
+    }
+
+    /* =====  TRIVIA ROUND CREATION (client)  ===== */
+    async function pushTriviaRound() {
+        await ensureTriviaBank();
+        const week = weekKey();
+        const bankSnap = await get(dbRef(db, `triviaBank/${week}`));
+        if (!bankSnap.exists()) return;
+        const questions = Object.values(bankSnap.val()).filter(q => !q.used);
+        if (!questions.length) return;
+        const q = questions[Math.floor(Math.random() * questions.length)];
+        const roundId = push(dbRef(db, `rooms/${roomId}/messages`)).key;
+        const msgRef = dbRef(db, `rooms/${roomId}/messages/${roundId}`);
+        await set(msgRef, {
+            senderId: TRIVIA_BOT_UID,
+            type: 'trivia',
+            message: q,
+            timestamp: Date.now(),
+            id: roundId
+        });
+        /* mark used */
+        const idx = Object.keys(bankSnap.val()).find(k => bankSnap.val()[k] === q);
+        await set(dbRef(db, `triviaBank/${week}/${idx}/used`), true);
+        playPop(); // <<--- SOUND
+    }
+
+    /* =====  MESSAGE LISTENER  ===== */
+    function setupMessages() {
+        const ref = dbRef(db, `rooms/${roomId}/messages`);
+        messagesListener = onValue(ref, async (snap) => {
+            if (!snap.exists()) {
+                document.getElementById('messages-container').innerHTML = '<p style="text-align:center;color:var(--text-secondary);margin-top:40px;">No messages yet. Be the first to say hi!</p>';
+                return;
+            }
+            allMessages = Object.entries(snap.val()).map(([id, m]) => ({ id, ...m })).sort((a, b) => a.timestamp - b.timestamp);
+            const container = document.getElementById('messages-container');
+            container.innerHTML = '';
+            let lastDate = null;
+            for (const msg of allMessages) {
+                const msgDate = new Date(msg.timestamp).toLocaleDateString('en-US', { weekday: 'long' });
+                if (msgDate !== lastDate) {
+                    container.innerHTML += `<div class="message-date">${msgDate}</div>`;
+                    lastDate = msgDate;
+                }
+                container.innerHTML += await renderMessage(msg);
+            }
+            container.scrollTop = container.scrollHeight;
+        });
+    }
+
+    /* =====  INPUT  ===== */
+    document.getElementById('send-btn').onclick = async () => {
+        const input = document.getElementById('message-input');
+        const text = input.value.trim();
+        if (!text) return;
         const encrypted = await encrypt(text, roomId);
-        const messagesRef = ref(db, `rooms/${roomId}/messages`);
-        const newMessageRef = push(messagesRef);
-        const timestamp = Date.now();
-        
-        await set(newMessageRef, {
-          senderId: currentUser.uid,
-          message: encrypted,
-          type: 'text',
-          timestamp: timestamp,
-          status: 'sent'
+        const msgRef = dbRef(db, `rooms/${roomId}/messages`);
+        const newRef = push(msgRef);
+        await set(newRef, {
+            senderId: currentUser.uid,
+            message: encrypted,
+            type: 'text',
+            timestamp: Date.now(),
+            status: 'sent'
         });
-        
-        // Update user activity
-        await update(ref(db, `rooms/${roomId}/participants/${currentUser.uid}`), {
-          lastActive: timestamp,
-          status: 'online'
-        });
-        
         input.value = '';
         input.style.height = 'auto';
-      } catch (error) {
-        console.error('Failed to send message:', error);
-        showAlert('Failed to send message.');
-      } finally {
-        hideSpinner();
-      }
     };
-    
-    window.attachFile = async () => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*,video/*';
-      input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        showSpinner();
-        const progressDiv = document.getElementById('media-progress');
-        const progressBar = document.getElementById('media-progress-bar');
-        progressDiv.style.display = 'block';
-        
-        try {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', 'https://api.cloudinary.com/v1_1/dqkujefxj/upload');
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('upload_preset', 'banter_box');
-          
-          await new Promise((resolve, reject) => {
-            xhr.upload.addEventListener('progress', (ev) => {
-              if (ev.lengthComputable) {
-                progressBar.style.width = Math.round((ev.loaded / ev.total) * 100) + '%';
-              }
-            });
-            xhr.onload = () => {
-              if (xhr.status === 200) resolve(JSON.parse(xhr.responseText));
-              else reject(new Error(`Upload failed: ${xhr.statusText}`));
-            };
-            xhr.onerror = reject;
-            xhr.send(formData);
-          });
-          
-          const { secure_url } = JSON.parse(xhr.responseText);
-          const type = file.type.startsWith('image/') ? 'image' : 'video';
-          await sendMediaMessage(secure_url, type);
-        } catch (error) {
-          console.error('Failed to send media:', error);
-          showAlert('Failed to send media.');
-        } finally {
-          hideSpinner();
-          progressDiv.style.display = 'none';
-          progressBar.style.width = '0%';
+    document.getElementById('message-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            document.getElementById('send-btn').click();
         }
-      };
-      input.click();
-    };
-    
-    async function sendMediaMessage(url, type) {
-      try {
-        const messagesRef = ref(db, `rooms/${roomId}/messages`);
-        const newMessageRef = push(messagesRef);
-        const timestamp = Date.now();
-        
-        await set(newMessageRef, {
-          senderId: currentUser.uid,
-          message: url,
-          type: type,
-          timestamp: timestamp,
-          status: 'sent'
-        });
-        
-        // Update user activity
-        await update(ref(db, `rooms/${roomId}/participants/${currentUser.uid}`), {
-          lastActive: timestamp,
-          status: 'online'
-        });
-      } catch (error) {
-        console.error('Failed to send media message:', error);
-        showAlert('Failed to send media message.');
-      }
-    }
-    
-    window.handleKeyPress = (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    };
-    
-    // FIX: Setup send button to work
-    const setupInput = () => {
-      const input = document.getElementById('message-input');
-      const sendBtn = document.getElementById('send-btn');
-      
-      // Explicitly set the onclick handler
-      sendBtn.onclick = sendMessage;
-      
-      input.addEventListener('input', () => {
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-      });
-    };
-    
-    onAuthStateChanged(auth, async (user) => {
-      currentUser = user;
-      if (!user) {
-        location.href = 'login.html';
-        return;
-      }
-      
-      showSpinner();
-      
-      try {
-        // Add current user to participants map immediately
-        const userRef = ref(db, `users/${currentUser.uid}`);
-        const userSnap = await get(userRef);
-        if (userSnap.exists()) {
-          participants.set(currentUser.uid, {
-            ...userSnap.val(),
-            status: 'online'
-          });
-        }
-        
-        // Join global room
-        await set(ref(db, `rooms/${roomId}/participants/${currentUser.uid}`), {
-          joinedAt: Date.now(),
-          lastActive: Date.now(),
-          status: 'online'
-        });
-        
-        // Setup presence
-        const myStatusRef = ref(db, `rooms/${roomId}/participants/${currentUser.uid}/status`);
-        window.addEventListener('beforeunload', () => {
-          set(myStatusRef, 'offline');
-        });
-        
-        // Keep user online
-        setInterval(() => {
-          set(myStatusRef, 'online');
-        }, 60000);
-        
-        loadParticipants();
-        setupMessagesListener();
-        setupInput();
-        
-      } catch (error) {
-        console.error('Failed to initialize chat:', error);
-        showAlert('Failed to load global chat');
-      } finally {
-        hideSpinner();
-      }
     });
-    
-    window.addEventListener('beforeunload', () => {
-      if (messagesListener) off(messagesListener);
-      if (participantsListener) off(participantsListener);
-      if (currentUser && roomId) {
-        set(ref(db, `rooms/${roomId}/participants/${currentUser.uid}/status`), 'offline');
-      }
+
+    /* =====  TRIVIA BUTTON  ===== */
+    document.getElementById('triviaBtn').onclick = pushTriviaRound;
+
+    /* =====  CRYPTO  ===== */
+    const encrypt = async (message, roomId) => {
+        try {
+            const encoder = new TextEncoder();
+            const keyMat = await crypto.subtle.importKey('raw', encoder.encode('vynix-2025'), { name: 'PBKDF2' }, false, ['deriveKey']);
+            const key = await crypto.subtle.deriveKey(
+                { name: 'PBKDF2', salt: encoder.encode(roomId), iterations: 100000, hash: 'SHA-256' },
+                keyMat, { name: 'AES-GCM', length: 256 }, true, ['encrypt']
+            );
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(message));
+            const ivB64 = btoa(String.fromCharCode(...iv));
+            const cipherB64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+            return JSON.stringify({ iv: ivB64, ciphertext: cipherB64 });
+        } catch (e) {
+            console.error('Encryption failed', e);
+            throw e;
+        }
+    };
+
+    /* =====  ATTACH FILE  ===== */
+    window.attachFile = () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*,video/*';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            showSpinner();
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('upload_preset', 'banter_box');
+            try {
+                const res = await fetch('https://api.cloudinary.com/v1_1/dqkujefxj/upload ', { method: 'POST', body: fd });
+                const data = await res.json();
+                const msgRef = dbRef(db, `rooms/${roomId}/messages`);
+                const newRef = push(msgRef);
+                await set(newRef, {
+                    senderId: currentUser.uid,
+                    message: data.secure_url,
+                    type: file.type.startsWith('image/') ? 'image' : 'video',
+                    timestamp: Date.now(),
+                    status: 'sent'
+                });
+            } catch (e) {
+                showAlert('Upload failed');
+            } finally {
+                hideSpinner();
+            }
+        };
+        input.click();
+    };
+
+    /* =====  AUTH  ===== */
+    onAuthStateChanged(auth, async (user) => {
+        if (!user) { location.href = 'login.html'; return; }
+        currentUser = user;
+        showSpinner();
+        try {
+            /* load xAI key */
+            const rc = getRemoteConfig(app);
+            await fetchAndActivate(rc);
+            xaiKey = getString(rc, 'xai_api_key')?.trim();
+            /* join room */
+            await set(dbRef(db, `rooms/${roomId}/participants/${user.uid}`), {
+                joinedAt: Date.now(),
+                lastActive: Date.now(),
+                status: 'online'
+            });
+            /* keep online */
+            const statusRef = dbRef(db, `rooms/${roomId}/participants/${user.uid}/status`);
+            setInterval(() => set(statusRef, 'online'), 60000);
+            window.addEventListener('beforeunload', () => set(statusRef, 'offline'));
+            loadParticipants();
+            setupMessages();
+            /* ensure bank */
+            await ensureTriviaBank();
+        } catch (e) {
+            console.error('Init error', e);
+            showAlert('Failed to load chat');
+        } finally {
+            hideSpinner();
+        }
     });
   </script>
 </body>
