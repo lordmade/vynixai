@@ -767,10 +767,10 @@
       Chats
       <span id="chat-badge" class="nav-badge">0</span>
     </div>
-    <a href="ai.html" class="nav-item">
-  <span class="material-icons">change_history</span>   <!-- triangle / "V" -->
-  Buddy
-</a>
+    <div class="nav-item" data-tab="channels">
+      <span class="material-icons">dvr</span>
+      Channels
+    </div>
     <div class="nav-item" data-tab="status">
       <span class="material-icons">circle</span>
       Status
@@ -817,10 +817,7 @@
     </div>
     <div class="sheet-content">
       <textarea id="status-text-input" class="w-full p-3 rounded-xl border border-border bg-card text-text" rows="4" placeholder="What's on your mind?"></textarea>
-     <button id="submit-text-status" class="pill-btn primary">
-  <span class="material-icons">send</span>
-  Post Status
-</button>
+      <button id="submit-text-status" class="w-full py-3 rounded-xl bg-accent text-white font-semibold mt-3">Post Status</button>
     </div>
   </div>
 
@@ -865,28 +862,6 @@
     </div>
   </div>
 
-  
-<!-- Custom Caption Modal -->
-<div id="caption-modal" class="custom-alert">
-  <div class="alert-box">
-    <h3>Add Caption</h3>
-    <input id="caption-input" type="text" class="w-full p-3 rounded-xl border border-border bg-card text-text mt-2" placeholder="Write a caption..." />
-    <div class="alert-buttons mt-4">
-      <button id="caption-cancel" class="alert-btn secondary">Cancel</button>
-      <button id="caption-confirm" class="alert-btn primary">Upload</button>
-    </div>
-  </div>
-</div>
-  <!-- Upload Progress Bar -->
-<div id="upload-progress" class="fixed inset-0 bg-black/60 flex items-center justify-center z-[999] hidden">
-  <div class="bg-card rounded-2xl p-6 w-11/12 max-w-sm text-center">
-    <h3 class="text-lg font-bold mb-2">Uploading...</h3>
-    <div class="w-full bg-border rounded-full h-2">
-      <div id="progress-bar-fill" class="bg-accent h-2 rounded-full" style="width: 0%"></div>
-    </div>
-    <p id="progress-text" class="text-sm text-text2 mt-2">0%</p>
-  </div>
-</div>
   <!-- firebase -->
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js ';
@@ -918,7 +893,6 @@
     let totalUnreadCount = 0;
     let chatListeners = new Map();
     let statusListeners = new Map();
-    let statusListener = null;   // <- single listener for the status list
 
     /* ---------- helpers ---------- */
     const toast = (msg) => {
@@ -1208,76 +1182,72 @@
     };
 
     /* ---------- Status List (All Users) ---------- */
-    /* ----------  global guard: only ONE listener alive  ---------- */
-
-
-const loadStatus = () => {
-  const list = document.getElementById('status-list');
-  list.innerHTML = '';
-
-  /* 1.  kill previous listener (if any) */
-  if (statusListener) {
-    statusListener();        // unsubscribe
-    statusListener = null;
-  }
-
-  /* 2.  attach fresh listener */
-  statusListener = onValue(ref(db, 'status'), async (snap) => {
-    list.innerHTML = '';          // single render per snapshot
-
-    const userStatuses = {};      // uid -> [status, …]
-    const userPromises = [];
-
-    snap.forEach((child) => {
-      const status = child.val();
-      if (Date.now() - status.timestamp < 24 * 3600 * 1000) {
-        if (!userStatuses[status.uid]) {
-          userStatuses[status.uid] = [];
-          userPromises.push(
-            get(ref(db, `users/${status.uid}`)).then((u) => ({
-              uid: status.uid,
-              user: u.val(),
-            }))
-          );
+    const loadStatus = () => {
+      const list = document.getElementById('status-list');
+      
+      // Clear existing listeners
+      statusListeners.forEach((unsubscribe) => unsubscribe());
+      statusListeners.clear();
+      
+      onValue(ref(db, 'status'), async (snap) => {
+        list.innerHTML = '';
+        
+        // Group by user and get latest
+        const userStatuses = {};
+        const userPromises = [];
+        
+        snap.forEach((child) => {
+          const status = child.val();
+          if (Date.now() - status.timestamp < 24 * 3600 * 1000) {
+            if (!userStatuses[status.uid]) {
+              userStatuses[status.uid] = [];
+              userPromises.push(
+                get(ref(db, `users/${status.uid}`)).then(userSnap => ({
+                  uid: status.uid,
+                  user: userSnap.val()
+                }))
+              );
+            }
+            userStatuses[status.uid].push({ key: child.key, ...status });
+          }
+        });
+        
+        const userDataMap = {};
+        const userResults = await Promise.all(userPromises);
+        userResults.forEach(({ uid, user }) => {
+          userDataMap[uid] = user;
+        });
+        
+        // Create status items for each user
+        Object.entries(userStatuses).forEach(([userId, statuses]) => {
+          const user = userDataMap[userId];
+          if (!user) return;
+          
+          const latestStatus = statuses.sort((a, b) => b.timestamp - a.timestamp)[0];
+          const hasNew = !viewedStatuses.has(latestStatus.key);
+          
+          const item = document.createElement('div');
+          item.className = 'status-item';
+          item.innerHTML = `
+            <img class="status-avatar ${hasNew ? 'has-new' : 'viewed'}" 
+                 src="${user.photoURL || `https://ui-avatars.com/api/?name= ${user.displayName || 'U'}&background=05d9e8&color=fff`}" 
+                 alt="${user.displayName || 'User'} avatar">
+            <div class="status-info">
+              <div class="status-name">${user.displayName || user.email}</div>
+              <div class="status-time">${formatTime(latestStatus.timestamp)}</div>
+            </div>
+            ${statuses.length > 1 ? `<div class="status-count">${statuses.length}</div>` : ''}
+          `;
+          
+          item.onclick = () => openViewer(userId);
+          list.appendChild(item);
+        });
+        
+        if (Object.keys(userStatuses).length === 0) {
+          list.innerHTML = '<div class="text-secondary text-center py-8">No recent status updates</div>';
         }
-        userStatuses[status.uid].push({ key: child.key, ...status });
-      }
-    });
-
-    const userMap = {};
-    (await Promise.all(userPromises)).forEach((u) => (userMap[u.uid] = u.user));
-
-    Object.entries(userStatuses).forEach(([uid, arr]) => {
-      const user = userMap[uid];
-      if (!user) return;
-
-      const latest = arr.sort((a, b) => b.timestamp - a.timestamp)[0];
-      const hasNew = !viewedStatuses.has(latest.key);
-
-      const item = document.createElement('div');
-      item.className = 'status-item';
-      item.innerHTML = `
-        <img class="status-avatar ${hasNew ? 'has-new' : 'viewed'}"
-             src="${user.photoURL ||
-                  `https://ui-avatars.com/api/?name= ${encodeURIComponent(
-                    user.displayName || 'U'
-                  )}&background=05d9e8&color=fff`}"
-             alt="${user.displayName || 'User'} avatar">
-        <div class="status-info">
-          <div class="status-name">${user.displayName || user.email}</div>
-          <div class="status-time">${formatTime(latest.timestamp)}</div>
-        </div>
-        ${arr.length > 1 ? `<div class="status-count">${arr.length}</div>` : ''}`;
-      item.onclick = () => openViewer(uid);
-      list.appendChild(item);
-    });
-
-    if (!Object.keys(userStatuses).length) {
-      list.innerHTML =
-        '<div class="text-secondary text-center py-8">No recent status updates</div>';
-    }
-  });
-};
+      });
+    };
 
     const formatTime = (timestamp) => {
       const now = Date.now();
@@ -1541,71 +1511,15 @@ const loadStatus = () => {
     document.getElementById('media-upload').onchange = async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const captionModal = document.getElementById('caption-modal');
-const captionInput = document.getElementById('caption-input');
-const captionConfirm = document.getElementById('caption-confirm');
-const captionCancel = document.getElementById('caption-cancel');
-const uploadProgress = document.getElementById('upload-progress');
-const progressBarFill = document.getElementById('progress-bar-fill');
-const progressText = document.getElementById('progress-text');
-
-let caption = '';
-
-// Show caption modal
-captionModal.classList.add('active');
-
-// Wait for user input
-captionConfirm.onclick = async () => {
-  caption = captionInput.value.trim();
-  captionModal.classList.remove('active');
-  captionInput.value = '';
-  await uploadStatus(file, caption);
-};
-
-captionCancel.onclick = () => {
-  captionModal.classList.remove('active');
-  captionInput.value = '';
-};
-      async function uploadStatus(file, caption) {
-  uploadProgress.classList.remove('hidden');
-
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('upload_preset', UPLOAD_PRESET);
-
-  const xhr = new XMLHttpRequest();
-
-  // Simulate progress
-  xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) {
-      const percent = Math.round((e.loaded / e.total) * 100);
-      progressBarFill.style.width = `${percent}%`;
-      progressText.textContent = `${percent}%`;
-    }
-  };
-
-  xhr.onload = async () => {
-    if (xhr.status === 200) {
-      const { secure_url } = JSON.parse(xhr.responseText);
-      const key = push(ref(db, 'status')).key;
-      await set(ref(db, `status/${key}`), {
-        media: secure_url,
-        caption,
-        uid,
-        timestamp: serverTimestamp()
-      });
+      const caption = prompt('Caption (optional):') || '';
+      toast('Uploading…');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('upload_preset', UPLOAD_PRESET);
+      const res = await fetch(`https://api.cloudinary.com/v1_1/ ${CLOUD_NAME}/upload`, { method: 'POST', body: fd });
+      const { secure_url } = await res.json();
+      const key = push(ref(db, `status/${key}`), { media: secure_url, caption, uid, timestamp: serverTimestamp() });
       toast('Status added!');
-    } else {
-      toast('Upload failed.');
-    }
-    uploadProgress.classList.add('hidden');
-    progressBarFill.style.width = '0%';
-    progressText.textContent = '0%';
-  };
-
-  xhr.open('POST', `https://api.cloudinary.com/v1_1/ ${CLOUD_NAME}/upload`);
-  xhr.send(fd);
-}
     };
 
     /* ---------- nav ---------- */
@@ -1650,9 +1564,6 @@ captionCancel.onclick = () => {
         `));
       }
     });
-    window.addEventListener('beforeunload', () => {
-  if (statusListener) statusListener();
-});
   </script>
 </body>
 </html>
