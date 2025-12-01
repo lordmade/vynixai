@@ -1297,7 +1297,7 @@ const loadStatus = () => {
     };
 
     /* ---------- Chat Friends Loading (Only Following) ---------- */
-   const loadChats = async () => {
+const loadChats = async () => {
   const list = document.getElementById('chat-list');
   list.innerHTML = '';
   
@@ -1316,34 +1316,48 @@ const loadStatus = () => {
   chatListeners.clear();
   totalUnreadCount = 0;
   
-  // Get user data for all following
-  const userPromises = followingIds.map(id => 
-    get(ref(db, `users/${id}`)).then(userSnap => ({
+  // Fetch all users and their chat metadata
+  const userPromises = followingIds.map(async (id) => {
+    const [userSnap, chatSnap] = await Promise.all([
+      get(ref(db, `users/${id}`)),
+      get(ref(db, `users/${uid}/chats/${id}`))
+    ]);
+    
+    return {
       id,
-      user: userSnap.val()
-    }))
-  );
+      user: userSnap.val(),
+      chatMeta: chatSnap.val() || {}
+    };
+  });
   
   const userResults = await Promise.all(userPromises);
   
-  userResults.forEach(({ id, user }) => {
+  // Sort by last message time (newest first)
+  userResults.sort((a, b) => {
+    const timeA = a.chatMeta.lastMessageTime || 0;
+    const timeB = b.chatMeta.lastMessageTime || 0;
+    return timeB - timeA; // Descending order
+  });
+  
+  // Render sorted cards
+  userResults.forEach(({ id, user, chatMeta }) => {
     if (!user) return;
     
     const card = document.createElement('div');
     card.className = 'card';
     card.id = `chat-card-${id}`;
     card.innerHTML = `
-  <div class="avatar-wrapper">
-    <img class="avatar" src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
-    <span id="dot-${id}" class="status-dot"></span>
-  </div>
-  <div class="flex-1">
-    <div class="name">${user.displayName || user.email}</div>
-    <div id="prev-${id}" class="preview">Tap to chat</div>
-    <div id="time-${id}" class="preview-time"></div>
-  </div>
-  <span id="unread-${id}" class="unread" style="display:none;">0</span>
-`;
+      <div class="avatar-wrapper">
+        <img class="avatar" src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}" />
+        <span id="dot-${id}" class="status-dot"></span>
+      </div>
+      <div class="flex-1">
+        <div class="name">${user.displayName || user.email}</div>
+        <div id="prev-${id}" class="preview">Tap to chat</div>
+        <div id="time-${id}" class="preview-time"></div>
+      </div>
+      <span id="unread-${id}" class="unread" style="display:none;">0</span>
+    `;
     
     card.onclick = () => startChat(id, user);
     card.querySelector('.avatar').onclick = (e) => {
@@ -1352,10 +1366,9 @@ const loadStatus = () => {
     };
     list.appendChild(card);
 
-    // ✅ FIXED: Listen to the correct path where lastMessage is stored
     const chatId = [uid, id].sort().join('_');
     
-    // Last message listener - listens to user's chat node
+    // Last message listener
     const lastMsgUnsub = onValue(ref(db, `users/${uid}/chats/${id}/lastMessage`), async (s) => {
       if (s.exists()) {
         const encrypted = s.val();
@@ -1365,14 +1378,15 @@ const loadStatus = () => {
       }
     });
     chatListeners.set(`lastMsg-${id}`, lastMsgUnsub);
-
+    
+    // Timestamp listener
     const timeUnsub = onValue(ref(db, `users/${uid}/chats/${id}/lastMessageTime`), (s) => {
-  if (s.exists()) {
-    const timeEl = document.getElementById(`time-${id}`);
-    if (timeEl) timeEl.textContent = formatTime(s.val());
-  }
-});
-chatListeners.set(`time-${id}`, timeUnsub);
+      if (s.exists()) {
+        const timeEl = document.getElementById(`time-${id}`);
+        if (timeEl) timeEl.textContent = formatTime(s.val());
+      }
+    });
+    chatListeners.set(`time-${id}`, timeUnsub);
     
     // Unread count listener
     const unreadUnsub = onValue(ref(db, `users/${uid}/chats/${id}/unreadCount`), (s) => {
@@ -1386,7 +1400,7 @@ chatListeners.set(`time-${id}`, timeUnsub);
     });
     chatListeners.set(`unread-${id}`, unreadUnsub);
     
-    // Status dot listener (from status page)
+    // Status dot listener
     const statusUnsub = onValue(ref(db, 'status'), (snap) => {
       let has = false;
       snap.forEach((ch) => {
