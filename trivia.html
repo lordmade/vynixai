@@ -470,8 +470,8 @@
           participants.clear();
           const participantData = snapshot.val();
           
-          // Load participant details
-          for (const userId of Object.keys(participantData)) {
+          // Load all participant details
+          const userPromises = Object.keys(participantData).map(async (userId) => {
             const userRef = ref(db, `users/${userId}`);
             const userSnap = await get(userRef);
             if (userSnap.exists()) {
@@ -480,15 +480,45 @@
                 status: participantData[userId].status || 'offline'
               });
             }
-          }
+          });
           
+          await Promise.all(userPromises);
+          updateOnlineCount();
+        } else {
           updateOnlineCount();
         }
       });
     };
     
     const renderMessage = async (message) => {
-      const sender = participants.get(message.senderId) || { displayName: 'Anonymous', photoURL: null, verified: false };
+      // FIX: Fetch sender data if not in cache yet
+      let sender = participants.get(message.senderId);
+      
+      // If not cached, fetch immediately
+      if (!sender && message.senderId) {
+        try {
+          const userRef = ref(db, `users/${message.senderId}`);
+          const userSnap = await get(userRef);
+          if (userSnap.exists()) {
+            sender = userSnap.val();
+            // Cache it
+            participants.set(message.senderId, sender);
+          }
+        } catch (e) {
+          console.warn('Failed to fetch user:', e);
+        }
+      }
+      
+      // Fallback
+      if (!sender) {
+        sender = { 
+          displayName: 'Anonymous', 
+          photoURL: null, 
+          verified: false,
+          status: 'offline'
+        };
+      }
+      
       const isSent = message.senderId === currentUser.uid;
       let displayContent;
       const isViewOnce = message.viewOnce;
@@ -704,8 +734,14 @@
       }
     };
     
+    // FIX: Setup send button to work
     const setupInput = () => {
       const input = document.getElementById('message-input');
+      const sendBtn = document.getElementById('send-btn');
+      
+      // Explicitly set the onclick handler
+      sendBtn.onclick = sendMessage;
+      
       input.addEventListener('input', () => {
         input.style.height = 'auto';
         input.style.height = Math.min(input.scrollHeight, 120) + 'px';
@@ -722,7 +758,17 @@
       showSpinner();
       
       try {
-        // Join global room automatically
+        // Add current user to participants map immediately
+        const userRef = ref(db, `users/${currentUser.uid}`);
+        const userSnap = await get(userRef);
+        if (userSnap.exists()) {
+          participants.set(currentUser.uid, {
+            ...userSnap.val(),
+            status: 'online'
+          });
+        }
+        
+        // Join global room
         await set(ref(db, `rooms/${roomId}/participants/${currentUser.uid}`), {
           joinedAt: Date.now(),
           lastActive: Date.now(),
@@ -735,7 +781,7 @@
           set(myStatusRef, 'offline');
         });
         
-        // Periodically update online status
+        // Keep user online
         setInterval(() => {
           set(myStatusRef, 'online');
         }, 60000);
