@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-  <title>ZULABEAT – SA's AI Music App</title>
+  <title>ZULABEAT – Your SA Music Bestie</title>
 
   <!-- PWA -->
   <link rel="manifest" href="data:application/manifest+json,{
     "name":"Zulabeat","short_name":"Zulabeat",
-    "description":"Just say the vibe – Amapiano, Gqom, Kwaito, Maskandi",
+    "description":"Your South African music bestie – talk, vibe, play",
     "start_url":"/","display":"standalone",
     "background_color":"#FF6B35","theme_color":"#FF6B35",
     "icons":[
@@ -42,7 +42,7 @@
     .track-text{flex:1}
     .track-text p{margin:0;font-weight:700}
     .track-text small{opacity:0.9;font-size:0.9rem}
-    .timestamp{font-size:0.75rem;opacity:0.7;margin-top:4px;text-align:right}
+    .timestamp{font-size:0.75rem;opacity:0.7;margin-top:4px}
     .message.ai .timestamp{margin-left:18px}
     .thinking{display:flex;gap:9px;padding:16px 20px}
     .dot{width:11px;height:11px;background:#a78bfa;border-radius:50%;animation:pulse 1.5s infinite}
@@ -55,36 +55,22 @@
     #chatInput::placeholder{color:rgba(255,255,255,0.6)}
     .send-btn{width:52px;height:52px;background:#FF6B35;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:.2s}
     .send-btn:disabled{opacity:0.5}
-    .install-banner{position:fixed;bottom:90px;left:8px;right:8px;background:#fff;color:#000;padding:1rem;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.3);display:none;align-items:center;justify-content:space-between;z-index:50}
   </style>
 </head>
 <body>
 
   <header class="header">
     <h1>ZULABEAT</h1>
-    <p>Just say the vibe – Grok finds the music</p>
+    <p>Your South African music bestie – talk to me</p>
   </header>
 
-  <section id="chatPane">
-    <div class="text-center mt-20 opacity-80">
-      <p class="text-xl">Examples:</p>
-      <p class="mt-4">• Amapiano for the braai</p>
-      <p>• Gqom that slaps</p>
-      <p>• Kwaito classics</p>
-      <p>• Maskandi vibes</p>
-    </div>
-  </section>
+  <section id="chatPane"></section>
 
   <div class="input-bar">
     <div class="input-container">
-      <input type="text" id="chatInput" placeholder="What vibe you feeling today?..." autocomplete="off" />
-      <button class="send-btn" id="sendBtn" disabled><i data-lucide="send" class="w-6 h-6"></i></button>
+      <input type="text" id="chatInput" placeholder="Say hi or ask for music..." autocomplete="off" />
+      <button class="send-btn" id="sendBtn"><i data-lucide="send" class="w-6 h-6"></i></button>
     </div>
-  </div>
-
-  <div class="install-banner" id="installBanner">
-    <span>Install Zulabeat – tap “Add to Home Screen”</span>
-    <button id="installBtn" class="bg-orange-600 text-white px-4 py-2 rounded-full font-bold">Install</button>
   </div>
 
   <audio id="audioPlayer"></audio>
@@ -112,16 +98,17 @@
     let spotifyClientSecret = null;
     let spotifyToken = null;
     let tokenExpiry = 0;
+    let history = [];
 
-    // Load keys from Remote Config
+    // Load secrets
     await fetchAndActivate(remoteConfig);
     xaiKey = getString(remoteConfig, 'xai_api_key');
     spotifyClientId = getString(remoteConfig, 'spotify_client_id');
     spotifyClientSecret = getString(remoteConfig, 'spotify_client_secret');
 
-    if (!xaiKey || !spotifyClientId) {
-      addMessage("App not ready yet – contact support", 'ai');
-      throw new Error("Missing config");
+    if (!xaiKey) {
+      addMessage("App not ready – missing config", 'ai');
+      throw new Error("No xAI key");
     }
 
     const chatPane = document.getElementById('chatPane');
@@ -129,22 +116,7 @@
     const sendBtn = document.getElementById('sendBtn');
     const audio = document.getElementById('audioPlayer');
 
-    let currentTrack = null;
-    let deferredPrompt = null;
-
-    window.addEventListener('beforeinstallprompt', e => {
-      e.preventDefault();
-      deferredPrompt = e;
-      document.getElementById('installBanner').style.display = 'flex';
-    });
-    document.getElementById('installBtn').onclick = () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        deferredPrompt.userChoice.then(() => document.getElementById('installBanner').style.display = 'none');
-      }
-    };
-
-    function addMessage(content, sender, plain = '') {
+    function addMessage(content, sender) {
       const div = document.createElement('div');
       div.className = `message ${sender}`;
       const time = new Date().toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
@@ -156,15 +128,14 @@
             <div class="timestamp">${time}</div>
           </div>
         `;
-        chatPane.appendChild(div);
       } else {
         div.innerHTML = `
           <div class="bubble">${content.replace(/\n/g, '<br>')}
             <div class="timestamp">${time}</div>
           </div>
         `;
-        chatPane.appendChild(div);
       }
+      chatPane.appendChild(div);
       chatPane.scrollTop = chatPane.scrollHeight;
     }
 
@@ -195,49 +166,71 @@
       return spotifyToken;
     }
 
-    async function searchAndShow(userText) {
+    async function callGrok(userMessage) {
       addThinking();
       try {
-        // Step 1: Let Grok clean the vibe
-        const grokRes = await fetch("https://api.x.ai/v1/chat/completions", {
+        const res = await fetch("https://api.x.ai/v1/chat/completions", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${xaiKey}` },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${xaiKey}`
+          },
           body: JSON.stringify({
             model: "grok-beta",
-            messages: [{ role: "user", content: `Turn this into the best Spotify search query for South African music (only return the query): "${userText}"` }],
-            temperature: 0.7,
-            max_tokens: 30
+            messages: [
+              { role: "system", content: "You are Zulabeat – a super cool, fun, South African music bestie. Speak like a real person from Joburg. Use slang, be friendly, reply short and sweet. If they ask for music, return ONLY a clean Spotify search query in this format: SEARCH_QUERY: your reply here. Example: SEARCH_QUERY: amapiano 2025 Yo fam! Here's the latest Amapiano fire!" },
+              ...history,
+              { role: "user", content: userMessage }
+            ],
+            temperature: 0.8,
+            max_tokens: 300
           })
         });
-        const grokData = await grokRes.json();
-        const cleanQuery = (grokData.choices?.[0]?.message?.content || userText).trim();
 
-        // Step 2: Search Spotify
+        const data = await res.json();
+        removeThinking();
+        const reply = data.choices?.[0]?.message?.content || "Hmm... not sure";
+
+        // Check if Grok wants to play music
+        const match = reply.match(/^SEARCH_QUERY:\s*(.+)$/m);
+        if (match) {
+          const query = match[1].trim().split('\n')[0];
+          const cleanText = reply.replace(/^SEARCH_QUERY:.+$/m, '').trim();
+          await playMusic(query, cleanText || "Here’s some fire for you");
+        } else {
+          addMessage(reply, 'ai');
+        }
+      } catch (err) {
+        removeThinking();
+        addMessage("Network error – check your data", 'ai');
+      }
+    }
+
+    async function playMusic(query, textBefore) {
+      try {
         const token = await getSpotifyToken();
-        const searchRes = await fetch(
-          `https://api.spotify.com/v1/search?q=${encodeURIComponent(cleanQuery)}&type=track&market=ZA&limit=10`,
+        const res = await fetch(
+          `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&market=ZA&limit=8`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
-        const searchData = await searchRes.json();
-        const tracks = searchData.tracks.items;
-
-        removeThinking();
+        const data = await res.json();
+        const tracks = data.tracks.items;
 
         if (tracks.length === 0) {
-          addMessage("No tracks found – try another vibe", 'ai');
+          addMessage("Couldn't find anything for that vibe", 'ai');
           return;
         }
 
-        addMessage(`Found \( {tracks.length} bangers for " \){userText}" 🔥`, 'ai');
+        if (textBefore) addMessage(textBefore, 'ai');
 
         tracks.forEach(track => {
-          const art = track.album.images[0]?.url || 'https://via.placeholder.com/300';
+          const art = track.album.images[0]?.url || '';
           const bubble = document.createElement('div');
           bubble.className = 'message ai track-bubble';
           bubble.innerHTML = `
             <div class="bubble">
               <div class="track-info">
-                <img src="\( {art}" alt=" \){track.name}">
+                <img src="${art}" alt="">
                 <div class="track-text">
                   <p>${track.name}</p>
                   <small>${track.artists.map(a => a.name).join(', ')}</small>
@@ -250,44 +243,39 @@
             if (track.preview_url) {
               audio.src = track.preview_url;
               audio.play();
-              addMessage(`Now playing: \( {track.name} – \){track.artists[0].name} 🎶`, 'ai');
+              addMessage(`Now playing: \( {track.name} – \){track.artists[0].name}`, 'ai');
             } else {
               window.open(track.external_urls.spotify, '_blank');
-              addMessage(`Opened full track in Spotify: ${track.name}`, 'ai');
+              addMessage(`Opened in Spotify: ${track.name}`, 'ai');
             }
           };
           chatPane.appendChild(bubble);
         });
-
-      } catch (err) {
-        removeThinking();
-        addMessage("Something went wrong – check your connection", 'ai');
+      } catch {
+        addMessage("Music search failed – try again", 'ai');
       }
     }
 
-    function sendMessage() {
-      const text = chatInput.value.trim();
-      if (!text) return;
-      addMessage(text, 'user');
+    function send() {
+      const msg = chatInput.value.trim();
+      if (!msg) return;
+      addMessage(msg, 'user');
+      history.push({ role: "user", content: msg });
       chatInput.value = '';
-      sendBtn.disabled = true;
-      searchAndShow(text).finally(() => sendBtn.disabled = false);
+      callGrok(msg);
     }
 
-    chatInput.addEventListener('input', () => {
-      sendBtn.disabled = !chatInput.value.trim();
-    });
-
-    sendBtn.onclick = sendMessage;
+    chatInput.addEventListener('input', () => sendBtn.disabled = !chatInput.value.trim() === '');
+    sendBtn.onclick = send;
     chatInput.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        sendMessage();
+        send();
       }
     });
 
-    // Welcome message
-    addMessage("Yo! What vibe you feeling today? Amapiano? Gqom? Kwaito? Just say it 🔥", 'ai');
+    // Welcome
+    addMessage("Yo! I'm Zulabeat – your SA music bestie. What's the vibe today?", 'ai');
   </script>
 </body>
 </html>
