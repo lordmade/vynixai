@@ -268,6 +268,9 @@
       transform: translateY(-2px);
       box-shadow: var(--shadow-md);
     }
+    .quick-btn.retry {
+      background: #dc2626; /* Red for retry */
+    }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
@@ -348,7 +351,7 @@
   <div class="input-bar">
     <button class="input-icon material-icons" title="Attach" onclick="attachFile()">attach_file</button>
     <div class="input-group">
-      <textarea id="message-input" placeholder="What would you like to order?" rows="1"></textarea>
+      <textarea id="message-input" placeholder="What would you like to order? (e.g., '2 pizzas, deliver to 123 Long St')" rows="1"></textarea>
     </div>
     <button class="send-btn material-icons" id="send-btn" disabled>send</button>
   </div>
@@ -388,16 +391,18 @@
     const spinner = document.getElementById('horizontal-spinner');
     const alertBox = document.getElementById('alert-message');
 
-    // Order State
+    // Order State - Enhanced for collection/delivery
     let history = [];
     let currentOrder = {
       items: [],
-      customer: { name: '', phone: '', address: { street: '', city: '', zip: '' } },
+      customer: { name: '', phone: '', address: { street: '', city: 'Cape Town', state: 'WC', zip: '8001', country: 'ZA' } },
+      restaurant: { name: 'QuickDispatch Partner', address: { street: '123 Main St', city: 'Cape Town', state: 'WC', zip: '8001', country: 'ZA' }, phone: '+271234567890' },
       total: 0,
       tip: 0,
       note: '',
       paymentMethod: 'credit_card',
-      status: 'collecting' // collecting → confirming → confirmed
+      deliveryType: 'delivery', // 'delivery' or 'collection' - defaults to delivery
+      status: 'collecting'
     };
 
     function showSpinner() { spinner.classList.add('active'); }
@@ -405,7 +410,7 @@
     function showAlert(msg) {
       alertBox.textContent = msg;
       alertBox.classList.add('active');
-      setTimeout(() => alertBox.classList.remove('active'), 4000);
+      setTimeout(() => alertBox.classList.remove('active'), 5000);
     }
 
     function formatTime() {
@@ -419,10 +424,11 @@
 
       let messageContent = content;
       if (orderData && sender === 'ai') {
+        const typeIcon = orderData.deliveryType === 'collection' ? '📦 Collect' : '🚚 Delivery';
         messageContent = `
           ${content}
           <div class="order-info">
-            <div style="font-weight: bold; margin-bottom: 8px;">Order #${orderData.orderNumber || 'TEMP'}</div>
+            <div style="font-weight: bold; margin-bottom: 8px;">Order #${orderData.orderNumber || 'TEMP'} ${typeIcon}</div>
             ${orderData.items.map(item => `
               <div class="order-item">
                 <span>${item.quantity}x ${item.name}</span>
@@ -434,7 +440,8 @@
               <span>R${orderData.total.toFixed(2)}</span>
             </div>
             <div style="margin-top: 8px; font-size: 12px; color: var(--text-secondary);">
-              📍 ${orderData.customer.address.street || 'Address pending'}
+              📍 ${orderData.customer.address.street || 'Address pending'}<br>
+              ${typeIcon}: ${orderData.deliveryType}
             </div>
           </div>
         `;
@@ -464,16 +471,43 @@
       document.getElementById('thinking')?.remove();
     }
 
+    // Validate and format payload before sending
+    function validatePayload(payload) {
+      if (!payload.customerName || payload.customerName === 'Customer') throw new Error('Missing customer name');
+      if (!payload.customerPhoneNumber || !payload.customerPhoneNumber.startsWith('+')) throw new Error('Invalid phone—use +27 format (e.g., +27123456789)');
+      if (payload.items.length === 0) throw new Error('No items in order');
+      if (payload.totalAmount <= 0) throw new Error('Invalid total—must be positive');
+      if (Math.abs(payload.totalAmount - payload.items.reduce((sum, i) => sum + (i.quantity * i.price), 0)) > 0.01) throw new Error('Total doesn\'t match items');
+      return true;
+    }
+
     async function createShipdayOrder() {
       showSpinner();
       try {
+        // Calculate total from items
+        currentOrder.total = currentOrder.items.reduce((sum, i) => sum + (i.quantity * i.price), 0) + (currentOrder.tip || 0);
+
         const payload = {
           externalOrderId: `QD-${Date.now()}`,
-          customerName: currentOrder.customer.name || "Customer",
-          customerPhoneNumber: currentOrder.customer.phone || "+1234567890",
-          customerAddress: `${currentOrder.customer.address.street || "Unknown Street"}, ${currentOrder.customer.address.city || "Cape Town"}`,
-          restaurantName: "QuickDispatch Partner",
-          restaurantAddress: "Cape Town CBD",
+          customerName: currentOrder.customer.name,
+          customerPhoneNumber: currentOrder.customer.phone,
+          customerEmail: currentOrder.customer.email || '',
+          customerAddress: {
+            street: currentOrder.customer.address.street,
+            city: currentOrder.customer.address.city,
+            state: currentOrder.customer.address.state,
+            zip: currentOrder.customer.address.zip,
+            country: currentOrder.customer.address.country
+          },
+          restaurantName: currentOrder.restaurant.name,
+          restaurantPhoneNumber: currentOrder.restaurant.phone,
+          restaurantAddress: {
+            street: currentOrder.restaurant.address.street,
+            city: currentOrder.restaurant.address.city,
+            state: currentOrder.restaurant.address.state,
+            zip: currentOrder.restaurant.address.zip,
+            country: currentOrder.restaurant.address.country
+          },
           items: currentOrder.items.map(i => ({
             name: i.name,
             quantity: i.quantity,
@@ -481,9 +515,14 @@
           })),
           totalAmount: currentOrder.total,
           currency: "ZAR",
-          tip: currentOrder.tip,
-          note: currentOrder.note || "Order via QuickDispatch AI"
+          tip: currentOrder.tip || 0,
+          note: currentOrder.note || "Order via QuickDispatch AI",
+          deliveryType: currentOrder.deliveryType // 'delivery' or 'collection' - Shipday handles dispatch
         };
+
+        validatePayload(payload);
+
+        console.log('Sending to Shipday:', payload); // Debug log
 
         const response = await fetch("https://api.shipday.com/v1/orders", {
           method: "POST",
@@ -496,18 +535,24 @@
 
         const result = await response.json();
 
+        console.log('Shipday Response:', result); // Debug log
+
         if (!response.ok) {
-          throw new Error(result.message || "Shipday rejected the order");
+          let errorMsg = result.message || `HTTP ${response.status}: ${response.statusText}`;
+          if (response.status === 401) errorMsg = 'Invalid API key—check Firebase config';
+          if (response.status === 400) errorMsg = `Bad request: ${errorMsg} (check name/phone/address)`;
+          if (response.status === 429) errorMsg = 'Rate limited—try again in a minute';
+          throw new Error(errorMsg);
         }
 
         return {
           success: true,
-          orderId: result.orderId,
+          orderId: result.orderId || payload.externalOrderId,
           orderNumber: result.orderNumber || payload.externalOrderId,
-          trackingUrl: `https://track.shipday.com/${result.orderId}`
+          trackingUrl: result.trackingUrl || `https://track.shipday.com/${result.orderId}`
         };
       } catch (err) {
-        console.error("Shipday Error:", err);
+        console.error("Shipday Error Details:", err);
         throw err;
       } finally {
         hideSpinner();
@@ -528,10 +573,11 @@
             messages: [
               {
                 role: "system",
-                content: `You are QuickDispatch AI – a super fast, friendly food ordering assistant in South Africa.
-                Goal: Collect order items, customer name, phone, full delivery address, then confirm.
-                When ready to confirm, respond with: ORDER_READY
-                Keep replies short, natural, and South African friendly (e.g. "lekker", "sharp sharp").`
+                content: `You are QuickDispatch AI – a super fast, friendly food ordering assistant in South Africa for collection & delivery.
+                Goal: Collect items (with quantities), customer name, phone (+27 format), full address, delivery type (delivery or collection), then confirm.
+                Ask for delivery type early: "Delivery to address or collect in-store?"
+                When all info ready, respond with: ORDER_READY
+                Keep replies short, natural, SA vibe (e.g., "lekker", "sharp").`
               },
               ...history.slice(-15),
               { role: "user", content: userMsg }
@@ -549,45 +595,66 @@
         history.push({ role: "assistant", content: reply });
         if (history.length > 40) history = history.slice(-40);
 
-        // Auto-detect confirmation trigger
-        if (reply.includes("ORDER_READY") || (currentOrder.items.length > 0 && currentOrder.customer.name && currentOrder.customer.phone && currentOrder.customer.address.street)) {
+        // Auto-trigger confirmation if ready
+        if (reply.includes("ORDER_READY") || 
+            (currentOrder.items.length > 0 && currentOrder.customer.name && currentOrder.customer.phone && currentOrder.customer.address.street)) {
           currentOrder.status = 'confirming';
-          const summary = `Order Summary:\n${currentOrder.items.map(i => `${i.quantity}x ${i.name} - R${(i.quantity * i.price).toFixed(2)}`).join('\n')}\n\nTotal: R${currentOrder.total.toFixed(2)}\nDeliver to: ${currentOrder.customer.address.street}\n\nReply YES to confirm or NO to change`;
+          const typeText = currentOrder.deliveryType === 'collection' ? '📦 Collection' : '🚚 Delivery';
+          const summary = `${typeText} Order Summary:\n${currentOrder.items.map(i => `${i.quantity}x ${i.name} - R${(i.quantity * i.price).toFixed(2)}`).join('\n')}\n\nTotal: R${currentOrder.total.toFixed(2)}\nTo: ${currentOrder.customer.address.street}\n\nReply YES to confirm or NO to change`;
           addMessage(summary, 'ai');
           addQuickActions(['YES', 'NO']);
           return;
         }
 
-        if (userMsg.toLowerCase() === 'yes' && currentOrder.status === 'confirming') {
-          addMessage("Sharp sharp! Sending your order now...", 'ai');
+        if (userMsg.toLowerCase().includes('yes') && currentOrder.status === 'confirming') {
+          addMessage("Sharp sharp! Dispatching your order now...", 'ai');
           try {
             const result = await createShipdayOrder();
-            addMessage(`Order placed! 🎉\n\nOrder #: ${result.orderNumber}\nWe'll SMS you when the driver is on the way.`, 'ai', {
+            const typeIcon = currentOrder.deliveryType === 'collection' ? '📦' : '🚚';
+            addMessage(`${typeIcon} Order dispatched! 🎉\n\nOrder #: ${result.orderNumber}\nDriver en route (or ready for collection). SMS incoming.`, 'ai', {
               orderNumber: result.orderNumber,
               items: currentOrder.items,
               total: currentOrder.total,
-              customer: currentOrder.customer
+              customer: currentOrder.customer,
+              deliveryType: currentOrder.deliveryType
             });
 
             const trackBtn = document.createElement('div');
             trackBtn.className = 'quick-actions';
-            trackBtn.innerHTML = `<button class="quick-btn" onclick="window.open('${result.trackingUrl}', '_blank')">Track My Order</button>`;
+            const btnText = currentOrder.deliveryType === 'collection' ? 'Ready for Collection' : 'Track Driver';
+            trackBtn.innerHTML = `<button class="quick-btn" onclick="window.open('${result.trackingUrl}', '_blank')">${btnText}</button>`;
             chatPane.appendChild(trackBtn);
 
             setTimeout(() => {
-              currentOrder = { items: [], customer: { name: '', phone: '', address: { street: '', city: '', zip: '' } }, total: 0, tip: 0, note: '', status: 'collecting' };
-              addMessage("Anything else I can help with today?", 'ai');
+              currentOrder = {
+                items: [],
+                customer: { name: '', phone: '', address: { street: '', city: 'Cape Town', state: 'WC', zip: '8001', country: 'ZA' } },
+                restaurant: { name: 'QuickDispatch Partner', address: { street: '123 Main St', city: 'Cape Town', state: 'WC', zip: '8001', country: 'ZA' }, phone: '+271234567890' },
+                total: 0,
+                tip: 0,
+                note: '',
+                paymentMethod: 'credit_card',
+                deliveryType: 'delivery',
+                status: 'collecting'
+              };
+              addMessage("Lekker! Anything else today?", 'ai');
             }, 3000);
 
           } catch (e) {
-            addMessage("Sorry chief, something went wrong with the dispatch. Please try again.", 'ai');
+            const errorMsg = e.message.includes('Invalid API key') ? e.message : "Dispatch failed—check details (name/phone/address) and try again.";
+            addMessage(`❌ ${errorMsg}`, 'ai');
+            // Add retry button
+            setTimeout(() => {
+              addQuickActions(['Retry Order']);
+            }, 100);
+            showAlert(`Error: ${e.message} (see console for details)`);
           }
           return;
         }
 
-        if (userMsg.toLowerCase() === 'no') {
+        if (userMsg.toLowerCase().includes('no') || userMsg.toLowerCase() === 'cancel') {
           currentOrder.status = 'collecting';
-          addMessage("No worries! Let's fix that. What would you like to change?", 'ai');
+          addMessage("No stress! Let's start over. What can I get you?", 'ai');
           return;
         }
 
@@ -596,39 +663,44 @@
 
       } catch (e) {
         removeThinking();
-        addMessage("Network trouble. Check your connection and try again.", 'ai');
+        addMessage("Network oopsie—check connection and try again.", 'ai');
       }
     }
 
     function extractOrderInfoFromMessage(msg) {
       const lower = msg.toLowerCase();
 
+      // Delivery Type
+      if (lower.includes('collect') || lower.includes('pickup')) currentOrder.deliveryType = 'collection';
+      if (lower.includes('deliver') || lower.includes('delivery to')) currentOrder.deliveryType = 'delivery';
+
       // Name
-      if (lower.includes("name is") || lower.includes("call me")) {
-        const match = msg.match(/(?:name is|call me|my name's)\s+([a-z\s]+)/i);
-        if (match) currentOrder.customer.name = match[1].trim();
+      const nameMatch = msg.match(/(?:name is|call me|my name['s]*)\s+([a-zA-Z\s]+)/i);
+      if (nameMatch) currentOrder.customer.name = nameMatch[1].trim();
+
+      // Phone - Format to E.164
+      const phoneMatch = msg.match(/(\+?27|0)(\d{9})/);
+      if (phoneMatch) {
+        currentOrder.customer.phone = phoneMatch[1] === '0' ? '+27' + phoneMatch[2] : '+' + phoneMatch[1] + phoneMatch[2];
       }
 
-      // Phone
-      const phoneMatch = msg.match(/(\+?\d[\d\s\-\(\)]{8,})/);
-      if (phoneMatch) currentOrder.customer.phone = phoneMatch[1].replace(/\s/g, '');
-
-      // Address (basic street match)
-      const addrMatch = msg.match(/(\d+\s+[\w\s]+(?:street|st|road|rd|avenue|ave|drive|dr|boulevard|blvd|park|close|way|crescent|lane)\b[\w\s]*)/i);
+      // Address
+      const addrMatch = msg.match(/(\d+\s+[\w\s]+(?:street|st|road|rd|avenue|ave|drive|dr|boulevard|blvd|park|close|way|crescent|lane|ln)[\w\s,]*)/i);
       if (addrMatch) {
         currentOrder.customer.address.street = addrMatch[1].trim();
-        currentOrder.customer.address.city = "Cape Town";
       }
 
-      // Items (e.g., "2 pizzas", "1 burger and chips")
-      const itemRegex = /(\d+)\s*x?\s*([a-z\s\w]+)/gi;
+      // Items with fallback prices (ZAR, SA foods)
+      const itemRegex = /(\d+)\s*(x)?\s*([a-zA-Z\s\w]+)/gi;
       let match;
+      const priceMap = { pizza: 120, burger: 85, chow: 95, salad: 65, default: 80 };
       while ((match = itemRegex.exec(msg)) !== null) {
         const qty = parseInt(match[1]);
-        const name = match[2].trim();
-        if (!currentOrder.items.find(i => i.name.toLowerCase() === name.toLowerCase())) {
-          currentOrder.items.push({ name, quantity: qty, price: 85.00 }); // fallback price
-          currentOrder.total += qty * 85.00;
+        const name = match[3].trim().toLowerCase();
+        const price = priceMap[name] || priceMap.default;
+        if (!currentOrder.items.find(i => i.name.toLowerCase() === name)) {
+          currentOrder.items.push({ name: match[3].trim(), quantity: qty, price });
+          currentOrder.total += qty * price;
         }
       }
     }
@@ -636,13 +708,21 @@
     function addQuickActions(actions) {
       const div = document.createElement('div');
       div.className = 'quick-actions';
-      div.innerHTML = actions.map(a => `<button class="quick-btn" onclick="quickAction('${a}')">${a}</button>`).join('');
+      div.innerHTML = actions.map(a => {
+        const isRetry = a === 'Retry Order';
+        return `<button class="quick-btn ${isRetry ? 'retry' : ''}" onclick="quickAction('${a}')">${a}</button>`;
+      }).join('');
       chatPane.appendChild(div);
       chatPane.scrollTop = chatPane.scrollHeight;
     }
 
     window.quickAction = function(action) {
-      chatInput.value = action;
+      if (action === 'Retry Order') {
+        currentOrder.status = 'confirming'; // Retry from confirmation
+        chatInput.value = 'yes';
+      } else {
+        chatInput.value = action.toLowerCase();
+      }
       send();
       document.querySelectorAll('.quick-actions').forEach(el => el.remove());
     };
@@ -659,6 +739,7 @@
     }
 
     window.attachFile = () => showAlert("File uploads coming soon!");
+
     chatInput.addEventListener('input', () => {
       chatInput.style.height = 'auto';
       chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
@@ -673,9 +754,9 @@
       }
     });
 
-    // Welcome
-    addMessage("Howzit! I'm QuickDispatch ✈️\nI help you order food super fast.\nWhat are you in the mood for today?", 'ai');
-    setTimeout(() => addQuickActions(['Pizza', 'Burger', 'Bunny Chow', 'Track Order']), 1500);
+    // Welcome - Emphasize collection/delivery
+    addMessage("Howzit! I'm QuickDispatch ✈️\nFast food orders for delivery or collection in Cape Town.\nDelivery or collect? What you craving?", 'ai');
+    setTimeout(() => addQuickActions(['Delivery - Pizza', 'Collection - Burger', 'Bunny Chow', 'Track Order']), 1500);
   </script>
 </body>
 </html>
