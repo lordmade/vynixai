@@ -45,6 +45,20 @@
       touch-action: manipulation;
       line-height: 1.4;
       transition: background-color 0.3s ease, color 0.3s ease;
+      -webkit-tap-highlight-color: transparent; /* Prevent tap highlight */
+    }
+    /* Prevent highlight on interactive elements */
+    .header, .input-bar, .message-avatar, .send-btn, .input-icon, .quick-btn {
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    /* Allow text selection in messages */
+    .message-bubble {
+      -webkit-user-select: text;
+      user-select: text;
+      cursor: text;
     }
     .header {
       position: fixed;
@@ -174,6 +188,7 @@
       justify-content: center;
       margin-left: 12px;
       flex-shrink: 0;
+      overflow: hidden;
     }
     .message-avatar img {
       width: 100%;
@@ -188,7 +203,7 @@
       word-wrap: break-word;
       line-height: 1.4;
       position: relative;
-      cursor: pointer;
+      cursor: text;
       user-select: text;
     }
     .message-received .message-bubble {
@@ -415,6 +430,11 @@
     <button class="send-btn material-icons" id="send-btn" disabled>send</button>
   </div>
 
+  <!-- Notification sound -->
+  <audio id="notify-sound" preload="auto" style="display: none;">
+    <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTA" type="audio/wav">
+  </audio>
+
   <div id="horizontal-spinner">
     <div id="spinner-segment"></div>
   </div>
@@ -423,13 +443,13 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, set, push, update, query, orderByChild, limitToLast } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, set, push, update, query, orderByChild, limitToLast, onValue, off } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
-      databaseURL: "https://fire-b-a8878.firebaseio.com",
+      databaseURL: "https://fire-b-a8878.firebaseio.com/",
       projectId: "fire-b-a8878",
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
@@ -446,21 +466,25 @@
     let aiChatId = null;
     let messagesListener = null;
     let allMessages = [];
+    let isLoadingHistory = true; // Prevents notification during history load
 
+    // Crisis detection keywords
     const CRISIS_KEYWORDS = ['suicide', 'kill myself', 'end my life', 'self harm', 'overdose', 'hurt myself'];
-
+    
     function detectCrisis(message) {
       return CRISIS_KEYWORDS.some(keyword => 
         message.toLowerCase().includes(keyword)
       );
     }
 
+    // XSS protection
     function sanitizeInput(text) {
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML.replace(/\n/g, '<br>');
     }
 
+    // UI Helpers
     const showSpinner = () => document.getElementById('horizontal-spinner').classList.add('active');
     const hideSpinner = () => document.getElementById('horizontal-spinner').classList.remove('active');
     const showAlert = (message) => {
@@ -474,6 +498,22 @@
       return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
+    // Audio notification setup
+    const notifySound = document.getElementById('notify-sound');
+    let userInteracted = false;
+    
+    document.addEventListener('click', () => {
+      userInteracted = true;
+    }, { once: true });
+    
+    function playNotification() {
+      if (userInteracted && notifySound && !isLoadingHistory) {
+        notifySound.currentTime = 0;
+        notifySound.play().catch(e => console.log('Audio notification failed:', e));
+      }
+    }
+
+    // Encryption/Decryption
     async function encrypt(message, chatId) {
       try {
         const encoder = new TextEncoder();
@@ -512,6 +552,7 @@
       }
     }
 
+    // Get or create AI chat room
     async function getOrCreateAIChat() {
       if (!currentUser) return null;
       
@@ -535,16 +576,27 @@
       return chatId;
     }
 
-    function addMessage(content, sender, timestamp = Date.now()) {
+    // Add message to UI (FIXED: shows user profile picture)
+    function addMessage(content, sender, timestamp = Date.now(), messageId = null) {
       const chatPane = document.getElementById('messages-container');
       const div = document.createElement('div');
       div.className = `message-item ${sender === 'user' ? 'message-sent' : 'message-received'}`;
       const time = formatTime(timestamp);
 
+      // FIXED: Proper avatar rendering with profile picture support
+      let avatarHtml = '';
+      if (sender === 'user') {
+        if (currentUser?.photoURL) {
+          avatarHtml = `<img src="${currentUser.photoURL}" alt="You" loading="lazy" onerror="this.onerror=null; this.parentElement.innerHTML='${currentUser.displayName?.[0] || 'Y'}';">`;
+        } else {
+          avatarHtml = currentUser?.displayName?.[0]?.toUpperCase() || 'Y';
+        }
+      } else {
+        avatarHtml = 'MS';
+      }
+
       div.innerHTML = `
-        <div class="message-avatar">
-          ${sender === 'user' ? (currentUser?.displayName?.[0] || 'Y') : 'MS'}
-        </div>
+        <div class="message-avatar">${avatarHtml}</div>
         <div class="message-bubble">
           ${sanitizeInput(content)}
           <div class="message-time">${time}</div>
@@ -554,6 +606,7 @@
       chatPane.scrollTop = chatPane.scrollHeight;
     }
 
+    // Add typing indicator
     function addThinking() {
       const d = document.createElement('div');
       d.id = 'thinking';
@@ -567,11 +620,12 @@
       document.getElementById('thinking')?.remove();
     }
 
+    // Add quick action buttons
     function addQuickActions(actions) {
       const div = document.createElement('div');
       div.className = 'quick-actions';
       div.innerHTML = actions.map(a => 
-        `<button class="quick-btn" onclick="quickAction('${a.replace(/'/g, "\\\\'")}')">${a}</button>`
+        `<button class="quick-btn" onclick="quickAction('${a.replace(/'/g, "\\'")}')">${a}</button>`
       ).join('');
       document.getElementById('messages-container').appendChild(div);
       document.getElementById('messages-container').scrollTop = document.getElementById('messages-container').scrollHeight;
@@ -584,6 +638,7 @@
       sendMessage();
     };
 
+    // AI conversation context
     let conversationHistory = [
       { role: "system", content: `You are MindSpace — a warm, empathetic, professional mental health AI companion.
 You are friendly, non-judgmental, and highly supportive. You use a calm, reassuring tone.
@@ -594,7 +649,9 @@ Keep responses concise but caring (2–4 short paragraphs max). Use line breaks 
 End many responses with an open, gentle question to keep the conversation flowing.` }
     ];
 
+    // Get AI reply from xAI API
     async function getAIReply(userMsg) {
+      // Immediate crisis response
       if (detectCrisis(userMsg)) {
         return `🚨 **I'm really concerned about your safety right now.**
         
@@ -632,6 +689,7 @@ Please reach out to a professional right now. You don't have to go through this 
       }
     }
 
+    // Save message to Firebase
     async function saveMessageToFirebase(content, sender, type = 'text') {
       if (!aiChatId || !currentUser) return;
 
@@ -649,7 +707,7 @@ Please reach out to a professional right now. You don't have to go through this 
 
       await set(newMessageRef, messageData);
 
-      // Update the chat metadata
+      // Update chat metadata
       const chatUpdate = {
         lastMessage: content.substring(0, 100),
         lastMessageType: type,
@@ -659,6 +717,7 @@ Please reach out to a professional right now. You don't have to go through this 
       await update(ref(db, `users/${currentUser.uid}/chats/mindspace_ai`), chatUpdate);
     }
 
+    // Load conversation history
     async function loadConversationHistory() {
       if (!aiChatId || !currentUser) return;
 
@@ -667,45 +726,50 @@ Please reach out to a professional right now. You don't have to go through this 
       
       try {
         const snapshot = await get(orderedRef);
-        if (snapshot.exists()) {
-          allMessages = Object.entries(snapshot.val())
-            .map(([id, m]) => ({ id, ...m }))
-            .sort((a, b) => a.timestamp - b.timestamp);
+        if (!snapshot.exists()) {
+          isLoadingHistory = false;
+          return;
+        }
 
-          // Load and render messages
-          for (const msg of allMessages) {
-            if (msg.type === 'text' && msg.message) {
-              msg.decrypted = await decrypt(msg.message, aiChatId);
-            }
-            
-            const isUser = msg.senderId === currentUser.uid;
-            addMessage(msg.decrypted || msg.message, isUser ? 'user' : 'ai', msg.timestamp);
+        allMessages = Object.entries(snapshot.val())
+          .map(([id, m]) => ({ id, ...m }))
+          .sort((a, b) => a.timestamp - b.timestamp);
+
+        // Render messages
+        for (const msg of allMessages) {
+          if (msg.type === 'text' && msg.message) {
+            msg.decrypted = await decrypt(msg.message, aiChatId);
           }
-
-          // Build conversation history for AI context
-          conversationHistory = [
-            { role: "system", content: conversationHistory[0].content }
-          ];
           
-          allMessages.forEach(msg => {
-            if (msg.type === 'text' && msg.decrypted) {
-              conversationHistory.push({
-                role: msg.senderId === currentUser.uid ? "user" : "assistant",
-                content: msg.decrypted
-              });
-            }
-          });
+          const isUser = msg.senderId === currentUser.uid;
+          addMessage(msg.decrypted || msg.message, isUser ? 'user' : 'ai', msg.timestamp, msg.id);
+        }
 
-          // Keep only last 30 messages
-          if (conversationHistory.length > 30) {
-            conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
+        // Build AI conversation history
+        conversationHistory = [
+          { role: "system", content: conversationHistory[0].content }
+        ];
+        
+        allMessages.forEach(msg => {
+          if (msg.type === 'text' && msg.decrypted) {
+            conversationHistory.push({
+              role: msg.senderId === currentUser.uid ? "user" : "assistant",
+              content: msg.decrypted
+            });
           }
+        });
+
+        if (conversationHistory.length > 32) {
+          conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
         }
       } catch (error) {
         console.error('Failed to load history:', error);
+      } finally {
+        isLoadingHistory = false;
       }
     }
 
+    // Main send message function
     async function sendMessage() {
       const input = document.getElementById('message-input');
       const msg = input.value.trim();
@@ -724,12 +788,8 @@ Please reach out to a professional right now. You don't have to go through this 
         const reply = await getAIReply(msg);
         removeThinking();
         
-        if (reply.includes('🚨')) {
-          addMessage(reply, 'ai');
-        } else {
-          addMessage(reply, 'ai');
-          await saveMessageToFirebase(reply, 'ai');
-        }
+        addMessage(reply, 'ai');
+        await saveMessageToFirebase(reply, 'ai');
 
         // Update conversation history
         conversationHistory.push({ role: "user", content: msg });
@@ -747,6 +807,7 @@ Please reach out to a professional right now. You don't have to go through this 
 
     window.sendMessage = sendMessage;
 
+    // Media attachment handler
     window.attachFile = async () => {
       const input = document.createElement('input');
       input.type = 'file';
@@ -794,10 +855,12 @@ Please reach out to a professional right now. You don't have to go through this 
 
     // Input handling
     const messageInput = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+    
     messageInput.addEventListener('input', () => {
       messageInput.style.height = 'auto';
       messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
-      document.getElementById('send-btn').disabled = !messageInput.value.trim();
+      sendBtn.disabled = !messageInput.value.trim();
     });
 
     messageInput.addEventListener('keydown', (e) => {
@@ -807,9 +870,7 @@ Please reach out to a professional right now. You don't have to go through this 
       }
     });
 
-    document.getElementById('media-btn').onclick = window.attachFile;
-
-    // Initialize app
+    // Initialize app on auth
     onAuthStateChanged(auth, async (user) => {
       if (!user) {
         location.href = 'login.html';
@@ -823,38 +884,37 @@ Please reach out to a professional right now. You don't have to go through this 
         showAlert("App not fully configured – AI features limited.");
       }
 
-      // Update header with user's avatar if available
-      if (user.photoURL) {
-        document.querySelector('.message-sent .message-avatar').innerHTML = 
-          `<img src="${user.photoURL}" alt="You">`;
-      }
-
-      // Load conversation history
+      // Load history first
       await loadConversationHistory();
 
-      // Setup real-time listener for new messages (from other devices)
+      // Setup real-time listener for cross-device sync
       const messagesRef = ref(db, `chats/${aiChatId}/messages`);
       const orderedRef = query(messagesRef, orderByChild('timestamp'), limitToLast(1));
       
-      onValue(orderedRef, async (snapshot) => {
-        if (!snapshot.exists()) return;
+      messagesListener = onValue(orderedRef, async (snapshot) => {
+        if (!snapshot.exists() || isLoadingHistory) return;
         
         const messages = snapshot.val();
         const latestId = Object.keys(messages)[0];
         const latestMsg = messages[latestId];
         
-        // Only process if it's a new AI message
-        if (latestMsg.senderId === 'mindspace_ai' && 
-            !allMessages.find(m => m.id === latestId)) {
-          
+        // Only process new AI messages from other devices
+        const isAlreadyRendered = allMessages.some(m => m.id === latestId);
+        if (latestMsg.senderId === 'mindspace_ai' && !isAlreadyRendered) {
           if (latestMsg.type === 'text' && latestMsg.message) {
             latestMsg.decrypted = await decrypt(latestMsg.message, aiChatId);
-            addMessage(latestMsg.decrypted, 'ai', latestMsg.timestamp);
+            addMessage(latestMsg.decrypted, 'ai', latestMsg.timestamp, latestId);
+            
+            // Add to conversation history
+            conversationHistory.push({ role: "assistant", content: latestMsg.decrypted });
+            if (conversationHistory.length > 32) {
+              conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
+            }
           }
         }
       });
 
-      // Welcome message if empty chat
+      // Welcome message for new users
       if (allMessages.length === 0) {
         setTimeout(() => {
           addMessage(`Hi there 👋 I’m MindSpace, your friendly mental health companion.\n\nI'm here to listen without judgment and support you however I can — whether you're feeling stressed, anxious, low, or just need someone to talk to.\n\nHow are you feeling today?`, 'ai');
@@ -872,7 +932,7 @@ Please reach out to a professional right now. You don't have to go through this 
       }
     });
 
-    // Cleanup on page unload
+    // Cleanup
     window.addEventListener('beforeunload', () => {
       if (messagesListener) off(messagesListener);
     });
