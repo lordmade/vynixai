@@ -349,12 +349,12 @@
   <div id="suggested-prompts">
     <div id="prompts-container">
       <button class="prompt-btn" onclick="usePrompt('I feel anxious all the time')">Feeling anxious</button>
-      <button class="prompt-btn" onclick="usePrompt('I’ve been feeling really low')">Feeling low</button>
+      <button class="prompt-btn" onclick="usePrompt('I’ve been feeling really low lately')">Feeling low</button>
       <button class="prompt-btn" onclick="usePrompt('I can’t sleep at night')">Can’t sleep</button>
-      <button class="prompt-btn" onclick="usePrompt('I feel overwhelmed')">Feeling overwhelmed</button>
-      <button class="prompt-btn" onclick="usePrompt('Just need someone to talk to')">Need to talk</button>
+      <button class="prompt-btn" onclick="usePrompt('I feel overwhelmed with everything')">Feeling overwhelmed</button>
+      <button class="prompt-btn" onclick="usePrompt('I just need someone to talk to')">Need to talk</button>
       <button class="prompt-btn" onclick="usePrompt('I’m having a panic attack')">Panic attack</button>
-      <button class="prompt-btn" onclick="usePrompt('Not sure how I feel')">Not sure</button>
+      <button class="prompt-btn" onclick="usePrompt('I don’t know how I feel')">Not sure</button>
     </div>
   </div>
 
@@ -363,7 +363,7 @@
     <div class="input-group">
       <textarea id="message-input" placeholder="How are you feeling today? I'm here to listen…" rows="1"></textarea>
     </div>
-    <button class="send-btn material-icons" id="send-btn" disabled>send</button>
+    <button class="send-btn material-icons" id="send-btn" disabled onclick="sendMessage()">send</button>
   </div>
 
   <div id="horizontal-spinner"><div id="spinner-segment"></div></div>
@@ -388,12 +388,28 @@
     const rc = getRemoteConfig(app);
     rc.settings.minimumFetchIntervalMillis = 3600000;
     await fetchAndActivate(rc);
-    const xaiKey = getString(rc, 'xai_api_key');
+    const xaiKey = getString(rc, 'xai_api_key'); // Your xAI API key from console.x.ai
 
     let currentUser = null;
     let aiChatId = null;
     let renderedMessageIds = new Set();
     let conversationStarted = false;
+    let conversationHistory = [{
+      role: "system",
+      content: `You are MindSpace — a warm, empathetic, professional mental health AI companion. You are friendly, non-judgmental, and highly supportive. You use a calm, reassuring tone. You help with stress, anxiety, low mood, loneliness, sleep, self-esteem, relationships, and daily emotional wellbeing. You never diagnose, prescribe medication, or replace a therapist. If someone is in crisis or mentions self-harm/suicide, immediately direct them to emergency services (e.g., in South Africa: SADAG 0800 567 567 or Lifeline 011 422 4242) and say "I'm really concerned about your safety — please call a crisis helpline right now." Always validate feelings, reflect back what you hear, and offer practical coping tips, mindfulness, or gentle questions. Keep responses concise but caring (2–4 short paragraphs max). Use line breaks for readability. End many responses with an open, gentle question to keep the conversation flowing.`
+    }];
+
+    const CRISIS_KEYWORDS = ['suicide', 'kill myself', 'end my life', 'self harm', 'overdose', 'hurt myself'];
+
+    function detectCrisis(message) {
+      return CRISIS_KEYWORDS.some(keyword => message.toLowerCase().includes(keyword));
+    }
+
+    function sanitizeInput(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML.replace(/\n/g, '<br>');
+    }
 
     function hideSuggestedPrompts() {
       const el = document.getElementById('suggested-prompts');
@@ -419,13 +435,13 @@
       if (id) div.dataset.id = id;
 
       const avatar = sender === 'user'
-        ? (currentUser?.photoURL ? `<img src="${currentUser.photoURL}" alt="You" loading="lazy">` : 'Y')
+        ? (currentUser?.photoURL ? `<img src="${currentUser.photoURL}" alt="You" loading="lazy" onerror="this.style.display=\'none\';this.parentElement.innerHTML=\'Y\';">` : 'Y')
         : 'MS';
 
       div.innerHTML = `
         <div class="message-avatar">${avatar}</div>
         <div class="message-bubble">
-          ${content.replace(/\n/g, '<br>')}
+          ${sanitizeInput(content)}
           <div class="message-time">${new Date(timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
         </div>
       `;
@@ -433,10 +449,79 @@
       container.scrollTop = container.scrollHeight;
     }
 
+    async function getAIReply(msg) {
+      if (detectCrisis(msg)) {
+        return `🚨 **I'm really concerned about your safety right now.**\n\nIf you're in immediate danger, please contact emergency services or a crisis helpline immediately:\n- **South Africa**: SADAG 0800 567 567 or Lifeline 011 422 4242\n- **USA**: 988 Suicide & Crisis Lifeline\n- **UK**: Samaritans 116 123\n\nPlease reach out to a professional right now. You don't have to go through this alone.`;
+      }
+
+      try {
+        const res = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${xaiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "grok-4-1-fast-non-reasoning",
+            messages: [...conversationHistory, { role: "user", content: msg }],
+            temperature: 0.8,
+            max_tokens: 500
+          })
+        });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        const data = await res.json();
+        const reply = data.choices?.[0]?.message?.content?.trim();
+        return reply || "I'm here with you. Could you tell me a bit more about how you're feeling?";
+      } catch (error) {
+        console.error('xAI API error:', error);
+        return "I'm having trouble connecting right now. Please try again in a moment — I'm still here for you.";
+      }
+    }
+
+    async function saveMessageToFirebase(content, sender, type = 'text') {
+      if (!aiChatId || !currentUser) return null;
+      const newRef = push(ref(db, `chats/${aiChatId}/messages`));
+      const timestamp = Date.now();
+      await set(newRef, {
+        senderId: sender === 'user' ? currentUser.uid : 'mindspace_ai',
+        message: type === 'text' ? btoa(encodeURIComponent(content)) : content, // Simple base64 encoding for demo
+        type,
+        timestamp,
+        status: 'sent'
+      });
+      return newRef.key;
+    }
+
+    async function loadConversationHistory() {
+      if (!aiChatId) return;
+      const snap = await get(query(ref(db, `chats/${aiChatId}/messages`), orderByChild('timestamp'), limitToLast(50)));
+      renderedMessageIds.clear();
+      if (snap.exists()) {
+        const messages = Object.entries(snap.val())
+          .map(([id, m]) => ({ id, ...m }))
+          .sort((a, b) => a.timestamp - b.timestamp);
+        for (const msg of messages) {
+          const content = msg.type === 'text' ? decodeURIComponent(atob(msg.message)) : msg.message;
+          addMessage(content, msg.senderId === currentUser.uid ? 'user' : 'ai', msg.timestamp, msg.id);
+          if (msg.type === 'text' && content !== '…') {
+            conversationHistory.push({
+              role: msg.senderId === currentUser.uid ? "user" : "assistant",
+              content
+            });
+          }
+        }
+        if (conversationHistory.length > 32) {
+          conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
+        }
+        hideSuggestedPrompts();
+        conversationStarted = true;
+      }
+    }
+
     async function sendMessage() {
       const input = document.getElementById('message-input');
       const msg = input.value.trim();
-      if (!msg || !currentUser) return;
+      if (!msg || !aiChatId) return;
 
       input.value = '';
       input.style.height = 'auto';
@@ -448,14 +533,25 @@
       }
 
       addMessage(msg, 'user');
-      document.getElementById('horizontal-spinner').classList.add('active');
+      const userMsgId = await saveMessageToFirebase(msg, 'user');
 
-      // Simulate AI reply (replace with real xAI call when ready)
-      setTimeout(() => {
-        document.getElementById('horizontal-spinner').classList.remove('active');
-        addMessage("I'm really listening. Thank you for sharing that with me. How does that make you feel right now?", 'ai');
-      }, 1500);
+      const spinner = document.getElementById('horizontal-spinner');
+      spinner.classList.add('active');
+
+      const reply = await getAIReply(msg);
+      spinner.classList.remove('active');
+
+      const aiMsgId = await saveMessageToFirebase(reply, 'ai');
+      addMessage(reply, 'ai', Date.now(), aiMsgId);
+
+      conversationHistory.push({ role: "user", content: msg }, { role: "assistant", content: reply });
+      if (conversationHistory.length > 32) {
+        conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
+      }
+
+      document.getElementById('send-btn').disabled = false;
     }
+    window.sendMessage = sendMessage;
 
     // Auto-resize input
     const textarea = document.getElementById('message-input');
@@ -477,21 +573,33 @@
     document.addEventListener('selectstart', e => e.preventDefault());
 
     // Auth & init
-    onAuthStateChanged(auth, user => {
+    onAuthStateChanged(auth, async (user) => {
       if (!user) {
         location.href = 'login.html';
         return;
       }
       currentUser = user;
+      aiChatId = [user.uid, 'mindspace_ai'].sort().join('_');
 
-      // Simulate chat ready
-      setTimeout(() => {
-        document.getElementById('horizontal-spinner').classList.remove('active');
-      }, 1000);
+      const chatRef = ref(db, `chats/${aiChatId}`);
+      const chatSnap = await get(chatRef);
+      if (!chatSnap.exists()) {
+        await set(chatRef, {
+          participants: { [user.uid]: true, mindspace_ai: true },
+          createdAt: Date.now(),
+          type: 'ai_chat'
+        });
+      }
+
+      await loadConversationHistory();
+
+      // Welcome message if no history
+      if (renderedMessageIds.size === 0) {
+        setTimeout(() => {
+          addMessage(`Hi there 👋 I'm MindSpace, your friendly mental health companion.\n\nI'm here to listen without judgment and support you however I can — whether you're feeling stressed, anxious, low, or just need someone to talk to.\n\nHow are you feeling today?`, 'ai');
+        }, 500);
+      }
     });
-
-    // Click send button
-    document.getElementById('send-btn').addEventListener('click', sendMessage);
   </script>
 </body>
 </html>
