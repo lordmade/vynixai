@@ -17,6 +17,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://js.yoco.com/sdk/v1/yoco-sdk-web.js"></script>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <style>
     :root {
@@ -2367,18 +2368,47 @@
     });
     
     /* ---------- GET VERIFIED BADGE ---------- */
-    document.getElementById('get-verified-item').onclick = async () => {
+   document.getElementById('get-verified-item').onclick = async () => {
   document.getElementById('verified-modal').classList.add('active');
   
+  const container = document.getElementById('yoco-button-container');
+  
+  // Show loading state
+  container.innerHTML = '<p style="text-align:center; padding:20px; color: var(--text2);">Loading payment...</p>';
+
   try {
+    // Check if Remote Config is initialized
+    if (!remoteConfig) {
+      container.innerHTML = '<p style="text-align:center; padding:20px; color: #ef4444;">Error: Remote Config not initialized</p>';
+      return;
+    }
+
     // Fetch config from Firebase Remote Config
     await fetchAndActivate(remoteConfig);
     const yocoPublicKey = getString(remoteConfig, 'yoco_public_key');
     const badgePrice = getNumber(remoteConfig, 'verified_badge_price') || 7900;
     
+    console.log('Fetched Yoco key:', yocoPublicKey ? 'Key found' : 'Key missing'); // Debug log
+    
+    // Validate key
     if (!yocoPublicKey || yocoPublicKey === 'pk_test_yourkeyhere') {
-      toast('Payment service not configured. Please contact support.');
-      document.getElementById('verified-modal').classList.remove('active');
+      container.innerHTML = `
+        <div style="color: var(--text2); text-align: center; padding: 20px;">
+          <p>Payment service not configured.</p>
+          <p style="font-size: 12px; margin-top: 8px;">Please contact support.</p>
+        </div>
+      `;
+      return; // Don't close modal, let user read the message
+    }
+    
+    // Check if YocoSDK is available
+    if (typeof YocoSDK === 'undefined') {
+      container.innerHTML = `
+        <div style="color: var(--text2); text-align: center; padding: 20px;">
+          <p>Payment SDK failed to load.</p>
+          <p style="font-size: 12px; margin-top: 8px;">Please check your connection.</p>
+        </div>
+      `;
       return;
     }
     
@@ -2390,6 +2420,8 @@
       description: 'Vynix Verified Badge',
       metadata: { userId: uid, product: 'verified_badge' },
       onSuccess: async (payload) => {
+        console.log('Payment success:', payload);
+        
         // Update user verification status
         await set(ref(db, `users/${uid}/verified`), true);
         await set(ref(db, `users/${uid}/verifiedAt`), serverTimestamp());
@@ -2397,15 +2429,48 @@
         toast('Payment successful! You are now verified.');
         document.getElementById('verified-modal').classList.remove('active');
         
-        // Refresh UI
+        // Refresh UI immediately
         loadChats();
         loadStatus();
       },
       onError: (error) => {
         console.error('Payment failed:', error);
         toast('Payment failed. Please try again.');
+        
+        // Show error in modal with retry button
+        container.innerHTML = `
+          <div style="color: #ef4444; text-align: center; padding: 20px;">
+            <p>Payment failed</p>
+            <p style="font-size: 12px; margin-top: 8px;">${error.message || 'Please try again'}</p>
+            <button onclick="document.getElementById('get-verified-item').onclick()" 
+                    style="margin-top: 12px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 999px; cursor: pointer;">
+              Try Again
+            </button>
+          </div>
+        `;
       }
     });
+    
+    // Clear loading text and add button
+    container.innerHTML = '';
+    container.appendChild(button);
+    
+  } catch (error) {
+    console.error('Failed to load payment config:', error);
+    container.innerHTML = `
+      <div style="color: #ef4444; text-align: center; padding: 20px;">
+        <p>Failed to load configuration</p>
+        <p style="font-size: 12px; margin-top: 8px;">${error.message}</p>
+      </div>
+    `;
+  }
+};
+
+// Clean up on cancel
+document.getElementById('verified-cancel').onclick = () => {
+  document.getElementById('verified-modal').classList.remove('active');
+  document.getElementById('yoco-button-container').innerHTML = '';
+};
     
     // Clear and add button
     const container = document.getElementById('yoco-button-container');
@@ -2430,20 +2495,34 @@ document.getElementById('verified-cancel').onclick = () => {
     };
     
     /* ---------- auth ---------- */
-   onAuthStateChanged(auth, async (user) => {
+onAuthStateChanged(auth, async (user) => {
   if (!user) return (location.href = 'login.html');
   uid = user.uid;
   
-  // Initialize Remote Config
+  // Initialize Remote Config FIRST
   remoteConfig = getRemoteConfig(app);
   remoteConfig.settings = {
     minimumFetchIntervalMillis: 3600000, // Cache for 1 hour
   };
   remoteConfig.defaultConfig = {
-    'yoco_public_key': 'pk_test_yourkeyhere', // Fallback key
-    'verified_badge_price': 7900 // Default R79.00
+    'yoco_public_key': '', // Empty fallback - forces error if not set in console
+    'verified_badge_price': 7900
   };
   
+  // CRITICAL: Fetch and activate Remote Config values from Firebase
+  try {
+    await fetchAndActivate(remoteConfig);
+    console.log('✅ Remote Config activated successfully');
+    
+    // Optional: Log the fetched values for debugging
+    const fetchedKey = getString(remoteConfig, 'yoco_public_key');
+    console.log('Yoco Key fetched:', fetchedKey ? 'Key found' : 'Key missing');
+  } catch (error) {
+    console.warn('⚠️ Remote Config fetch failed:', error);
+    // Continue with default values - don't block the app
+  }
+  
+  // FIXED: Removed space in URL
   document.getElementById('me-avatar').src = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=ff2a6d&color=fff`;
   document.getElementById('me-avatar').onclick = () => (location.href = 'profile.html');
  
