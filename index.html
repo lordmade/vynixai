@@ -18,7 +18,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://js.yoco.com/sdk/v1/yoco-sdk-web.js"></script>
+  
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <style>
     :root {
@@ -2378,109 +2378,127 @@
     });
     
     /* ---------- GET VERIFIED BADGE ---------- */
-    document.getElementById('get-verified-item').onclick = async () => {
-      document.getElementById('verified-modal').classList.add('active');
+    /* ---------- GET VERIFIED BADGE (Popup Version) ---------- */
+async function startYocoVerifiedBadgePayment() {
+  const container = document.getElementById('yoco-button-container');
+  
+  // Show loading state
+  container.innerHTML = '<p style="text-align:center; padding:20px; color: var(--text2);">Loading payment...</p>';
+
+  try {
+    // CRITICAL: Check if Remote Config is initialized first
+    if (!remoteConfig) {
+      container.innerHTML = '<p style="text-align:center; padding:20px; color: #ef4444;">Error: Remote Config not initialized</p>';
+      return;
+    }
+
+    // Fetch config from Firebase Remote Config
+    await fetchAndActivate(remoteConfig);
+    const yocoPublicKey = getString(remoteConfig, 'yoco_public_key');
+    const badgePrice = getNumber(remoteConfig, 'verified_badge_price') || 7900;
+    
+    console.log('Fetched Yoco key:', yocoPublicKey ? 'Key found' : 'Key missing');
+    
+    // Validate key - check for placeholder or empty values
+    if (!yocoPublicKey || yocoPublicKey === 'pk_test_yourkeyhere' || yocoPublicKey.includes('yourkeyhere')) {
+      container.innerHTML = `
+        <div style="color: var(--text2); text-align: center; padding: 20px;">
+          <p>Payment service not configured.</p>
+          <p style="font-size: 12px; margin-top: 8px;">Please contact support.</p>
+        </div>
+      `;
+      return;
+    }
+    
+    // Check if YocoSDK is available
+    if (typeof YocoSDK === 'undefined') {
+      container.innerHTML = `
+        <div style="color: var(--text2); text-align: center; padding: 20px;">
+          <p>Payment SDK failed to load.</p>
+          <p style="font-size: 12px; margin-top: 8px;">Please check your connection.</p>
+        </div>
+      `;
+      return;
+    }
+    
+    // Initialize Yoco with fetched key
+    const yoco = new YocoSDK({ publicKey: yocoPublicKey });
+    
+    // Show Yoco Popup (like ai.html)
+    const result = await yoco.showPopup({
+      amountInCents: badgePrice,
+      currency: 'ZAR',
+      name: 'Vynix Verified Badge',
+      description: 'Verified Badge - One-time purchase',
+      metadata: { 
+        userId: uid, 
+        product: 'verified_badge',
+        type: 'one_time'
+      },
+      callbackUrl: location.href
+    });
+    
+    // Handle payment result
+    if (result?.paymentResult?.status === 'successful') {
+      console.log('Payment success:', result);
       
-      const container = document.getElementById('yoco-button-container');
+      // Update user verification status
+      await set(ref(db, `users/${uid}/verified`), true);
+      await set(ref(db, `users/${uid}/verifiedAt`), serverTimestamp());
       
-      // Show loading state
-      container.innerHTML = '<p style="text-align:center; padding:20px; color: var(--text2);">Loading payment...</p>';
-
-      try {
-        // CRITICAL: Check if Remote Config is initialized first
-        if (!remoteConfig) {
-          container.innerHTML = '<p style="text-align:center; padding:20px; color: #ef4444;">Error: Remote Config not initialized</p>';
-          return;
-        }
-
-        // Fetch config from Firebase Remote Config
-        await fetchAndActivate(remoteConfig);
-        const yocoPublicKey = getString(remoteConfig, 'yoco_public_key');
-        const badgePrice = getNumber(remoteConfig, 'verified_badge_price') || 7900;
-        
-        console.log('Fetched Yoco key:', yocoPublicKey ? 'Key found' : 'Key missing'); // Debug log
-        
-        // Validate key - check for placeholder or empty values
-        if (!yocoPublicKey || yocoPublicKey === 'pk_test_yourkeyhere' || yocoPublicKey.includes('yourkeyhere')) {
-          container.innerHTML = `
-            <div style="color: var(--text2); text-align: center; padding: 20px;">
-              <p>Payment service not configured.</p>
-              <p style="font-size: 12px; margin-top: 8px;">Please contact support.</p>
-            </div>
-          `;
-          return; // Don't close modal, let user read the message
-        }
-        
-        // Check if YocoSDK is available
-        if (typeof YocoSDK === 'undefined') {
-          container.innerHTML = `
-            <div style="color: var(--text2); text-align: center; padding: 20px;">
-              <p>Payment SDK failed to load.</p>
-              <p style="font-size: 12px; margin-top: 8px;">Please check your connection.</p>
-            </div>
-          `;
-          return;
-        }
-        
-        // Initialize Yoco with fetched key
-        const yoco = new YocoSDK({ publicKey: yocoPublicKey });
-        const button = yoco.createCheckoutButton({
-          amount: badgePrice,
-          currency: 'ZAR',
-          description: 'Vynix Verified Badge',
-          metadata: { userId: uid, product: 'verified_badge' },
-          onSuccess: async (payload) => {
-            console.log('Payment success:', payload);
-            
-            // Update user verification status
-            await set(ref(db, `users/${uid}/verified`), true);
-            await set(ref(db, `users/${uid}/verifiedAt`), serverTimestamp());
-            
-            toast('Payment successful! You are now verified.');
-            document.getElementById('verified-modal').classList.remove('active');
-            
-            // Refresh UI immediately
-            loadChats();
-            loadStatus();
-          },
-          onError: (error) => {
-            console.error('Payment failed:', error);
-            toast('Payment failed. Please try again.');
-            
-            // Show error in modal with retry button
-            container.innerHTML = `
-              <div style="color: #ef4444; text-align: center; padding: 20px;">
-                <p>Payment failed</p>
-                <p style="font-size: 12px; margin-top: 8px;">${error.message || 'Please try again'}</p>
-                <button onclick="document.getElementById('get-verified-item').onclick()" 
-                        style="margin-top: 12px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 999px; cursor: pointer;">
-                  Try Again
-                </button>
-              </div>
-            `;
-          }
-        });
-        
-        // Clear loading text and add button
-        container.innerHTML = '';
-        container.appendChild(button);
-        
-      } catch (error) {
-        console.error('Failed to load payment config:', error);
-        container.innerHTML = `
-          <div style="color: #ef4444; text-align: center; padding: 20px;">
-            <p>Failed to load configuration</p>
-            <p style="font-size: 12px; margin-top: 8px;">${error.message}</p>
-          </div>
-        `;
-      }
-    };
-
-    // FIXED: Clean up on cancel
-    document.getElementById('verified-cancel').onclick = () => {
+      toast('Payment successful! You are now verified.');
       document.getElementById('verified-modal').classList.remove('active');
       document.getElementById('yoco-button-container').innerHTML = '';
-    };
+      
+      // Refresh UI immediately
+      loadChats();
+      loadStatus();
+    } else if (result?.error) {
+      console.error('Payment failed:', result.error);
+      toast('Payment failed. Please try again.');
+      
+      // Show error in modal with retry button
+      container.innerHTML = `
+        <div style="color: #ef4444; text-align: center; padding: 20px;">
+          <p>Payment failed</p>
+          <p style="font-size: 12px; margin-top: 8px;">${result.error.message || 'Please try again'}</p>
+          <button onclick="document.getElementById('get-verified-item').onclick()" 
+                  style="margin-top: 12px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 999px; cursor: pointer;">
+            Try Again
+          </button>
+        </div>
+      `;
+    } else {
+      // User cancelled or other non-error case
+      document.getElementById('verified-modal').classList.remove('active');
+      document.getElementById('yoco-button-container').innerHTML = '';
+    }
+    
+  } catch (error) {
+    console.error('Payment error:', error);
+    container.innerHTML = `
+      <div style="color: #ef4444; text-align: center; padding: 20px;">
+        <p>Payment error occurred</p>
+        <p style="font-size: 12px; margin-top: 8px;">${error.message}</p>
+      </div>
+    `;
+  }
+}
+
+document.getElementById('get-verified-item').onclick = async () => {
+  document.getElementById('verified-modal').classList.add('active');
+  document.getElementById('yoco-button-container').innerHTML = '';
+  
+  // Start payment flow
+  await startYocoVerifiedBadgePayment();
+};
+
+// Clean up on cancel
+document.getElementById('verified-cancel').onclick = () => {
+  document.getElementById('verified-modal').classList.remove('active');
+  document.getElementById('yoco-button-container').innerHTML = '';
+};
+   
     
     /* ---------- auth ---------- */
     onAuthStateChanged(auth, async (user) => {
