@@ -29,8 +29,8 @@
     /* Chat Tab */
     .chat-header { position:fixed; top:64px; left:0; right:0; height:64px; background:var(--header-bg); border-bottom:1px solid var(--border); display:flex; align-items:center; padding:0 16px; z-index:99; box-shadow:var(--shadow-sm); }
     .header-left { display:flex; align-items:center; gap:16px; flex:1; }
-    .back-btn, .voice-btn { background:none; border:none; color:var(--text-primary); font-size:28px; cursor:pointer; padding:8px; border-radius:50%; transition:background .2s; }
-    .back-btn:hover, .voice-btn:hover { background:rgba(255,42,109,.1); }
+    .back-btn { background:none; border:none; color:var(--text-primary); font-size:28px; cursor:pointer; padding:8px; border-radius:50%; transition:background .2s; }
+    .back-btn:hover { background:rgba(255,42,109,.1); }
     .profile-pic-header { width:40px; height:40px; border-radius:50%; background:var(--accent); color:white; font-weight:bold; font-size:18px; display:flex; align-items:center; justify-content:center; }
     .status-dot-header { position:absolute; bottom:2px; right:2px; width:12px; height:12px; background:var(--status-online); border:2px solid var(--header-bg); border-radius:50%; }
 
@@ -63,7 +63,14 @@
 
     /* Create Tab */
     .create-content { position:fixed; top:64px; left:0; right:0; bottom:100px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; overflow-y:auto; }
-    .generated-image { max-width:100%; max-height:80vh; border-radius:16px; box-shadow:var(--shadow-md); margin:20px 0; }
+    .generated-image { max-width:100%; max-height:75vh; border-radius:16px; box-shadow:var(--shadow-md); margin:20px 0; }
+    .download-btn {
+      background:var(--accent); color:white; border:none; padding:12px 24px;
+      border-radius:50px; font-weight:700; cursor:pointer; box-shadow:var(--glow);
+      transition:all .2s; margin-top:10px;
+    }
+    .download-btn:hover { transform:scale(1.05); }
+
     .create-input-bar { position:fixed; bottom:0; left:0; right:0; background:var(--card-bg); border-top:1px solid var(--border); padding:12px 20px; display:flex; gap:12px; z-index:10; box-shadow:var(--shadow-sm); max-width:600px; margin:0 auto; left:50%; transform:translateX(-50%); width:100%; }
     .create-textarea { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:24px; padding:12px 16px; font-size:16px; resize:none; outline:none; min-height:48px; max-height:120px; }
     .generate-btn { background:var(--accent); color:white; border:none; border-radius:50px; padding:12px 24px; font-weight:700; cursor:pointer; box-shadow:var(--glow); transition:all .2s; }
@@ -133,6 +140,9 @@
         <div class="thinking-dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
       </div>
       <img id="generated-image" class="generated-image hidden" />
+      <button id="download-btn" class="download-btn hidden" onclick="downloadImage()">
+        <span class="material-icons">download</span> Download Image
+      </button>
     </div>
     <div class="create-input-bar">
       <textarea id="image-prompt" class="create-textarea" placeholder="Describe your image..."></textarea>
@@ -154,7 +164,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, get, set, push } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, get, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
     import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js';
 
     const app = initializeApp({
@@ -174,25 +184,24 @@
     let currentUser = null;
     let isVerified = false;
     let monthlyTokens = 15000;
-    let tokenResetDate = null;
-    let thinkingBubble = null;
+    let currentImageUrl = '';
 
     // Token System
     async function loadTokens() {
       if (!currentUser) return;
       const snap = await get(ref(db, `users/${currentUser.uid}`));
-      const data = snap.val();
-      isVerified = data?.verified || false;
-      tokenResetDate = data?.tokenReset || Date.now();
+      const data = snap.val() || {};
+      isVerified = data.verified || false;
 
       const now = Date.now();
       const oneMonth = 30 * 24 * 60 * 60 * 1000;
-      if (now - tokenResetDate > oneMonth) {
+      const lastReset = data.tokenReset || 0;
+
+      if (now - lastReset > oneMonth || !data.tokens) {
         monthlyTokens = 15000;
-        await set(ref(db, `users/${currentUser.uid}/tokens`), { used: 0, reset: now });
-        await set(ref(db, `users/${currentUser.uid}/tokenReset`), now);
+        await set(ref(db, `users/${currentUser.uid}`), { ...data, tokens: { used: 0 }, tokenReset: now });
       } else {
-        monthlyTokens = 15000 - (data?.tokens?.used || 0);
+        monthlyTokens = 15000 - (data.tokens?.used || 0);
       }
 
       if (isVerified) monthlyTokens = Infinity;
@@ -206,7 +215,8 @@
         return false;
       }
       monthlyTokens -= amount;
-      await set(ref(db, `users/${currentUser.uid}/tokens`), { used: 15000 - monthlyTokens, reset: tokenResetDate });
+      const used = 15000 - monthlyTokens;
+      await set(ref(db, `users/${currentUser.uid}/tokens`), { used });
       document.getElementById('user-status').textContent = `Tokens: ${monthlyTokens.toLocaleString()}`;
       return true;
     }
@@ -232,17 +242,17 @@
       div.innerHTML = `<div class="message-avatar">${sender === 'user' ? 'Y' : 'AI'}</div>${bubble}`;
       container.appendChild(div);
       container.scrollTop = container.scrollHeight;
-      if (isThinking) thinkingBubble = div;
       return div;
     }
 
+    let thinkingBubble = null;
     async function sendMessage() {
       const input = document.getElementById('message-input');
       const msg = input.value.trim();
       if (!msg || !(await deductTokens(50))) return;
       addMessage(msg, 'user');
       input.value = ''; document.getElementById('send-btn').disabled = true;
-      addMessage('', 'ai', true);
+      thinkingBubble = addMessage('', 'ai', true);
 
       const reply = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST",
@@ -250,82 +260,63 @@
         body: JSON.stringify({ model: "grok-4-1-fast-non-reasoning", messages: [{ role: "user", content: msg }], temperature: 0.8 })
       }).then(r => r.json()).then(d => d.choices?.[0]?.message?.content || "Thinking...");
 
-      if (thinkingBubble) thinkingBubble.remove();
+      thinkingBubble.remove();
       addMessage(reply, 'ai');
       document.getElementById('send-btn').disabled = false;
     }
     window.sendMessage = sendMessage;
 
-    // Create Tab
+    // Create Tab + Download Button
     async function generateImage() {
       const prompt = document.getElementById('image-prompt').value.trim();
       if (!prompt || !(await deductTokens(100))) return;
+
       document.getElementById('thinking-animation').classList.remove('hidden');
       document.getElementById('generated-image').classList.add('hidden');
+      document.getElementById('download-btn').classList.add('hidden');
       document.getElementById('generate-btn').disabled = true;
 
-      const url = await fetch("https://api.x.ai/v1/images/generations", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "grok-2-image-1212", prompt, n: 1, response_format: "url" })
-      }).then(r => r.json()).then(d => d.data[0].url);
+      try {
+        const res = await fetch("https://api.x.ai/v1/images/generations", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${xaiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "grok-2-image-1212", prompt, n: 1, response_format: "url" })
+        });
+        const data = await res.json();
+        currentImageUrl = data.data[0].url;
 
-      document.getElementById('generated-image').src = url;
-      document.getElementById('generated-image').classList.remove('hidden');
+        const img = document.getElementById('generated-image');
+        img.src = currentImageUrl;
+        img.classList.remove('hidden');
+        document.getElementById('download-btn').classList.remove('hidden');
+      } catch (e) {
+        alert("Failed to generate image");
+      }
+
       document.getElementById('thinking-animation').classList.add('hidden');
       document.getElementById('generate-btn').disabled = false;
       document.getElementById('image-prompt').value = '';
     }
 
-    // Voice Tab (Basic but beautiful)
-    let recognition = null;
-    let isRecording = false;
-    document.getElementById('mic-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('mic-btn');
-      if (!isRecording) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-          recognition.continuous = true;
-          recognition.interimResults = true;
-          recognition.onresult = e => {
-            const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
-            document.getElementById('voice-status').textContent = transcript || "Listening...";
-          };
-          recognition.start();
-          btn.classList.add('active');
-          document.getElementById('voice-visualization').innerHTML = '';
-          for (let i = 0; i < 20; i++) {
-            const bar = document.createElement('div');
-            bar.className = 'sound-wave';
-            bar.style.animationDelay = `${i * 0.05}s`;
-            document.getElementById('voice-visualization').appendChild(bar);
-          }
-          document.getElementById('voice-status').textContent = "Listening...";
-          isRecording = true;
-        } catch (e) { alert("Microphone access denied"); }
-      } else {
-        recognition?.stop();
-        btn.classList.remove('active');
-        document.getElementById('voice-visualization').innerHTML = '<div style="color:var(--text-secondary);">Tap to speak</div>';
-        document.getElementById('voice-status').textContent = "Ready";
-        isRecording = false;
-      }
-    });
-
-    // Input handling
-    document.getElementById('message-input').addEventListener('input', function() {
-      this.style.height = 'auto';
-      this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-      document.getElementById('send-btn').disabled = !this.value.trim();
-    });
-    document.getElementById('message-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-    });
+    function downloadImage() {
+      if (!currentImageUrl) return;
+      const a = document.createElement('a');
+      a.href = currentImageUrl;
+      a.download = `vynix-ai-${Date.now()}.png`;
+      a.click();
+    }
+    window.downloadImage = downloadImage;
 
     document.getElementById('generate-btn').addEventListener('click', generateImage);
     document.getElementById('image-prompt').addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateImage(); }
+    });
+
+    // Input auto-resize
+    document.getElementById('message-input').addEventListener('input', function() {
+      this.style.height = 'auto';
+      this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+      document.getElementById('send-btn').disabled = !this.value.trim();
     });
 
     // Auth
@@ -333,7 +324,7 @@
       if (!user) { location.href = 'login.html'; return; }
       currentUser = user;
       await loadTokens();
-      addMessage("Hello! You have " + (isVerified ? "unlimited" : monthlyTokens.toLocaleString()) + " tokens.", 'ai');
+      addMessage("Hello! You have " + (isVerified ? "unlimited" : monthlyTokens.toLocaleString()) + " tokens this month.", 'ai');
     });
 
     function hideSuggestedPrompts() { document.getElementById('suggested-prompts').classList.add('hidden'); }
