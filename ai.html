@@ -348,7 +348,7 @@
       border-radius: 20px 20px 0 0;
       z-index: 200;
       transition: transform 0.3s ease;
-      max-height: 70vh;
+      max-height: 60vh;
       box-shadow: var(--shadow-md);
     }
     .voice-bottom-sheet.hidden {
@@ -427,33 +427,6 @@
       line-height: 1.5;
       color: var(--text-primary);
     }
-    .voice-controls {
-      display: flex;
-      justify-content: center;
-      gap: 16px;
-      padding-top: 12px;
-    }
-    .voice-control-btn {
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 50%;
-      width: 56px;
-      height: 56px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      font-size: 28px;
-      box-shadow: var(--glow);
-      transition: transform 0.2s;
-    }
-    .voice-control-btn:hover {
-      transform: scale(1.05);
-    }
-    .voice-control-btn.stop {
-      background: #dc2626;
-    }
   </style>
 </head>
 <body class="light">
@@ -510,11 +483,8 @@
       <div class="voice-visualization" id="voice-visualization">
         <div style="color: var(--text-secondary);">Ready to chat</div>
       </div>
-      <div class="voice-status" id="voice-status">Tap the microphone to start speaking</div>
+      <div class="voice-status" id="voice-status">Starting conversation...</div>
       <div class="voice-transcript" id="voice-transcript"></div>
-      <div class="voice-controls">
-        <button class="voice-control-btn material-icons" id="mic-btn">mic</button>
-      </div>
     </div>
   </div>
 
@@ -553,12 +523,12 @@
       content: `You are Vynix AI — a helpful, friendly, and knowledgeable general-purpose AI assistant. You can help with writing, coding, explanations, analysis, creative ideas, study help, and more. Be concise but thorough, and always maintain a helpful, professional tone.`
     }];
 
-    // Voice-related variables
+    // Voice state management
+    let voiceState = 'idle'; // 'idle', 'listening', 'processing', 'speaking'
     let recognition = null;
     let isRecording = false;
-    let isVoiceMode = false;
-    let mediaStream = null;
-    let audioContext = null;
+    let audioStream = null;
+    let currentAudio = null;
 
     // Token management
     const DAILY_TOKEN_LIMIT = 15000;
@@ -765,235 +735,6 @@
     }
     window.sendMessage = sendMessage;
 
-    // Voice functionality
-    function initSpeechRecognition() {
-      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
-        
-        recognition.onstart = () => {
-          isRecording = true;
-          updateVoiceStatus('Listening...');
-          startVisualization();
-          document.getElementById('mic-btn').classList.add('stop');
-          document.getElementById('mic-btn').textContent = 'stop';
-        };
-        
-        recognition.onresult = (event) => {
-          const transcript = Array.from(event.results)
-            .map(result => result[0].transcript)
-            .join('');
-          
-          document.getElementById('voice-transcript').textContent = transcript;
-          
-          if (event.results[0].isFinal) {
-            handleVoiceInput(transcript);
-          }
-        };
-        
-        recognition.onend = () => {
-          isRecording = false;
-          stopVisualization();
-          document.getElementById('mic-btn').classList.remove('stop');
-          document.getElementById('mic-btn').textContent = 'mic';
-        };
-        
-        recognition.onerror = (event) => {
-          console.error('Speech recognition error:', event.error);
-          updateVoiceStatus('Error: ' + event.error);
-          isRecording = false;
-          stopVisualization();
-          document.getElementById('mic-btn').classList.remove('stop');
-          document.getElementById('mic-btn').textContent = 'mic';
-        };
-        
-        return recognition;
-      } else {
-        alert('Voice recognition is not supported in your browser.');
-        return null;
-      }
-    }
-
-    async function toggleVoiceMode() {
-      const sheet = document.getElementById('voice-bottom-sheet');
-      const voiceBtn = document.getElementById('voice-btn');
-      const isHidden = sheet.classList.contains('hidden');
-      
-      if (isHidden) {
-        // Open sheet
-        sheet.classList.remove('hidden');
-        voiceBtn.classList.add('active');
-        isVoiceMode = true;
-        
-        // Request microphone permission
-        try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          audioContext = new (window.AudioContext || window.webkitAudioContext)();
-          
-          if (!recognition) {
-            recognition = initSpeechRecognition();
-          }
-          
-          // AI greeting on first open
-          if (!conversationStarted && renderedMessageIds.size === 0) {
-            const greeting = "Hello! I'm Vynix AI. How can I help you today?";
-            updateVoiceStatus('AI is speaking...');
-            await speakWithElevenLabs(greeting);
-            addMessage(greeting, 'ai');
-            conversationStarted = true;
-          }
-          
-          updateVoiceStatus('Tap microphone to start speaking');
-        } catch (err) {
-          console.error('Microphone access denied:', err);
-          alert('Microphone access is required for voice chat. Please check your browser permissions.');
-          closeVoiceMode();
-        }
-      } else {
-        closeVoiceMode();
-      }
-    }
-
-    function closeVoiceMode() {
-      const sheet = document.getElementById('voice-bottom-sheet');
-      const voiceBtn = document.getElementById('voice-btn');
-      sheet.classList.add('hidden');
-      voiceBtn.classList.remove('active');
-      isVoiceMode = false;
-      
-      if (recognition && isRecording) {
-        recognition.stop();
-      }
-      
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(track => track.stop());
-        mediaStream = null;
-      }
-      
-      if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-      }
-      
-      stopVisualization();
-      document.getElementById('voice-transcript').textContent = '';
-      updateVoiceStatus('Tap microphone to start speaking');
-    }
-
-    async function handleVoiceInput(transcript) {
-      updateVoiceStatus('Processing...');
-      
-      // Add user message to chat
-      addMessage(transcript, 'user');
-      await saveMessageToFirebase(transcript, 'user');
-      hideSuggestedPrompts();
-      
-      // Estimate tokens
-      const estimatedTokens = Math.ceil(transcript.length / 4) + 50;
-      if (!(await deductTokens(estimatedTokens))) {
-        updateVoiceStatus('Insufficient tokens');
-        return;
-      }
-      
-      // Get AI response
-      const reply = await getAIReply(transcript);
-      
-      // Update status and speak
-      updateVoiceStatus('AI is speaking...');
-      addMessage(reply, 'ai');
-      await saveMessageToFirebase(reply, 'ai');
-      await speakWithElevenLabs(reply);
-      
-      // Update conversation history
-      conversationHistory.push({ role: "user", content: transcript }, { role: "assistant", content: reply });
-      if (conversationHistory.length > 32) {
-        conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
-      }
-      
-      updateVoiceStatus('Tap microphone to speak again');
-    }
-
-    async function speakWithElevenLabs(text) {
-      if (!elevenLabsKey || !elevenLabsVoiceId) {
-        updateVoiceStatus('Eleven Labs not configured, using system voice');
-        return speakWithSystemVoice(text);
-      }
-      
-      try {
-        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}`, {
-          method: 'POST',
-          headers: {
-            'xi-api-key': elevenLabsKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            text: text,
-            model_id: 'eleven_monolingual_v1',
-            voice_settings: {
-              stability: 0.5,
-              similarity_boost: 0.75,
-              style: 0.0,
-              use_speaker_boost: true
-            }
-          })
-        });
-        
-        if (!response.ok) throw new Error(`ElevenLabs API error: ${response.status}`);
-        
-        const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        
-        return new Promise((resolve) => {
-          const audio = new Audio(audioUrl);
-          audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            resolve();
-          };
-          audio.play().catch(err => {
-            console.error('Audio playback error:', err);
-            speakWithSystemVoice(text).then(resolve);
-          });
-        });
-      } catch (error) {
-        console.error('Eleven Labs error:', error);
-        updateVoiceStatus('Using system voice');
-        return speakWithSystemVoice(text);
-      }
-    }
-
-    function speakWithSystemVoice(text) {
-      return new Promise((resolve) => {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.onend = resolve;
-        utterance.rate = 0.9;
-        utterance.pitch = 1.1;
-        speechSynthesis.speak(utterance);
-      });
-    }
-
-    function startVisualization() {
-      const viz = document.getElementById('voice-visualization');
-      viz.innerHTML = '';
-      for (let i = 0; i < 20; i++) {
-        const bar = document.createElement('div');
-        bar.className = 'sound-wave';
-        bar.style.animationDelay = `${i * 0.05}s`;
-        viz.appendChild(bar);
-      }
-    }
-
-    function stopVisualization() {
-      const viz = document.getElementById('voice-visualization');
-      viz.innerHTML = '<div style="color: var(--text-secondary);">Ready</div>';
-    }
-
-    function updateVoiceStatus(status) {
-      document.getElementById('voice-status').textContent = status;
-    }
-
     // Auto-resize input
     const textarea = document.getElementById('message-input');
     textarea.addEventListener('input', function() {
@@ -1013,19 +754,292 @@
     document.addEventListener('contextmenu', e => e.preventDefault());
     document.addEventListener('selectstart', e => e.preventDefault());
 
+    // Voice functionality
+    function initSpeechRecognition() {
+      if (recognition) return recognition;
+      
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('Voice recognition is not supported in your browser.');
+        return null;
+      }
+      
+      const rec = new SpeechRecognition();
+      rec.continuous = false;
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+      
+      rec.onstart = () => {
+        isRecording = true;
+        updateVoiceStatus('Listening...');
+        startVisualization();
+      };
+      
+      rec.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map(result => result[0].transcript)
+          .join('');
+        
+        document.getElementById('voice-transcript').textContent = transcript;
+        
+        if (event.results[0].isFinal) {
+          handleVoiceInput(transcript);
+        }
+      };
+      
+      rec.onend = () => {
+        isRecording = false;
+        // Auto-restart listening if we're still in voice mode
+        if (voiceState === 'listening' || voiceState === 'idle') {
+          setTimeout(() => startListening(), 500);
+        }
+      };
+      
+      rec.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        updateVoiceStatus('Error: ' + event.error);
+        setTimeout(() => {
+          if (voiceState !== 'speaking') startListening();
+        }, 2000);
+      };
+      
+      return rec;
+    }
+
+    async function toggleVoiceMode() {
+      const sheet = document.getElementById('voice-bottom-sheet');
+      const voiceBtn = document.getElementById('voice-btn');
+      const isHidden = sheet.classList.contains('hidden');
+      
+      if (isHidden) {
+        // Open sheet
+        sheet.classList.remove('hidden');
+        voiceBtn.classList.add('active');
+        voiceState = 'idle';
+        
+        try {
+          // Initialize microphone access
+          audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          
+          // Initialize recognition
+          recognition = initSpeechRecognition();
+          if (!recognition) {
+            closeVoiceMode();
+            return;
+          }
+          
+          // AI greeting on first open
+          if (!conversationStarted && renderedMessageIds.size === 0) {
+            const greeting = "Hello! I'm Vynix AI. I'm listening - how can I help you today?";
+            await speak(greeting);
+            addMessage(greeting, 'ai');
+            conversationStarted = true;
+          }
+          
+          // Start listening
+          startListening();
+        } catch (err) {
+          console.error('Voice initialization failed:', err);
+          alert('Microphone access is required for voice chat.');
+          closeVoiceMode();
+        }
+      } else {
+        closeVoiceMode();
+      }
+    }
+
+    function closeVoiceMode() {
+      const sheet = document.getElementById('voice-bottom-sheet');
+      const voiceBtn = document.getElementById('voice-btn');
+      
+      sheet.classList.add('hidden');
+      voiceBtn.classList.remove('active');
+      
+      // Stop all voice activities
+      stopListening();
+      speechSynthesis.cancel();
+      voiceState = 'idle';
+      
+      // Clean up audio stream
+      if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+      }
+      
+      // Reset UI
+      document.getElementById('voice-transcript').textContent = '';
+      updateVoiceStatus('Conversation ended');
+      stopVisualization();
+      
+      // Stop any playing audio
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+      }
+    }
+
+    function startListening() {
+      if (voiceState === 'speaking' || voiceState === 'processing') return;
+      if (recognition && !isRecording) {
+        try {
+          recognition.start();
+        } catch (err) {
+          console.error('Start recognition failed:', err);
+          setTimeout(startListening, 1000);
+        }
+      }
+    }
+
+    function stopListening() {
+      if (recognition && isRecording) {
+        recognition.stop();
+      }
+      stopVisualization();
+    }
+
+    async function handleVoiceInput(transcript) {
+      if (voiceState !== 'listening') return;
+      
+      voiceState = 'processing';
+      stopListening();
+      updateVoiceStatus('Thinking...');
+      
+      // Add user message
+      addMessage(transcript, 'user');
+      await saveMessageToFirebase(transcript, 'user');
+      hideSuggestedPrompts();
+      
+      // Check tokens
+      const estimatedTokens = Math.ceil(transcript.length / 4) + 50;
+      if (!(await deductTokens(estimatedTokens))) {
+        updateVoiceStatus('Insufficient tokens');
+        voiceState = 'idle';
+        return;
+      }
+      
+      // Get AI response
+      const reply = await getAIReply(transcript);
+      
+      // Update conversation history
+      conversationHistory.push({ role: "user", content: transcript }, { role: "assistant", content: reply });
+      if (conversationHistory.length > 32) {
+        conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-30)];
+      }
+      
+      // Save AI message
+      await saveMessageToFirebase(reply, 'ai');
+      
+      // Speak response
+      await speak(reply);
+      addMessage(reply, 'ai');
+      
+      // Return to listening
+      startListening();
+    }
+
+    async function speak(text) {
+      // Stop any current audio/speech
+      speechSynthesis.cancel();
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+      }
+      
+      voiceState = 'speaking';
+      updateVoiceStatus('AI is speaking...');
+      document.getElementById('voice-transcript').textContent = '🤖 ' + text;
+      stopVisualization();
+      
+      // Try Eleven Labs
+      if (elevenLabsKey && elevenLabsVoiceId) {
+        try {
+          const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}`, {
+            method: 'POST',
+            headers: {
+              'xi-api-key': elevenLabsKey,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              text: text,
+              model_id: 'eleven_monolingual_v1',
+              voice_settings: {
+                stability: 0.5,
+                similarity_boost: 0.75,
+                style: 0.0,
+                use_speaker_boost: true
+              }
+            })
+          });
+          
+          if (!response.ok) throw new Error('ElevenLabs failed');
+          
+          const audioBlob = await response.blob();
+          const audioUrl = URL.createObjectURL(audioBlob);
+          currentAudio = new Audio(audioUrl);
+          
+          await new Promise((resolve) => {
+            currentAudio.onended = () => {
+              URL.revokeObjectURL(audioUrl);
+              currentAudio = null;
+              voiceState = 'idle';
+              resolve();
+            };
+            currentAudio.onerror = () => {
+              URL.revokeObjectURL(audioUrl);
+              currentAudio = null;
+              voiceState = 'idle';
+              speakWithSystemVoice(text).then(resolve);
+            };
+            currentAudio.play().catch(() => {
+              speakWithSystemVoice(text).then(resolve);
+            });
+          });
+        } catch (error) {
+          console.error('Eleven Labs error:', error);
+          await speakWithSystemVoice(text);
+        }
+      } else {
+        await speakWithSystemVoice(text);
+      }
+    }
+
+    function speakWithSystemVoice(text) {
+      return new Promise((resolve) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = () => {
+          voiceState = 'idle';
+          resolve();
+        };
+        utterance.rate = 0.9;
+        utterance.pitch = 1.1;
+        speechSynthesis.speak(utterance);
+      });
+    }
+
+    function startVisualization() {
+      const viz = document.getElementById('voice-visualization');
+      viz.innerHTML = '';
+      for (let i = 0; i < 20; i++) {
+        const bar = document.createElement('div');
+        bar.className = 'sound-wave';
+        bar.style.animationDelay = `${i * 0.05}s`;
+        bar.style.height = `${Math.random() * 40 + 20}px`;
+        viz.appendChild(bar);
+      }
+    }
+
+    function stopVisualization() {
+      const viz = document.getElementById('voice-visualization');
+      viz.innerHTML = '<div style="color: var(--text-secondary);">Ready</div>';
+    }
+
+    function updateVoiceStatus(status) {
+      document.getElementById('voice-status').textContent = status;
+    }
+
     // Voice button event listeners
     document.getElementById('voice-btn').addEventListener('click', toggleVoiceMode);
     document.getElementById('close-voice-btn').addEventListener('click', closeVoiceMode);
-    document.getElementById('mic-btn').addEventListener('click', () => {
-      if (!recognition) {
-        recognition = initSpeechRecognition();
-      }
-      if (recognition && !isRecording) {
-        recognition.start();
-      } else if (recognition && isRecording) {
-        recognition.stop();
-      }
-    });
 
     // Auth & init
     onAuthStateChanged(auth, async (user) => {
