@@ -991,7 +991,7 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getDatabase, ref, get, onValue, push, set, remove, serverTimestamp, onDisconnect } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
-    
+    import { getRemoteConfig, fetchAndActivate, getValue } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js';
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -1005,6 +1005,35 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
+
+    // Remote Config Setup
+  const remoteConfig = getRemoteConfig(app);
+  remoteConfig.settings.minimumFetchIntervalMillis = 3600000; // 1 hour
+
+  // Default values (in case fetch fails)
+  remoteConfig.defaultConfig = {
+    "yoco_public_key": "",
+    "payments_enabled": false
+  };
+
+  let yocoPublicKey = "";
+  let paymentsEnabled = false;
+
+  // Fetch config once at app start
+  async function loadPaymentConfig() {
+    try {
+      await fetchAndActivate(remoteConfig);
+      yocoPublicKey = getValue(remoteConfig, "yoco_public_key").asString();
+      paymentsEnabled = getValue(remoteConfig, "payments_enabled").asBoolean();
+      console.log("Remote Config loaded → Payments:", paymentsEnabled ? "ON" : "OFF");
+    } catch (err) {
+      console.warn("Remote Config fetch failed (using defaults)", err);
+      paymentsEnabled = false;
+    }
+  }
+
+  // Run it immediately
+  loadPaymentConfig();
     
     let uid;
     let totalUnreadCount = 0;
@@ -1722,48 +1751,109 @@
   })();
 
     /* ========= VERIFIED BADGE PURCHASE ========= */
-/* re-uses the yoco SDK you already load in init() */
-const verifyItem  = document.getElementById('verify-item');
-const verifyBadge = document.getElementById('verify-badge');
 
-/* show / hide “Active” chip */
-function renderVerifiedStatus(){
-  onValue(ref(db, `users/${uid}/verified`), snap => {
-    const v = snap.val();
-    verifyBadge.classList.toggle('hidden', !v?.active);
-    if(v?.active) verifyBadge.textContent = `Active • expires ${new Date(v.expiresAt).toLocaleDateString()}`;
-  });
-}
 
-/* buy button */
-verifyItem.addEventListener('click', async () => {
-  if(!yocoPublicKey){ toast("Payments coming soon"); return; }
-  await loadYocoScript();                       // you already have this fn
-  const yoco = new window.YocoSDK({ publicKey: yocoPublicKey });
-  const result = await yoco.showPopup({
-    amountInCents: 6900,
-    currency: 'ZAR',
-    name: 'Vynix Verified Badge',
-    description: 'R69 / month subscription',
-    metadata: { userId: uid, plan: 'verified_monthly' }
-  });
 
-  if(result?.paymentResult?.status === 'successful'){
-    /* write verified flag + 30-day expiry */
-    const now = Date.now();
-    const expires = new Date(now + 30 * 24 * 60 * 60 * 1000);
-    await set(ref(db, `users/${uid}/verified`), {
-      active: true,
-      chargeId: result.paymentResult.id,
-      plan: 'verified_monthly',
-      expiresAt: expires.toISOString()
-    });
-    toast("You are now verified!");
-  }
-});
 
 /* initialise status chip when user lands */
 onAuthStateChanged(auth, () => renderVerifiedStatus());
   </script>
+
+  <script>
+// Verified Badge System with Yoco + Remote Config
+const verifyItem  = document.getElementById('verify-item');
+const verifyBadge = document.getElementById('verify-badge');
+
+function renderVerifiedStatus() {
+  if (!uid) return;
+  onValue(ref(db, `users/${uid}/verified), (snap) => {
+    const v = snap.val();
+    if (v?.active && v.expiresAt > Date.now()) {
+      verifyBadge.classList.remove('hidden');
+      verifyBadge.textContent = `Active • ${new Date(v.expiresAt).toLocaleDateString()}`;
+    } else {
+      verifyBadge.classList.add('hidden');
+    }
+  });
+}
+
+// Start listening when user logs in
+onAuthStateChanged(auth, user => {
+  if (user) renderVerifiedStatus();
+});
+
+// Click → Buy Verified Badge
+verifyItem.addEventListener('click', async () => {
+  // Don't allow if already verified
+  if (!verifyBadge.classList.contains('hidden')) {
+    toast("You are already verified!");
+    return;
+  }
+
+  // Check if payments are enabled via Remote Config
+  if (!paymentsEnabled) {
+    toast("Verified badges are coming soon");
+    return;
+  }
+
+  if (!yocoPublicKey) {
+    toast("Payment system not ready yet");
+    return;
+  }
+
+  // UI: loading state
+  const label = verifyItem.querySelector('.settings-label');
+  const originalText = label.textContent;
+  label.textContent = "Opening payment...";
+  verifyItem.style.opacity = "0.6";
+  verifyItem.style.pointerEvents = "none";
+
+  try {
+    // Load Yoco SDK only when needed
+    if (!window.YocoSDK) {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://js.yoco.com/sdk/v1/yoco-sdk-web.js';
+        script.onload = resolve;
+        script.onerror = () => reject();
+        document.head.appendChild(script);
+      });
+    }
+
+    const yoco = new window.YocoSDK({ publicKey: yocoPublicKey });
+
+    const result = await yoco.showPopup({
+      amountInCents: 6900,
+      currency: 'ZAR',
+      title: 'Vynix Verified',
+      description: 'R69 – Blue check-mark',
+      metadata: { userId: uid }
+    });
+
+    if (result.status === 'successful') {
+      const expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 1 year
+
+      await set(ref(db, `users/${uid}/verified`), {
+        active: true,
+        chargeId: result.id,
+        purchasedAt: serverTimestamp(),
+        expiresAt: expiresAt
+      });
+
+      toast("Verified! Welcome");
+    } else {
+      toast("Payment cancelled");
+    }
+  } catch (err) {
+    console.error(err);
+    toast("Payment failed");
+  } finally {
+    // Restore button
+    label.textContent = originalText;
+    verifyItem.style.opacity = "";
+    verifyItem.style.pointerEvents = "";
+  }
+});
+</script>
 </body>
 </html>
