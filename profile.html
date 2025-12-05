@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="theme-color" content="#ff2a6d">
-  <title>Edit Profile • Vynix</title>
+  <title>Profile • Vynix</title>
 
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -111,6 +111,24 @@
 
     textarea { min-height: 100px; }
 
+    .bio-view {
+      font-size: 17px;
+      line-height: 1.6;
+      color: #0f1419;
+      margin: 24px 0;
+      white-space: pre-wrap;
+    }
+
+    .location-view {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: #536471;
+      font-size: 16px;
+      margin: 24px 0;
+    }
+
     .btn {
       width: 100%;
       padding: 16px;
@@ -170,27 +188,37 @@
   <div class="card">
     <div class="avatar-wrapper">
       <img id="profileAvatar" class="avatar" src="" alt="Profile">
-      <label class="edit-avatar material-icons">camera_alt</label>
+      <label class="edit-avatar material-icons" id="editAvatarBtn" style="display:none;">camera_alt</label>
       <input type="file" id="avatarInput" accept="image/*" style="display:none;">
     </div>
 
     <h1 id="displayName">Loading...</h1>
     <div class="email" id="userEmail"></div>
 
-    <div class="input-group">
-      <input type="text" id="nameInput" placeholder="Your Name">
+    <!-- EDIT MODE (Owner) -->
+    <div id="editMode" style="display:none;">
+      <div class="input-group">
+        <input type="text" id="nameInput" placeholder="Your Name">
+      </div>
+      <div class="input-group">
+        <textarea id="bioInput" placeholder="Write something about yourself..."></textarea>
+      </div>
+      <div class="input-group">
+        <input type="text" id="locationInput" placeholder="City, Country">
+      </div>
+      <button class="btn btn-primary" id="saveBtn">Save Profile</button>
     </div>
 
-    <div class="input-group">
-      <textarea id="bioInput" placeholder="Write something about yourself..."></textarea>
+    <!-- VIEW MODE (Visitor) -->
+    <div id="viewMode" style="display:none;">
+      <div class="bio-view" id="bioView">No bio yet.</div>
+      <div class="location-view" id="locationView">
+        <span class="material-icons">location_on</span>
+        <span id="locationText">No location set</span>
+      </div>
     </div>
 
-    <div class="input-group">
-      <input type="text" id="locationInput" placeholder="City, Country">
-    </div>
-
-    <button class="btn btn-primary" id="saveBtn">Save Profile</button>
-    <button class="btn btn-logout" id="logoutBtn">Log Out</button>
+    <button class="btn btn-logout" id="logoutBtn" style="display:none;">Log Out</button>
   </div>
 
   <div id="toast" class="toast"></div>
@@ -214,9 +242,9 @@
     const db = getDatabase(app);
     const overlay = document.getElementById('overlay');
 
-    // REPLACE WITH YOUR CLOUDINARY
-    const CLOUDINARY_CLOUD_NAME = "your-cloud-name";
-    const CLOUDINARY_UPLOAD_PRESET = "your-preset-name";
+    // Cloudinary (replace with yours)
+    const CLOUDINARY_CLOUD_NAME = "dqkujefxj";
+    const CLOUDINARY_UPLOAD_PRESET = "banter_box";
 
     const toast = (msg) => {
       const t = document.getElementById('toast');
@@ -225,35 +253,82 @@
       setTimeout(() => t.classList.remove('show'), 3000);
     };
 
+    let currentUser = null;
+    let isOwner = false;
     let userProfile = {};
 
-    onAuthStateChanged(auth, (user) => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetUid = urlParams.get('user');
+
+    onAuthStateChanged(auth, async (user) => {
+      currentUser = user;
+
       if (!user) {
-        location.href = 'login.html';
+        if (targetUid) {
+          // Public view as guest
+          await loadPublicProfile(targetUid);
+        } else {
+          location.href = 'login.html';
+        }
         return;
       }
 
-      document.getElementById('displayName').textContent = user.displayName || 'Set your name';
-      document.getElementById('userEmail').textContent = user.email;
-      document.getElementById('nameInput').value = user.displayName || '';
-      document.getElementById('profileAvatar').src = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || 'U')}&background=ff2a6d&color=fff`;
+      const uidToShow = targetUid || user.uid;
+      isOwner = (uidToShow === user.uid);
 
-      const profileRef = ref(db, `users/${user.uid}/profile`);
-      onValue(profileRef, (snap) => {
-        userProfile = snap.val() || {};
-        document.getElementById('bioInput').value = userProfile.bio || '';
-        document.getElementById('locationInput').value = userProfile.location || '';
-      });
+      if (isOwner) {
+        document.getElementById('editMode').style.display = 'block';
+        document.getElementById('viewMode').style.display = 'none';
+        document.getElementById('logoutBtn').style.display = 'block';
+        document.getElementById('editAvatarBtn').style.display = 'grid';
+      } else {
+        document.getElementById('editMode').style.display = 'none';
+        document.getElementById('viewMode').style.display = 'block';
+        document.getElementById('logoutBtn').style.display = 'none';
+        document.getElementById('editAvatarBtn').style.display = 'none';
+      }
+
+      await loadProfile(uidToShow);
     });
 
-    // Cloudinary upload
-    document.querySelector('.edit-avatar').addEventListener('click', () => {
+    const loadProfile = async (uid) => {
+      overlay.classList.add('show');
+
+      const userRef = ref(db, `users/${uid}`);
+      const snap = await get(userRef);
+      if (!snap.exists()) {
+        toast('User not found');
+        overlay.classList.remove('show');
+        return;
+      }
+
+      const data = snap.val();
+      userProfile = data.profile || {};
+
+      document.getElementById('displayName').textContent = data.displayName || 'Anonymous';
+      document.getElementById('userEmail').textContent = data.email || '';
+      document.getElementById('profileAvatar').src = data.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(data.displayName || 'U')}&background=ff2a6d&color=fff`;
+
+      if (isOwner) {
+        document.getElementById('nameInput').value = data.displayName || '';
+        document.getElementById('bioInput').value = userProfile.bio || '';
+        document.getElementById('locationInput').value = userProfile.location || '';
+      } else {
+        document.getElementById('bioView').textContent = userProfile.bio || 'No bio yet.';
+        document.getElementById('locationText').textContent = userProfile.location || 'No location set';
+      }
+
+      overlay.classList.remove('show');
+    };
+
+    // Cloudinary upload (owner only)
+    document.getElementById('editAvatarBtn').addEventListener('click', () => {
       document.getElementById('avatarInput').click();
     });
 
     document.getElementById('avatarInput').addEventListener('change', async (e) => {
       const file = e.target.files[0];
-      if (!file) return;
+      if (!file || !isOwner) return;
 
       overlay.classList.add('show');
       const formData = new FormData();
@@ -278,25 +353,23 @@
       }
     });
 
-    // Save profile
+    // Save profile (owner only)
     document.getElementById('saveBtn').addEventListener('click', async () => {
-      const user = auth.currentUser;
-      const profileRef = ref(db, `users/${user.uid}/profile`);
+      if (!isOwner) return;
 
+      const name = document.getElementById('nameInput').value.trim();
       const updates = {
         bio: document.getElementById('bioInput').value.trim(),
         location: document.getElementById('locationInput').value.trim()
       };
 
-      const name = document.getElementById('nameInput').value.trim();
-      if (name && name !== user.displayName) {
-        await updateProfile(user, { displayName: name });
-        document.getElementById('displayName').textContent = name;
-      }
-
       overlay.classList.add('show');
       try {
-        await set(profileRef, updates);
+        if (name && name !== auth.currentUser.displayName) {
+          await updateProfile(auth.currentUser, { displayName: name });
+          document.getElementById('displayName').textContent = name;
+        }
+        await set(ref(db, `users/${auth.currentUser.uid}/profile`), updates);
         toast('Profile saved!');
       } catch (err) {
         toast('Save failed');
