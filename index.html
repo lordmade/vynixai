@@ -2009,57 +2009,79 @@
     });
     
     /* ---------- Status List (All Users) ---------- */
-    /* ---------- posts ---------- */
+  /* ---------- posts ---------- */
+let postsListener = null;  // ← keep track of the listener so we don’t add it multiple times
+
 const loadPosts = () => {
   const list = document.getElementById('posts-list');
-  onValue(ref(db, 'posts'), async (snap) => {
-    list.innerHTML = '';
+
+  // If already listening, do nothing (prevents duplicates)
+  if (postsListener) return;
+
+  postsListener = onValue(ref(db, 'posts'), async (snap) => {
+    list.innerHTML = '';  // Clear once per update
     const posts = [];
     snap.forEach((c) => posts.push({ key: c.key, ...c.val() }));
-    posts.sort((a, b) => b.timestamp - a.timestamp);
+
+    // Sort newest first
+    posts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
     for (const p of posts) {
       const userSnap = await get(ref(db, `users/${p.uid}`));
       const user = userSnap.val() || {};
+
       const card = document.createElement('div');
       card.className = 'post-card';
+      card.dataset.postKey = p.key;  // useful for future updates
+
       card.innerHTML = `
         <div class="post-header">
-          <img class="post-avatar" src="${user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || 'U'}&background=05d9e8&color=fff`}">
+          <img class="post-avatar" src="${user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || 'U')}&background=05d9e8&color=fff`}">
           <div class="post-meta">
             <div class="post-name">${user.displayName || 'User'}${user.verified ? '<span class="material-icons verified-badge" style="font-size:16px;margin-left:4px;">verified</span>' : ''}</div>
             <div class="post-time">${formatTime(p.timestamp)}</div>
           </div>
         </div>
-        ${p.text ? `<div class="post-body">${p.text}</div>` : ''}
+        ${p.text ? `<div class="post-body">${p.text.replace(/\n/g, '<br>')}</div>` : ''}
         ${p.media ? (p.media.includes('video') ? `<video class="post-media" controls><source src="${p.media}"></video>` : `<img class="post-media" src="${p.media}">`) : ''}
         <div class="post-footer">
           <button class="post-btn like-btn" data-key="${p.key}">
-            <span class="material-icons">favorite_border</span>Like
+            <span class="material-icons">favorite_border</span> Like
           </button>
           <button class="post-btn comment-btn" data-key="${p.key}">
-            <span class="material-icons">comment</span>Comment
+            <span class="material-icons">comment</span> Comment
           </button>
           <button class="post-btn share-btn" data-key="${p.key}">
-            <span class="material-icons">share</span>Share
+            <span class="material-icons">share</span> Share
           </button>
         </div>
       `;
-      list.appendChild(card);
-      // like long-press
+
+      // Attach event listeners
       const likeBtn = card.querySelector('.like-btn');
       let pressTimer;
-      likeBtn.addEventListener('mousedown', () => {
+      likeBtn.addEventListener('mousedown', (e) => {
         pressTimer = setTimeout(() => openPostSheet('like', p.key), 500);
       });
       likeBtn.addEventListener('mouseup', () => clearTimeout(pressTimer));
-      likeBtn.addEventListener('touchstart', () => {
+      likeBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
         pressTimer = setTimeout(() => openPostSheet('like', p.key), 500);
       });
       likeBtn.addEventListener('touchend', () => clearTimeout(pressTimer));
-      likeBtn.addEventListener('click', () => toggleLike(p.key));
+      likeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleLike(p.key);
+      });
+
       card.querySelector('.comment-btn').addEventListener('click', () => openPostSheet('comment', p.key));
       card.querySelector('.share-btn').addEventListener('click', () => openPostSheet('share', p.key));
+
+      list.appendChild(card);
     }
+  }, (error) => {
+    console.error("Posts listener error:", error);
+    toast("Failed to load posts");
   });
 };
 
