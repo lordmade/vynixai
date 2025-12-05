@@ -731,6 +731,28 @@
     /* ---- verification ---- */
 #verify-item{position:relative}
 #verify-badge.hidden{display:none}
+
+    /* ==========  POSTS  ========== */
+#posts-feed          { min-height:100vh; }
+.post-card           { background:var(--card); border:1px solid var(--border); border-radius:16px; margin:12px 16px; padding:12px; }
+.post-header         { display:flex; align-items:center; gap:10px; }
+.post-avatar         { width:40px; height:40px; border-radius:50%; object-fit:cover; }
+.post-name           { font-weight:700; font-size:15px; display:flex; align-items:center; gap:4px; }
+.post-time           { font-size:12px; color:var(--text2); margin-left:auto; }
+.post-body           { margin-top:10px; font-size:15px; white-space:pre-wrap; }
+.post-media          { width:100%; border-radius:12px; margin-top:10px; }
+.post-actions        { display:flex; justify-content:space-around; margin-top:12px; }
+.post-btn            { background:transparent; border:none; color:var(--text2); font-size:14px; cursor:pointer; display:flex; align-items:center; gap:4px; padding:6px 10px; border-radius:999px; transition:.2s; }
+.post-btn:hover      { background:rgba(255,42,109,.12); color:var(--accent); }
+.post-btn.liked      { color:var(--accent); }
+#posts-loader        { text-align:center; padding:12px; font-size:14px; color:var(--text2); }
+#composer-btn        { position:fixed; bottom:80px; right:20px; width:56px; height:56px; border-radius:50%; background:var(--accent); color:#fff; border:none; box-shadow:var(--glow); display:grid; place-items:center; z-index:20; cursor:pointer; }
+#composer-modal      { position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:30; display:none; align-items:center; justify-content:center; }
+#composer-modal.active { display:flex; }
+.composer-box        { background:var(--card); width:90%; max-width:500px; border-radius:20px; padding:20px; }
+#postText            { width:100%; resize:none; border:1px solid var(--border); border-radius:12px; padding:12px; background:var(--bg); color:var(--text); }
+.composer-footer     { display:flex; justify-content:space-between; align-items:center; margin-top:12px; }
+#mediaUrl            { display:none; }
   </style>
 </head>
 <body>
@@ -764,8 +786,13 @@
 </header>
   <!-- content -->
   <main class="main">
+    <!-- 4. NEW POSTS TAB (DEFAULT) -->
+<div id="posts" class="tab active">
+  <div id="posts-feed"></div>
+  <div id="posts-loader">Loading…</div>
+</div>
     <!-- Chats -->
-    <div id="chats" class="tab active">
+    <div id="chats" class="tab">
       <input class="search" id="search" placeholder="Search chats…">
       <!-- AI Trivia card -->
      <!-- REPLACE your current <div id="trivia-card"> block with this one -->
@@ -902,7 +929,10 @@
   <button id="add-fab" class="fab material-icons">person_add</button>
   <!-- bottom nav -->
   <nav class="bottom-nav">
-    <div class="nav-item active" data-tab="chats">
+    <div class="nav-item active" data-tab="posts">
+  <span class="material-icons">article</span>Posts
+</div>
+    <div class="nav-item" data-tab="chats">
       <span class="material-icons">chat</span>
       Chats
       <span id="chat-badge" class="nav-badge">0</span>
@@ -1852,6 +1882,123 @@ verifyItem.addEventListener('click', async () => {
     label.textContent = originalText;
     verifyItem.style.opacity = "";
     verifyItem.style.pointerEvents = "";
+  }
+});
+</script>
+
+  <script type="module">
+import { getDatabase, ref, push, set, onValue, serverTimestamp, increment } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+const db = getDatabase();
+
+/* ----------  POSTS functionality  ---------- */
+const $ = q => document.querySelector(q);
+let oldestKey = null, loading = false, postsPerPage = 10, listeners = {};
+
+/* composer */
+$('#composer-btn').onclick = () => $('#composer-modal').classList.add('active');
+$('#cancelPost').onclick = () => $('#composer-modal').classList.remove('active');
+$('#publishPost').onclick = publish;
+$('#uploadMedia').onclick = () => cloudinary.open();
+
+/* Cloudinary direct-upload (no widget) */
+const cloudinary = window.cloudinary?.createUploadWidget ?
+  window.cloudinary.createUploadWidget(
+    { cloudName: 'YOUR_CLOUD_NAME', uploadPreset: 'unsigned_preset', sources: ['local', 'camera'], multiple: false },
+    (err, res) => { if (!err && res.event === 'success') $('#mediaUrl').value = res.info.secure_url; }
+  ) : { open: () => toast('Cloudinary not loaded') };
+
+async function publish() {
+  const text = $('#postText').value.trim();
+  const media = $('#mediaUrl').value;
+  if (!text && !media) return toast('Empty post');
+  $('#publishPost').disabled = true;
+  const postRef = push(ref(db, 'posts'));
+  await set(postRef, { author: uid, text, media, likes: 0, comments: 0, reposts: 0, timestamp: serverTimestamp() });
+  $('#postText').value = $('#mediaUrl').value = '';
+  $('#composer-modal').classList.remove('active');
+  $('#publishPost').disabled = false;
+  toast('Posted!');
+}
+
+/* infinite-scroll feed */
+function initPosts() {
+  if (loading) return;
+  loading = true; $('#posts-feed').innerHTML = ''; oldestKey = null; loadBatch();
+  $('#posts-feed').onscroll = e => {
+    if (e.target.scrollTop + e.target.clientHeight >= e.target.scrollHeight - 100) loadBatch();
+  };
+}
+
+async function loadBatch() {
+  $('#posts-loader').style.display = 'block';
+  const qry = oldestKey
+    ? ref(db, 'posts').orderByKey().endBefore(oldestKey).limitToLast(postsPerPage)
+    : ref(db, 'posts').orderByKey().limitToLast(postsPerPage);
+  onValue(qry, snap => {
+    const rows = []; snap.forEach(c => rows.unshift({ key: c.key, ...c.val() }));
+    if (!rows.length) { $('#posts-loader').textContent = 'No more posts'; return; }
+    oldestKey = rows[rows.length - 1].key;
+    rows.forEach(renderPost);
+    $('#posts-loader').style.display = 'none'; loading = false;
+  }, { onlyOnce: true });
+}
+
+function renderPost(p) {
+  if (listeners[p.key]) return;
+  const card = document.createElement('div'); card.className = 'post-card'; card.id = `post-${p.key}`;
+  card.innerHTML = `
+    <div class="post-header">
+      <img class="post-avatar" id="ava-${p.key}">
+      <div class="post-name" id="name-${p.key}"></div>
+      <div class="post-time" id="time-${p.key}"></div>
+    </div>
+    <div class="post-body" id="body-${p.key}"></div>
+    <img class="post-media hidden" id="img-${p.key}">
+    <div class="post-actions">
+      <button class="post-btn like" data-id="${p.key}"><span class="material-icons">favorite_border</span><span id="likes-${p.key}">${p.likes||0}</span></button>
+      <button class="post-btn comment" data-id="${p.key}"><span class="material-icons">comment</span><span id="comments-${p.key}">${p.comments||0}</span></button>
+      <button class="post-btn repost" data-id="${p.key}"><span class="material-icons">repeat</span><span id="reposts-${p.key}">${p.reposts||0}</span></button>
+    </div>`;
+  $('#posts-feed').appendChild(card);
+
+  onValue(ref(db, `users/${p.author}`), s => {
+    const u = s.val(); if (!u) return;
+    $(`#ava-${p.key}`).src = u.photoURL || `https://ui-avatars.com/api/?name=${u.displayName||'U'}&background=05d9e8&color=fff`;
+    $(`#name-${p.key}`).innerHTML = `${u.displayName||u.email}${u.verified?'<span class="material-icons verified">verified</span>':''}`;
+  });
+  $(`#time-${p.key}`).textContent = new Date(p.timestamp||Date.now()).toLocaleString();
+  $(`#body-${p.key}`).textContent = p.text||'';
+  if (p.media) { $(`#img-${p.key}`).src = p.media; $(`#img-${p.key}`).classList.remove('hidden'); }
+
+  onValue(ref(db, `postLikes/${p.key}/${uid}`), s => card.querySelector('.like').classList.toggle('liked', !!s.val()));
+  card.querySelector('.like').onclick = () => toggleLike(p.key);
+  card.querySelector('.comment').onclick = () => toast('Comments – coming soon');
+  card.querySelector('.repost').onclick = () => toggleRepost(p.key);
+  listeners[p.key] = true;
+}
+
+async function toggleLike(pid) {
+  const likeRef = ref(db, `postLikes/${pid}/${uid}`);
+  const postRef = ref(db, `posts/${pid}/likes`);
+  const snap = await (await fetch(likeRef)).exists();
+  if (snap) { await set(likeRef, null); await set(postRef, increment(-1)); }
+  else { await set(likeRef, true); await set(postRef, increment(1)); }
+}
+async function toggleRepost(pid) {
+  const repRef = ref(db, `postReposts/${pid}/${uid}`);
+  const postRef = ref(db, `posts/${pid}/reposts`);
+  const snap = await (await fetch(repRef)).exists();
+  if (snap) { await set(repRef, null); await set(postRef, increment(-1)); }
+  else { await set(repRef, true); await set(postRef, increment(1)); }
+}
+
+/* auto-open Posts when user lands */
+onAuthStateChanged(auth, user => {
+  if (user) {
+    uid = user.uid;
+    $('#me-avatar').src = user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName||'U'}&background=ff2a6d&color=fff`;
+    $('#me-avatar').onclick = () => location.href = 'profile.html';
+    initPosts();               // <-- load feed straight away
   }
 });
 </script>
