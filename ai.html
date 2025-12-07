@@ -60,7 +60,7 @@
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, remove, query, limitToLast, orderByChild, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, remove, query, limitToLast, orderByChild, onValue } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -74,49 +74,61 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db   = getDatabase(app);
+const db = getDatabase(app);
 
 let uid;
 const feedEl = document.getElementById('feed');
+const POSTS_TO_DISPLAY = 20;
 
-/* Theme */
+/* Theme Detection */
 if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
   document.body.setAttribute('data-theme', 'dark');
 
-/* Auth */
+/* 1. Auth & Load Logic */
 onAuthStateChanged(auth, user => {
-  if (!user) {
-    signInAnonymously(auth);
-    // Temp guest ID for logic
-    uid = "guest_" + Math.random().toString(36).slice(2);
-  } else {
+  if (user) {
     uid = user.uid;
+    console.log("User logged in:", uid);
+    initFeedListener(); // Start listening for posts only after login
+  } else {
+    console.log("Signing in anonymously...");
+    signInAnonymously(auth).catch(e => {
+      console.error("Auth Failed:", e);
+      feedEl.innerHTML = `<div style="text-align:center;padding:20px;color:red">Authentication Error. Check Console.</div>`;
+    });
   }
-  loadPosts();
 });
 
-/* Feed Loading */
-const POSTS_TO_DISPLAY = 20;
-
-async function loadPosts() {
+/* 2. Real-time Feed Listener */
+function initFeedListener() {
   const postsRef = ref(db, 'posts');
+  // Order by timestamp, get last X posts
   const q = query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_TO_DISPLAY));
 
-  try {
-    const snap = await get(q);
-    if (!snap.exists()) {
-      feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
+  // onValue listens for ANY change in the database query
+  onValue(q, (snapshot) => {
+    feedEl.innerHTML = ''; // Clear feed before re-rendering to prevent duplicates
+    
+    if (!snapshot.exists()) {
+      feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet. Be the first!</div>';
       return;
     }
+
     const rows = [];
-    snap.forEach(child => rows.push({ key: child.key, ...child.val() }));
-    rows.reverse();
-    feedEl.innerHTML = '';
-    rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
-  } catch (e) {
-    console.error('Feed error:', e);
-    toast('Could not load feed'); 
-  }
+    snapshot.forEach(child => {
+      rows.push({ key: child.key, ...child.val() });
+    });
+
+    // Reverse to show newest first (since Firebase sorts ascending)
+    rows.reverse(); 
+    
+    rows.forEach(p => {
+      feedEl.appendChild(renderPostCard(p));
+    });
+  }, (error) => {
+    console.error("Read Error:", error);
+    feedEl.innerHTML = `<div style="text-align:center;padding:40px;color:red">Permission Denied: Check Database Rules</div>`;
+  });
 }
 
 function renderPostCard(p) {
@@ -124,17 +136,24 @@ function renderPostCard(p) {
   div.className = 'post-card';
   div.id = `post-${p.key}`;
   
-  // Only show delete if the current user authored it
-  const del = p.authorId === uid ? `<div class="action-item delete-btn" onclick="deletePost('${p.key}')"><span class="material-icons-outlined">delete</span></div>` : '';
+  // Safe delete button logic
+  const isAuthor = p.authorId === uid;
+  const del = isAuthor ? 
+    `<div class="action-item delete-btn" onclick="deletePost('${p.key}')"><span class="material-icons-outlined">delete</span></div>` : '';
+  
+  // Fallback for missing data
+  const avatar = p.authorAvatar || 'https://via.placeholder.com/40';
+  const name = escape(p.authorName || 'Anonymous');
+  const handle = name.replace(/\s/g,'').toLowerCase();
   
   div.innerHTML = `
     <div class="post-header">
-      <img src="${p.authorAvatar}" class="post-avatar" alt="">
+      <img src="${avatar}" class="post-avatar" alt="">
       <div style="flex:1">
         <div class="user-meta">
-          <span class="name">${escape(p.authorName)}</span>
+          <span class="name">${name}</span>
           ${p.verified ? '<span class="material-icons verified-badge">verified</span>' : ''}
-          <span class="handle">@${p.authorName.replace(/\s/g,'').toLowerCase()} · ${timeAgo(p.timestamp)}</span>
+          <span class="handle">@${handle} · ${timeAgo(p.timestamp)}</span>
         </div>
         <div class="post-content">${escape(p.text)}</div>
         ${p.image ? `<img class="post-image" src="${p.image}" loading="lazy" />` : ''}
@@ -149,11 +168,12 @@ function renderPostCard(p) {
   return div;
 }
 
+/* 3. Global Actions */
 window.deletePost = key => { 
   if (confirm('Delete this post?')) { 
-    remove(ref(db, `posts/${key}`)); 
-    document.getElementById(`post-${key}`).remove(); 
-    toast('Deleted'); 
+    remove(ref(db, `posts/${key}`))
+      .then(() => toast('Deleted'))
+      .catch(e => toast('Error deleting'));
   } 
 };
 
@@ -163,7 +183,12 @@ function toast(msg) {
   document.body.appendChild(t); setTimeout(()=>t.classList.add('show'),10); setTimeout(()=>{t.classList.remove('show'); setTimeout(()=>t.remove(),400);},3000);
 }
 const escape = s => s ? s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
-const timeAgo = ts => { if (!ts) return 'now'; const s = Math.floor((Date.now()-ts)/1000); return s<60?`${s}s`:s<3600?`${Math.floor(s/60)}m`:s<86400?`${Math.floor(s/3600)}h`:`${Math.floor(s/86400)}d`; };
+const timeAgo = ts => { 
+  if (!ts) return 'now'; 
+  const s = Math.floor((Date.now()-ts)/1000); 
+  return s<60?`${s}s`:s<3600?`${Math.floor(s/60)}m`:s<86400?`${Math.floor(s/3600)}h`:`${Math.floor(s/86400)}d`; 
+};
 </script>
+    
 </body>
 </html>
