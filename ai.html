@@ -27,15 +27,17 @@
     .post-header img{width:44px;height:44px;border-radius:50%;object-fit:cover;}
     .post-header .name{font-weight:700;font-size:15px;}
     .post-header .handle{color:var(--text2);font-size:14px;}
-    .post-header .time{margin-left:auto;color:var(--text2);font-size:13px;}
+    .post post-header .time{margin-left:auto;color:var(--text2);font-size:13px;}
     .post-body{margin-top:10px;white-space:pre-wrap;font-size:15px;}
     .post-image{max-width:100%;border-radius:12px;margin-top:10px;}
     .post-footer{display:flex;justify-content:space-between;margin-top:12px;color:var(--text2);font-size:14px;}
     .post-footer span{cursor:pointer;display:flex;align-items:center;gap:4px;padding:4px 8px;border-radius:999px;transition:background .2s;}
     .post-footer span:hover{background:rgba(255,42,109,.08);color:var(--accent);}
+    .warn{position:fixed;top:70px;left:50%;transform:translateX(-50%);background:#ef4444;color:#fff;padding:8px 16px;border-radius:20px;font-size:14px;display:none;z-index:1000;}
   </style>
 </head>
 <body>
+<div id="warn" class="warn">Database permission denied – check console</div>
 
 <!-- composer -->
 <div class="composer">
@@ -60,164 +62,211 @@
 <main id="feed" class="feed"></main>
 
 <script type="module">
-/*  ONLY  Realtime-Database imports  */
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, onValue, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+  // Firebase Realtime Database (not Firestore!)
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+  import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+  import { 
+    getDatabase, 
+    ref, 
+    push, 
+    set,           // ← this was missing
+    onValue, 
+    serverTimestamp 
+  } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
-  authDomain: "fire-b-a8878.firebaseapp.com",
-  databaseURL: "https://fire-b-a8878.firebaseio.com",
-  projectId: "fire-b-a8878",
-  storageBucket: "fire-b-a8878.firebasestorage.app",
-  messagingSenderId: "658673187627",
-  appId: "1:658673187627:web:6e4c29af661785f0afa36e"
-};
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getDatabase(app);
+  const firebaseConfig = {
+    apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
+    authDomain: "fire-b-a8878.firebaseapp.com",
+    databaseURL: "https://fire-b-a8878.firebaseio.com",
+    projectId: "fire-b-a8878",
+    storageBucket: "fire-b-a8878.firebasestorage.app",
+    messagingSenderId: "658673187627",
+    appId: "1:658673187627:web:6e4c29af661785f0afa36e"
+  };
 
-let uid, uname, uavatar;
-const postBtn   = document.getElementById('post-btn');
-const textEl    = document.getElementById('post-text');
-const previewEl = document.getElementById('media-preview');
-const fileInput = document.getElementById('file-input');
-const btnText   = document.getElementById('btn-text');
-const btnSpin   = document.getElementById('btn-spinner');
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getDatabase(app);
 
-/* theme */
-const applyTheme = () => {
-  const s = localStorage.getItem('vynix-settings');
-  if (!s) return;
-  const {darkMode, theme} = JSON.parse(s);
-  const dark = darkMode || (theme==='auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
-};
-applyTheme();
+  let uid, uname, uavatar;
+  const postBtn   = document.getElementById('post-btn');
+  const textEl    = document.getElementById('post-text');
+  const previewEl = document.getElementById('media-preview');
+  const fileInput = document.getElementById('file-input');
+  const btnText   = document.getElementById('btn-text');
+  const btnSpin   = document.getElementById('btn-spinner');
+  const warnBox   = document.getElementById('warn');
 
-/* auth */
-onAuthStateChanged(auth, user=>{
-  if (!user) { console.warn('🔒 not logged in – redirect'); location.href='login.html'; return; }
-  uid    = user.uid;
-  uname  = user.displayName || user.email.split('@')[0];
-  uavatar= user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${uname}`;
-  document.getElementById('my-avatar').src = uavatar;
-  loadFeed();
-});
+  /* theme */
+  const applyTheme = () => {
+    const s = localStorage.getItem('vynix-settings');
+    if (!s) return;
+    const {darkMode, theme} = JSON.parse(s);
+    const dark = darkMode || (theme==='auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
+  };
+  applyTheme();
 
-/* upload spinner */
-let imageUrl = '', uploading = false;
-function toggleBtn(){ postBtn.disabled = uploading || (!textEl.value.trim() && !imageUrl); }
-function setUploading(on){
-  uploading = on;
-  btnText.classList.toggle('hidden', on);
-  btnSpin.classList.toggle('hidden', !on);
-  toggleBtn();
-}
+  /* auth */
+  onAuthStateChanged(auth, user => {
+    if (!user) { 
+      console.warn('not logged in – redirect'); 
+      location.href='login.html'; 
+      return; 
+    }
+    uid     = user.uid;
+    uname   = user.displayName || user.email.split('@')[0];
+    uavatar = user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${encodeURIComponent(uname)}`;
+    document.getElementById('my-avatar').src = uavatar;
+    console.log('auth ok', uid, uname);
+    loadFeed();
+  });
 
-/* media picker */
-fileInput.onchange = e=>{
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev=>{ previewEl.src = ev.target.result; previewEl.classList.remove('hidden'); };
-  reader.readAsDataURL(file);
-  uploadToCloudinary(file);
-};
-function uploadToCloudinary(file){
-  setUploading(true);
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('upload_preset', 'YOUR_UNSIGNED_PRESET');   // ← your preset
-  return fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', {method:'POST', body: fd})  // ← your cloud
-    .then(r=>r.json())
-    .then(res=>{
-      if (res.error) { toast('Upload failed'); console.error(res.error); return; }
-      imageUrl = res.secure_url;
-      toast('Media attached');
-    })
-    .catch(err=>{ toast('Upload error'); console.error(err); })
-    .finally(()=> setUploading(false) );
-}
-
-/* post */
-textEl.oninput = toggleBtn;
-postBtn.onclick = ()=>{
-  const text = textEl.value.trim();
-  if (!text && !imageUrl) return toast('Write something or attach media');
-  if (uploading) return toast('Please wait until upload finishes');
-  savePost(text);
-};
-function savePost(text){
-  const refPost = push(ref(db, 'posts'));
-  set(refPost, {
-    authorId: uid,
-    authorName: uname,
-    authorAvatar: uavatar,
-    text,
-    image: imageUrl,
-    verified: false,
-    likes: 0, reposts: 0, replies: 0,
-    timestamp: serverTimestamp()
-  }).then(()=>{
-    textEl.value = ''; imageUrl = ''; uploading = false;
-    previewEl.classList.add('hidden');
+  /* upload spinner */
+  let imageUrl = '', uploading = false;
+  function toggleBtn() { 
+    postBtn.disabled = uploading || (!textEl.value.trim() && !imageUrl); 
+  }
+  function setUploading(on) {
+    uploading = on;
+    btnText.classList.toggle('hidden', on);
+    btnSpin.classList.toggle('hidden', !on);
     toggleBtn();
-    toast('Posted');
-  }).catch(err=>{
-    toast('Post failed – console');
-    console.error(err);
-  });
-}
+  }
 
-/* feed */
-function loadFeed(){
-  const feed = document.getElementById('feed');
-  onValue(ref(db, 'posts'), snap=>{
-    const posts = [];
-    snap.forEach(c=> posts.push({id: c.key, ...c.val()}));
-    posts.sort((a,b)=> b.timestamp - a.timestamp);
-    feed.innerHTML = '';
-    posts.forEach(p=> feed.appendChild(renderPostCard(p)));
-  });
-}
-function renderPostCard(p){
-  const div = document.createElement('div');
-  div.className = 'post-card';
-  div.innerHTML = `
-    <div class="post-header">
-      <img src="${p.authorAvatar}" />
-      <div>
-        <div class="name">${escape(p.authorName)}</div>
-        <div class="handle">@${p.authorName.replace(/\s/g,'')} · ${timeAgo(p.timestamp)}</div>
+  /* media picker */
+  fileInput.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => { 
+      previewEl.src = ev.target.result; 
+      previewEl.classList.remove('hidden'); 
+    };
+    reader.readAsDataURL(file);
+    uploadToCloudinary(file);
+  };
+
+  function uploadToCloudinary(file) {
+    setUploading(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('upload_preset', 'YOUR_UNSIGNED_PRESET');           // ← CHANGE THIS
+    fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', { // ← CHANGE THIS
+      method: 'POST',
+      body: fd
+    })
+      .then(r => r.json())
+      .then(res => {
+        if (res.error) { toast('Upload failed'); console.error(res.error); return; }
+        imageUrl = res.secure_url;
+        console.log('media uploaded', imageUrl);
+        toast('Media attached');
+      })
+      .catch(err => { toast('Upload error'); console.error(err); })
+      .finally(() => setUploading(false));
+  }
+
+  /* post */
+  textEl.oninput = toggleBtn;
+  postBtn.onclick = () => {
+    const text = textEl.value.trim();
+    if (!text && !imageUrl) return toast('Write something or attach media');
+    if (uploading) return toast('Please wait until upload finishes');
+    savePost(text);
+  };
+
+  function savePost(text) {
+    console.log('saving post', {text, imageUrl});
+    const newPostRef = push(ref(db, 'posts'));   // create new key
+    set(newPostRef, {                            // ← now using correct Realtime DB set()
+      authorId: uid,
+      authorName: uname,
+      authorAvatar: uavatar,
+      text,
+      image: imageUrl || null,
+      verified: false,
+      likes: 0,
+      reposts: 0,
+      replies: 0,
+      timestamp: serverTimestamp()
+    })
+    .then(() => {
+      console.log('post saved');
+      textEl.value = '';
+      imageUrl = '';
+      previewEl.classList.add('hidden');
+      previewEl.src = '';
+      fileInput.value = '';
+      toggleBtn();
+      toast('Posted');
+    })
+    .catch(err => {
+      console.error('save failed', err);
+      toast('Post failed – check console');
+    });
+  }
+
+  /* feed */
+  function loadFeed() {
+    const feed = document.getElementById('feed');
+    onValue(ref(db, 'posts'), snap => {
+      const posts = [];
+      snap.forEach(child => {
+        posts.push({ id: child.key, ...child.val() });
+      });
+      posts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      feed.innerHTML = '';
+      posts.forEach(p => feed.appendChild(renderPostCard(p)));
+    }, err => {
+      console.error('feed listener error', err);
+      warnBox.style.display = 'block';
+      setTimeout(() => warnBox.style.display = 'none', 4000);
+    });
+  }
+
+  function renderPostCard(p) {
+    const div = document.createElement('div');
+    div.className = 'post-card';
+    div.innerHTML = `
+      <div class="post-header">
+        <img src="${p.authorAvatar || 'https://ui-avatars.com/api/?background=05d9e8&color=fff&name=U'}" alt="avatar"/>
+        <div>
+          <div class="name">${escape(p.authorName || 'User')}</div>
+          <div class="handle">@\( {(p.authorName || 'user').replace(/\s/g,'').toLowerCase()} · \){timeAgo(p.timestamp)}</div>
+        </div>
       </div>
-    </div>
-    <div class="post-body">${escape(p.text)}</div>
-    ${p.image ? `<img class="post-image" src="${p.image}" />` : ''}
-    <div class="post-footer">
-      <span>💬 ${p.replies||0}</span>
-      <span>🔁 ${p.reposts||0}</span>
-      <span>❤️ ${p.likes||0}</span>
-      <span>📤</span>
-    </div>
-  `;
-  return div;
-}
+      <div class="post-body">${escape(p.text || '')}</div>
+      \( {p.image ? `<img class="post-image" src=" \){p.image}" loading="lazy"/>` : ''}
+      <div class="post-footer">
+        <span>💬 ${p.replies || 0}</span>
+        <span>🔁 ${p.reposts || 0}</span>
+        <span>❤️ ${p.likes || 0}</span>
+        <span>📤</span>
+      </div>
+    `;
+    return div;
+  }
 
-/* helpers */
-const toast = msg=>{
-  const t=document.createElement('div');
-  t.className='fixed bottom-8 left-1/2 -translate-x-1/2 bg-accent text-white px-4 py-2 rounded-full text-sm';
-  t.textContent=msg; document.body.appendChild(t);
-  setTimeout(()=>t.remove(),2500);
-};
-const escape=s=>s.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const timeAgo=ts=>{
-  const s=Math.floor((Date.now()-ts)/1000);
-  if(s<60)return`${s}s`;if(s<3600)return`${Math.floor(s/60)}m`;
-  if(s<86400)return`${Math.floor(s/3600)}h`;return`${Math.floor(s/86400)}d`;
-};
+  /* helpers */
+  const toast = msg => {
+    const t = document.createElement('div');
+    t.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 bg-[#ff2a6d] text-white px-5 py-3 rounded-full text-sm shadow-lg z-50';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2500);
+  };
+
+  const escape = s => s ? s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
+
+  const timeAgo = ts => {
+    if (!ts) return 'just now';
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s/60)}m`;
+    if (s < 86400) return `${Math.floor(s/3600)}h`;
+    return `${Math.floor(s/86400)}d`;
+  };
 </script>
 </body>
 </html>
