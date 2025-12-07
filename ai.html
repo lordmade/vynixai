@@ -126,7 +126,7 @@ applyTheme();
 
 /* ---------- Auth ---------- */
 onAuthStateChanged(auth, user => {
-  if (!user) {                                    // anon guest
+  if (!user) {                        // anon guest
     signInAnonymously(auth);
     uid = "guest_" + Math.random().toString(36).slice(2);
     uname = "Guest";
@@ -142,8 +142,9 @@ onAuthStateChanged(auth, user => {
   }
 });
 
-/* ---------- Infinite Scroll – Public Timeline ---------- */
-let lastPost   = null;   // oldest timestamp we already rendered
+/* ---------- Infinite Scroll – Public Timeline (FIXED) ---------- */
+// lastPost now stores both the timestamp and the key of the oldest post to handle pagination correctly
+let lastPost = null; 
 let isLoadingPosts = false;
 let allPostsLoaded = false;
 const POSTS_PER_PAGE = 8;
@@ -157,18 +158,12 @@ async function loadPosts() {
   let q;
 
   if (lastPost === null) {
-    // Initial load: Get newest posts (limitToLast(8))
+    // Initial load: Get the latest POSTS_PER_PAGE
     q = query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE));
   } else {
-    // Subsequent load: Get next page (older than the last post loaded)
-    // NOTE: This uses the two-argument form of endAt(value, key) to skip the last post
-    // and correctly handle identical timestamps. We need posts *older* than lastPost.
-    // The query logic here is tricky with limitToLast.
-    // To get posts OLDER than the timestamp of the last post loaded,
-    // we should use a value just BEFORE lastPost.timestamp, OR
-    // reverse the order to use startAfter (easier).
-    
-    // Simplest working fix with current setup: Exclude the *last* post and limit.
+    // Subsequent load: Get the next page. We query for POSTS_PER_PAGE + 1 
+    // and use endAt(timestamp, key) to include the last post, which we then slice off.
+    // This correctly handles posts with identical timestamps.
     q = query(postsRef, orderByChild('timestamp'), endAt(lastPost.timestamp, lastPost.key), limitToLast(POSTS_PER_PAGE + 1));
   }
 
@@ -180,38 +175,35 @@ async function loadPosts() {
       if (lastPost === null) feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
       return;
     }
-
-    const rows = [];
+    
+    let rows = [];
     snap.forEach(child => rows.push({ key: child.key, ...child.val() }));
     rows.reverse(); // newest → oldest
 
     let postsToRender = rows;
 
     if (lastPost !== null) {
-      // If we loaded more than POSTS_PER_PAGE (i.e., POSTS_PER_PAGE + 1)
-      // the first item is the duplicate of the *last* post from the previous load.
-      // We slice it off, and now we have a clean set of new posts.
-      postsToRender = rows.slice(1);
+        // Remove the first element, which is a duplicate of the last post from the previous page
+        postsToRender = rows.slice(1);
     }
     
-    if (postsToRender.length === 0) {
-        allPostsLoaded = true;
-        scrollLoader.classList.add('hidden');
-        return;
+    // Check for the end of the feed
+    if (postsToRender.length === 0 || rows.length <= POSTS_PER_PAGE) {
+      allPostsLoaded = true;
     }
 
-    // Check if we loaded fewer posts than expected, meaning we reached the end.
-    if (postsToRender.length < POSTS_PER_PAGE) allPostsLoaded = true;
+    // Only update lastPost if we actually loaded new posts
+    if (postsToRender.length > 0) {
+      const oldestPost = postsToRender[postsToRender.length - 1];
+      lastPost = { timestamp: oldestPost.timestamp, key: oldestPost.key };
+    }
     
-    // Update lastPost to the oldest post we just rendered
-    const oldestPost = postsToRender[postsToRender.length - 1];
-    lastPost = { timestamp: oldestPost.timestamp, key: oldestPost.key };
-
     postsToRender.forEach(p => feedEl.appendChild(renderPostCard(p)));
-
+    
   } catch (e) {
     console.error('Feed error:', e);
-    toast('Could not load feed'); // This is where the error message comes from
+    // This is the source of the "Could not load feed" message
+    toast('Could not load feed'); 
   } finally {
     isLoadingPosts = false;
     scrollLoader.classList.add('hidden');
@@ -241,9 +233,11 @@ function uploadToCloudinary(file) {
   document.getElementById('btn-spinner').classList.remove('hidden');
   document.getElementById('btn-text').classList.add('hidden');
   const fd = new FormData();
+  // NOTE: You must replace 'YOUR_UNSIGNED_PRESET' and 'YOUR_CLOUD_NAME' 
+  // with your actual Cloudinary configuration.
   fd.append('file', file);
-  fd.append('upload_preset', 'YOUR_UNSIGNED_PRESET');   // <-- replace
-  fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', { method: 'POST', body: fd })
+  fd.append('upload_preset', 'YOUR_UNSIGNED_PRESET');  // <-- REPLACE
+  fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', { method: 'POST', body: fd }) // <-- REPLACE
     .then(r => r.json())
     .then(res => { if (res.error) throw res.error; imageUrl = res.secure_url; toast('Image ready'); })
     .catch(err => { toast('Upload failed'); console.error(err); })
@@ -255,9 +249,11 @@ postBtn.onclick = () => {
   const text = textEl.value.trim();
   if (!text && !imageUrl) return;
   const newRef = push(ref(db, 'posts'));
+  // Use serverTimestamp() for correct ordering in Firebase
   const post = { authorId: uid, authorName: uname, authorAvatar: uavatar, text, image: imageUrl, verified: false, likes: 0, timestamp: serverTimestamp() };
   set(newRef, post).then(() => {
     textEl.value = ''; imageUrl = ''; previewEl.classList.add('hidden'); toggleBtn(); toast('Posted!');
+    // Prepend the new post immediately with client's time (Date.now()) for instant UX
     feedEl.prepend(renderPostCard({ key: newRef.key, ...post, timestamp: Date.now() }));
   }).catch(() => toast('Error posting'));
 };
