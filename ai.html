@@ -143,7 +143,7 @@ onAuthStateChanged(auth, user => {
 });
 
 /* ---------- Infinite Scroll – Public Timeline ---------- */
-let lastPostTime   = null;   // oldest timestamp we already rendered
+let lastPost   = null;   // oldest timestamp we already rendered
 let isLoadingPosts = false;
 let allPostsLoaded = false;
 const POSTS_PER_PAGE = 8;
@@ -154,27 +154,64 @@ async function loadPosts() {
   scrollLoader.classList.remove('hidden');
 
   const postsRef = ref(db, 'posts');
-  const q = lastPostTime === null
-    ? query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE))
-    : query(postsRef, orderByChild('timestamp'), endAt(lastPostTime - 1), limitToLast(POSTS_PER_PAGE));
+  let q;
+
+  if (lastPost === null) {
+    // Initial load: Get newest posts (limitToLast(8))
+    q = query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE));
+  } else {
+    // Subsequent load: Get next page (older than the last post loaded)
+    // NOTE: This uses the two-argument form of endAt(value, key) to skip the last post
+    // and correctly handle identical timestamps. We need posts *older* than lastPost.
+    // The query logic here is tricky with limitToLast.
+    // To get posts OLDER than the timestamp of the last post loaded,
+    // we should use a value just BEFORE lastPost.timestamp, OR
+    // reverse the order to use startAfter (easier).
+    
+    // Simplest working fix with current setup: Exclude the *last* post and limit.
+    q = query(postsRef, orderByChild('timestamp'), endAt(lastPost.timestamp, lastPost.key), limitToLast(POSTS_PER_PAGE + 1));
+  }
 
   try {
     const snap = await get(q);
     if (!snap.exists()) {
       allPostsLoaded = true;
       scrollLoader.classList.add('hidden');
-      if (lastPostTime === null) feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
+      if (lastPost === null) feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
       return;
     }
+
     const rows = [];
     snap.forEach(child => rows.push({ key: child.key, ...child.val() }));
-    rows.reverse();                                    // newest → oldest
-    if (rows.length < POSTS_PER_PAGE) allPostsLoaded = true;
-    lastPostTime = rows[rows.length - 1].timestamp;
-    rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
+    rows.reverse(); // newest → oldest
+
+    let postsToRender = rows;
+
+    if (lastPost !== null) {
+      // If we loaded more than POSTS_PER_PAGE (i.e., POSTS_PER_PAGE + 1)
+      // the first item is the duplicate of the *last* post from the previous load.
+      // We slice it off, and now we have a clean set of new posts.
+      postsToRender = rows.slice(1);
+    }
+    
+    if (postsToRender.length === 0) {
+        allPostsLoaded = true;
+        scrollLoader.classList.add('hidden');
+        return;
+    }
+
+    // Check if we loaded fewer posts than expected, meaning we reached the end.
+    if (postsToRender.length < POSTS_PER_PAGE) allPostsLoaded = true;
+    
+    // Update lastPost to the oldest post we just rendered
+    const oldestPost = postsToRender[postsToRender.length - 1];
+    lastPost = { timestamp: oldestPost.timestamp, key: oldestPost.key };
+
+    postsToRender.forEach(p => feedEl.appendChild(renderPostCard(p)));
+
   } catch (e) {
     console.error('Feed error:', e);
-    toast('Could not load feed');
+    toast('Could not load feed'); // This is where the error message comes from
   } finally {
     isLoadingPosts = false;
     scrollLoader.classList.add('hidden');
