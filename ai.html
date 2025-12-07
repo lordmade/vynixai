@@ -201,13 +201,14 @@ async function initFeed() {
   try {
     console.log('Initializing feed...');
     const postsRef = ref(db, 'posts');
-    const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT));
     
-    const snap = await get(q);
-    console.log('Posts snapshot received:', snap.exists());
+    // First, let's see ALL posts without ordering
+    const snap = await get(postsRef);
+    console.log('Posts snapshot exists:', snap.exists());
+    console.log('Number of posts:', snap.size);
     
     if (!snap.exists()) {
-      console.log('No posts found');
+      console.log('No posts found in database');
       feedEl.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text2);">No posts yet. Be the first to post!</div>';
       initialLoadDone = true;
       listenNew();
@@ -217,13 +218,19 @@ async function initFeed() {
     const rows = [];
     snap.forEach(c => {
       const data = c.val();
-      if (data && data.timestamp) {
+      console.log('Post data:', c.key, data);
+      if (data) {
         rows.push({key: c.key, ...data});
       }
     });
     
-    console.log('Loaded posts:', rows.length);
-    rows.reverse();
+    // Sort by timestamp (newest first)
+    rows.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    
+    console.log('Total posts loaded:', rows.length);
+    
+    // Clear feed and display all posts
+    feedEl.innerHTML = '';
     rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
     
     const last = rows[rows.length-1];
@@ -232,14 +239,16 @@ async function initFeed() {
       lastKey = last.key; 
     }
     
-    loadMoreBtn.classList.toggle('hidden', rows.length < POST_LIMIT);
+    loadMoreBtn.classList.add('hidden'); // Hide for now since we're loading all
     initialLoadDone = true;
     listenNew();
     
   } catch (error) {
     console.error('Error loading feed:', error);
+    console.error('Error details:', error.code, error.message);
     feedEl.innerHTML = `<div style="padding: 40px; text-align: center; color: #f4212e;">
       Error loading posts: ${error.message}<br>
+      <small>Check console for details</small><br>
       <button onclick="location.reload()" style="margin-top: 16px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 999px; cursor: pointer;">
         Retry
       </button>
@@ -248,15 +257,32 @@ async function initFeed() {
 }
 
 function listenNew() {
+  console.log('Setting up real-time listener...');
   const postsRef = ref(db, 'posts');
+  
   onChildAdded(postsRef, snap => {
-    if (!initialLoadDone) return;
+    if (!initialLoadDone) {
+      console.log('Skipping - initial load not done');
+      return;
+    }
     
     const data = snap.val();
-    if (!data || !data.timestamp) return;
+    console.log('New post detected:', snap.key, data);
     
-    if (!lastTimestamp || data.timestamp > lastTimestamp) {
-      feedEl.prepend(renderPostCard({key: snap.key, ...data}));
+    if (!data) return;
+    
+    // Check if post already exists in feed
+    if (document.getElementById(`post-${snap.key}`)) {
+      console.log('Post already exists, skipping');
+      return;
+    }
+    
+    // Add new post to top of feed
+    const newPost = {key: snap.key, ...data};
+    feedEl.prepend(renderPostCard(newPost));
+    console.log('New post added to feed');
+    
+    if (data.timestamp) {
       lastTimestamp = data.timestamp;
     }
   });
@@ -293,7 +319,23 @@ loadMoreBtn.onclick = async () => {
 };
 
 let imageUrl = '', uploading = false;
-function toggleBtn() { postBtn.disabled = uploading || (!textEl.value.trim() && !imageUrl); }
+
+function toggleBtn() { 
+  const hasText = textEl.value.trim().length > 0;
+  const hasImage = imageUrl.length > 0;
+  const shouldEnable = !uploading && (hasText || hasImage);
+  
+  postBtn.disabled = !shouldEnable;
+  
+  // Debug logging
+  console.log('Toggle button:', {
+    hasText,
+    hasImage,
+    uploading,
+    shouldEnable,
+    textLength: textEl.value.length
+  });
+}
 
 fileInput.onchange = e => {
   const file = e.target.files[0]; if (!file) return;
@@ -319,9 +361,18 @@ function uploadToCloudinary(file) {
 
 postBtn.onclick = async () => {
   const text = textEl.value.trim();
-  if (!text && !imageUrl) return;
+  if (!text && !imageUrl) {
+    toast('Please write something or add an image');
+    return;
+  }
+  
+  // Disable button during posting
+  postBtn.disabled = true;
+  const originalText = $('#btn-text').textContent;
+  $('#btn-text').textContent = 'Posting...';
   
   try {
+    console.log('Starting post creation...');
     const newRef = push(ref(db, 'posts'));
     const postData = { 
       authorId: uid, 
@@ -333,22 +384,36 @@ postBtn.onclick = async () => {
       likes: 0, 
       replies: 0, 
       reposts: 0, 
-      timestamp: serverTimestamp() 
+      timestamp: Date.now() // Use client timestamp instead of serverTimestamp
     };
     
+    console.log('Posting data:', postData);
     await set(newRef, postData);
+    console.log('Post created successfully!');
+    
     textEl.value = ''; 
     imageUrl = ''; 
-    previewEl.classList.add('hidden'); 
-    toggleBtn(); 
+    previewEl.classList.add('hidden');
+    previewEl.src = '';
+    fileInput.value = '';
     toast('Posted!');
   } catch (error) {
     console.error('Error posting:', error);
-    toast('Error posting');
+    toast('Error posting: ' + error.message);
+  } finally {
+    $('#btn-text').textContent = originalText;
+    toggleBtn();
   }
 };
 
-textEl.oninput = () => { textEl.style.height = 'auto'; textEl.style.height = textEl.scrollHeight + 'px'; toggleBtn(); };
+textEl.oninput = () => { 
+  textEl.style.height = 'auto'; 
+  textEl.style.height = textEl.scrollHeight + 'px'; 
+  toggleBtn(); 
+};
+
+// Add keyup listener as well for immediate response
+textEl.onkeyup = () => toggleBtn();
 
 function renderPostCard(p) {
   const isMine = p.authorId === uid;
@@ -446,7 +511,7 @@ async function doRepost(postId) {
       authorId: uid, authorName: uname, authorAvatar: uavatar,
       text: orig.text, image: orig.image, verified: false,
       repostOf: {authorName: orig.authorName, key: postId},
-      likes: 0, replies: 0, reposts: 0, timestamp: serverTimestamp()
+      likes: 0, replies: 0, reposts: 0, timestamp: Date.now()
     });
     toast('Re-posted');
   } catch (error) {
@@ -498,7 +563,7 @@ commentSendBtn.onclick = async () => {
   if (!text || !currentPostId) return;
   try {
     await set(push(ref(db, `comments/${currentPostId}`)), { 
-      authorId: uid, authorName: uname, authorAvatar: uavatar, text, timestamp: serverTimestamp() 
+      authorId: uid, authorName: uname, authorAvatar: uavatar, text, timestamp: Date.now() 
     });
     commentInput.value = '';
     toast('Comment posted');
