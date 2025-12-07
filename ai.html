@@ -24,6 +24,8 @@
       --border: #2f3336;
     }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); overflow-y: scroll; }
+    
+    /* Composer Styles */
     .composer { display: flex; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
     .composer img.avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
     textarea { flex: 1; resize: none; background: transparent; color: var(--text); border: none; outline: none; font-size: 20px; padding-top: 10px; min-height: 60px; }
@@ -33,6 +35,8 @@
     .icon-btn:hover { background: var(--hover-accent); }
     .post-btn { background: var(--accent); color: #fff; border: none; border-radius: 999px; padding: 10px 24px; font-weight: 700; font-size: 15px; cursor: pointer; transition: opacity 0.2s; }
     .post-btn:disabled { opacity: 0.5; cursor: default; }
+    
+    /* Feed Styles */
     .feed { padding-bottom: 40px; }
     .post-card { border-bottom: 1px solid var(--border); padding: 16px; cursor: pointer; transition: background 0.2s; }
     .post-card:hover { background: rgba(0,0,0,0.03); }
@@ -55,12 +59,11 @@
     .action-item:hover.like { color: #f91880; }
     .action-item:hover.like .material-icons-outlined { background: rgba(249, 24, 128, 0.1); }
     .delete-btn:hover { color: #f4212e; }
+    
     .custom-toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--accent); color: white; padding: 12px 24px; border-radius: 99px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3); font-weight: 600; opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 50; display: flex; align-items: center; gap: 8px; }
     .custom-toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
     .spinner { border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid #fff; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    .feed-loader { display: flex; justify-content: center; padding: 20px; }
-    .feed-loader .spinner { border-color: var(--border); border-top-color: var(--accent); width: 24px; height: 24px; }
   </style>
 </head>
 <body>
@@ -86,16 +89,14 @@
 </div>
 
 <main id="feed" class="feed"></main>
-<div id="scroll-trigger" class="feed-loader hidden"><div class="spinner"></div></div>
 
 <script type="module">
 /* ---------- Firebase ---------- */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, endAt, get, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, onValue, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
-  // ⚠️ REPLACE THIS WITH YOUR ACTUAL CONFIG
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
   authDomain: "fire-b-a8878.firebaseapp.com",
   databaseURL: "https://fire-b-a8878.firebaseio.com",
@@ -111,160 +112,161 @@ const db   = getDatabase(app);
 
 /* ---------- Globals ---------- */
 let uid, uname, uavatar;
-const postBtn     = document.getElementById('post-btn');
-const textEl      = document.getElementById('post-text');
-const previewEl   = document.getElementById('media-preview');
-const fileInput   = document.getElementById('file-input');
-const feedEl      = document.getElementById('feed');
-const scrollLoader= document.getElementById('scroll-trigger');
+const postBtn       = document.getElementById('post-btn');
+const textEl        = document.getElementById('post-text');
+const previewEl     = document.getElementById('media-preview');
+const fileInput     = document.getElementById('file-input');
+const feedEl        = document.getElementById('feed');
+const POST_LIMIT    = 50; // How many posts to show at once
 
 /* ---------- Theme ---------- */
-const applyTheme = () => {
-  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
     document.body.setAttribute('data-theme', 'dark');
-};
-applyTheme();
 
-/* ---------- Auth ---------- */
+/* ---------- Auth & Init ---------- */
 onAuthStateChanged(auth, user => {
-  if (!user) {                        // anon guest
+  if (!user) {
     signInAnonymously(auth);
     uid = "guest_" + Math.random().toString(36).slice(2);
     uname = "Guest";
-    uavatar = `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
-    document.getElementById('my-avatar').src = uavatar;
-    loadPosts();
   } else {
     uid   = user.uid;
     uname = user.displayName || user.email?.split('@')[0] || 'User';
-    uavatar = user.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
-    document.getElementById('my-avatar').src = uavatar;
-    loadPosts();
   }
+  // Set avatar based on name
+  uavatar = `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
+  document.getElementById('my-avatar').src = uavatar;
+  
+  // Start Listening for Posts
+  initFeedListener();
 });
 
-/* ---------- Infinite Scroll – Public Timeline (FIXED) ---------- */
-// lastPost now stores both the timestamp and the key of the oldest post to handle pagination correctly
-let lastPost = null; 
-let isLoadingPosts = false;
-let allPostsLoaded = false;
-const POSTS_PER_PAGE = 8;
-
-async function loadPosts() {
-  if (isLoadingPosts || allPostsLoaded) return;
-  isLoadingPosts = true;
-  scrollLoader.classList.remove('hidden');
-
+/* ---------- Realtime Feed Listener ---------- */
+function initFeedListener() {
   const postsRef = ref(db, 'posts');
-  let q;
+  // Order by timestamp, get last 50
+  const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT));
 
-  if (lastPost === null) {
-    // 1. Initial load: Get the latest POSTS_PER_PAGE
-    q = query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE));
-  } else {
-    // 2. Subsequent load: Get the next page (older posts).
-    // We query for POSTS_PER_PAGE + 1 and use endAt(timestamp, key) 
-    // to include the last post from the previous page, which we then slice off.
-    q = query(postsRef, orderByChild('timestamp'), endAt(lastPost.timestamp, lastPost.key), limitToLast(POSTS_PER_PAGE + 1));
-  }
-
-  try {
-    const snap = await get(q);
-    if (!snap.exists()) {
-      allPostsLoaded = true;
-      scrollLoader.classList.add('hidden');
-      if (lastPost === null) feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
+  onValue(q, (snapshot) => {
+    feedEl.innerHTML = ''; // Clear current feed
+    
+    if (!snapshot.exists()) {
+      feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
       return;
     }
-    
-    let rows = [];
-    snap.forEach(child => rows.push({ key: child.key, ...child.val() }));
-    rows.reverse(); // newest → oldest
 
-    let postsToRender = rows;
+    const rows = [];
+    snapshot.forEach(child => rows.push({ key: child.key, ...child.val() }));
+    rows.reverse(); // Newest first
 
-    if (lastPost !== null) {
-        // Remove the first element, which is the duplicate of the last post from the previous page
-        postsToRender = rows.slice(1);
-    }
-    
-    // Check for the end of the feed: if the total results were less than the requested limit + 1
-    if (postsToRender.length === 0 || rows.length <= POSTS_PER_PAGE) {
-      allPostsLoaded = true;
-    }
-
-    // Only update lastPost if we actually loaded new posts
-    if (postsToRender.length > 0) {
-      const oldestPost = postsToRender[postsToRender.length - 1];
-      // Store the key and timestamp of the oldest post we just added.
-      lastPost = { timestamp: oldestPost.timestamp, key: oldestPost.key };
-    }
-    
-    postsToRender.forEach(p => feedEl.appendChild(renderPostCard(p)));
-    
-  } catch (e) {
-    console.error('Feed error:', e);
-    // This is the source of the "Could not load feed" message
-    toast('Could not load feed'); 
-  } finally {
-    isLoadingPosts = false;
-    scrollLoader.classList.add('hidden');
-  }
+    rows.forEach(p => {
+      feedEl.appendChild(renderPostCard(p));
+    });
+  }, (error) => {
+    console.error(error);
+    toast('Error loading feed');
+  });
 }
 
-window.onscroll = () => {
-  if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) loadPosts();
-};
-
-/* ---------- Image Upload ---------- */
+/* ---------- Image Upload (Cloudinary) ---------- */
 let imageUrl = '', uploading = false;
 function toggleBtn() {
   const has = textEl.value.trim().length > 0 || imageUrl.length > 0;
   postBtn.disabled = uploading || !has;
 }
+
 fileInput.onchange = e => {
   const file = e.target.files[0];
   if (!file) return;
+  // Show local preview immediately
   const r = new FileReader();
   r.onload = ev => { previewEl.src = ev.target.result; previewEl.classList.remove('hidden'); };
   r.readAsDataURL(file);
   uploadToCloudinary(file);
 };
+
 function uploadToCloudinary(file) {
+  // ⚠️ YOU MUST SET THESE FOR IMAGES TO WORK
+  const CLOUD_NAME = "YOUR_CLOUD_NAME"; 
+  const UPLOAD_PRESET = "YOUR_UNSIGNED_PRESET"; 
+
+  if(CLOUD_NAME === "YOUR_CLOUD_NAME") {
+      alert("Please configure Cloudinary in the code to upload images!");
+      return;
+  }
+
   uploading = true; toggleBtn();
   document.getElementById('btn-spinner').classList.remove('hidden');
   document.getElementById('btn-text').classList.add('hidden');
+  
   const fd = new FormData();
   fd.append('file', file);
-  // ⚠️ REPLACE THIS WITH YOUR ACTUAL CLOUDINARY PRESET
-  fd.append('upload_preset', 'YOUR_UNSIGNED_PRESET'); 
-  // ⚠️ REPLACE THIS WITH YOUR ACTUAL CLOUDINARY CLOUD NAME
-  fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', { method: 'POST', body: fd }) 
+  fd.append('upload_preset', UPLOAD_PRESET);
+  
+  fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method: 'POST', body: fd }) 
     .then(r => r.json())
-    .then(res => { if (res.error) throw res.error; imageUrl = res.secure_url; toast('Image ready'); })
-    .catch(err => { toast('Upload failed'); console.error(err); })
-    .finally(() => { uploading = false; document.getElementById('btn-spinner').classList.add('hidden'); document.getElementById('btn-text').classList.remove('hidden'); toggleBtn(); });
+    .then(res => { 
+        if (res.error) throw res.error; 
+        imageUrl = res.secure_url; 
+        toast('Image ready'); 
+    })
+    .catch(err => { 
+        toast('Upload failed'); 
+        console.error(err); 
+        previewEl.classList.add('hidden'); // hide preview on fail
+        imageUrl = '';
+    })
+    .finally(() => { 
+        uploading = false; 
+        document.getElementById('btn-spinner').classList.add('hidden'); 
+        document.getElementById('btn-text').classList.remove('hidden'); 
+        toggleBtn(); 
+    });
 }
 
-/* ---------- Posting ---------- */
+/* ---------- Posting Logic ---------- */
 postBtn.onclick = () => {
   const text = textEl.value.trim();
   if (!text && !imageUrl) return;
+
   const newRef = push(ref(db, 'posts'));
-  const post = { authorId: uid, authorName: uname, authorAvatar: uavatar, text, image: imageUrl, verified: false, likes: 0, timestamp: serverTimestamp() };
+  const post = { 
+      authorId: uid, 
+      authorName: uname, 
+      authorAvatar: uavatar, 
+      text, 
+      image: imageUrl, 
+      verified: false, 
+      likes: 0, 
+      timestamp: serverTimestamp() 
+  };
+
   set(newRef, post).then(() => {
-    textEl.value = ''; imageUrl = ''; previewEl.classList.add('hidden'); toggleBtn(); toast('Posted!');
-    feedEl.prepend(renderPostCard({ key: newRef.key, ...post, timestamp: Date.now() }));
+    // Reset Composer
+    textEl.value = ''; 
+    imageUrl = ''; 
+    previewEl.classList.add('hidden'); 
+    toggleBtn(); 
+    toast('Posted!');
+    // No need to manually append to feed, onValue listener handles it!
   }).catch(() => toast('Error posting'));
 };
-textEl.oninput = () => { textEl.style.height = 'auto'; textEl.style.height = textEl.scrollHeight + 'px'; toggleBtn(); };
+
+textEl.oninput = () => { 
+    textEl.style.height = 'auto'; 
+    textEl.style.height = textEl.scrollHeight + 'px'; 
+    toggleBtn(); 
+};
 
 /* ---------- Render ---------- */
 function renderPostCard(p) {
   const div = document.createElement('div');
   div.className = 'post-card';
   div.id = `post-${p.key}`;
-  const del = p.authorId === uid ? `<div class="action-item delete-btn" onclick="deletePost('${p.key}')"><span class="material-icons-outlined">delete</span></div>` : '';
+  
+  const del = p.authorId === uid ? 
+    `<div class="action-item delete-btn" onclick="deletePost('${p.key}')"><span class="material-icons-outlined">delete</span></div>` : '';
+  
   div.innerHTML = `
     <div class="post-header">
       <img src="${p.authorAvatar}" class="post-avatar" alt="">
@@ -287,14 +289,21 @@ function renderPostCard(p) {
     </div>`;
   return div;
 }
-window.deletePost = key => { if (confirm('Delete this post?')) { remove(ref(db, `posts/${key}`)); document.getElementById(`post-${key}`).remove(); toast('Deleted'); } };
+
+window.deletePost = key => { 
+    if (confirm('Delete this post?')) { 
+        remove(ref(db, `posts/${key}`))
+            .then(() => toast('Deleted'))
+            .catch(() => toast('Error deleting'));
+    } 
+};
 
 /* ---------- Utils ---------- */
 function toast(msg) {
   const t = document.createElement('div'); t.className = 'custom-toast'; t.textContent = msg;
   document.body.appendChild(t); setTimeout(()=>t.classList.add('show'),10); setTimeout(()=>{t.classList.remove('show'); setTimeout(()=>t.remove(),400);},3000);
 }
-const escape = s => s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const escape = s => s ? s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
 const timeAgo = ts => { if (!ts) return 'now'; const s = Math.floor((Date.now()-ts)/1000); return s<60?`${s}s`:s<3600?`${Math.floor(s/60)}m`:s<86400?`${Math.floor(s/3600)}h`:`${Math.floor(s/86400)}d`; };
 </script>
 </body>
