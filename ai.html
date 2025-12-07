@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
   <title>Vynix – Posts</title>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     :root {
@@ -18,7 +19,7 @@
       --text2: #8b98a5; --border: #2f3336;
     }
     body {
-      font-family: system-ui, sans-serif;
+      font-family: system-ui, -apple-system, sans-serif;
       background: var(--bg); color: var(--text);
       -webkit-user-select: none; user-select: none;
       -webkit-touch-callout: none;
@@ -33,7 +34,7 @@
       flex: 1; resize: none; background: transparent; color: var(--text);
       border: none; outline: none; font-size: 18px;
     }
-    .media-preview { max-height: 200px; border-radius: 12px; margin-top: 8px; }
+    .media-preview { max-height: 200px; border-radius: 12px; margin-top: 8px; object-fit: cover; }
     .composer-actions {
       display: flex; align-items: center; justify-content: space-between;
       margin-top: 8px;
@@ -66,19 +67,27 @@
     .post-header .name { font-weight: 700; font-size: 15px; }
     .post-header .handle { color: var(--text2); font-size: 14px; }
     .post-header .time { margin-left: auto; color: var(--text2); font-size: 13px; }
-    .post-body { margin-top: 10px; white-space: pre-wrap; font-size: 15px; }
-    .post-image { max-width: 100%; border-radius: 12px; margin-top: 10px; }
+    .post-body { margin-top: 10px; white-space: pre-wrap; font-size: 15px; word-break: break-word; }
+    .post-image { max-width: 100%; border-radius: 12px; margin-top: 10px; display: block; }
     .post-footer {
       display: flex; justify-content: space-between; margin-top: 12px;
       color: var(--text2); font-size: 14px;
     }
     .post-footer span {
-      cursor: pointer; display: flex; align-items: center; gap: 4px;
-      padding: 4px 8px; border-radius: 999px; transition: background .2s;
+      cursor: pointer; display: flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border-radius: 999px; transition: all .2s;
     }
     .post-footer span:hover { background: rgba(255,42,109,.08); color: var(--accent); }
     .post-footer .retweet:hover { background: rgba(23,191,99,.08); color: var(--retweet); }
     .post-footer .like:hover   { background: rgba(224,36,94,.08); color: var(--like); }
+
+    /* toast */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #333; color: #fff; padding: 12px 24px; border-radius: 999px;
+      font-size: 14px; z-index: 1000; animation: toast 2.5s forwards;
+    }
+    @keyframes toast { 0%,100% {opacity:0; transform:translateX(-50%) translateY(20px)} 10%,90% {opacity:1; transform:translateX(-50%) translateY(0)} }
   </style>
 </head>
 <body>
@@ -88,15 +97,15 @@
   <img id="my-avatar" src="https://ui-avatars.com/api/?background=05d9e8&color=fff&name=U"/>
   <div class="flex-1">
     <textarea id="post-text" rows="2" placeholder="What's happening?"></textarea>
-    <img id="media-preview" class="media-preview hidden"/>
-    <div class="composer-actions">
-      <div>
-        <input type="file" id="file-input" accept="image/*" class="hidden"/>
-        <label for="file-input" class="icon-btn material-icons">image</label>
-      </div>
-      <button id="post-btn" class="post-btn">Post</button>
-    </div>
+    <img id="media-preview" class="media-preview hidden" alt="Preview"/>
   </div>
+</div>
+<div class="composer-actions">
+  <div>
+    <input type="file" id="file-input" accept="image/*" class="hidden"/>
+    <label for="file-input" class="icon-btn material-icons">image</label>
+  </div>
+  <button id="post-btn" class="post-btn">Post</button>
 </div>
 
 <!-- algorithmic feed -->
@@ -106,7 +115,10 @@
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, onValue, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { 
+  getDatabase, ref, push, onValue, serverTimestamp, 
+  set, runTransaction 
+} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -117,142 +129,190 @@ const firebaseConfig = {
   messagingSenderId: "658673187627",
   appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
 let uid, uname, uavatar;
+let imageUrl = '';
 
-/* ---------- theme ---------- */
+// Theme
 const applyTheme = () => {
   const s = localStorage.getItem('vynix-settings');
   if (!s) return;
   const {darkMode, theme} = JSON.parse(s);
-  const dark = darkMode || (theme==='auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
+  const dark = darkMode || (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
 };
 applyTheme();
 
-/* ---------- auth ---------- */
-onAuthStateChanged(auth, user=>{
-  if (!user) return location.href='login.html';
+// Auth
+onAuthStateChanged(auth, user => {
+  if (!user) return location.href = 'login.html';
   uid = user.uid;
   uname = user.displayName || user.email.split('@')[0];
-  uavatar = user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${uname}`;
+  uavatar = user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${encodeURIComponent(uname)}`;
   document.getElementById('my-avatar').src = uavatar;
   loadFeed();
 });
 
-/* ---------- image handling ---------- */
-let imageUrl = '';
-document.getElementById('file-input').onchange = e=>{
+// Image upload
+document.getElementById('file-input').onchange = e => {
   const file = e.target.files[0];
   if (!file) return;
+  
   const reader = new FileReader();
-  reader.onload = ev=>{
-    document.getElementById('media-preview').src = ev.target.result;
-    document.getElementById('media-preview').classList.remove('hidden');
+  reader.onload = ev => {
+    const preview = document.getElementById('media-preview');
+    preview.src = ev.target.result;
+    preview.classList.remove('hidden');
   };
   reader.readAsDataURL(file);
+  
   uploadToCloudinary(file);
 };
-function uploadToCloudinary(file){
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('upload_preset', 'banter_box); // unsigned preset
-  fetch('https://api.cloudinary.com/v1_1/dqkujefxj/image/upload', {method:'POST', body: fd})
-    .then(r=>r.json())
-    .then(res=>{ imageUrl = res.secure_url; toast('Image ready'); })
-    .catch(err=>{ toast('Upload failed'); console.error(err); });
+
+async function uploadToCloudinary(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', 'banter_box'); // Make sure this unsigned preset exists in your Cloudinary
+
+  try {
+    const res = await fetch('https://api.cloudinary.com/v1_1/dqkujefxj/image/upload', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (data.secure_url) {
+      imageUrl = data.secure_url;
+      toast('Image uploaded');
+    } else {
+      throw new Error('Upload failed');
+    }
+  } catch (err) {
+    console.error(err);
+    toast('Image upload failed');
+    imageUrl = '';
+  }
 }
 
-/* ---------- post ---------- */
-document.getElementById('post-btn').onclick = ()=>{
+// Post
+document.getElementById('post-btn').onclick = async () => {
   const text = document.getElementById('post-text').value.trim();
-  if (!text && !imageUrl) return toast('Write something or attach an image');
+  if (!text && !imageUrl) return toast('Write something or add an image');
+
   const postRef = push(ref(db, 'posts'));
-  const ts = serverTimestamp();
-  // initialise engagement counters
-  set(postRef, {
-    authorId: uid, authorName: uname, authorAvatar: uavatar,
-    text, image: imageUrl, verified: false,
-    timestamp: ts,
-    likes: 0, reposts: 0, replies: 0, score: 0
+  
+  await set(postRef, {
+    authorId: uid,
+    authorName: uname,
+    authorAvatar: uavatar,
+    text,
+    image: imageUrl || null,
+    timestamp: serverTimestamp(),
+    likes: 0,
+    reposts: 0,
+    replies: 0,
+    score: 0
   });
-  // reset
+
+  // Reset
   document.getElementById('post-text').value = '';
   document.getElementById('media-preview').classList.add('hidden');
   imageUrl = '';
-  toast('Posted');
+  toast('Posted!');
 };
 
-/* ---------- feed (algorithmic) ---------- */
-function loadFeed(){
+// Feed
+function loadFeed() {
   const feed = document.getElementById('feed');
-  onValue(ref(db, 'posts'), snap=>{
+  
+  onValue(ref(db, 'posts'), snap => {
     const posts = [];
-    snap.forEach(c=> posts.push({id: c.key, ...c.val()}));
-    // compute hot score once client-side (could be moved to cloud later)
-    posts.forEach(p=>{
-      const ageH = (Date.now() - (p.timestamp || 0)) / 3600000;
-      const decay = Math.max(0, 1 - ageH/24); // 24 h half-life
-      p.score = (p.likes*3 + p.reposts*5 + p.replies*2) * decay;
+    snap.forEach(child => {
+      posts.push({ id: child.key, ...child.val() });
     });
-    posts.sort((a,b)=> b.score - a.score);
+
+    // Client-side hotness score
+    posts.forEach(p => {
+      const ageHours = (Date.now() - (p.timestamp || 0)) / 3600000;
+      const decay = Math.max(0.1, Math.exp(-ageHours / 12)); // smoother decay
+      p.score = (p.likes * 3 + p.reposts * 5 + p.replies * 2 + 1) * decay;
+    });
+
+    posts.sort((a, b) => b.score - a.score);
+
     feed.innerHTML = '';
-    posts.forEach(p=> feed.appendChild(renderPostCard(p)));
-  });
+    posts.forEach(p => feed.appendChild(renderPostCard(p)));
+  }, { onlyOnce: false });
 }
-function renderPostCard(p){
+
+function renderPostCard(p) {
   const div = document.createElement('div');
   div.className = 'post-card';
+
+  const escapedText = escapeHtml(p.text || '');
+
   div.innerHTML = `
     <div class="post-header">
-      <img src="${p.authorAvatar}" />
+      <img src="\( {p.authorAvatar || 'https://ui-avatars.com/api/?background=05d9e8&color=fff&name=U'}" alt=" \){escapeHtml(p.authorName)}">
       <div>
-        <div class="name">${p.authorName}</div>
-        <div class="handle">@${p.authorName.replace(/\s/g,'')}</div>
+        <div class="name">${escapeHtml(p.authorName)}</div>
+        <div class="handle">@${p.authorName.replace(/\s/g, '').toLowerCase()}</div>
       </div>
       <div class="time">${timeAgo(p.timestamp)}</div>
     </div>
-    <div class="post-body">${escapeHtml(p.text)}</div>
-    ${p.image ? `<img class="post-image" src="${p.image}" />` : ''}
+    <div class="post-body">${escapedText.replace(/\n/g, '<br>')}</div>
+    \( {p.image ? `<img class="post-image" src=" \){p.image}" loading="lazy">` : ''}
     <div class="post-footer">
-      <span class="material-icons-outlined" onclick="reply('${p.id}')">chat_bubble_outline</span>
-      <span class="retweet" onclick="repost('${p.id}')">${p.reposts}  repeat</span>
-      <span class="like"   onclick="like('${p.id}')">${p.likes}  favorite_border</span>
-      <span class="material-icons-outlined" onclick="share('${p.id}')">share</span>
+      <span onclick="reply('\( {p.id}')"><span class="material-icons-outlined text-base">chat_bubble_outline</span> \){p.replies}</span>
+      <span class="retweet" onclick="repost('\( {p.id}')"><span class="material-icons-outlined text-base">repeat</span> \){p.reposts}</span>
+      <span class="like" onclick="like('\( {p.id}')"><span class="material-icons-outlined text-base">favorite_border</span> \){p.likes}</span>
+      <span onclick="share('${p.id}')"><span class="material-icons-outlined text-base">share</span></span>
     </div>
   `;
   return div;
 }
 
-/* ---------- engagement ---------- */
-window.like   = id=> transact(id, 'likes');
-window.repost = id=> transact(id, 'reposts');
-function transact(id, key){
-  const refPost = ref(db, `posts/${id}/${key}`);
-  runTransaction(refPost, cur=>(cur||0)+1);
-}
-window.reply = id=> toast('Reply coming soon');
-window.share = id=> toast('Link copied');
+// Engagement
+window.like   = id => transact(id, 'likes');
+window.repost = id => transact(id, 'reposts');
 
-/* ---------- helpers ---------- */
-const toast = msg=>{
+function transact(id, field) {
+  const r = ref(db, `posts/\( {id}/ \){field}`);
+  runTransaction(r, val => (val || 0) + 1);
+}
+
+window.reply = () => toast('Replies coming soon');
+window.share = () => {
+  navigator.clipboard.writeText(location.href);
+  toast('Link copied!');
+};
+
+// Helpers
+function toast(msg) {
   const t = document.createElement('div');
-  t.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 bg-accent text-white px-4 py-2 rounded-full text-sm';
+  t.className = 'toast';
   t.textContent = msg;
   document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 2500);
-};
-const escapeHtml = str=>str.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const timeAgo = ts=>{
-  const s = Math.floor((Date.now() - ts)/1000);
-  if (s<60) return `${s}s`;
-  if (s<3600) return `${Math.floor(s/60)}m`;
-  if (s<86400) return `${Math.floor(s/3600)}h`;
-  return `${Math.floor(s/86400)}d`;
-};
+  setTimeout(() => t.remove(), 2800);
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function timeAgo(ts) {
+  if (!ts) return 'just now';
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
 </script>
 </body>
 </html>
