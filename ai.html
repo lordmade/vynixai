@@ -199,53 +199,41 @@ onAuthStateChanged(auth, async user => {
 
 async function initFeed() {
   try {
-    console.log('Initializing feed...');
-    const postsRef = ref(db, 'posts');
-    
-    // First, let's see ALL posts without ordering
-    const snap = await get(postsRef);
-    console.log('Posts snapshot exists:', snap.exists());
-    console.log('Number of posts:', snap.size);
-    
+    console.log('Initializing feed via ordered query...');
+    // Query the last N posts ordered by timestamp
+    const postsQuery = query(ref(db, 'posts'), orderByChild('timestamp'), limitToLast(POST_LIMIT));
+    const snap = await get(postsQuery);
+
+    console.log('posts root exists:', snap.exists(), 'children:', snap.exists() ? snap.numChildren() : 0);
+
     if (!snap.exists()) {
-      console.log('No posts found in database');
       feedEl.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text2);">No posts yet. Be the first to post!</div>';
       initialLoadDone = true;
       listenNew();
       return;
     }
-    
+
+    // Build array and sort newest-first
     const rows = [];
     snap.forEach(c => {
       const data = c.val();
-      console.log('Post data:', c.key, data);
-      if (data) {
-        rows.push({key: c.key, ...data});
-      }
+      if (data) rows.push({ key: c.key, ...data });
     });
-    
-    // Sort by timestamp (newest first)
-    rows.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    
-    console.log('Total posts loaded:', rows.length);
-    
-    // Clear feed and display all posts
+    rows.sort((a,b) => (b.timestamp || 0) - (a.timestamp || 0));
+
     feedEl.innerHTML = '';
     rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
-    
+
     const last = rows[rows.length-1];
-    if (last) { 
-      lastTimestamp = last.timestamp; 
-      lastKey = last.key; 
-    }
-    
-    loadMoreBtn.classList.add('hidden'); // Hide for now since we're loading all
+    if (last) { lastTimestamp = last.timestamp; lastKey = last.key; }
+
+    // Hide load more if less than limit
+    if (rows.length < POST_LIMIT) loadMoreBtn.classList.add('hidden'); else loadMoreBtn.classList.remove('hidden');
+
     initialLoadDone = true;
     listenNew();
-    
   } catch (error) {
     console.error('Error loading feed:', error);
-    console.error('Error details:', error.code, error.message);
     feedEl.innerHTML = `<div style="padding: 40px; text-align: center; color: #f4212e;">
       Error loading posts: ${error.message}<br>
       <small>Check console for details</small><br>
@@ -257,58 +245,54 @@ async function initFeed() {
 }
 
 function listenNew() {
-  console.log('Setting up real-time listener...');
+  console.log('Setting up real-time listener (onChildAdded)...');
   const postsRef = ref(db, 'posts');
   
+  // onChildAdded will fire for new children; we skip while initialLoadDone is false to avoid duplicates
   onChildAdded(postsRef, snap => {
     if (!initialLoadDone) {
-      console.log('Skipping - initial load not done');
+      // when initialLoadDone becomes true we will start handling new children only
+      console.log('Skipping new-child handling until initial load completes');
       return;
     }
-    
     const data = snap.val();
-    console.log('New post detected:', snap.key, data);
-    
     if (!data) return;
-    
-    // Check if post already exists in feed
+    console.log('New post detected:', snap.key, data);
     if (document.getElementById(`post-${snap.key}`)) {
       console.log('Post already exists, skipping');
       return;
     }
-    
-    // Add new post to top of feed
-    const newPost = {key: snap.key, ...data};
+    const newPost = { key: snap.key, ...data };
     feedEl.prepend(renderPostCard(newPost));
-    console.log('New post added to feed');
-    
-    if (data.timestamp) {
-      lastTimestamp = data.timestamp;
-    }
-  });
+    if (data.timestamp) lastTimestamp = data.timestamp;
+  }, err => console.error('onChildAdded error:', err));
 }
 
 loadMoreBtn.onclick = async () => {
   loadMoreBtn.disabled = true;
   try {
-    const q = query(ref(db, 'posts'), orderByChild('timestamp'), endAt(lastTimestamp), limitToLast(POST_LIMIT+1));
+    if (!lastTimestamp) {
+      toast('No more posts');
+      loadMoreBtn.classList.add('hidden');
+      return;
+    }
+    const q = query(ref(db, 'posts'), orderByChild('timestamp'), endAt(lastTimestamp), limitToLast(POST_LIMIT + 1));
     const snap = await get(q);
     const rows = [];
-    snap.forEach(c => rows.push({key: c.key, ...c.val()}));
+    snap.forEach(c => rows.push({ key: c.key, ...c.val() }));
+    // Filter duplicate lastKey (we used endAt)
     const uniq = rows.filter(p => p.key !== lastKey);
-    
     if (!uniq.length) {
       toast('No more posts');
       loadMoreBtn.classList.add('hidden');
       return;
     }
-    
+    // uniq currently oldest-first because limitToLast + endAt; reverse to append in chronological order
     uniq.reverse();
     uniq.forEach(p => feedEl.appendChild(renderPostCard(p)));
     const last = uniq[uniq.length-1];
     lastTimestamp = last.timestamp;
     lastKey = last.key;
-    
     if (uniq.length < POST_LIMIT) loadMoreBtn.classList.add('hidden');
   } catch (error) {
     console.error('Error loading more posts:', error);
@@ -324,17 +308,8 @@ function toggleBtn() {
   const hasText = textEl.value.trim().length > 0;
   const hasImage = imageUrl.length > 0;
   const shouldEnable = !uploading && (hasText || hasImage);
-  
   postBtn.disabled = !shouldEnable;
-  
-  // Debug logging
-  console.log('Toggle button:', {
-    hasText,
-    hasImage,
-    uploading,
-    shouldEnable,
-    textLength: textEl.value.length
-  });
+  console.log('Toggle button state:', { hasText, hasImage, uploading, shouldEnable, textLength: textEl.value.length });
 }
 
 fileInput.onchange = e => {
@@ -354,8 +329,13 @@ function uploadToCloudinary(file) {
   fd.append('upload_preset', UPLOAD_PRESET);
   fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, {method: 'POST', body: fd})
     .then(r => r.json())
-    .then(res => { imageUrl = res.secure_url; toast('Image ready'); })
-    .catch(err => { toast('Upload failed'); imageUrl = ''; previewEl.classList.add('hidden'); console.error(err); })
+    .then(res => {
+      console.log('Cloudinary response:', res);
+      imageUrl = res.secure_url || '';
+      if (imageUrl) toast('Image ready');
+      else { toast('Upload did not return url'); previewEl.classList.add('hidden'); }
+    })
+    .catch(err => { toast('Upload failed'); imageUrl = ''; previewEl.classList.add('hidden'); console.error('Cloudinary error', err); })
     .finally(() => { uploading = false; $('#btn-spinner').classList.add('hidden'); $('#btn-text').classList.remove('hidden'); toggleBtn(); });
 }
 
@@ -366,30 +346,29 @@ postBtn.onclick = async () => {
     return;
   }
   
-  // Disable button during posting
   postBtn.disabled = true;
   const originalText = $('#btn-text').textContent;
   $('#btn-text').textContent = 'Posting...';
   
   try {
-    console.log('Starting post creation...');
+    console.log('Creating post...');
     const newRef = push(ref(db, 'posts'));
     const postData = { 
       authorId: uid, 
       authorName: uname, 
       authorAvatar: uavatar, 
       text, 
-      image: imageUrl, 
+      image: imageUrl || null, 
       verified: false, 
       likes: 0, 
       replies: 0, 
       reposts: 0, 
-      timestamp: Date.now() // Use client timestamp instead of serverTimestamp
+      timestamp: serverTimestamp() // server timestamp for consistent ordering
     };
     
-    console.log('Posting data:', postData);
+    console.log('Post data (sent):', postData);
     await set(newRef, postData);
-    console.log('Post created successfully!');
+    console.log('Post created!');
     
     textEl.value = ''; 
     imageUrl = ''; 
@@ -399,7 +378,7 @@ postBtn.onclick = async () => {
     toast('Posted!');
   } catch (error) {
     console.error('Error posting:', error);
-    toast('Error posting: ' + error.message);
+    toast('Error posting: ' + (error.message || error));
   } finally {
     $('#btn-text').textContent = originalText;
     toggleBtn();
@@ -411,8 +390,6 @@ textEl.oninput = () => {
   textEl.style.height = textEl.scrollHeight + 'px'; 
   toggleBtn(); 
 };
-
-// Add keyup listener as well for immediate response
 textEl.onkeyup = () => toggleBtn();
 
 function renderPostCard(p) {
@@ -423,15 +400,15 @@ function renderPostCard(p) {
 
   div.innerHTML = `
     <div class="post-header">
-      <img src="${p.authorAvatar}" class="post-avatar">
+      <img src="${p.authorAvatar || ''}" class="post-avatar" alt="avatar">
       <div class="flex-1">
         <div class="user-meta">
           <span class="name">${esc(p.authorName)}</span>
           ${p.verified ? '<span class="material-icons verified-badge">verified</span>' : ''}
-          <span class="handle">@${p.authorName.replace(/\s/g,'').toLowerCase()} · ${timeAgo(p.timestamp)}</span>
+          <span class="handle">@${(p.authorName||'').replace(/\s/g,'').toLowerCase()} · ${timeAgo(p.timestamp)}</span>
         </div>
         <div class="post-content">${esc(p.text)}</div>
-        ${p.image ? `<img class="post-image" src="${p.image}" loading="lazy">` : ''}
+        ${p.image ? `<img class="post-image" src="${p.image}" loading="lazy" alt="post image">` : ''}
         <div class="post-actions">
           <div class="action-item reply" data-post="${p.key}" data-action="reply">
             <span class="material-icons-outlined">chat_bubble_outline</span>
@@ -455,9 +432,12 @@ function renderPostCard(p) {
       </div>
     </div>`;
 
+  // Delegate click events on action buttons
   div.addEventListener('click', e => {
-    const action = e.target.closest('[data-action]')?.dataset.action;
-    const postId = e.target.closest('[data-post]')?.dataset.post;
+    const actionEl = e.target.closest('[data-action]');
+    if (!actionEl) return;
+    const action = actionEl.dataset.action;
+    const postId = actionEl.dataset.post;
     if (!action || !postId) return;
     e.stopPropagation();
     if (action === 'reply') openComments(postId);
@@ -472,28 +452,51 @@ function renderPostCard(p) {
 }
 
 function listenCounters(postId) {
-  onValue(ref(db, `likes/${postId}`), s => {
-    const c = s.size;
-    const likesEl = $('#likes-'+postId);
-    const iconEl = $('#like-icon-'+postId);
-    if (likesEl) likesEl.textContent = c;
-    if (iconEl) iconEl.textContent = s.hasChild(uid) ? 'favorite' : 'favorite_border';
-  });
-  onValue(ref(db, `comments/${postId}`), s => {
-    const el = $('#replies-'+postId);
-    if (el) el.textContent = s.size;
-  });
-  onValue(ref(db, `reposts/${postId}`), s => {
-    const el = $('#reposts-'+postId);
-    if (el) el.textContent = s.size;
-  });
+  // Likes
+  onValue(ref(db, `likes/${postId}`), snap => {
+    try {
+      const c = snap.exists() ? snap.numChildren() : 0;
+      const likesEl = document.getElementById('likes-'+postId);
+      const iconEl = document.getElementById('like-icon-'+postId);
+      if (likesEl) likesEl.textContent = c;
+      if (iconEl) {
+        const isLiked = snap.exists() && uid && typeof snap.hasChild === 'function' && snap.hasChild(uid);
+        iconEl.textContent = isLiked ? 'favorite' : 'favorite_border';
+      }
+    } catch (err) {
+      console.error('likes listener error for', postId, err);
+    }
+  }, err => console.error('likes onValue error:', err));
+
+  // Comments
+  onValue(ref(db, `comments/${postId}`), snap => {
+    try {
+      const c = snap.exists() ? snap.numChildren() : 0;
+      const el = document.getElementById('replies-'+postId);
+      if (el) el.textContent = c;
+    } catch (err) {
+      console.error('comments listener error for', postId, err);
+    }
+  }, err => console.error('comments onValue error:', err));
+
+  // Reposts
+  onValue(ref(db, `reposts/${postId}`), snap => {
+    try {
+      const c = snap.exists() ? snap.numChildren() : 0;
+      const el = document.getElementById('reposts-'+postId);
+      if (el) el.textContent = c;
+    } catch (err) {
+      console.error('reposts listener error for', postId, err);
+    }
+  }, err => console.error('reposts onValue error:', err));
 }
 
 async function toggleLike(postId) {
   try {
     const likeRef = ref(db, `likes/${postId}/${uid}`);
     const snap = await get(likeRef);
-    snap.exists() ? await remove(likeRef) : await set(likeRef, true);
+    if (snap.exists()) await remove(likeRef);
+    else await set(likeRef, true);
   } catch (error) {
     console.error('Error toggling like:', error);
     toast('Error updating like');
@@ -509,9 +512,9 @@ async function doRepost(postId) {
     const newRef = push(ref(db, 'posts'));
     await set(newRef, {
       authorId: uid, authorName: uname, authorAvatar: uavatar,
-      text: orig.text, image: orig.image, verified: false,
-      repostOf: {authorName: orig.authorName, key: postId},
-      likes: 0, replies: 0, reposts: 0, timestamp: Date.now()
+      text: orig.text, image: orig.image || null, verified: false,
+      repostOf: { authorName: orig.authorName, key: postId },
+      likes: 0, replies: 0, reposts: 0, timestamp: serverTimestamp()
     });
     toast('Re-posted');
   } catch (error) {
@@ -532,7 +535,7 @@ function openComments(postId) {
   commentList.innerHTML = '<div class="p-4 text-sm" style="color: var(--text2);">Loading…</div>';
   commentOverlay.classList.add('show');
 
-  if (commentsListener) commentsListener();
+  if (commentsListener) commentsListener(); // detach previous
   commentsListener = onValue(ref(db, `comments/${postId}`), snap => {
     commentList.innerHTML = '';
     if (!snap.exists()) { 
@@ -543,9 +546,12 @@ function openComments(postId) {
       const v = c.val();
       const d = document.createElement('div');
       d.className = 'comment-item';
-      d.innerHTML = `<img src="${v.authorAvatar}" class="comment-avatar"><div class="comment-body"><div class="comment-name">${esc(v.authorName)}</div><div class="comment-text">${esc(v.text)}</div></div>`;
+      d.innerHTML = `<img src="${v.authorAvatar || ''}" class="comment-avatar" alt="avatar"><div class="comment-body"><div class="comment-name">${esc(v.authorName)}</div><div class="comment-text">${esc(v.text)}</div></div>`;
       commentList.appendChild(d);
     });
+  }, err => {
+    console.error('comments onValue error', err);
+    commentList.innerHTML = '<div class="p-4 text-sm" style="color: var(--text2);">Error loading comments</div>';
   });
 }
 
@@ -563,7 +569,7 @@ commentSendBtn.onclick = async () => {
   if (!text || !currentPostId) return;
   try {
     await set(push(ref(db, `comments/${currentPostId}`)), { 
-      authorId: uid, authorName: uname, authorAvatar: uavatar, text, timestamp: Date.now() 
+      authorId: uid, authorName: uname, authorAvatar: uavatar, text, timestamp: serverTimestamp() 
     });
     commentInput.value = '';
     toast('Comment posted');
@@ -619,10 +625,12 @@ function toast(msg) {
   }, 3000);
 }
 
-const esc = s => s ? s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
+const esc = s => s ? String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
 
 const timeAgo = ts => { 
   if (!ts) return 'now'; 
+  // ts could be serverTimestamp placeholder on the client (object) until DB resolves — handle that
+  if (typeof ts === 'object' && ts && ts['.sv']) return 'now';
   const s = Math.floor((Date.now() - ts) / 1000);
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`; 
 };
