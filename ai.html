@@ -10,8 +10,6 @@
     :root {
       --bg: #ffffff; --card: #f7f9fa; --text: #0f1419;
       --text2: #536471; --border: #e1e8ed; --accent: #ff2a6d;
-      --glow: 0 0 10px rgba(255, 42, 109, .35);
-      --retweet: #17bf63; --like: #e0245e;
     }
     [data-theme="dark"] {
       --bg: #0f1419; --card: #1a1f25; --text: #ffffff;
@@ -23,6 +21,7 @@
       -webkit-user-select: none; user-select: none;
       -webkit-touch-callout: none;
     }
+    /* ---- composer ---- */
     .composer {
       display: flex; gap: 12px; padding: 16px;
       border-bottom: 1px solid var(--border);
@@ -49,13 +48,13 @@
       padding: 8px 20px; font-weight: 600;
     }
     .post-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ---- feed cards ---- */
     .feed { padding-bottom: 20px; }
     .post-card {
       background: var(--card); border: 1px solid var(--border);
       border-radius: 16px; margin: 12px 16px; padding: 16px;
-      transition: transform .15s, box-shadow .15s;
     }
-    .post-card:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,0,0,.08); }
     .post-header {
       display: flex; align-items: center; gap: 10px;
     }
@@ -74,8 +73,6 @@
       padding: 4px 8px; border-radius: 999px; transition: background .2s;
     }
     .post-footer span:hover { background: rgba(255,42,109,.08); color: var(--accent); }
-    .post-footer .retweet:hover { background: rgba(23,191,99,.08); color: var(--retweet); }
-    .post-footer .like:hover   { background: rgba(224,36,94,.08); color: var(--like); }
   </style>
 </head>
 <body>
@@ -96,14 +93,14 @@
   </div>
 </div>
 
-<!-- algorithmic feed -->
+<!-- live feed -->
 <main id="feed" class="feed"></main>
 
 <!-- Firebase -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, onValue, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, push, onValue, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -116,15 +113,15 @@ const firebaseConfig = {
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db  = getDatabase(app);
+const db = getDatabase(app);
 
 let uid, uname, uavatar;
-const postBtn     = document.getElementById('post-btn');
-const textEl      = document.getElementById('post-text');
-const previewEl   = document.getElementById('media-preview');
-const fileInput   = document.getElementById('file-input');
+const postBtn   = document.getElementById('post-btn');
+const textEl    = document.getElementById('post-text');
+const previewEl = document.getElementById('media-preview');
+const fileInput = document.getElementById('file-input');
 
-/* ---------- theme ---------- */
+/* theme */
 const applyTheme = () => {
   const s = localStorage.getItem('vynix-settings');
   if (!s) return;
@@ -134,18 +131,17 @@ const applyTheme = () => {
 };
 applyTheme();
 
-/* ---------- auth + initial UI ---------- */
+/* auth */
 onAuthStateChanged(auth, user=>{
-  if (!user) { console.warn('🔒 not logged in – redirect'); location.href='login.html'; return; }
+  if (!user) { location.href='login.html'; return; }
   uid    = user.uid;
   uname  = user.displayName || user.email.split('@')[0];
   uavatar= user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${uname}`;
   document.getElementById('my-avatar').src = uavatar;
-  console.log('✅ logged:', uid, uname);
-  loadFeed();               // ← only now we have uid
+  loadFeed();
 });
 
-/* ---------- image handling ---------- */
+/* image */
 let imageUrl = '';
 fileInput.onchange = e=>{
   const file = e.target.files[0];
@@ -158,60 +154,42 @@ fileInput.onchange = e=>{
 function uploadToCloudinary(file){
   const fd = new FormData();
   fd.append('file', file);
-  fd.append('upload_preset', 'vynix_posts');   // ➊ MUST exist & be UNSIGNED
+  fd.append('upload_preset', 'vynix_posts');   // must be UNSIGNED
   fetch('https://api.cloudinary.com/v1_1/dk5d7xkhz/image/upload', {method:'POST', body: fd})
     .then(r=>r.json())
-    .then(res=>{
-      if (res.error) { console.error('☁️ Cloudinary error:', res.error); toast('Image upload failed'); return; }
-      imageUrl = res.secure_url;
-      console.log('☁️ image ready:', imageUrl);
-      togglePostButton();
-      toast('Image attached');
-    })
-    .catch(err=>{ console.error('☁️ network error:', err); toast('Upload failed'); });
+    .then(res=>{ imageUrl = res.secure_url; toggleBtn(); toast('Image attached'); })
+    .catch(err=>toast('Upload failed'));
 }
 
-/* ---------- post ---------- */
-textEl.oninput = togglePostButton;
-function togglePostButton(){
-  postBtn.disabled = !textEl.value.trim() && !imageUrl;
-}
+/* post */
+textEl.oninput = toggleBtn;
+function toggleBtn(){ postBtn.disabled = !textEl.value.trim() && !imageUrl; }
+
 postBtn.onclick = ()=>{
   const text = textEl.value.trim();
   if (!text && !imageUrl) return toast('Write something or attach an image');
   const refPost = push(ref(db, 'posts'));
-  console.log('📝 posting:', text, imageUrl);
   set(refPost, {
     authorId: uid, authorName: uname, authorAvatar: uavatar,
     text, image: imageUrl, verified: false,
-    likes: 0, reposts: 0, replies: 0, score: 0,
+    likes: 0, reposts: 0, replies: 0,
     timestamp: serverTimestamp()
-  })
-  .then(()=>{
-    console.log('✅ post saved');
+  }).then(()=>{
     textEl.value = ''; imageUrl = ''; previewEl.classList.add('hidden');
-    togglePostButton();
-    toast('Posted');
-  })
-  .catch(err=>{ console.error('❌ save failed:', err); toast('Post failed – check console'); });
+    toggleBtn(); toast('Posted');
+  }).catch(err=>toast('Post failed – console'));
 };
 
-/* ---------- feed (algorithmic) ---------- */
+/* feed */
 function loadFeed(){
   const feed = document.getElementById('feed');
   onValue(ref(db, 'posts'), snap=>{
     const posts = [];
     snap.forEach(c=> posts.push({id: c.key, ...c.val()}));
-    console.log('📨 posts snapshot count:', posts.length);
-    posts.forEach(p=>{
-      const ageH = (Date.now() - (p.timestamp || 0)) / 3600000;
-      const decay = Math.max(0, 1 - ageH/24);        // 24 h half-life
-      p.score = (p.likes*3 + p.reposts*5 + p.replies*2) * decay;
-    });
-    posts.sort((a,b)=> b.score - a.score);
+    posts.sort((a,b)=> b.timestamp - a.timestamp);   // newest first
     feed.innerHTML = '';
     posts.forEach(p=> feed.appendChild(renderPostCard(p)));
-  }, err=>{ console.error('❌ feed listener:', err); });
+  });
 }
 function renderPostCard(p){
   const div = document.createElement('div');
@@ -220,49 +198,34 @@ function renderPostCard(p){
     <div class="post-header">
       <img src="${p.authorAvatar}" />
       <div>
-        <div class="name">${escapeHtml(p.authorName)}</div>
+        <div class="name">${escape(p.authorName)}</div>
         <div class="handle">@${p.authorName.replace(/\s/g,'')} · ${timeAgo(p.timestamp)}</div>
       </div>
     </div>
-    <div class="post-body">${escapeHtml(p.text)}</div>
+    <div class="post-body">${escape(p.text)}</div>
     ${p.image ? `<img class="post-image" src="${p.image}" />` : ''}
     <div class="post-footer">
-      <span onclick="reply('${p.id}')">💬 ${p.replies||0}</span>
-      <span class="retweet" onclick="repost('${p.id}')">🔁 ${p.reposts||0}</span>
-      <span class="like"   onclick="like('${p.id}')">❤️ ${p.likes||0}</span>
-      <span onclick="share('${p.id}')">📤</span>
+      <span>💬 ${p.replies||0}</span>
+      <span>🔁 ${p.reposts||0}</span>
+      <span>❤️ ${p.likes||0}</span>
+      <span>📤</span>
     </div>
   `;
   return div;
 }
 
-/* ---------- engagement ---------- */
-window.reply  = id=> toast('Reply coming soon');
-window.share  = id=> toast('Link copied');
-window.like   = id=> transact(id, 'likes');
-window.repost = id=> transact(id, 'reposts');
-function transact(id, key){
-  const refPost = ref(db, `posts/${id}/${key}`);
-  runTransaction(refPost, cur=>(cur||0)+1)
-    .then(res=>console.log(`✅ ${key} ++`, res.snapshot.val()))
-    .catch(err=>console.error(`❌ ${key} failed`, err));
-}
-
-/* ---------- helpers ---------- */
+/* helpers */
 const toast = msg=>{
-  const t = document.createElement('div');
-  t.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 bg-accent text-white px-4 py-2 rounded-full text-sm';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 2500);
+  const t=document.createElement('div');
+  t.className='fixed bottom-8 left-1/2 -translate-x-1/2 bg-accent text-white px-4 py-2 rounded-full text-sm';
+  t.textContent=msg; document.body.appendChild(t);
+  setTimeout(()=>t.remove(),2500);
 };
-const escapeHtml = str=>str.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const timeAgo = ts=>{
-  const s = Math.floor((Date.now() - ts)/1000);
-  if (s<60) return `${s}s`;
-  if (s<3600) return `${Math.floor(s/60)}m`;
-  if (s<86400) return `${Math.floor(s/3600)}h`;
-  return `${Math.floor(s/86400)}d`;
+const escape=s=>s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const timeAgo=ts=>{
+  const s=Math.floor((Date.now()-ts)/1000);
+  if(s<60)return`${s}s`;if(s<3600)return`${Math.floor(s/60)}m`;
+  if(s<86400)return`${Math.floor(s/3600)}h`;return`${Math.floor(s/86400)}d`;
 };
 </script>
 </body>
