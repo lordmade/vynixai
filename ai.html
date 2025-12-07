@@ -169,10 +169,15 @@
 </div>
 
 <script type="module">
+/* ----------  IMPORTS  ---------- */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, endAt, get, update, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import {
+  getDatabase, ref, push, set, remove, query, limitToLast,
+  orderByChild, endAt, get, serverTimestamp, onValue, off
+} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
+/* ----------  FIREBASE CONFIG  ---------- */
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
   authDomain: "fire-b-a8878.firebaseapp.com",
@@ -182,294 +187,241 @@ const firebaseConfig = {
   messagingSenderId: "658673187627",
   appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
-
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// Variables
+/* ----------  GLOBALS  ---------- */
 let uid, uname, uavatar;
-const postBtn = document.getElementById('post-btn');
-const textEl = document.getElementById('post-text');
-const previewEl = document.getElementById('media-preview');
-const fileInput = document.getElementById('file-input');
-const feedEl = document.getElementById('feed');
-const scrollLoader = document.getElementById('scroll-trigger');
+let lastPostTime = null, isLoadingPosts = false, allPostsLoaded = false;
+const POSTS_PER_PAGE = 8;
 
-// Theme Logic (Keeping for completeness)
-const applyTheme = () => {
-  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-    document.body.setAttribute('data-theme', 'dark');
-  }
-};
+/* ----------  THEME  ---------- */
+const applyTheme = () =>
+  window.matchMedia('(prefers-color-scheme: dark)').matches &&
+  document.body.setAttribute('data-theme', 'dark');
 applyTheme();
 
-// Auth
+/* ----------  AUTH  ---------- */
 onAuthStateChanged(auth, user => {
-  if (!user) { 
-    // Fallback for guest
-    uid = "guest123"; uname = "Guest"; uavatar = `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
+  if (!user) {
+    uid = "guest123"; uname = "Guest";
+    uavatar = `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
   } else {
     uid = user.uid;
     uname = user.displayName || user.email.split('@')[0];
     uavatar = user.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
   }
   document.getElementById('my-avatar').src = uavatar;
-  loadPosts(); 
+  loadPosts();
 });
 
-/* --- INFINITE SCROLL LOGIC (Retained) --- */
-let lastPostTime = null;
-let isLoadingPosts = false;
-let allPostsLoaded = false;
-const POSTS_PER_PAGE = 8;
+/* ----------  INFINITE SCROLL  ---------- */
+window.onscroll = () =>
+  window.innerHeight + window.scrollY >= document.body.offsetHeight - 500 && loadPosts();
 
 async function loadPosts() {
   if (isLoadingPosts || allPostsLoaded) return;
   isLoadingPosts = true;
   scrollLoader.classList.remove('hidden');
 
-  let q;
   const postsRef = ref(db, 'posts');
+  const q = lastPostTime === null
+    ? query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE))
+    : query(postsRef, orderByChild('timestamp'), endAt(lastPostTime - 1), limitToLast(POSTS_PER_PAGE));
 
-  if (lastPostTime === null) {
-    q = query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE));
-  } else {
-    q = query(postsRef, orderByChild('timestamp'), endAt(lastPostTime - 1), limitToLast(POSTS_PER_PAGE));
-  }
-
-  try {
-    const snapshot = await get(q);
-    
-    if (!snapshot.exists() || snapshot.size < 1) {
-      allPostsLoaded = true;
-      scrollLoader.classList.add('hidden');
-      if(lastPostTime === null) feedEl.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text2)">No posts yet.</div>';
-      return;
-    }
-
-    const posts = [];
-    snapshot.forEach(child => {
-      posts.push({ key: child.key, ...child.val() });
-    });
-
-    posts.reverse(); // Reverse to show newest first
-
-    if (posts.length < POSTS_PER_PAGE) {
-      allPostsLoaded = true;
-    }
-
-    if (posts.length > 0) {
-      lastPostTime = posts[posts.length - 1].timestamp;
-      posts.forEach(p => {
-        // Prevent re-adding the oldest post (the cursor)
-        const existingEl = document.getElementById(`post-${p.key}`);
-        if (!existingEl) {
-            feedEl.appendChild(renderPostCard(p));
-        }
-      });
-    }
-
-  } catch (error) {
-    console.error("Feed error:", error);
-    toast("Could not load feed", "error");
-  } finally {
-    isLoadingPosts = false;
+  const snap = await get(q);
+  if (!snap.exists()) {
+    allPostsLoaded = true;
     scrollLoader.classList.add('hidden');
+    if (lastPostTime === null) feedEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text2)">No posts yet.</div>';
+    return;
   }
+
+  const arr = [];
+  snap.forEach(c => arr.push({ key: c.key, ...c.val() }));
+  arr.reverse();
+  if (arr.length < POSTS_PER_PAGE) allPostsLoaded = true;
+  if (arr.length) lastPostTime = arr[arr.length - 1].timestamp;
+
+  arr.forEach(p => feedEl.appendChild(renderPostCard(p)));
+  isLoadingPosts = false;
+  scrollLoader.classList.add('hidden');
 }
 
-window.onscroll = () => {
-  if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
-    loadPosts();
-  }
-};
-
-/* --- UPLOAD LOGIC (Retained) --- */
+/* ----------  UPLOAD  ---------- */
 let imageUrl = '', uploading = false;
-
-function toggleBtn() {
-    const hasContent = textEl.value.trim().length > 0 || imageUrl.length > 0;
-    postBtn.disabled = uploading || !hasContent;
-}
+const fileInput = document.getElementById('file-input');
+const previewEl = document.getElementById('media-preview');
+const postBtn = document.getElementById('post-btn');
+const textEl = document.getElementById('post-text');
+const scrollLoader = document.getElementById('scroll-trigger');
+const feedEl = document.getElementById('feed');
 
 fileInput.onchange = e => {
   const file = e.target.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev => { previewEl.src = ev.target.result; previewEl.classList.remove('hidden'); };
-  reader.readAsDataURL(file);
+  const r = new FileReader();
+  r.onload = ev => { previewEl.src = ev.target.result; previewEl.classList.remove('hidden'); };
+  r.readAsDataURL(file);
   uploadToCloudinary(file);
 };
 
-function uploadToCloudinary(file) { /* ... implementation retained ... */ }
-postBtn.onclick = () => { /* ... implementation retained ... */ };
-textEl.oninput = () => { 
-    textEl.style.height = 'auto';
-    textEl.style.height = textEl.scrollHeight + 'px';
-    toggleBtn();
-};
+function uploadToCloudinary(file) {
+  uploading = true; toggleBtn();
+  document.getElementById('btn-spinner').classList.remove('hidden');
+  document.getElementById('btn-text').classList.add('hidden');
 
-/* ------------------------------------- */
-/* --- NEW: INTERACTION FUNCTIONS --- */
-/* ------------------------------------- */
-
-// 1. LIKE BUTTON
-window.toggleLike = (key) => {
-    const postRef = ref(db, `posts/${key}`);
-    
-    // Using transaction ensures multiple users liking at once doesn't overwrite the counter
-    runTransaction(postRef, (post) => {
-        if (post) {
-            if (!post.likedBy) post.likedBy = {};
-
-            if (post.likedBy[uid]) {
-                // Unlike the post
-                post.likes--;
-                post.likedBy[uid] = null; // Remove user from liked list
-            } else {
-                // Like the post
-                post.likes++;
-                post.likedBy[uid] = true; // Add user to liked list
-            }
-        }
-        return post;
-    }).then(() => {
-        // Update UI immediately (optional, Firebase listeners will update it anyway)
-        const card = document.getElementById(`post-${key}`);
-        if(card) {
-            const likeBtn = card.querySelector('.action-item.like');
-            const isLiked = likeBtn.classList.toggle('liked');
-            likeBtn.querySelector('span:last-child').textContent = likeBtn.classList.contains('liked') ? 
-                parseInt(likeBtn.querySelector('span:last-child').textContent) + (isLiked ? 1 : -1) : 
-                parseInt(likeBtn.querySelector('span:last-child').textContent) + (isLiked ? 1 : -1);
-
-            // Correct icon state
-            likeBtn.querySelector('.material-icons-outlined').textContent = likeBtn.classList.contains('liked') ? 'favorite' : 'favorite_border';
-        }
-    }).catch(error => {
-        toast("Like failed", "error");
-        console.error("Like transaction failed: ", error);
-    });
-};
-
-// 2. REPOST BUTTON (Placeholder structure for future implementation)
-window.toggleRepost = (key) => {
-    toast("Repost functionality is simulated!", "repeat");
-    // Implementation would involve:
-    // 1. Checking if the user has already reposted.
-    // 2. Using runTransaction to increment/decrement 'reposts' counter.
-    // 3. Updating the post's UI element.
-};
-
-/* ------------------------------------- */
-/* --- NEW: CUSTOM DELETE MODAL --- */
-/* ------------------------------------- */
-const modal = document.getElementById('custom-modal');
-const confirmBtn = document.getElementById('confirm-delete-btn');
-let postIdToDelete = null;
-
-window.showDeleteConfirmation = (key) => {
-    postIdToDelete = key;
-    modal.style.display = 'block';
-    confirmBtn.onclick = () => {
-        window.deletePost(postIdToDelete);
-        closeModal();
-    };
-};
-
-window.closeModal = () => {
-    modal.style.display = 'none';
-    postIdToDelete = null;
-};
-
-// Close modal if user clicks outside
-window.onclick = function(event) {
-    if (event.target == modal) {
-        closeModal();
-    }
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('upload_preset', 'YOUR_UNSIGNED_PRESET'); // <— CHANGE
+  fetch('https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/upload', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(res => { if (res.error) throw res.error; imageUrl = res.secure_url; toast('Image ready'); })
+    .catch(err => { toast('Upload failed'); console.error(err); })
+    .finally(() => { uploading = false; toggleBtn(); });
 }
 
-window.deletePost = (key) => {
-    remove(ref(db, `posts/${key}`))
-        .then(() => {
-            const element = document.getElementById(`post-${key}`);
-            if(element) element.remove();
-            toast('Post deleted successfully!', 'delete');
-        })
-        .catch(e => {
-            toast('Delete failed!', 'error');
-            console.error("Delete error: ", e);
-        });
+/* ----------  POST  ---------- */
+postBtn.onclick = async () => {
+  const text = textEl.value.trim();
+  if (!text && !imageUrl) return;
+  const newRef = push(ref(db, 'posts'));
+  const post = { authorId: uid, authorName: uname, authorAvatar: uavatar,
+                 text, image: imageUrl, verified: false, likes: 0,
+                 timestamp: serverTimestamp() };
+  await set(newRef, post);
+  textEl.value = ''; imageUrl = ''; previewEl.classList.add('hidden'); toggleBtn(); toast('Posted!');
+  feedEl.prepend(renderPostCard({ key: newRef.key, ...post, timestamp: Date.now() }));
 };
 
+textEl.oninput = () => { textEl.style.height = 'auto'; textEl.style.height = textEl.scrollHeight + 'px'; toggleBtn(); };
+function toggleBtn() {
+  postBtn.disabled = uploading || (!textEl.value.trim() && !imageUrl);
+}
 
-/* ------------------------------------- */
-/* --- RENDER CARD (Updated) --- */
-/* ------------------------------------- */
+/* ----------  RENDER CARD  ---------- */
 function renderPostCard(p) {
   const div = document.createElement('div');
-  div.className = 'post-card';
-  div.id = `post-${p.key}`;
-  
-  // Check if current user liked the post
-  const isLiked = p.likedBy && p.likedBy[uid];
-  const likeClass = isLiked ? 'liked' : '';
-  const likeIcon = isLiked ? 'favorite' : 'favorite_border';
-  
-  const deleteBtn = p.authorId === uid 
-    ? `<div class="action-item delete-btn" onclick="showDeleteConfirmation('${p.key}')"><span class="material-icons-outlined">delete</span></div>` : '';
+  div.className = 'post-card'; div.id = `post-${p.key}`;
+
+  const deleteBtn = p.authorId === uid
+    ? `<div class="action-item delete-btn" data-key="${p.key}"><span class="material-icons-outlined">delete</span></div>` : '';
 
   div.innerHTML = `
     <div class="post-header">
-      <img src="${p.authorAvatar}" class="post-avatar" />
+      <img src="${p.authorAvatar}" class="post-avatar"/>
       <div style="flex:1">
         <div class="user-meta">
-            <span class="name">${escape(p.authorName)}</span>
-            ${p.verified ? '<span class="material-icons verified-badge">verified</span>' : ''}
-            <span class="handle">@${p.authorName.replace(/\s/g,'').toLowerCase()} · ${timeAgo(p.timestamp)}</span>
+          <span class="name">${esc(p.authorName)}</span>
+          ${p.verified ? '<span class="material-icons verified-badge">verified</span>' : ''}
+          <span class="handle">@${p.authorName.replace(/\s/g,'').toLowerCase()} · ${timeAgo(p.timestamp)}</span>
         </div>
-        <div class="post-content">${escape(p.text)}</div>
-        ${p.image ? `<img class="post-image" src="${p.image}" loading="lazy" />` : ''}
-        <div class="post-actions">
-          <div class="action-item reply"><span class="material-icons-outlined">chat_bubble_outline</span><span>${p.replies||0}</span></div>
-          
-          <div class="action-item repost" onclick="toggleRepost('${p.key}')">
-            <span class="material-icons-outlined">repeat</span><span>${p.reposts||0}</span>
-          </div>
-          
-          <div class="action-item like ${likeClass}" onclick="toggleLike('${p.key}')">
-            <span class="material-icons-outlined">${likeIcon}</span><span>${p.likes||0}</span>
-          </div>
-          
-          <div class="action-item share"><span class="material-icons-outlined">ios_share</span></div>
+        <div class="post-content">${esc(p.text)}</div>
+        ${p.image ? `<img class="post-image" src="${p.image}" loading="lazy"/>` : ''}
+        <div class="post-actions" data-key="${p.key}">
+          <div class="action-item reply" data-act="reply"><span class="material-icons-outlined">chat_bubble_outline</span><span>${p.replies||0}</span></div>
+          <div class="action-item repost" data-act="repost"><span class="material-icons-outlined">repeat</span><span>${p.reposts||0}</span></div>
+          <div class="action-item like" data-act="like"><span class="material-icons-outlined">${p.likedBy?.[uid]?'favorite':'favorite_border'}</span><span>${p.likes||0}</span></div>
+          <div class="action-item share" data-act="share"><span class="material-icons-outlined">ios_share</span></div>
           ${deleteBtn}
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
+
+  // Bind events
+  div.querySelectorAll('.action-item').forEach(el => {
+    el.onmousedown = e => e.preventDefault(); // kill long-press highlight
+    el.onclick = e => {
+      e.stopPropagation();
+      const act = el.dataset.act, key = el.closest('.post-actions').dataset.key;
+      if (act) handleAction(act, key, el);
+      else if (el.classList.contains('delete-btn')) handleDelete(key);
+    };
+  });
   return div;
 }
 
-/* --- UTILS (Retained) --- */
-function toast(msg, iconName = 'info') {
-  // Remove existing
-  const existing = document.querySelector('.custom-toast');
-  if(existing) existing.remove();
+/* ----------  ACTION HANDLERS  ---------- */
+function handleAction(action, key, el) {
+  const span = el.querySelector('span:last-child');
+  const icon = el.querySelector('span:first-child');
+  const postRef = ref(db, `posts/${key}`);
 
-  const t = document.createElement('div');
-  t.className = 'custom-toast';
-  t.innerHTML = `<span class="material-icons">${iconName}</span> ${msg}`;
-  document.body.appendChild(t);
-  
-  setTimeout(()=> t.classList.add('show'), 10);
-  setTimeout(()=> { t.classList.remove('show'); setTimeout(()=>t.remove(),400); }, 3000);
+  if (action === 'reply') {
+    const r = prompt('Reply:');
+    if (!r || !r.trim()) return;
+    const repliesRef = ref(db, `posts/${key}/replies`);
+    push(repliesRef, { uid, text: r.trim(), ts: Date.now() });
+    toast('Replied!');
+  }
+
+  if (action === 'repost') {
+    const repRef = ref(db, `posts/${key}/reposts`);
+    get(repRef).then(s => {
+      const set = s.val()||{};
+      if (set[uid]) { delete set[uid]; } else { set[uid]=true; }
+      set(repRef, set);
+    });
+  }
+
+  if (action === 'like') {
+    const likesRef = ref(db, `posts/${key}/likedBy`);
+    const likesCntRef = ref(db, `posts/${key}/likes`);
+    get(likesRef).then(s => {
+      const set = s.val()||{};
+      let cnt = (parseInt(span.textContent)||0);
+      if (set[uid]) { delete set[uid]; cnt--; icon.textContent='favorite_border'; }
+      else { set[uid]=true; cnt++; icon.textContent='favorite'; }
+      set(likesRef, set); set(likesCntRef, cnt);
+      span.textContent = cnt;
+    });
+  }
+
+  if (action === 'share') {
+    const url = `${location.href.split('#')[0]}#post-${key}`;
+    navigator.clipboard.writeText(url).then(()=>toast('Link copied!'));
+  }
 }
 
-const escape = s => s ? s.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
+function handleDelete(key) {
+  customConfirm('Delete this post?', () => {
+    remove(ref(db, `posts/${key}`));
+    document.getElementById(`post-${key}`)?.remove();
+    toast('Deleted');
+  });
+}
+
+/* ----------  CUSTOM CONFIRM  ---------- */
+function customConfirm(msg, onYes) {
+  const cover = document.createElement('div');
+  cover.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:center;justify-content:center';
+  cover.innerHTML = `
+    <div style="background:var(--card);padding:24px 28px;border-radius:16px;max-width:280px;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,.3)">
+      <div style="color:var(--text);font-size:16px;margin-bottom:20px">${msg}</div>
+      <div style="display:flex;gap:12px;justify-content:center">
+        <button id="confirm-cancel" style="flex:1;padding:8px 16px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:999px">Cancel</button>
+        <button id="confirm-ok" style="flex:1;padding:8px 16px;border:none;background:var(--accent);color:#fff;border-radius:999px">Delete</button>
+      </div>
+    </div>`;
+  document.body.appendChild(cover);
+  cover.querySelector('#confirm-cancel').onclick = () => cover.remove();
+  cover.querySelector('#confirm-ok').onclick = () => { cover.remove(); onYes(); };
+}
+
+/* ----------  TOAST  ---------- */
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'custom-toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.classList.add('show'),10);
+  setTimeout(()=>{t.classList.remove('show'); setTimeout(()=>t.remove(),400)},3000);
+}
+
+/* ----------  UTILS  ---------- */
+const esc = s => s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const timeAgo = ts => {
-  if(!ts) return 'now';
-  const s = Math.floor((Date.now() - ts)/1000);
+  if(!ts) return 'now'; const s = Math.floor((Date.now()-ts)/1000);
   if(s<60)return`${s}s`; if(s<3600)return`${Math.floor(s/60)}m`;
   if(s<86400)return`${Math.floor(s/3600)}h`; return`${Math.floor(s/86400)}d`;
 };
