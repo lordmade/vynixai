@@ -23,7 +23,6 @@
       -webkit-user-select: none; user-select: none;
       -webkit-touch-callout: none;
     }
-    /* ---- composer ---- */
     .composer {
       display: flex; gap: 12px; padding: 16px;
       border-bottom: 1px solid var(--border);
@@ -50,24 +49,6 @@
       padding: 8px 20px; font-weight: 600;
     }
     .post-btn:disabled { opacity: .5; cursor: not-allowed; }
-
-    /* Progress bar */
-    .progress-container {
-      width: 100%;
-      height: 4px;
-      background: rgba(255,42,109,.2);
-      border-radius: 2px;
-      overflow: hidden;
-      margin-top: 8px;
-    }
-    .progress-bar {
-      height: 100%;
-      width: 0%;
-      background: var(--accent);
-      transition: width 0.2s ease;
-    }
-
-    /* ---- post card ---- */
     .feed { padding-bottom: 20px; }
     .post-card {
       background: var(--card); border: 1px solid var(--border);
@@ -105,18 +86,12 @@
   <div class="flex-1">
     <textarea id="post-text" rows="2" placeholder="What's happening?"></textarea>
     <img id="media-preview" class="media-preview hidden"/>
-    
-    <!-- Progress Bar -->
-    <div id="progress-container" class="progress-container hidden">
-      <div id="progress-bar" class="progress-bar"></div>
-    </div>
-    
     <div class="composer-actions">
       <div>
         <input type="file" id="file-input" accept="image/*" class="hidden"/>
         <label for="file-input" class="icon-btn material-icons">image</label>
       </div>
-      <button id="post-btn" class="post-btn">Post</button>
+      <button id="post-btn" class="post-btn" disabled>Post</button>
     </div>
   </div>
 </div>
@@ -128,7 +103,7 @@
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, onValue, serverTimestamp, runTransaction, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, push, onValue, serverTimestamp, runTransaction } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -141,14 +116,13 @@ const firebaseConfig = {
 };
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getDatabase(app);
+const db  = getDatabase(app);
 
 let uid, uname, uavatar;
-let imageUrl = '';
-
-// Elements
-const progressContainer = document.getElementById('progress-container');
-const progressBar = document.getElementById('progress-bar');
+const postBtn     = document.getElementById('post-btn');
+const textEl      = document.getElementById('post-text');
+const previewEl   = document.getElementById('media-preview');
+const fileInput   = document.getElementById('file-input');
 
 /* ---------- theme ---------- */
 const applyTheme = () => {
@@ -160,104 +134,66 @@ const applyTheme = () => {
 };
 applyTheme();
 
-/* ---------- auth ---------- */
+/* ---------- auth + initial UI ---------- */
 onAuthStateChanged(auth, user=>{
-  if (!user) return location.href='login.html';
-  uid = user.uid;
-  uname = user.displayName || user.email.split('@')[0];
-  uavatar = user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${uname}`;
+  if (!user) { console.warn('🔒 not logged in – redirect'); location.href='login.html'; return; }
+  uid    = user.uid;
+  uname  = user.displayName || user.email.split('@')[0];
+  uavatar= user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${uname}`;
   document.getElementById('my-avatar').src = uavatar;
-  loadFeed();
+  console.log('✅ logged:', uid, uname);
+  loadFeed();               // ← only now we have uid
 });
 
 /* ---------- image handling ---------- */
-document.getElementById('file-input').onchange = e=>{
+let imageUrl = '';
+fileInput.onchange = e=>{
   const file = e.target.files[0];
   if (!file) return;
-
-  // Show preview instantly
   const reader = new FileReader();
-  reader.onload = ev=>{
-    const preview = document.getElementById('media-preview');
-    preview.src = ev.target.result;
-    preview.classList.remove('hidden');
-  };
+  reader.onload = ev=>{ previewEl.src = ev.target.result; previewEl.classList.remove('hidden'); };
   reader.readAsDataURL(file);
-
-  // Reset progress
-  progressBar.style.width = '0%';
-  progressContainer.classList.remove('hidden');
-
   uploadToCloudinary(file);
 };
-
 function uploadToCloudinary(file){
   const fd = new FormData();
   fd.append('file', file);
-  fd.append('upload_preset', 'vynix_posts');
-
-  const xhr = new XMLHttpRequest();
-
-  // Progress tracking
-  xhr.upload.addEventListener('progress', e => {
-    if (e.lengthComputable) {
-      const percent = (e.loaded / e.total) * 100;
-      progressBar.style.width = percent + '%';
-    }
-  });
-
-  xhr.onload = () => {
-    if (xhr.status === 200) {
-      const res = JSON.parse(xhr.responseText);
+  fd.append('upload_preset', 'vynix_posts');   // ➊ MUST exist & be UNSIGNED
+  fetch('https://api.cloudinary.com/v1_1/dk5d7xkhz/image/upload', {method:'POST', body: fd})
+    .then(r=>r.json())
+    .then(res=>{
+      if (res.error) { console.error('☁️ Cloudinary error:', res.error); toast('Image upload failed'); return; }
       imageUrl = res.secure_url;
-      progressContainer.classList.add('hidden');
-      toast('Image uploaded successfully');
-    } else {
-      progressContainer.classList.add('hidden');
-      toast('Upload failed');
-      console.error('Upload error:', xhr.status);
-    }
-  };
-
-  xhr.onerror = () => {
-    progressContainer.classList.add('hidden');
-    toast('Upload failed – network error');
-  };
-
-  xhr.open('POST', 'https://api.cloudinary.com/v1_1/dk5d7xkhz/image/upload');
-  xhr.send(fd);
+      console.log('☁️ image ready:', imageUrl);
+      togglePostButton();
+      toast('Image attached');
+    })
+    .catch(err=>{ console.error('☁️ network error:', err); toast('Upload failed'); });
 }
 
 /* ---------- post ---------- */
-document.getElementById('post-btn').onclick = ()=>{
-  const text = document.getElementById('post-text').value.trim();
+textEl.oninput = togglePostButton;
+function togglePostButton(){
+  postBtn.disabled = !textEl.value.trim() && !imageUrl;
+}
+postBtn.onclick = ()=>{
+  const text = textEl.value.trim();
   if (!text && !imageUrl) return toast('Write something or attach an image');
-
-  const postRef = push(ref(db, 'posts'));
-  set(postRef, {
-    authorId: uid,
-    authorName: uname,
-    authorAvatar: uavatar,
-    text,
-    image: imageUrl || null,
-    verified: false,
-    timestamp: serverTimestamp(),
-    likes: 0,
-    reposts: 0,
-    replies: 0,
-    score: 0
-  });
-
-  // Reset composer
-  document.getElementById('post-text').value = '';
-  document.getElementById('media-preview').classList.add('hidden');
-  document.getElementById('media-preview').src = '';
-  progressContainer.classList.add('hidden');
-  progressBar.style.width = '0%';
-  imageUrl = '';
-  document.getElementById('file-input').value = ''; // clear file input
-
-  toast('Posted!');
+  const refPost = push(ref(db, 'posts'));
+  console.log('📝 posting:', text, imageUrl);
+  set(refPost, {
+    authorId: uid, authorName: uname, authorAvatar: uavatar,
+    text, image: imageUrl, verified: false,
+    likes: 0, reposts: 0, replies: 0, score: 0,
+    timestamp: serverTimestamp()
+  })
+  .then(()=>{
+    console.log('✅ post saved');
+    textEl.value = ''; imageUrl = ''; previewEl.classList.add('hidden');
+    togglePostButton();
+    toast('Posted');
+  })
+  .catch(err=>{ console.error('❌ save failed:', err); toast('Post failed – check console'); });
 };
 
 /* ---------- feed (algorithmic) ---------- */
@@ -266,19 +202,17 @@ function loadFeed(){
   onValue(ref(db, 'posts'), snap=>{
     const posts = [];
     snap.forEach(c=> posts.push({id: c.key, ...c.val()}));
-    
+    console.log('📨 posts snapshot count:', posts.length);
     posts.forEach(p=>{
       const ageH = (Date.now() - (p.timestamp || 0)) / 3600000;
-      const decay = Math.max(0, 1 - ageH/24);
+      const decay = Math.max(0, 1 - ageH/24);        // 24 h half-life
       p.score = (p.likes*3 + p.reposts*5 + p.replies*2) * decay;
     });
-    
     posts.sort((a,b)=> b.score - a.score);
     feed.innerHTML = '';
     posts.forEach(p=> feed.appendChild(renderPostCard(p)));
-  }, {onlyOnce: false});
+  }, err=>{ console.error('❌ feed listener:', err); });
 }
-
 function renderPostCard(p){
   const div = document.createElement('div');
   div.className = 'post-card';
@@ -287,64 +221,49 @@ function renderPostCard(p){
       <img src="${p.authorAvatar}" />
       <div>
         <div class="name">${escapeHtml(p.authorName)}</div>
-        <div class="handle">@${p.authorName.replace(/\s/g,'').toLowerCase()}</div>
+        <div class="handle">@${p.authorName.replace(/\s/g,'')} · ${timeAgo(p.timestamp)}</div>
       </div>
-      <div class="time">${timeAgo(p.timestamp)}</div>
     </div>
     <div class="post-body">${escapeHtml(p.text)}</div>
-    \( {p.image ? `<img class="post-image" src=" \){p.image}" loading="lazy"/>` : ''}
+    ${p.image ? `<img class="post-image" src="${p.image}" />` : ''}
     <div class="post-footer">
-      <span class="material-icons-outlined" onclick="reply('${p.id}')">chat_bubble_outline</span>
-      <span class="retweet" onclick="repost('\( {p.id}')"><span class="material-icons-outlined">repeat</span> \){p.reposts}</span>
-      <span class="like"   onclick="like('\( {p.id}')"><span class="material-icons" style="font-size:18px">favorite_border</span> \){p.likes}</span>
-      <span class="material-icons-outlined" onclick="share('${p.id}')">share</span>
+      <span onclick="reply('${p.id}')">💬 ${p.replies||0}</span>
+      <span class="retweet" onclick="repost('${p.id}')">🔁 ${p.reposts||0}</span>
+      <span class="like"   onclick="like('${p.id}')">❤️ ${p.likes||0}</span>
+      <span onclick="share('${p.id}')">📤</span>
     </div>
   `;
   return div;
 }
 
 /* ---------- engagement ---------- */
+window.reply  = id=> toast('Reply coming soon');
+window.share  = id=> toast('Link copied');
 window.like   = id=> transact(id, 'likes');
 window.repost = id=> transact(id, 'reposts');
-window.reply  = id=> toast('Reply coming soon');
-window.share  = id=> { navigator.clipboard.writeText(location.href); toast('Link copied'); };
-
 function transact(id, key){
-  const r = ref(db, `posts/\( {id}/ \){key}`);
-  runTransaction(r, cur => (cur || 0) + 1);
+  const refPost = ref(db, `posts/${id}/${key}`);
+  runTransaction(refPost, cur=>(cur||0)+1)
+    .then(res=>console.log(`✅ ${key} ++`, res.snapshot.val()))
+    .catch(err=>console.error(`❌ ${key} failed`, err));
 }
 
 /* ---------- helpers ---------- */
 const toast = msg=>{
   const t = document.createElement('div');
+  t.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 bg-accent text-white px-4 py-2 rounded-full text-sm';
   t.textContent = msg;
-  t.style.cssText = `
-    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
-    background:var(--accent); color:white; padding:10px 20px;
-    border-radius:999px; font-size:14px; z-index:1000;
-    animation: toast 2.5s ease forwards;
-  `;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(()=>t.remove(), 2500);
 };
-
-const escapeHtml = str => str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-
+const escapeHtml = str=>str.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const timeAgo = ts=>{
-  if (!ts) return 'just now';
   const s = Math.floor((Date.now() - ts)/1000);
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s/60)}m`;
-  if (s < 86400) return `${Math.floor(s/3600)}h`;
+  if (s<60) return `${s}s`;
+  if (s<3600) return `${Math.floor(s/60)}m`;
+  if (s<86400) return `${Math.floor(s/3600)}h`;
   return `${Math.floor(s/86400)}d`;
 };
 </script>
-
-<style>
-@keyframes toast {
-  0%, 100% { opacity:0; transform:translateX(-50%) translateY(20px); }
-  15%, 85% { opacity:1; transform:translateX(-50%) translateY(0); }
-}
-</style>
 </body>
 </html>
