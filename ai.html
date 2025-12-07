@@ -25,7 +25,7 @@
       --border: #2f3336;
     }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); overflow-y: scroll; }
-
+    
     /* --- Composer Styles --- */
     .composer { display: flex; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
     .composer img.avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
@@ -92,6 +92,13 @@
 
 <main id="feed" class="feed"></main>
 
+<div class="text-center p-4">
+    <button id="load-more-btn" class="post-btn hidden">
+        Load More Posts
+    </button>
+</div>
+
+
 <script type="module">
 /* -------------------------------------------
  * FIREBASE CONFIGURATION AND IMPORTS 
@@ -99,7 +106,8 @@
  */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, onValue, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+// Added get() for the initial load
+import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, onValue, serverTimestamp, get, endAt } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   // ⚠️ Ensure this is your actual Firebase configuration
@@ -127,7 +135,12 @@ const previewEl     = document.getElementById('media-preview');
 const fileInput     = document.getElementById('file-input');
 const feedEl        = document.getElementById('feed');
 const myAvatarEl    = document.getElementById('my-avatar');
+const loadMoreBtn   = document.getElementById('load-more-btn'); // Added button element
 const POST_LIMIT    = 50; 
+
+// Pagination State
+let lastTimestamp = null; 
+let lastKey = null; 
 
 /* -------------------------------------------
  * INITIALIZATION
@@ -153,25 +166,22 @@ onAuthStateChanged(auth, user => {
   uavatar = user.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
   myAvatarEl.src = uavatar;
   
-  // Start Realtime Feed Listener
-  initFeedListener();
+  // Start Initial Feed Load (changed from real-time listener to single load)
+  initFeedLoad();
 });
 
 
 /* -------------------------------------------
- * REALTIME FEED LISTENER
+ * PAGINATION LOGIC
  * -------------------------------------------
  */
-function initFeedListener() {
+function initFeedLoad() {
   const postsRef = ref(db, 'posts');
-  // Query for the latest posts, ordered by timestamp
+  // Load the first batch
   const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT));
 
-  // onValue listens for ANY data change and re-renders the feed
-  onValue(q, (snapshot) => {
-    // CRITICAL: This ensures the feed is cleared before re-rendering
-    feedEl.innerHTML = ''; 
-    
+  // Use get() for the initial load of older content
+  get(q).then((snapshot) => { 
     if (!snapshot.exists()) {
       feedEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">No posts yet.</div>';
       return;
@@ -179,16 +189,80 @@ function initFeedListener() {
 
     const rows = [];
     snapshot.forEach(child => rows.push({ key: child.key, ...child.val() }));
-    rows.reverse(); // Display newest post first
+    rows.reverse(); // Newest first
 
-    rows.forEach(p => {
-      feedEl.appendChild(renderPostCard(p));
-    });
-  }, (error) => {
-    console.error("Firebase Read Error:", error);
+    // Render posts
+    rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
+
+    // Set the cursor for the next load
+    if (rows.length > 0) {
+      const lastPost = rows[rows.length - 1];
+      lastTimestamp = lastPost.timestamp;
+      lastKey = lastPost.key;
+      // If we got a full batch, assume there might be more
+      if (rows.length === POST_LIMIT) {
+        loadMoreBtn.classList.remove('hidden'); 
+      }
+    }
+    
+  }).catch((error) => {
+    console.error("Firebase Initial Load Error:", error);
     toast('Error loading feed');
   });
 }
+
+function loadMorePosts() {
+  if (lastTimestamp === null) return;
+  loadMoreBtn.disabled = true;
+
+  const postsRef = ref(db, 'posts');
+  // Query posts *older* than the current lastTimestamp.
+  // limitToLast(POST_LIMIT + 1) fetches the last post of the previous batch + the next POST_LIMIT posts.
+  
+  const q = query(
+      postsRef, 
+      orderByChild('timestamp'), 
+      endAt(lastTimestamp), 
+      limitToLast(POST_LIMIT + 1)
+  );
+
+  get(q).then((snapshot) => {
+    const newRows = [];
+    snapshot.forEach(child => newRows.push({ key: child.key, ...child.val() }));
+
+    // Filter out the duplicate (the one with lastKey)
+    const uniqueNewRows = newRows.filter(p => p.key !== lastKey);
+
+    if (uniqueNewRows.length === 0) {
+      toast("No more posts to load.");
+      loadMoreBtn.classList.add('hidden');
+      return;
+    }
+    
+    // Process and append the new, older posts
+    uniqueNewRows.reverse(); 
+    uniqueNewRows.forEach(p => feedEl.appendChild(renderPostCard(p)));
+
+    // Update the cursor for the next load
+    const lastPost = uniqueNewRows[uniqueNewRows.length - 1];
+    lastTimestamp = lastPost.timestamp;
+    lastKey = lastPost.key;
+    
+    // If we loaded fewer than the limit, assume we reached the end
+    if (uniqueNewRows.length < POST_LIMIT || newRows.length <= POST_LIMIT) {
+       loadMoreBtn.classList.add('hidden');
+    }
+    
+  }).catch((error) => {
+    console.error("Firebase Pagination Error:", error);
+    toast('Error loading more posts');
+  }).finally(() => {
+    loadMoreBtn.disabled = false;
+  });
+}
+
+// Attach the Load More function to the button
+loadMoreBtn.onclick = loadMorePosts;
 
 
 /* -------------------------------------------
