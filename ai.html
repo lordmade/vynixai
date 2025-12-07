@@ -221,8 +221,8 @@ const postBtn = $('#post-btn'), textEl = $('#post-text'), previewEl = $('#media-
       fileInput = $('#file-input'), feedEl = $('#feed'), myAvatarEl = $('#my-avatar'),
       loadMoreBtn = $('#load-more-btn'), POST_LIMIT = 50;
 
-let lastTimestamp = null, lastKey = null, initialLoadDone = false;
-
+let lastTimestamp = null;   // oldest loaded post (for Load More)
+let newestTimestamp = null; // newest loaded post (for real-time updates)
 /* ========== THEME ========== */
 if (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches)
   document.body.setAttribute('data-theme', 'dark');
@@ -244,51 +244,78 @@ onAuthStateChanged(auth, user => {
 
 /* ========== FEED LOGIC ========== */
 async function initFeed() {
-  const postsRef = ref(db, 'posts');
+  feedEl.innerHTML = ''; // clear feed on refresh/login
 
-  // 1. grab the newest POST_LIMIT posts (ascending order)
-  const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT));
+  const postsRef = ref(db, 'posts');
+  const q = query(postsRef, orderByChild('timestamp'), limitToLast(50));
   const snap = await get(q);
 
-  const rows = [];
-  snap.forEach(c => rows.push({ key: c.key, ...c.val() }));
+  const posts = [];
+  snap.forEach(child => posts.push({ key: child.key, ...child.val() }));
 
-  // 2. reverse once → newest on top
-  rows.reverse();
-  rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
+  // NO .reverse() → limitToLast already returns newest first
+  posts.forEach(post => feedEl.appendChild(renderPostCard(post)));
 
-  // 3. anchor “load-more” to the oldest post we just rendered
-  const oldest = rows[rows.length - 1];
-  if (oldest) {
-    lastTimestamp = oldest.timestamp;
-    lastKey       = oldest.key;
+  if (posts.length > 0) {
+    newestTimestamp = posts[0].timestamp;
+    lastTimestamp = posts[posts.length - 1].timestamp;
   }
-  loadMoreBtn.classList.toggle('hidden', rows.length < POST_LIMIT);
-  initialLoadDone = true;
 
-  // 4. listen only for posts newer than the very first (newest) one
-  const newestRendered = rows[0];
-  if (newestRendered) listenNew(newestRendered.timestamp);
+  loadMoreBtn.classList.toggle('hidden', posts.length < 50);
+
+  // Start listening for new posts
+  listenForNewPosts();
 }
 
-function listenNew(anchorTs) {
-  const q = query(ref(db, 'posts'), orderByChild('timestamp'), startAfter(anchorTs));
-  onChildAdded(q, snap =>
-    feedEl.prepend(renderPostCard({ key: snap.key, ...snap.val() }))
+// DELETE the old listenNew() function completely
+
+// ADD THIS NEW ONE
+function listenForNewPosts() {
+  if (!newestTimestamp) return;
+
+  const q = query(
+    ref(db, 'posts'),
+    orderByChild('timestamp'),
+    startAfter(newestTimestamp)
   );
+
+  onChildAdded(q, snap => {
+    const post = { key: snap.key, ...snap.val() };
+    feedEl.prepend(renderPostCard(post));
+    newestTimestamp = post.timestamp; // keep anchor updated
+  });
 }
 
 loadMoreBtn.onclick = async () => {
+  if (!lastTimestamp) return;
   loadMoreBtn.disabled = true;
-  const q   = query(ref(db, 'posts'), orderByChild('timestamp'), endAt(lastTimestamp), limitToLast(POST_LIMIT+1));
-  const snap= await get(q);
-  const rows= []; snap.forEach(c => rows.push({key: c.key, ...c.val()}));
-  const uniq= rows.filter(p => p.key !== lastKey);
-  if (!uniq.length) { toast('No more posts'); loadMoreBtn.classList.add('hidden'); return; }
-  uniq.reverse(); uniq.forEach(p => feedEl.appendChild(renderPostCard(p)));
-  const last = uniq[uniq.length-1];
-  lastTimestamp = last.timestamp; lastKey = last.key;
-  if (uniq.length < POST_LIMIT) loadMoreBtn.classList.add('hidden');
+
+  const q = query(
+    ref(db, 'posts'),
+    orderByChild('timestamp'),
+    endAt(lastTimestamp),
+    limitToLast(51) // +1 to detect end
+  );
+
+  const snap = await get(q);
+  const posts = [];
+  snap.forEach(child => posts.push({ key: child.key, ...child.val() }));
+
+  // Remove the duplicate (the last post we already have)
+  posts.shift();
+
+  if (posts.length === 0) {
+    toast('No more posts');
+    loadMoreBtn.classList.add('hidden');
+    loadMoreBtn.disabled = false;
+    return;
+  }
+
+  // Already in correct order → just append
+  posts.forEach(post => feedEl.appendChild(renderPostCard(post)));
+
+  lastTimestamp = posts[posts.length - 1].timestamp;
+  loadMoreBtn.classList.toggle('hidden', posts.length < 50);
   loadMoreBtn.disabled = false;
 };
 
