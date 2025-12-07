@@ -112,7 +112,16 @@
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, push, onValue, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { 
+  getDatabase, 
+  ref, 
+  push, 
+  onValue, 
+  serverTimestamp,
+  set,                 // ← THIS WAS MISSING!
+  query,
+  orderByChild
+} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -123,6 +132,7 @@ const firebaseConfig = {
   messagingSenderId: "658673187627",
   appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
@@ -146,110 +156,158 @@ const applyTheme = () => {
 applyTheme();
 
 /* auth */
-onAuthStateChanged(auth, user=>{
-  if (!user) { location.href='login.html'; return; }
-  uid    = user.uid;
-  uname  = user.displayName || user.email.split('@')[0];
-  uavatar= user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${uname}`;
+onAuthStateChanged(auth, user => {
+  if (!user) { 
+    location.href = 'login.html'; 
+    return; 
+  }
+  uid = user.uid;
+  uname = user.displayName || user.email.split('@')[0];
+  uavatar = user.photoURL || `https://ui-avatars.com/api/?background=05d9e8&color=fff&name=${encodeURIComponent(uname)}`;
   document.getElementById('my-avatar').src = uavatar;
   loadFeed();
 });
 
-/* image / video upload with spinner */
+/* media upload */
 let imageUrl = '';
 let uploading = false;
 
-function toggleBtn(){ postBtn.disabled = uploading || (!textEl.value.trim() && !imageUrl); }
+function toggleBtn() {
+  postBtn.disabled = uploading || (!textEl.value.trim() && !imageUrl);
+}
 
-function setUploading(on){
+function setUploading(on) {
   uploading = on;
   btnText.classList.toggle('hidden', on);
   btnSpin.classList.toggle('hidden', !on);
   toggleBtn();
 }
 
-fileInput.onchange = e=>{
+fileInput.onchange = e => {
   const file = e.target.files[0];
   if (!file) return;
+  
   const reader = new FileReader();
-  reader.onload = ev=>{ previewEl.src = ev.target.result; previewEl.classList.remove('hidden'); };
+  reader.onload = ev => {
+    previewEl.src = ev.target.result;
+    previewEl.classList.remove('hidden');
+  };
   reader.readAsDataURL(file);
+  
+  imageUrl = ''; // reset
   uploadToCloudinary(file);
 };
 
-function uploadToCloudinary(file){
+function uploadToCloudinary(file) {
   setUploading(true);
   const fd = new FormData();
   fd.append('file', file);
-  fd.append('upload_preset', 'vynix_posts');   // UNSIGNED preset
-  fetch('https://api.cloudinary.com/v1_1/dk5d7xkhz/upload', {method:'POST', body: fd})
-    .then(r=>r.json())
-    .then(res=>{
-      if (res.error) { toast('Upload failed'); console.error(res.error); return; }
-      imageUrl = res.secure_url;
-      toast('Media attached');
-    })
-    .catch(err=>{ toast('Upload error'); console.error(err); })
-    .finally(()=> setUploading(false) );
+  fd.append('upload_preset', 'vynix_posts');
+
+  fetch('https://api.cloudinary.com/v1_1/dk5d7xkhz/upload', {
+    method: 'POST',
+    body: fd
+  })
+  .then(r => r.json())
+  .then(res => {
+    if (res.error) throw new Error(res.error.message);
+    imageUrl = res.secure_url;
+    toast('Media ready!');
+  })
+  .catch(err => {
+    console.error(err);
+    toast('Upload failed');
+    previewEl.classList.add('hidden');
+    fileInput.value = '';
+  })
+  .finally(() => {
+    setUploading(false);
+    toggleBtn();
+  });
 }
 
 /* post */
 textEl.oninput = toggleBtn;
 
-postBtn.onclick = ()=>{
+postBtn.onclick = async () => {
   const text = textEl.value.trim();
-  if (!text && !imageUrl) return toast('Write something or attach media');
-  if (uploading) return toast('Please wait until upload finishes');
+  if (!text && !imageUrl) return toast('Add text or media');
+  if (uploading) return toast('Wait for upload...');
 
-  const refPost = push(ref(db, 'posts'));
-  set(refPost, {
-    authorId: uid,
-    authorName: uname,
-    authorAvatar: uavatar,
-    text,
-    image: imageUrl,               // empty string for text-only
-    verified: false,
-    likes: 0, reposts: 0, replies: 0,
-    timestamp: serverTimestamp()
-  }).then(()=>{
-    textEl.value = ''; imageUrl = ''; uploading = false;
+  const postRef = push(ref(db, 'posts'));
+  
+  try {
+    await set(postRef, {
+      authorId: uid,
+      authorName: uname,
+      authorAvatar: uavatar,
+      text: text || '',
+      image: imageUrl || '',
+      likes: 0,
+      reposts: 0,
+      replies: 0,
+      timestamp: serverTimestamp()
+    });
+
+    // Reset form
+    textEl.value = '';
+    imageUrl = '';
     previewEl.classList.add('hidden');
+    previewEl.src = '';
+    fileInput.value = '';
     toggleBtn();
-    toast('Posted');
-  }).catch(err=>{
-    toast('Post failed – console');
+    toast('Posted!');
+  } catch (err) {
     console.error(err);
-  });
+    toast('Failed to post');
+  }
 };
 
 /* feed */
-function loadFeed(){
+function loadFeed() {
   const feed = document.getElementById('feed');
-  onValue(ref(db, 'posts'), snap=>{
+  
+  // Better: order by timestamp directly in query
+  const postsQuery = query(ref(db, 'posts'), orderByChild('timestamp'));
+  
+  onValue(postsQuery, snap => {
     const posts = [];
-    snap.forEach(c=> posts.push({id: c.key, ...c.val()}));
-    posts.sort((a,b)=> b.timestamp - a.timestamp);   // newest first
+    snap.forEach(child => {
+      const data = child.val();
+      // serverTimestamp() is null on first read, skip invalid ones
+      if (data.timestamp !== null) {
+        posts.push({ id: child.key, ...data });
+      }
+    });
+
+    // Sort descending (newest first)
+    posts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
     feed.innerHTML = '';
-    posts.forEach(p=> feed.appendChild(renderPostCard(p)));
-  });
+    posts.forEach(p => feed.appendChild(renderPostCard(p)));
+  }, { onlyOnce: false });
 }
-function renderPostCard(p){
+
+function renderPostCard(p) {
   const div = document.createElement('div');
   div.className = 'post-card';
+  
+  const timestamp = p.timestamp ? timeAgo(p.timestamp) : 'Just now';
+
   div.innerHTML = `
     <div class="post-header">
-      <img src="${p.authorAvatar}" />
+      <img src="${p.authorAvatar || ''}" alt="avatar"/>
       <div>
-        <div class="name">${escape(p.authorName)}</div>
-        <div class="handle">@${p.authorName.replace(/\s/g,'')} · ${timeAgo(p.timestamp)}</div>
+        <div class="name">${escape(p.authorName || 'User')}</div>
+        <div class="handle">@\( {(p.authorName || 'user').replace(/\s/g,'').toLowerCase()} · \){timestamp}</div>
       </div>
     </div>
-    <div class="post-body">${escape(p.text)}</div>
-    ${p.image ? `<img class="post-image" src="${p.image}" />` : ''}
+    <div class="post-body">${escape(p.text || '')}</div>
+    \( {p.image ? `<img class="post-image" src=" \){p.image}" loading="lazy"/>` : ''}
     <div class="post-footer">
-      <span>💬 ${p.replies||0}</span>
-      <span>🔁 ${p.reposts||0}</span>
-      <span>❤️ ${p.likes||0}</span>
+      <span>💬 ${p.replies || 0}</span>
+      <span>🔁 ${p.reposts || 0}</span>
+      <span>❤️ ${p.likes || 0}</span>
       <span>📤</span>
     </div>
   `;
@@ -257,18 +315,33 @@ function renderPostCard(p){
 }
 
 /* helpers */
-const toast = msg=>{
-  const t=document.createElement('div');
-  t.className='fixed bottom-8 left-1/2 -translate-x-1/2 bg-accent text-white px-4 py-2 rounded-full text-sm';
-  t.textContent=msg; document.body.appendChild(t);
-  setTimeout(()=>t.remove(),2500);
+const toast = msg => {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = `
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:#ff2a6d; color:white; padding:12px 24px; border-radius:99px;
+    font-size:14px; z-index:9999; animation:fadeInOut 2.5s forwards;
+  `;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
 };
-const escape=s=>s.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-const timeAgo=ts=>{
-  const s=Math.floor((Date.now()-ts)/1000);
-  if(s<60)return`${s}s`;if(s<3600)return`${Math.floor(s/60)}m`;
-  if(s<86400)return`${Math.floor(s/3600)}h`;return`${Math.floor(s/86400)}d`;
+
+const escape = s => s ? s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) : '';
+
+const timeAgo = ts => {
+  if (!ts) return 'Just now';
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds/60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds/3600)}h`;
+  return `${Math.floor(seconds/86400)}d`;
 };
+
+// Add fade animation
+const style = document.createElement('style');
+style.textContent = `@keyframes fadeInOut { 0%,100% {opacity:0} 20%,80% {opacity:1} }`;
+document.head.appendChild(style);
 </script>
 </body>
 </html>
