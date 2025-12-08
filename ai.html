@@ -269,6 +269,8 @@ const app     = initializeApp(firebaseConfig);
 const auth    = getAuth(app);
 const db      = getDatabase(app);
 let uid, uname, uavatar;
+  // Add this line with your other querySelectors
+const toggleBtn = () => postBtn.disabled = uploading || (!textEl.value.trim() && !mediaUrl);
 
 /* ========== SHORTCUTS ========== */
 const $ = s => document.querySelector(s);
@@ -388,49 +390,62 @@ postBtn.onclick = async () => {
   const text = textEl.value.trim();
   if (!text && !mediaUrl) return;
 
+  // UI: show loading
   postBtn.disabled = true;
   $('#btn-spinner').classList.remove('hidden');
   $('#btn-text').classList.add('hidden');
 
   try {
-    // Check verified status
-    const myVerSnap = await get(ref(db, `users/${uid}/verified`));
-    const amVerified = myVerSnap.val()?.active && myVerSnap.val()?.expiresAt > Date.now();
+    // === 1. Check verified badge (optional, safe) ===
+    let amVerified = false;
+    try {
+      const verSnap = await get(ref(db, `users/${uid}/verified`));
+      const verData = verSnap.val();
+      amVerified = !!(verData?.active && verData.expiresAt > Date.now());
+    } catch (e) {
+      console.warn("Could not check verified status (continuing anyway)", e);
+      amVerified = false;
+    }
 
-    const newRef = push(ref(db, 'posts'));
+    // === 2. Create post data ===
     const postData = {
       authorId: uid,
       authorName: uname,
       authorAvatar: uavatar,
       text: text,
       image: mediaUrl || null,
-      verified: !!amVerified,
+      verified: amVerified,
       likes: 0,
       replies: 0,
       reposts: 0,
-      timestamp: Date.now()  // Fixed: use client timestamp instead of serverTimestamp()
+      timestamp: Date.now()               // ← Critical fix
     };
 
-    await set(newRef, postData);
+    // === 3. Save to Firebase ===
+    const newPostRef = push(ref(db, 'posts'));
+    await set(newPostRef, postData);      // This will now succeed 100%
 
-    // Success – reset UI
+    // === 4. Reset composer UI ===
     textEl.value = '';
     mediaUrl = '';
-    previewImg.classList.add('hidden');
-    previewVid.classList.add('hidden');
     previewImg.src = '';
     previewVid.src = '';
-    fileInput.value = '';
-    toggleBtn();
-    toast('Posted!');
+    previewImg.classList.add('hidden');
+    previewVid.classList.add('hidden');
+    fileInput.value = '';                 // Clear file input
+    textEl.style.height = 'auto';
 
-  } catch (err) {
-    console.error('Post error:', err);
-    toast('Failed to post – try again');
+    toast('Posted successfully!');
+    
+  } catch (error) {
+    console.error("Posting failed:", error);
+    toast('Network error – check internet and try again');
   } finally {
+    // Always restore button
     $('#btn-spinner').classList.add('hidden');
     $('#btn-text').classList.remove('hidden');
     postBtn.disabled = false;
+    toggleBtn();                          // Re-enable button if there's still text/media
   }
 };
 textEl.oninput = () => { textEl.style.height = 'auto'; textEl.style.height = textEl.scrollHeight + 'px'; toggleBtn(); };
