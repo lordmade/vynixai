@@ -105,7 +105,7 @@ nav a.text-[#ff2a6d] span:first-child { color: #ff2a6d !important; }
 
 /* Prevent content from hiding under bottom nav */
 main, .feed, .composer { padding-bottom: 80px !important; }
-    /* Replace your old .follow-pill CSS with this */
+    /* ---- pill follow button ---- */
 .follow-pill {
   position: absolute;
   top: 12px;
@@ -114,30 +114,19 @@ main, .feed, .composer { padding-bottom: 80px !important; }
   color: #fff;
   border: none;
   border-radius: 999px;
-  padding: 8px 18px;
-  font-size: 14px;
+  padding: 6px 14px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
-  z-index: 10;
-  min-width: 88px;
-  text-align: center;
-  box-shadow: 0 2px 6px rgba(255,42,109,0.25);
+  transition: opacity .2s;
+  z-index: 2;
 }
-.follow-pill:hover { 
-  opacity: 0.9; 
-  transform: translateY(-1px);
-}
+.follow-pill:hover { opacity: .85; }
 .follow-pill.following {
   background: transparent;
-  color: var(--text);
-  border: 1.5px solid var(--border);
-  box-shadow: none;
+  color: var(--text2);
+  border: 1px solid var(--border);
 }
-.follow-pill.following:hover {
-  background: var(--hover-accent);
-}
-
 .post-card { position: relative; }   /* anchor for absolute pill */
   </style>
 </head>
@@ -310,52 +299,34 @@ onAuthStateChanged(auth, user => {
 
 
 /* ========== FEED LOGIC ========== */
-/* ========== FEED LOGIC – FIXED VERSION ========== */
 async function initFeed() {
   try {
     const postsRef = ref(db, 'posts');
     const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT));
     const snap = await get(q);
-
-    if (!snap.exists()) {
-      feedEl.innerHTML = '<div class="p-8 text-center text-gray-500">No posts yet</div>';
-      loadMoreBtn.classList.add('hidden');
-      initialLoadDone = true;
-      return;
-    }
-
     const rows = [];
-    snap.forEach(child => {
-      rows.unshift({ key: child.key, ...child.val() });
-    });
-
-    rows.forEach(post => feedEl.appendChild(renderPostCard(post)));
-
-    const last = rows[rows.length - 1];
-    lastTimestamp = last.timestamp || Date.now();
-    lastKey = last.key;
-
+    snap.forEach(c => rows.unshift({key: c.key, ...c.val()}));
+    rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
+    const last = rows[rows.length-1];
+    if (last) { lastTimestamp = last.timestamp; lastKey = last.key; }
     loadMoreBtn.classList.toggle('hidden', rows.length < POST_LIMIT);
     initialLoadDone = true;
-
-    listenNew(); // start listening for new posts only after initial load
-  } catch (err) {
-    console.error('Feed load error:', err);
+    listenNew();
+  } catch (e) {
+    console.error(e);
     toast('Error loading posts');
   }
 }
-
 function listenNew() {
-  if (!initialLoadDone) return;
-
   const postsRef = ref(db, 'posts');
-  const q = query(postsRef, orderByChild('timestamp'), startAfter(lastTimestamp));
-
-  onChildAdded(q, snap => {
+  onChildAdded(postsRef, snap => {
+    if (!initialLoadDone) return;
     const data = snap.val();
-    const post = { key: snap.key, ...data };
-    feedEl.prepend(renderPostCard(post));
-    lastTimestamp = data.timestamp || Date.now();
+    if (!data || !data.timestamp) return;
+    if (!lastTimestamp || data.timestamp > lastTimestamp) {
+      feedEl.prepend(renderPostCard({key: snap.key, ...data}));
+      lastTimestamp = data.timestamp;
+    }
   });
 }
 
@@ -483,35 +454,27 @@ function renderPostCard(p) {
 
   /* ----- pill follow button (only for others) ----- */
   if (!isMine) {
-  const pill = document.createElement('button');
-  pill.className = 'follow-pill';
+    const pill = document.createElement('button');
+    pill.className = 'follow-pill';
+    const followRef = ref(db, `social/${uid}/following/${p.authorId}`);
 
-  // Set text immediately so it's never empty
-  pill.textContent = 'Loading...';
+    /* initial state */
+    get(followRef).then(s => {
+      const following = s.exists();
+      pill.textContent = following ? 'Following' : 'Follow';
+      pill.classList.toggle('following', following);
+    });
 
-  const followRef = ref(db, `social/\( {uid}/following/ \){p.authorId}`);
+    /* live sync */
+    onValue(followRef, s => {
+      const following = s.exists();
+      pill.textContent = following ? 'Following' : 'Follow';
+      pill.classList.toggle('following', following);
+    });
 
-  // Initial state
-  get(followRef).then(snap => {
-    const following = snap.exists();
-    pill.textContent = following ? 'Following' : 'Follow';
-    pill.classList.toggle('following', following);
-  });
-
-  // Live updates
-  onValue(followRef, snap => {
-    const following = snap.exists();
-    pill.textContent = following ? 'Following' : 'Follow';
-    pill.classList.toggle('following', following);
-  });
-
-  pill.onclick = e => {
-    e.stopPropagation(); // prevent post click
-    toggleFollow(p.authorId);
-  };
-
-  div.appendChild(pill);
-}
+    pill.onclick = e => { e.stopPropagation(); toggleFollow(p.authorId); };
+    div.appendChild(pill);
+  }
 
   /* ----- keep all existing action listeners ----- */
   div.addEventListener('click', e => {
