@@ -18,7 +18,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
 
   <style>
-    /* ---------- theme ---------- */
     :root{
       --bg:#ffffff; --card:#ffffff; --text:#0f1419; --text2:#536471;
       --border:#eff3f4; --accent:#ff2a6d; --hover-accent:rgba(255,42,109,.1);
@@ -27,7 +26,6 @@
       --bg:#000000; --card:#000000; --text:#e7e9ea; --text2:#71767b;
       --border:#2f3336;
     }
-    /* ---------- kill long-press EVERYWHERE ---------- */
     *{
       -webkit-user-select:none !important; user-select:none !important;
       -webkit-touch-callout:none !important; -webkit-tap-highlight-color:transparent !important;
@@ -35,7 +33,6 @@
     input,textarea,button{
       -webkit-user-select:auto !important; user-select:text !important;
     }
-    /* ---------- basic ---------- */
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
          background:var(--bg); color:var(--text);}
     .btn-primary{background:var(--accent); color:#fff;}
@@ -69,10 +66,7 @@
         <label for="avatarInput" class="absolute bottom-0 right-0 bg-black/50 text-white p-2 rounded-full cursor-pointer"><span class="material-icons-outlined">photo_camera</span></label>
         <input type="file" id="avatarInput" accept="image/*" class="hidden">
       </div>
-      <div class="mt-20 flex gap-2">
-        <button id="editBtn" class="px-4 py-2 rounded-full border border-[var(--border)] text-sm font-bold">Edit profile</button>
-        <button id="logoutBtn" class="px-4 py-2 rounded-full border border-[var(--border)] text-sm font-bold">Log out</button>
-      </div>
+      <div id="actionButtons" class="mt-20 flex gap-2"><!-- injected --></div>
     </div>
 
     <!-- name / bio -->
@@ -98,7 +92,7 @@
       <a href="chat.html" class="flex flex-col items-center justify-center h-full w-full"><span class="material-icons-outlined text-2xl">chat_bubble_outline</span><span class="text-xs mt-0.5">Chat</span></a>
       <a href="search.html" class="flex flex-col items-center justify-center h-full w-full"><span class="material-icons-outlined text-2xl">search</span><span class="text-xs mt-0.5">Search</span></a>
       <a href="ai.html" class="flex flex-col items-center justify-center h-full w-full"><span class="material-icons-outlined text-2xl">auto_awesome</span><span class="text-xs mt-0.5">AI</span></a>
-      <a href="notifications.html" class="flex flex-col items-center justify-center h-full w-full"><span class="material-icons-outlined text-2xl">notifications</span><span class="text-xs mt.5">Alerts</span></a>
+      <a href="notifications.html" class="flex flex-col items-center justify-center h-full w-full"><span class="material-icons-outlined text-2xl">notifications</span><span class="text-xs mt-0.5">Alerts</span></a>
       <a href="profile.html" class="flex flex-col items-center justify-center h-full w-full text-[var(--accent)]"><span class="material-icons text-2xl">person</span><span class="text-xs mt-0.5">Profile</span></a>
     </div>
   </nav>
@@ -135,7 +129,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, set, get, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey:"AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -165,16 +159,65 @@
     const CLOUD_NAME = "dqkujefxj";
     const UPLOAD_PRESET = "banter_box";
 
-    /* ---------- auth ---------- */
+    /* ---------- who are we viewing? ---------- */
+    const params = new URLSearchParams(location.search);
+    const targetUid = params.get('uid');          // null → own profile
     let uid, uname, uavatar;
+
+    /* ---------- auth ---------- */
     onAuthStateChanged(auth, user => {
       if (!user) { location.href = 'login.html'; return; }
       uid   = user.uid;
       uname = user.displayName || user.email.split('@')[0];
       uavatar = user.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
-      fillProfile(user);
+      renderActionButtons();               // buttons first (decide edit vs follow)
+      fillProfile(user);                   // then load data
       loadCounts();
     });
+
+    /* ---------- buttons (edit vs follow) ---------- */
+    function renderActionButtons(){
+      const box = $('#actionButtons');
+      box.innerHTML = '';
+      const viewingOwn = !targetUid || targetUid === uid;
+
+      if (viewingOwn) {
+        box.innerHTML = `
+          <button id="editBtn" class="px-4 py-2 rounded-full border border-[var(--border)] text-sm font-bold">Edit profile</button>
+          <button id="logoutBtn" class="px-4 py-2 rounded-full border border-[var(--border)] text-sm font-bold">Log out</button>`;
+        return;
+      }
+
+      // visitor → Follow / Following
+      const btn = document.createElement('button');
+      btn.id = 'followBtn';
+      btn.className = 'px-5 py-2 rounded-full text-sm font-bold transition';
+      box.appendChild(btn);
+
+      const followRef = ref(db, `social/${uid}/following/${targetUid}`);
+      onValue(followRef, snap => {
+        const following = snap.exists();
+        btn.textContent = following ? 'Following' : 'Follow';
+        btn.className = following
+          ? 'px-5 py-2 rounded-full text-sm font-bold border border-[var(--border)] text-[var(--text)]'
+          : 'px-5 py-2 rounded-full text-sm font-bold btn-primary';
+      });
+      btn.onclick = () => toggleFollow(targetUid);
+    }
+
+    /* ---------- toggle follow ---------- */
+    async function toggleFollow(targetUid){
+      const followingRef = ref(db, `social/${uid}/following/${targetUid}`);
+      const followerRef  = ref(db, `social/${targetUid}/followers/${uid}`);
+      const snap = await get(followingRef);
+      if (snap.exists()) {   // unfollow
+        await remove(followingRef);
+        await remove(followerRef);
+      } else {               // follow
+        await set(followingRef, true);
+        await set(followerRef, true);
+      }
+    }
 
     /* ---------- fill profile ---------- */
     function fillProfile(user){
@@ -227,7 +270,7 @@
     });
 
     /* ---------- edit modal ---------- */
-    $('#editBtn').onclick = () => $('#editModal').classList.remove('hidden');
+    $('#editBtn') && ( $('#editBtn').onclick = () => $('#editModal').classList.remove('hidden') );
     $('#closeEdit').onclick = $('#cancelEdit').onclick = () => $('#editModal').classList.add('hidden');
     $('#saveBtn').onclick = async () => {
       overlay.classList.remove('hidden');
@@ -242,11 +285,11 @@
     };
 
     /* ---------- logout ---------- */
-    $('#logoutBtn').onclick = async () => {
+    $('#logoutBtn') && ( $('#logoutBtn').onclick = async () => {
       overlay.classList.remove('hidden');
       await signOut(auth);
       location.href = 'login.html';
-    };
+    });
   </script>
 </body>
 </html>
