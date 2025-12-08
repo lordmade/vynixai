@@ -548,20 +548,83 @@ const commentOverlay = $('#comment-sheet-overlay'),
       commentInput  = $('#comment-input'),
       commentSendBtn= $('#comment-send-btn');
 
+
+
+  /* ====== comment-like & comment-delete helpers ====== */
+function listenCommentLikes(pid, cid) {
+  const likeRef = ref(db, `comments/${pid}/${cid}/likes`);
+  onValue(likeRef, snap => {
+    const cnt = snap.size, liked = snap.hasChild(uid);
+    const btn = document.querySelector(`.comment-like-btn[data-cid="${cid}"]`);
+    if (!btn) return;
+    btn.querySelector('.comment-like-count').textContent = cnt || '';
+    btn.classList.toggle('liked', liked);
+    btn.querySelector('.outline-heart').style.display = liked ? 'none' : 'inline';
+    btn.querySelector('.filled-heart').style.display  = liked ? 'inline' : 'none';
+  });
+}
+
+async function toggleCommentLike(pid, cid) {
+  const likeRef = ref(db, `comments/${pid}/${cid}/likes/${uid}`);
+  const snap = await get(likeRef);
+  if (snap.exists()) await remove(likeRef);
+  else await set(likeRef, true);
+}
+
+async function deleteComment(pid, cid) {
+  await remove(ref(db, `comments/${pid}/${cid}`));
+  toast('Comment deleted');
+}
+
+/* ====== one listener for the whole comment list ====== */
+commentList.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const pid = btn.dataset.post, cid = btn.dataset.cid;
+  if (btn.classList.contains('comment-like-btn'))  toggleCommentLike(pid, cid);
+  if (btn.classList.contains('comment-delete-btn')) deleteComment(pid, cid);
+});
+
 function openComments(postId) {
   currentPostId = postId;
   commentInput.value = '';
   commentList.innerHTML = '<div class="p-4 text-sm text-gray-500">Loading…</div>';
   commentOverlay.classList.add('show');
 
-  if (commentsListener) commentsListener();
+  if (commentsListener) commentsListener();          // detach previous
   commentsListener = onValue(ref(db, `comments/${postId}`), snap => {
     commentList.innerHTML = '';
-    if (!snap.exists()) { commentList.innerHTML = '<div class="p-4 text-sm text-gray-500">No comments yet</div>'; return; }
+    if (!snap.exists()) {
+      commentList.innerHTML = '<div class="p-4 text-sm text-gray-500">No comments yet</div>';
+      return;
+    }
     snap.forEach(c => {
-      const v = c.val(), d = document.createElement('div'); d.className = 'comment-item';
-      d.innerHTML = `<img src="${v.authorAvatar}" class="comment-avatar"><div class="comment-body"><div class="comment-name">${esc(v.authorName)}</div><div class="comment-text">${esc(v.text)}</div></div>`;
+      const v = c.val(), cid = c.key;
+      const isMine = v.authorId === uid;
+      const d = document.createElement('div');
+      d.className = 'comment-item';
+      d.innerHTML = `
+        <img src="${v.authorAvatar}" class="comment-avatar">
+        <div class="comment-body flex-1">
+          <div class="comment-name">${esc(v.authorName)}</div>
+          <div class="comment-text">${esc(v.text)}</div>
+
+          <!-- like + delete row -->
+          <div class="flex items-center gap-3 mt-2 text-sm text-gray-500">
+            <button class="comment-like-btn flex items-center gap-1" data-post="${postId}" data-cid="${cid}">
+              <svg class="outline-heart" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+              <svg class="filled-heart hidden" width="16" height="16" fill="#f91880" stroke="#f91880" stroke-width="0"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+              <span class="comment-like-count">0</span>
+            </button>
+
+            ${isMine ? `
+            <button class="comment-delete-btn text-red-500" data-post="${postId}" data-cid="${cid}">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+            </button>` : ''}
+          </div>
+        </div>`;
       commentList.appendChild(d);
+      listenCommentLikes(postId, cid);      // live like-count + own state
     });
   });
 }
@@ -569,11 +632,20 @@ function openComments(postId) {
 $('#comment-sheet-close').onclick = closeComments;
 commentOverlay.onclick = e => { if (e.target === commentOverlay) closeComments(); };
 
+  commentList.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const pid = btn.dataset.post, cid = btn.dataset.cid;
+  if (btn.classList.contains('comment-like-btn')) toggleCommentLike(pid, cid);
+  if (btn.classList.contains('comment-delete-btn')) deleteComment(pid, cid);
+});
+
 function closeComments() {
   commentOverlay.classList.remove('show');
   if (commentsListener) { commentsListener(); commentsListener = null; }
   currentPostId = null;
 }
+  
 
 commentSendBtn.onclick = async () => {
   const text = commentInput.value.trim();
