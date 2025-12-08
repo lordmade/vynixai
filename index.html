@@ -105,6 +105,29 @@ nav a.text-[#ff2a6d] span:first-child { color: #ff2a6d !important; }
 
 /* Prevent content from hiding under bottom nav */
 main, .feed, .composer { padding-bottom: 80px !important; }
+    /* ---- pill follow button ---- */
+.follow-pill {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .2s;
+  z-index: 2;
+}
+.follow-pill:hover { opacity: .85; }
+.follow-pill.following {
+  background: transparent;
+  color: var(--text2);
+  border: 1px solid var(--border);
+}
+.post-card { position: relative; }   /* anchor for absolute pill */
   </style>
 </head>
 <body>
@@ -388,9 +411,12 @@ textEl.oninput = () => { textEl.style.height = 'auto'; textEl.style.height = tex
 /* ========== CARD RENDERER ========== */
 function renderPostCard(p) {
   const isMine = p.authorId === uid;
-  const div = document.createElement('div');
-  div.id = `post-${p.key}`;
+  const div  = document.createElement('div');
+  div.id   = `post-${p.key}`;
   div.className = 'post-card';
+  div.style.position = 'relative';          // anchor for absolute pill
+
+  /* ----- build the card skeleton ----- */
   div.innerHTML = `
     <div class="post-header">
       <img src="${p.authorAvatar}" class="post-avatar">
@@ -425,6 +451,32 @@ function renderPostCard(p) {
         </div>
       </div>
     </div>`;
+
+  /* ----- pill follow button (only for others) ----- */
+  if (!isMine) {
+    const pill = document.createElement('button');
+    pill.className = 'follow-pill';
+    const followRef = ref(db, `social/${uid}/following/${p.authorId}`);
+
+    /* initial state */
+    get(followRef).then(s => {
+      const following = s.exists();
+      pill.textContent = following ? 'Following' : 'Follow';
+      pill.classList.toggle('following', following);
+    });
+
+    /* live sync */
+    onValue(followRef, s => {
+      const following = s.exists();
+      pill.textContent = following ? 'Following' : 'Follow';
+      pill.classList.toggle('following', following);
+    });
+
+    pill.onclick = e => { e.stopPropagation(); toggleFollow(p.authorId); };
+    div.appendChild(pill);
+  }
+
+  /* ----- keep all existing action listeners ----- */
   div.addEventListener('click', e => {
     const action = e.target.closest('[data-action]')?.dataset.action;
     const postId = e.target.closest('[data-post]')?.dataset.post;
@@ -436,8 +488,23 @@ function renderPostCard(p) {
     if (action === 'share')   navigator.share?.({title:'Post',url:location.href}).catch(()=>toast('Link copied'));
     if (action === 'delete')  confirmDelete(postId);
   });
+
   listenCounters(p.key);
   return div;
+}
+
+/* ----- follow/unfollow helper ----- */
+async function toggleFollow(targetUid) {
+  const followingRef = ref(db, `social/${uid}/following/${targetUid}`);
+  const followerRef  = ref(db, `social/${targetUid}/followers/${uid}`);
+  const snap = await get(followingRef);
+  if (snap.exists()) {   // unfollow
+    await remove(followingRef);
+    await remove(followerRef);
+  } else {               // follow
+    await set(followingRef, true);
+    await set(followerRef, true);
+  }
 }
 
 /* ---------- MEDIA RENDER ---------- */
