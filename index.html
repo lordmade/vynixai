@@ -310,34 +310,52 @@ onAuthStateChanged(auth, user => {
 
 
 /* ========== FEED LOGIC ========== */
+/* ========== FEED LOGIC – FIXED VERSION ========== */
 async function initFeed() {
   try {
     const postsRef = ref(db, 'posts');
     const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT));
     const snap = await get(q);
+
+    if (!snap.exists()) {
+      feedEl.innerHTML = '<div class="p-8 text-center text-gray-500">No posts yet</div>';
+      loadMoreBtn.classList.add('hidden');
+      initialLoadDone = true;
+      return;
+    }
+
     const rows = [];
-    snap.forEach(c => rows.unshift({key: c.key, ...c.val()}));
-    rows.forEach(p => feedEl.appendChild(renderPostCard(p)));
-    const last = rows[rows.length-1];
-    if (last) { lastTimestamp = last.timestamp; lastKey = last.key; }
+    snap.forEach(child => {
+      rows.unshift({ key: child.key, ...child.val() });
+    });
+
+    rows.forEach(post => feedEl.appendChild(renderPostCard(post)));
+
+    const last = rows[rows.length - 1];
+    lastTimestamp = last.timestamp || Date.now();
+    lastKey = last.key;
+
     loadMoreBtn.classList.toggle('hidden', rows.length < POST_LIMIT);
     initialLoadDone = true;
-    listenNew();
-  } catch (e) {
-    console.error(e);
+
+    listenNew(); // start listening for new posts only after initial load
+  } catch (err) {
+    console.error('Feed load error:', err);
     toast('Error loading posts');
   }
 }
+
 function listenNew() {
+  if (!initialLoadDone) return;
+
   const postsRef = ref(db, 'posts');
-  onChildAdded(postsRef, snap => {
-    if (!initialLoadDone) return;
+  const q = query(postsRef, orderByChild('timestamp'), startAfter(lastTimestamp));
+
+  onChildAdded(q, snap => {
     const data = snap.val();
-    if (!data || !data.timestamp) return;
-    if (!lastTimestamp || data.timestamp > lastTimestamp) {
-      feedEl.prepend(renderPostCard({key: snap.key, ...data}));
-      lastTimestamp = data.timestamp;
-    }
+    const post = { key: snap.key, ...data };
+    feedEl.prepend(renderPostCard(post));
+    lastTimestamp = data.timestamp || Date.now();
   });
 }
 
