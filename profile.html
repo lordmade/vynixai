@@ -18,9 +18,9 @@
     :root{
       --bg:#ffffff; --card:#ffffff; 
       --text:#161823; 
-      --text2:#86878b; /* Restored for original Nav */
+      --text2:#86878b;
       --border:#e3e3e4; 
-      --accent:#ff2a6d; /* Restored Vynix Pink/Red */
+      --accent:#ff2a6d;
       --btn-bg: #f1f1f2;
     }
     [data-theme="dark"]{
@@ -42,7 +42,7 @@
 
     /* ---------- Utilities ---------- */
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-         background:var(--bg); color:var(--text); padding-bottom: 85px;} /* Increased padding for nav */
+         background:var(--bg); color:var(--text); padding-bottom: 85px;}
 
     .btn-secondary {
         background-color: var(--btn-bg);
@@ -134,7 +134,7 @@
   </div>
 
   <div id="postsGrid" class="grid grid-cols-3 gap-0.5 min-h-[300px]">
-    </div>
+  </div>
 
   <nav class="fixed bottom-0 left-0 right-0 h-16 bg-white dark:bg-black border-t border-[var(--border)] z-40">
     <div class="h-full flex items-center justify-around text-[var(--text2)]">
@@ -183,7 +183,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, set } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, set, query, orderByChild, equalTo } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey:"AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -202,19 +202,33 @@
     const $ = s => document.querySelector(s);
     if (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches) document.body.setAttribute('data-theme','dark');
 
-    /* ---------- Fake Post Grid Generator ---------- */
+    /* ---------- Real owner-media grid ---------- */
     const grid = $('#postsGrid');
-    for(let i=0; i<15; i++) {
-        const div = document.createElement('div');
-        div.className = 'relative aspect-[3/4] bg-gray-200 overflow-hidden';
-        const views = (Math.random() * 50).toFixed(1) + 'K';
-        div.innerHTML = `
-            <img src="https://picsum.photos/200/300?random=${i}" class="w-full h-full object-cover">
-            <div class="absolute bottom-1 left-1 flex items-center text-white text-xs drop-shadow-md font-bold">
-                <span class="material-icons-outlined text-[14px] mr-0.5">play_arrow</span> ${views}
-            </div>
-        `;
-        grid.appendChild(div);
+
+    // empty state cell in case nothing exists
+    function emptyState(){
+      grid.innerHTML = `
+        <div class="col-span-3 text-center text-sm text-[var(--text2)] py-12">
+          No posts yet
+        </div>`;
+    }
+
+    // render one media cell
+    function addCell(url,isVideo){
+      const div = document.createElement('div');
+      div.className = 'relative aspect-[3/4] bg-gray-200 overflow-hidden';
+      div.innerHTML = `
+        <img src="${isVideo? url.replace('/video/upload','/video/upload/so_0')  // 1st-frame thumb
+                           : url}" class="w-full h-full object-cover">
+        ${isVideo ? `
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <span class="material-icons text-white/90 text-4xl drop-shadow-lg">play_circle_filled</span>
+        </div>` : ''}
+      `;
+      div.onclick = () => {            // re-use the same light-box helpers you already have
+        isVideo ? openVideoModal(url) : openImageModal(url);
+      };
+      grid.appendChild(div);
     }
 
     /* ---------- Auth Logic ---------- */
@@ -229,6 +243,7 @@
       uavatar = user.photoURL || `https://ui-avatars.com/api/?background=random&color=fff&name=${uname}`;
       fillProfile(user);
       loadCounts();
+      loadOwnerMedia();
     });
 
     function fillProfile(user){
@@ -249,6 +264,19 @@
     function loadCounts(){
       onValue(ref(db, `social/${uid}/following`), s => $('#followingCount').textContent = s.size||0);
       onValue(ref(db, `social/${uid}/followers`), s => $('#followersCount').textContent = s.size||0);
+    }
+
+    function loadOwnerMedia(){
+      const q = query(ref(db,'posts'), orderByChild('authorId'), equalTo(uid));
+      onValue(q, snap=>{
+        grid.innerHTML = '';
+        const arr = [];
+        snap.forEach(c=> arr.unshift({key:c.key,...c.val()})); // newest on top
+        arr.forEach(p=>{
+          if(p.image) addCell(p.image, p.image.includes('/video/upload') || p.image.endsWith('.mp4'));
+        });
+        if(!arr.length) emptyState();
+      });
     }
 
     /* ---------- Interactions ---------- */
@@ -302,6 +330,27 @@
       } catch { alert('Upload failed'); }
       $('#overlay').classList.add('hidden');
     });
+
+    /* ---------- Light-box helpers ---------- */
+    window.openImageModal = src => {
+      const img = new Image();
+      img.src = src;
+      img.className = 'max-w-[95%] max-h-[95%] object-contain rounded-lg';
+      const wrap = document.createElement('div');
+      wrap.className = 'fixed inset-0 z-[100] bg-black/95 flex items-center justify-center';
+      wrap.onclick = () => wrap.remove();
+      wrap.appendChild(img);
+      document.body.appendChild(wrap);
+    };
+    window.openVideoModal = src => {
+      const wrap = document.createElement('div');
+      wrap.className = 'fixed inset-0 z-[100] bg-black/95 flex items-center justify-center';
+      wrap.innerHTML = `
+        <video src="${src}" controls autoplay class="max-w-[95%] max-h-[95%] object-contain rounded-lg"></video>
+        <span class="absolute top-4 right-4 text-white text-3xl">&times;</span>`;
+      wrap.onclick = e => { if(e.target!==wrap.querySelector('video')) wrap.remove(); };
+      document.body.appendChild(wrap);
+    };
 
   </script>
 </body>
