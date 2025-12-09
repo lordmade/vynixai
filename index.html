@@ -282,8 +282,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
+const userMetaCache = new Map();
 let uid, uname, uavatar;
 
+  
 const $ = s => document.querySelector(s);
 const postBtn = $('#post-btn'), textEl = $('#post-text'), 
       previewImg = $('#media-preview-img'), previewVid = $('#media-preview-video'),
@@ -306,6 +308,16 @@ onAuthStateChanged(auth, user => {
   }
   uavatar = user?.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${uname}`;
   myAvatarEl.src = uavatar;
+  // Keep composer avatar updated if user changes it later
+if (user) {
+  onValue(ref(db, `users/${user.uid}/profile/avatar`), snap => {
+    const newAvatar = snap.val();
+    if (newAvatar) {
+      $('#my-avatar').src = newAvatar;
+      uavatar = newAvatar;
+    }
+  });
+}
   initFeed();
 });
 
@@ -474,22 +486,37 @@ textEl.oninput = () => { textEl.style.height = 'auto'; textEl.style.height = tex
 const userMetaCache = new Map(); // uid → {name, avatar, verified}
 
 function listenUserMeta(uid, card) {
-  if (userMetaCache.has(uid)) return applyUserMeta(card, userMetaCache.get(uid));
+  if (userMetaCache.has(uid)) {
+    applyUserMeta(card, userMetaCache.get(uid));
+    return;
+  }
+
   const unsub = onValue(ref(db, `users/${uid}/profile`), snap => {
-    const v = snap.val() || {};
-    const meta = { name: v.displayName || 'User', avatar: v.avatar || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${v.displayName || 'User'}`, verified: !!v.verified };
+    const p = snap.val() || {};
+    const meta = {
+      name: p.displayName || 'User',
+      avatar: p.avatar || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${p.displayName || 'User'}`,
+      verified: !!p.verified
+    };
     userMetaCache.set(uid, meta);
     applyUserMeta(card, meta);
+
+    // Update composer avatar instantly when profile picture changes
+    if (uid === auth.currentUser?.uid) {
+      $('#my-avatar').src = meta.avatar;
+    }
   });
-  card._unsubUser = unsub;
+
+  card._userUnsub = unsub;
 }
 
 function applyUserMeta(card, meta) {
-  card.querySelector('.name').textContent = esc(meta.name);
-  card.querySelector('.handle').textContent = `@${meta.name.replace(/\s/g, '').toLowerCase()}`;
+  card.querySelector('.name').textContent = meta.name;
+  card.querySelector('.handle').textContent = `@${meta.name.replace(/\s/g,'').toLowerCase()}`;
   card.querySelector('.post-avatar').src = meta.avatar;
+
   const badge = card.querySelector('.verified-badge');
-  badge.style.display = meta.verified ? 'inline' : 'none';
+  if (badge) badge.style.display = meta.verified ? 'inline' : 'none';
 }
 
 function renderPostCard(p) {
@@ -502,7 +529,7 @@ function renderPostCard(p) {
   div.innerHTML = `
     <div class="post-header">
       <a href="profile.html?uid=${encodeURIComponent(p.authorId)}">
-        <img src="${p.authorAvatar}" class="post-avatar">
+       <img src="" class="post-avatar"> <!-- Avatar will be updated by listenUserMeta -->
       </a>
       <div class="flex-1">
         <div class="user-meta">
