@@ -37,15 +37,10 @@
     .overlay{position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:50;}
     .spinner{border:3px solid rgba(255,255,255,.3); border-top:3px solid var(--accent); border-radius:50%; width:24px; height:24px; animation:spin 1s linear infinite;}
     @keyframes spin{to{transform:rotate(360deg);}}
-
-    /* ---- shimmer placeholder ---- */
-    .shimmer{ background:var(--btn-bg); background-image:linear-gradient(
-      to right, var(--btn-bg) 0%, var(--border) 20%, var(--btn-bg) 40%, var(--btn-bg) 100%
-    ); background-repeat:no-repeat; background-size:200% 100%; display:inline-block;
-      animation:shimmer 1.2s ease-in-out infinite; }
-    @keyframes shimmer{ 0%{background-position:-200% 0;} 100%{background-position:200% 0;} }
-    .shimmer-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:0.5px; }
-    .shimmer-cell{ aspect-ratio:3/4; }
+    .video-play-overlay{
+      background:rgba(0,0,0,0.25);
+      transition:opacity 0.4s ease;
+    }
   </style>
 </head>
 <body>
@@ -74,6 +69,7 @@
   <div class="pt-6 pb-2 px-4 text-center">
     <div class="relative mx-auto w-24 h-24 mb-3">
       <img id="profileAvatar" class="w-24 h-24 rounded-full object-cover border border-[var(--border)]" src="" alt="avatar">
+      <!-- Avatar change button - hidden for non-owners -->
       <label for="avatarInput" id="avatarChangeBtn" class="absolute bottom-0 right-0 bg-[var(--accent)] text-white w-7 h-7 flex items-center justify-center rounded-full border-2 border-[var(--bg)] cursor-pointer shadow-sm">
         <span class="material-icons text-sm">add</span>
       </label>
@@ -175,20 +171,14 @@
     if (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches) document.body.setAttribute('data-theme','dark');
 
     const urlParams = new URLSearchParams(location.search);
-    const viewedUid = urlParams.get('uid');
+    const viewedUid = urlParams.get('uid'); // if present → viewing someone else
+
     let currentUid = null;
     let isOwner = false;
+
     const grid = $('#postsGrid');
     const CLOUD_NAME = "dqkujefxj";
     const UPLOAD_PRESET = "banter_box";
-
-    /* ---------- shimmer helpers ---------- */
-    function showShimmer(n=9){
-      grid.innerHTML = '<div class="shimmer-grid col-span-3">'
-        + Array(n).fill(0).map(_=>`<div class="shimmer shimmer-cell"></div>`).join('')
-        + '</div>';
-    }
-    /* ------------------------------------- */
 
     function emptyState(){
       grid.innerHTML = `<div class="col-span-3 text-center text-sm text-[var(--text2)] py-12">No posts yet</div>`;
@@ -218,8 +208,11 @@
 
     onAuthStateChanged(auth, user => {
       if (!user) { location.href = 'login.html'; return; }
+
       currentUid = user.uid;
       isOwner = !viewedUid || viewedUid === currentUid;
+
+      // Hide edit controls if not owner
       $('#editBtn').style.display = isOwner ? 'block' : 'none';
       $('#shareBtn').style.display = isOwner ? 'flex' : 'none';
       $('#avatarChangeBtn').style.display = isOwner ? 'flex' : 'none';
@@ -230,13 +223,16 @@
     });
 
     function loadProfile(uidToLoad) {
+      // Get display name from Auth first
       const authUser = auth.currentUser;
       const displayName = authUser?.displayName || 'User';
+
       $('#displayName').textContent = '@' + (displayName || 'user').replace(/\s/g,'').toLowerCase();
       $('#navDisplayName').textContent = displayName || 'User';
       $('#profileAvatar').src = authUser?.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${displayName}`;
       $('#editPreviewAvatar').src = $('#profileAvatar').src;
 
+      // Then override with custom profile data from DB
       onValue(ref(db, `users/${uidToLoad}/profile`), s => {
         const p = s.val() || {};
         $('#displayName').textContent = '@' + (p.displayName || displayName || 'user').replace(/\s/g,'').toLowerCase();
@@ -253,25 +249,28 @@
     }
 
     function loadMedia(uidToLoad) {
-      showShimmer(); // <-- shimmer starts
       const q = query(ref(db,'posts'), orderByChild('authorId'), equalTo(uidToLoad));
       onValue(q, snap => {
-        grid.innerHTML = ''; // <-- shimmer removed
+        grid.innerHTML = '';
         const items = [];
         snap.forEach(child => {
           const p = child.val();
           if (p.image) items.push({url: p.image, isVideo: p.image.includes('/video/upload') || p.image.endsWith('.mp4')});
         });
         if (!items.length) { emptyState(); return; }
-        items.reverse();
+        items.reverse(); // newest first
         items.forEach(i => addCell(i.url, i.isVideo));
       });
     }
 
-    /* ---------- UI bindings ---------- */
+    // Menu
     $('#menuBtn').onclick = () => $('#menuDrawer').classList.remove('hidden');
     $('#closeMenu').onclick = $('#menuBackdrop').onclick = () => $('#menuDrawer').classList.add('hidden');
+
+    // Logout
     $('#logoutBtn').onclick = async () => { await signOut(auth); location.href = 'login.html'; };
+
+    // Edit Modal (only owner)
     $('#editBtn').onclick = () => {
       $('#nameInput').value = auth.currentUser.displayName || '';
       $('#bioInput').value = $('#bio').textContent === 'No bio yet.' ? '' : $('#bio').textContent;
@@ -289,10 +288,17 @@
 
       if (name && name !== auth.currentUser.displayName) await updateProfile(auth.currentUser, {displayName: name});
       await set(ref(db, `users/${currentUid}/profile`), {displayName: name || null, bio: bio || null, location: loc || null});
+
       toast('Saved!');
       $('#overlay').classList.add('hidden');
       $('#editModal').classList.add('hidden');
     };
+
+    /* ----------  FIXED AVATAR-UPLOAD  ---------- */
+    // helper: write profile fields that the feed listens to
+    function updateUserProfile(updates) {
+      return set(ref(db, `users/${currentUid}/profile`), updates);
+    }
 
     $('#avatarInput').addEventListener('change', async e => {
       if (!isOwner) return;
@@ -303,9 +309,13 @@
       try {
         const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {method:'POST', body:fd});
         const data = await res.json();
-        await updateProfile(auth.currentUser, {photoURL: data.secure_url});
-        $('#profileAvatar').src = data.secure_url;
-        $('#editPreviewAvatar').src = data.secure_url;
+        const newUrl = data.secure_url;
+        // 1. Auth (profile page header)
+        await updateProfile(auth.currentUser, {photoURL: newUrl});
+        // 2. Realtime (feed cards listen here)
+        await updateUserProfile({avatar: newUrl});
+        $('#profileAvatar').src = newUrl;
+        $('#editPreviewAvatar').src = newUrl;
         toast('Avatar updated');
       } catch { toast('Upload failed'); }
       $('#overlay').classList.add('hidden');
@@ -317,6 +327,7 @@
       setTimeout(()=>$('#toast').classList.remove('show'), 2500);
     }
 
+    // Lightbox
     window.openImageModal = src => {
       const wrap = document.createElement('div');
       wrap.className = 'fixed inset-0 z-[100] bg-black/95 flex items-center justify-center';
