@@ -32,6 +32,18 @@
 
     .btn-secondary{background:var(--btn-bg); color:var(--text); font-weight:600; transition:0.2s;}
     .btn-secondary:active{transform:scale(0.98); opacity:0.8;}
+
+    .btn-follow{
+      background:var(--accent); color:white; font-weight:700;
+      transition:all 0.3s ease; border-radius:999px;
+    }
+    .btn-follow.following{
+      background:transparent; color:var(--text); border:1px solid var(--border);
+    }
+    .btn-follow.following:hover{
+      background:rgba(255,42,109,0.1); border-color:var(--accent); color:var(--accent);
+    }
+
     ::-webkit-scrollbar{display:none;}
 
     .toast{position:fixed; top:20px; left:50%; transform:translateX(-50%) translateY(-100px);
@@ -43,7 +55,6 @@
     .spinner{border:3px solid rgba(255,255,255,.3); border-top:3px solid var(--accent); border-radius:50%; width:28px; height:28px; animation:spin 1s linear infinite;}
     @keyframes spin{to{transform:rotate(360deg);}}
 
-    /* SHIMMER LOADING */
     .skeleton {
       background: linear-gradient(90deg, var(--shimmer) 25%, #d1d5db 50%, var(--shimmer) 75%);
       background-size: 200% 100%;
@@ -127,7 +138,15 @@
       </div>
     </div>
 
-    <div class="flex gap-3 justify-center px-6 mb-6">
+    <!-- Follow Button (only for non-owners) -->
+    <div id="followButtonContainer" class="flex justify-center px-6 mb-6 hidden">
+      <button id="followBtn" class="px-8 py-3 rounded-full font-bold text-base btn-follow">
+        Follow
+      </button>
+    </div>
+
+    <!-- Edit Button (only for owner) -->
+    <div id="editButtonContainer" class="flex gap-3 justify-center px-6 mb-6">
       <button id="editBtn" class="flex-1 btn-secondary py-3 rounded-xl font-bold">Edit profile</button>
       <button id="shareBtn" class="w-12 btn-secondary rounded-xl flex items-center justify-center"><span class="material-icons-outlined">share</span></button>
     </div>
@@ -205,7 +224,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, set, query, orderByChild, equalTo } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, set, remove, query, orderByChild, equalTo } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -222,26 +241,23 @@
     const db = getDatabase(app);
     const $ = s => document.querySelector(s);
 
-    // Dark mode
     if (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches) {
       document.body.setAttribute('data-theme', 'dark');
     }
 
-    // Detect if viewing another user
     const urlParams = new URLSearchParams(location.search);
     const viewedUid = urlParams.get('uid');
     let currentUid = null;
     let isOwner = false;
+    let viewedUserId = null;
 
-    // Elements
     const grid = $('#postsGrid');
     const gridSkeleton = $('#gridSkeleton');
-    profileSkeleton = $('#profileSkeleton');
-    profileContent = $('#profileContent');
+    const profileSkeleton = $('#profileSkeleton');
+    const profileContent = $('#profileContent');
     const CLOUD_NAME = "dqkujefxj";
     const UPLOAD_PRESET = "banter_box";
 
-    // Show real content when all data loaded
     function showRealContent() {
       profileSkeleton.classList.add('hidden');
       profileContent.classList.remove('hidden');
@@ -249,7 +265,6 @@
       grid.classList.remove('hidden');
     }
 
-    // Add media cell with autoplay video
     function addCell(url, isVideo) {
       const div = document.createElement('div');
       div.className = 'relative aspect-[3/4] bg-black overflow-hidden';
@@ -276,31 +291,66 @@
       grid.appendChild(div);
     }
 
-    // Auth state
+    // Follow/Unfollow Logic
+    async function toggleFollow() {
+      if (isOwner || !viewedUserId) return;
+
+      const followRef = ref(db, `social/${currentUid}/following/${viewedUserId}`);
+      const followerRef = ref(db, `social/${viewedUserId}/followers/${currentUid}`);
+
+      const snap = await get(followRef);
+      if (snap.exists()) {
+        // Unfollow
+        await remove(followRef);
+        await remove(followerRef);
+        $('#followBtn').textContent = 'Follow';
+        $('#followBtn').classList.remove('following');
+      } else {
+        // Follow
+        await set(followRef, true);
+        await set(followerRef, true);
+        $('#followBtn').textContent = 'Following';
+        $('#followBtn').classList.add('following');
+      }
+    }
+
     onAuthStateChanged(auth, user => {
       if (!user) { location.href = 'login.html'; return; }
 
       currentUid = user.uid;
+      viewedUserId = viewedUid || currentUid;
       isOwner = !viewedUid || viewedUid === currentUid;
 
-      // Hide edit controls if not owner
-      $('#editBtn').style.display = isOwner ? 'block' : 'none';
-      $('#shareBtn').style.display = isOwner ? 'flex' : 'none';
+      // Show/hide correct buttons
+      $('#followButtonContainer').classList.toggle('hidden', isOwner);
+      $('#editButtonContainer').classList.toggle('hidden', !isOwner);
       $('#avatarChangeBtn').style.display = isOwner ? 'flex' : 'none';
 
-      const uidToLoad = viewedUid || currentUid;
-
       let loadedCount = 0;
-      const totalLoads = 3;
+      const totalLoads = 4; // profile, counts, media, follow status
 
       const done = () => {
         if (++loadedCount === totalLoads) showRealContent();
       };
 
-      loadProfile(uidToLoad, done);
-      loadCounts(uidToLoad, done);
-      loadMedia(uidToLoad, done);
+      loadProfile(viewedUserId, done);
+      loadCounts(viewedUserId, done);
+      loadMedia(viewedUserId, done);
+      loadFollowStatus(done);
     });
+
+    function loadFollowStatus(callback) {
+      if (isOwner) { callback(); return; }
+
+      const followRef = ref(db, `social/${currentUid}/following/${viewedUserId}`);
+      onValue(followRef, snap => {
+        const isFollowing = snap.exists();
+        const btn = $('#followBtn');
+        btn.textContent = isFollowing ? 'Following' : 'Follow';
+        btn.classList.toggle('following', isFollowing);
+        callback();
+      });
+    }
 
     function loadProfile(uid, callback) {
       const user = auth.currentUser;
@@ -350,7 +400,7 @@
         if (items.length === 0) {
           grid.innerHTML = '<div class="col-span-3 text-center py-20 text-[var(--text2)]">No posts yet</div>';
         } else {
-          items.reverse(); // newest first
+          items.reverse();
           items.forEach(i => addCell(i.url, i.isVideo));
         }
         callback();
@@ -366,6 +416,9 @@
       await signOut(auth);
       location.href = 'login.html';
     };
+
+    // Follow Button Click
+    $('#followBtn')?.addEventListener('click', toggleFollow);
 
     // Edit Profile Modal
     $('#editBtn').onclick = () => {
@@ -417,7 +470,6 @@
       $('#overlay').classList.add('hidden');
     };
 
-    // Toast
     function toast(msg) {
       const t = $('#toast');
       t.textContent = msg;
@@ -425,7 +477,6 @@
       setTimeout(() => t.classList.remove('show'), 3000);
     }
 
-    // Lightbox
     window.openImageModal = src => {
       const div = document.createElement('div');
       div.className = 'fixed inset-0 z-[200] bg-black/95 flex items-center justify-center';
