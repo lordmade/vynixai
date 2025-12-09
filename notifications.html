@@ -57,7 +57,7 @@
   <!-- notifications list -->
   <main id="notif-list" class="px-4 py-3 space-y-3"></main>
 
-  <!-- bottom nav -->
+  <!-- bottom nav (unchanged) -->
   <nav class="fixed bottom-0 left-0 right-0 h-16 bg-white dark:bg-black border-t border-[var(--border)] z-40">
     <div class="h-full flex items-center justify-around text-[var(--text2)]">
       <a href="index.html" class="flex flex-col items-center justify-center h-full w-full"><span class="material-icons-outlined text-2xl">home</span><span class="text-xs mt-0.5">Home</span></a>
@@ -75,7 +75,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, get, push, serverTimestamp, update } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, get, push, serverTimestamp, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey:"AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -106,7 +106,7 @@
       startListeners();
     });
 
-    /* ---------- real-time listeners ---------- */
+    /* ---------- listeners: likes, comments, follows ---------- */
     function startListeners(){
       /* likes on my posts */
       onValue(ref(db, 'posts'), async snap => {
@@ -146,47 +146,65 @@
       });
     }
 
-    /* ---------- add notification card ---------- */
-    const seen = new Set(); // simple dedup per session
+    /* ---------- add notification (stores in FB) ---------- */
+    const seen = new Set(); // session dedup
     async function addNotif(type, postId, fromUid, preview){
       const key = `${type}_${postId||'follow'}_${fromUid}`;
       if (seen.has(key)) return;
       seen.add(key);
+
+      // check if already stored
+      const storedSnap = await get(ref(db, `notifications/${uid}/${key}`));
+      if (storedSnap.exists()) return; // already saved
 
       const userSnap = await get(ref(db, `users/${fromUid}/profile`));
       const from = userSnap.val() || {};
       const icon = type === 'like' ? 'favorite' : type === 'comment' ? 'chat_bubble' : 'person_add';
       const text = type === 'like' ? 'liked your post' : type === 'comment' ? 'replied to your post' : 'started following you';
 
+      // store in FB
+      await push(ref(db, `notifications/${uid}`), {
+        type, postId, fromUid, fromName: from.displayName||'Someone',
+        fromAvatar: from.avatar||`https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${from.displayName||'U'}`,
+        preview, timestamp: serverTimestamp()
+      });
+    }
+
+    /* ---------- real-time read + render ---------- */
+    onValue(ref(db, `notifications/${uid}`), snap => {
+      $('#notif-list').innerHTML = '';
+      const rows = [];
+      snap.forEach(c => rows.push({key: c.key, ...c.val()}));
+      rows.reverse(); // newest first
+      rows.forEach(n => renderNotifCard(n));
+      if (!rows.length) $('#notif-list').innerHTML = '<div class="text-center text-sm text-[var(--text2)] py-10">No notifications yet</div>';
+    });
+
+    function renderNotifCard(n){
+      const icon = n.type==='like'?'favorite':n.type==='comment'?'chat_bubble':'person_add';
       const card = document.createElement('div');
       card.className = 'bg-[var(--card)] border border-[var(--border)] rounded-2xl p-3 cursor-pointer hover:opacity-90 relative';
       card.innerHTML = `
         <div class="flex items-center gap-3">
-          <img src="${from.avatar || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${from.displayName||'U'}`}" class="w-10 h-10 rounded-full object-cover">
+          <img src="${n.fromAvatar}" class="w-10 h-10 rounded-full object-cover">
           <div class="flex-1">
-            <div class="text-sm"><b>${from.displayName||'Someone'}</b> ${text}</div>
-            <div class="text-xs text-[var(--text2)] mt-1">${preview}</div>
+            <div class="text-sm"><b>${n.fromName}</b> ${n.type==='like'?'liked your post':n.type==='comment'?'replied to your post':'started following you'}</div>
+            <div class="text-xs text-[var(--text2)] mt-1">${n.preview}</div>
           </div>
           <span class="material-icons text-[var(--accent)]">${icon}</span>
         </div>
-        <button class="absolute top-2 right-2 text-[var(--text2)] hover:text-red-500" data-key="${key}">
+        <button class="absolute top-2 right-2 text-[var(--text2)] hover:text-red-500" data-key="${n.key}">
           <span class="material-icons-outlined text-sm">delete</span>
         </button>`;
       
       card.querySelector('button').onclick = (e) => {
         e.stopPropagation();
-        deleteNotif(key, card);
+        remove(ref(db, `notifications/${uid}/${n.key}`));
+        toast('Notification deleted');
       };
       
-      card.onclick = () => type==='follow'?openProfile(fromUid):openPost(postId);
-      $('#notif-list').prepend(card);
-    }
-
-    /* ---------- delete notification ---------- */
-    function deleteNotif(key, card) {
-      card.remove();
-      toast('Notification deleted');
-      seen.delete(key);
+      card.onclick = () => n.type==='follow'?openProfile(n.fromUid):openPost(n.postId);
+      $('#notif-list').appendChild(card);
     }
 
     /* ---------- open post / profile ---------- */
@@ -212,7 +230,6 @@
       location.href=`profile.html?uid=${uid}`;
     }
 
-    /* ---------- render post card (same as feed) ---------- */
     function renderPostCard(p){
       const div = document.createElement('div'); div.className = 'post-card';
       div.innerHTML = `
@@ -240,7 +257,7 @@
     window.addEventListener('load', () => $('#global-shimmer').classList.add('hidden'));
   </script>
 
-  <!-- bottom nav active state -->
+  <!-- bottom nav active state (unchanged) -->
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const cur = location.pathname.split('/').pop() || 'notifications.html';
