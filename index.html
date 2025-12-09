@@ -85,7 +85,7 @@
     .comment-send-btn { background: var(--accent); color: #fff; border: none; border-radius: 50%; width: 40px; height: 40px; display: grid; place-items: center; cursor: pointer; transition: opacity 0.2s; }
     .comment-send-btn:disabled { opacity: 0.5; cursor: default; }
     .custom-toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--accent); color: white; padding: 12px 24px; border-radius: 99px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3); font-weight: 600; opacity: 0; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 50; display: flex; align-items: center; gap: 8px; }
-    .custom-toast.show { transform: TranslateX(-50%) translateY(0); opacity: 1; }
+    .custom-toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
     .spinner { border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid #fff; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     .post-actions svg { width: 24px; height: 24px; }
@@ -104,7 +104,7 @@
     #modal-video.show { display: block; }
     
     /* Custom Video Controls */
-    .video-controls { position: absolute; bottom: 20px; left: 50%; transform: TranslateX(-50%); background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); border-radius: 50px; padding: 12px 20px; display: flex; align-items: center; gap: 15px; z-index: 160; }
+    .video-controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); border-radius: 50px; padding: 12px 20px; display: flex; align-items: center; gap: 15px; z-index: 160; }
     .video-controls button { background: none; border: none; color: white; cursor: pointer; display: flex; align-items: center; padding: 5px; border-radius: 50%; transition: all 0.2s; }
     .video-controls button:hover { background: rgba(255,255,255,0.2); transform: scale(1.1); }
     .video-progress { flex: 1; height: 4px; background: rgba(255,255,255,0.3); border-radius: 2px; cursor: pointer; position: relative; min-width: 200px; }
@@ -266,7 +266,7 @@
   
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import { getAuth, onAuthStateChanged, signInAnonymously, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, onChildAdded, onValue, get, endAt, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
@@ -308,6 +308,11 @@ onAuthStateChanged(auth, user => {
   myAvatarEl.src = uavatar;
   initFeed();
 });
+
+/* ---------- helper: write profile fields that feed cards listen to ---------- */
+function updateUserProfile(updates) {
+  return set(ref(db, `users/${uid}/profile`), updates);
+}
 
 function showSkeletonLoaders(count = 5) {
   feedEl.innerHTML = '';
@@ -407,6 +412,7 @@ fileInput.onchange = e => {
   uploadToCloudinary(file);
 };
 
+/* ---------- fixed avatar upload – updates BOTH Auth AND Realtime ---------- */
 function uploadToCloudinary(file) {
   const CLOUD_NAME = "dqkujefxj", UPLOAD_PRESET = "banter_box";
   uploading = true; toggleBtn();
@@ -416,9 +422,28 @@ function uploadToCloudinary(file) {
   fd.append('upload_preset', UPLOAD_PRESET);
   fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, {method: 'POST', body: fd})
     .then(r => r.json())
-    .then(res => { mediaUrl = res.secure_url; toast('Media ready'); })
-    .catch(err => { toast('Upload failed'); mediaUrl = ''; previewImg.classList.add('hidden'); previewVid.classList.add('hidden'); console.error(err); })
-    .finally(() => { uploading = false; $('#btn-spinner').classList.add('hidden'); $('#btn-text').classList.remove('hidden'); toggleBtn(); });
+    .then(async res => {
+      const newUrl = res.secure_url;
+      mediaUrl = newUrl;
+      // 1. Auth profile (so profile page picks it up)
+      await updateProfile(auth.currentUser, {photoURL: newUrl});
+      // 2. Realtime node that every post card listens to
+      await updateUserProfile({avatar: newUrl});
+      toast('Avatar updated');
+    })
+    .catch(err => {
+      toast('Upload failed');
+      mediaUrl = '';
+      previewImg.classList.add('hidden');
+      previewVid.classList.add('hidden');
+      console.error(err);
+    })
+    .finally(() => {
+      uploading = false;
+      $('#btn-spinner').classList.add('hidden');
+      $('#btn-text').classList.remove('hidden');
+      toggleBtn();
+    });
 }
 
 postBtn.onclick = async () => {
