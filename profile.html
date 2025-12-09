@@ -41,9 +41,43 @@
       background:rgba(0,0,0,0.25);
       transition:opacity 0.4s ease;
     }
+
+    /* ---- global shimmer overlay ---- */
+    #global-shimmer{
+      position:fixed; inset:0; z-index:100;
+      background:var(--bg);
+      display:flex; align-items:center; justify-content:center;
+      opacity:1; pointer-events:auto; transition:opacity .3s;
+    }
+    #global-shimmer.hidden{
+      opacity:0; pointer-events:none;
+    }
+    .shimmer-grid{
+      display:grid; grid-template-columns:repeat(3,1fr); gap:0.5px;
+      width:100%; max-width:400px;
+    }
+    .shimmer-cell{
+      aspect-ratio:3/4;
+      background:linear-gradient(90deg, var(--border) 25%, rgba(255,255,255,0.3) 50%, var(--border) 75%);
+      background-size:200% 100%; animation:shimmer 1.2s infinite;
+    }
+    [data-theme="dark"] .shimmer-cell{
+      background:linear-gradient(90deg, var(--border) 25%, rgba(255,255,255,0.05) 50%, var(--border) 75%);
+    }
+    @keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
   </style>
 </head>
 <body>
+
+  <!-- GLOBAL SHIMMER -->
+  <div id="global-shimmer">
+    <div class="shimmer-grid">
+      <!-- 9 grey cards while loading -->
+      <div class="shimmer-cell"></div><div class="shimmer-cell"></div><div class="shimmer-cell"></div>
+      <div class="shimmer-cell"></div><div class="shimmer-cell"></div><div class="shimmer-cell"></div>
+      <div class="shimmer-cell"></div><div class="shimmer-cell"></div><div class="shimmer-cell"></div>
+    </div>
+  </div>
 
   <!-- Header -->
   <div class="sticky top-0 z-30 bg-[var(--bg)] border-b border-[var(--border)] h-12 flex items-center justify-between px-4">
@@ -151,7 +185,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, onValue, set, query, orderByChild, equalTo } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, onValue, set, update, query, orderByChild, equalTo } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey:"AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -171,8 +205,7 @@
     if (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches) document.body.setAttribute('data-theme','dark');
 
     const urlParams = new URLSearchParams(location.search);
-    const viewedUid = urlParams.get('uid'); // if present → viewing someone else
-
+    const viewedUid = urlParams.get('uid');
     let currentUid = null;
     let isOwner = false;
 
@@ -180,14 +213,40 @@
     const CLOUD_NAME = "dqkujefxj";
     const UPLOAD_PRESET = "banter_box";
 
-    function emptyState(){
+    /* ---------- global shimmer helpers ---------- */
+    function showGlobalShimmer(show = true) {
+      $('#global-shimmer').classList.toggle('hidden', !show);
+    }
+    function toast(msg) {
+      $('#toast').textContent = msg;
+      $('#toast').classList.add('show');
+      setTimeout(() => $('#toast').classList.remove('show'), 2500);
+    }
+
+    /* ---------- merge-only helper (keeps existing fields) ---------- */
+    function updateUserProfile(updates) {
+      return update(ref(db, `users/${currentUid}/profile`), updates);
+    }
+
+    onAuthStateChanged(auth, user => {
+      if (!user) { location.href = 'login.html'; return; }
+      currentUid = user.uid;
+      isOwner = !viewedUid || viewedUid === currentUid;
+      $('#editBtn').style.display = isOwner ? 'block' : 'none';
+      $('#shareBtn').style.display = isOwner ? 'flex' : 'none';
+      $('#avatarChangeBtn').style.display = isOwner ? 'flex' : 'none';
+      loadProfile(viewedUid || currentUid);
+      loadCounts(viewedUid || currentUid);
+      loadMedia(viewedUid || currentUid);
+    });
+
+    function emptyState() {
       grid.innerHTML = `<div class="col-span-3 text-center text-sm text-[var(--text2)] py-12">No posts yet</div>`;
     }
 
     function addCell(url, isVideo) {
       const div = document.createElement('div');
       div.className = 'relative aspect-[3/4] bg-black overflow-hidden';
-
       if (isVideo) {
         div.innerHTML = `
           <video class="w-full h-full object-cover" src="${url}" muted loop playsinline autoplay preload="metadata"></video>
@@ -206,33 +265,14 @@
       grid.appendChild(div);
     }
 
-    onAuthStateChanged(auth, user => {
-      if (!user) { location.href = 'login.html'; return; }
-
-      currentUid = user.uid;
-      isOwner = !viewedUid || viewedUid === currentUid;
-
-      // Hide edit controls if not owner
-      $('#editBtn').style.display = isOwner ? 'block' : 'none';
-      $('#shareBtn').style.display = isOwner ? 'flex' : 'none';
-      $('#avatarChangeBtn').style.display = isOwner ? 'flex' : 'none';
-
-      loadProfile(viewedUid || currentUid);
-      loadCounts(viewedUid || currentUid);
-      loadMedia(viewedUid || currentUid);
-    });
-
-    function loadProfile(uidToLoad) {
-      // Get display name from Auth first
+    async function loadProfile(uidToLoad) {
       const authUser = auth.currentUser;
       const displayName = authUser?.displayName || 'User';
-
       $('#displayName').textContent = '@' + (displayName || 'user').replace(/\s/g,'').toLowerCase();
       $('#navDisplayName').textContent = displayName || 'User';
       $('#profileAvatar').src = authUser?.photoURL || `https://ui-avatars.com/api/?background=ff2a6d&color=fff&name=${displayName}`;
       $('#editPreviewAvatar').src = $('#profileAvatar').src;
 
-      // Then override with custom profile data from DB
       onValue(ref(db, `users/${uidToLoad}/profile`), s => {
         const p = s.val() || {};
         $('#displayName').textContent = '@' + (p.displayName || displayName || 'user').replace(/\s/g,'').toLowerCase();
@@ -248,7 +288,8 @@
       onValue(ref(db, `social/${uidToLoad}/followers`), s => $('#followersCount').textContent = s.size || 0);
     }
 
-    function loadMedia(uidToLoad) {
+    async function loadMedia(uidToLoad) {
+      showGlobalShimmer(true);
       const q = query(ref(db,'posts'), orderByChild('authorId'), equalTo(uidToLoad));
       onValue(q, snap => {
         grid.innerHTML = '';
@@ -257,9 +298,12 @@
           const p = child.val();
           if (p.image) items.push({url: p.image, isVideo: p.image.includes('/video/upload') || p.image.endsWith('.mp4')});
         });
-        if (!items.length) { emptyState(); return; }
-        items.reverse(); // newest first
-        items.forEach(i => addCell(i.url, i.isVideo));
+        if (!items.length) { emptyState(); }
+        else {
+          items.reverse();
+          items.forEach(i => addCell(i.url, i.isVideo));
+        }
+        showGlobalShimmer(false);
       });
     }
 
@@ -286,20 +330,21 @@
       const bio = $('#bioInput').value.trim();
       const loc = $('#locationInput').value.trim();
 
-      if (name && name !== auth.currentUser.displayName) await updateProfile(auth.currentUser, {displayName: name});
-      await set(ref(db, `users/${currentUid}/profile`), {displayName: name || null, bio: bio || null, location: loc || null});
+      const updates = {};
+      if (name && name !== auth.currentUser.displayName) {
+        await updateProfile(auth.currentUser, {displayName: name});
+        updates.displayName = name;
+      }
+      if (bio !== $('#bio').textContent) updates.bio = bio;
+      if (loc !== $('#location').textContent) updates.location = loc;
+      if (Object.keys(updates).length) await updateUserProfile(updates);
 
       toast('Saved!');
       $('#overlay').classList.add('hidden');
       $('#editModal').classList.add('hidden');
     };
 
-    /* ----------  FIXED AVATAR-UPLOAD  ---------- */
-    // helper: write profile fields that the feed listens to
-    function updateUserProfile(updates) {
-      return set(ref(db, `users/${currentUid}/profile`), updates);
-    }
-
+    // Avatar Upload (only owner) – merges, does NOT overwrite
     $('#avatarInput').addEventListener('change', async e => {
       if (!isOwner) return;
       const file = e.target.files[0]; if (!file) return;
@@ -310,10 +355,8 @@
         const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {method:'POST', body:fd});
         const data = await res.json();
         const newUrl = data.secure_url;
-        // 1. Auth (profile page header)
         await updateProfile(auth.currentUser, {photoURL: newUrl});
-        // 2. Realtime (feed cards listen here)
-        await updateUserProfile({avatar: newUrl});
+        await updateUserProfile({avatar: newUrl}); // <-- only touches avatar
         $('#profileAvatar').src = newUrl;
         $('#editPreviewAvatar').src = newUrl;
         toast('Avatar updated');
@@ -321,13 +364,6 @@
       $('#overlay').classList.add('hidden');
     });
 
-    function toast(msg){
-      $('#toast').textContent = msg;
-      $('#toast').classList.add('show');
-      setTimeout(()=>$('#toast').classList.remove('show'), 2500);
-    }
-
-    // Lightbox
     window.openImageModal = src => {
       const wrap = document.createElement('div');
       wrap.className = 'fixed inset-0 z-[100] bg-black/95 flex items-center justify-center';
