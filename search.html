@@ -22,7 +22,7 @@
     .results { padding: 8px; }
     .result-card { display: flex; gap: 12px; padding: 12px; border-radius: 12px; transition: background .2s; cursor: pointer; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
     .result-card:hover { background: rgba(255,42,109,.08); }
-    .avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
+    .avatar { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
     .name { font-weight: 700; }
     .handle { color: var(--text2); font-size: 14px; }
     .post-snippet { font-size: 15px; line-height: 1.4; margin-top: 4px; word-break: break-word; }
@@ -30,6 +30,63 @@
     .empty { text-align: center; padding: 60px 20px; color: var(--text2); font-size: 16px; }
     .loader { border: 3px solid #f3f3f3; border-top: 3px solid var(--accent); border-radius: 50%; width: 32px; height: 32px; animation: spin 1s linear infinite; margin: 40px auto; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    
+    /* Follow Button Styles */
+    .follow-btn {
+      padding: 6px 16px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex-shrink: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .follow-btn.follow {
+      background: var(--accent);
+      color: white;
+    }
+    .follow-btn.follow:active {
+      transform: scale(0.95);
+      opacity: 0.8;
+    }
+    .follow-btn.following {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .follow-btn.following:hover {
+      background: rgba(244,33,46,.08);
+      color: #f4212e;
+      border-color: #f4212e;
+    }
+    .follow-btn.following:hover .follow-text { display: none; }
+    .follow-btn.following:hover::after { content: 'Unfollow'; }
+    .follow-btn.me {
+      background: var(--border);
+      color: var(--text2);
+      cursor: default;
+      pointer-events: none;
+    }
+    .toast {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-100px);
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 12px 24px;
+      border-radius: 999px;
+      font-size: 14px;
+      opacity: 0;
+      transition: all .4s ease;
+      z-index: 99;
+    }
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
@@ -74,9 +131,12 @@
     </div>
   </nav>
 
+  <div id="toast" class="toast"></div>
+
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getDatabase, ref, get, query, orderByChild, limitToFirst } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import { getDatabase, ref, get, set, query, orderByChild, limitToFirst, onValue } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -88,11 +148,32 @@ const firebaseConfig = {
   appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
 const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
 const db = getDatabase(app);
 
 const input = document.getElementById('searchInput');
 const clearBtn = document.getElementById('clearBtn');
 const results = document.getElementById('results');
+
+let currentUid = null;
+let followStates = {}; // Track follow states for each user
+
+// Toast notification
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// Auth state
+onAuthStateChanged(auth, user => {
+  if (!user) {
+    location.href = 'login.html';
+    return;
+  }
+  currentUid = user.uid;
+});
 
 let timer;
 input.addEventListener('input', () => {
@@ -102,8 +183,11 @@ input.addEventListener('input', () => {
   if (!q) return results.innerHTML = '<div class="empty">Start typing to search Vynix</div>';
   timer = setTimeout(() => runSearch(q), 300);
 });
+
 clearBtn.onclick = () => {
-  input.value = ''; input.focus(); clearBtn.classList.add('hidden');
+  input.value = ''; 
+  input.focus(); 
+  clearBtn.classList.add('hidden');
   results.innerHTML = '<div class="empty">Start typing to search Vynix</div>';
 };
 
@@ -127,33 +211,132 @@ async function runSearch(raw) {
 
   const snap = await get(query(ref(db, 'posts'), orderByChild('timestamp'), limitToFirst(200)));
   const matches = [];
+  const uniqueAuthors = new Set();
+  
   snap.forEach(c => {
     const p = c.val();
     const text = (p.text || '').toLowerCase();
     const name = (p.authorName || '').toLowerCase();
     if (isTag ? text.includes('#' + key) : (text.includes(key) || name.includes(key))) {
       matches.push({ key: c.key, ...p });
+      if (p.authorId) uniqueAuthors.add(p.authorId);
     }
   });
 
   if (!matches.length) {
-    results.innerHTML = `<div class="empty">No results for "${raw}"</div>`; return;
+    results.innerHTML = `<div class="empty">No results for "${raw}"</div>`; 
+    return;
   }
 
-  results.innerHTML = matches.slice(0, 30).map(p => `
-    <a class="result-card block" data-pid="${p.key}" href="index.html#post-${p.key}">
+  // Load follow states for all unique authors
+  await loadFollowStates(Array.from(uniqueAuthors));
+
+  // Render results
+  results.innerHTML = matches.slice(0, 30).map(p => {
+    const isMe = p.authorId === currentUid;
+    const followBtnHtml = renderFollowButton(p.authorId, isMe);
+    
+    return `
+    <div class="result-card" data-pid="${p.key}" data-author-id="${p.authorId}">
       <img src="${p.authorAvatar}" class="avatar">
-      <div class="flex-1">
-        <div class="name">${esc(p.authorName)}</div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <div class="name">${esc(p.authorName)}</div>
+          ${followBtnHtml}
+        </div>
         <div class="handle">@${esc(p.authorName.replace(/\s/g, '').toLowerCase())}</div>
         <div class="post-snippet">${highlight(esc(p.text || ''), raw)}</div>
       </div>
-    </a>`).join('');
+    </div>`;
+  }).join('');
+
+  // Setup follow button listeners
+  setupFollowButtons();
+}
+
+/* ---------- load follow states ---------- */
+async function loadFollowStates(authorIds) {
+  if (!currentUid) return;
+  
+  const promises = authorIds.map(async authorId => {
+    const followingRef = ref(db, `social/${currentUid}/following/${authorId}`);
+    const snap = await get(followingRef);
+    followStates[authorId] = snap.exists();
+  });
+  
+  await Promise.all(promises);
+}
+
+/* ---------- render follow button ---------- */
+function renderFollowButton(authorId, isMe) {
+  if (isMe) {
+    return '<button class="follow-btn me">You</button>';
+  }
+  
+  const isFollowing = followStates[authorId];
+  if (isFollowing) {
+    return `<button class="follow-btn following" data-author-id="${authorId}"><span class="follow-text">Following</span></button>`;
+  } else {
+    return `<button class="follow-btn follow" data-author-id="${authorId}"><span class="follow-text">Follow</span></button>`;
+  }
+}
+
+/* ---------- setup follow button listeners ---------- */
+function setupFollowButtons() {
+  const buttons = results.querySelectorAll('.follow-btn:not(.me)');
+  buttons.forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const targetUid = btn.dataset.authorId;
+      await toggleFollow(targetUid, btn);
+    };
+  });
+}
+
+/* ---------- toggle follow ---------- */
+async function toggleFollow(targetUid, btnElement) {
+  if (!currentUid || !targetUid) return;
+
+  const followingPath = `social/${currentUid}/following/${targetUid}`;
+  const followersPath = `social/${targetUid}/followers/${currentUid}`;
+
+  try {
+    const snap = await get(ref(db, followingPath));
+    const isCurrentlyFollowing = snap.exists();
+
+    if (isCurrentlyFollowing) {
+      // Unfollow
+      const updates = {};
+      updates[followingPath] = null;
+      updates[followersPath] = null;
+      await set(ref(db), updates);
+      
+      followStates[targetUid] = false;
+      btnElement.className = 'follow-btn follow';
+      btnElement.innerHTML = '<span class="follow-text">Follow</span>';
+      toast('Unfollowed');
+    } else {
+      // Follow
+      await set(ref(db, followingPath), true);
+      await set(ref(db, followersPath), true);
+      
+      followStates[targetUid] = true;
+      btnElement.className = 'follow-btn following';
+      btnElement.innerHTML = '<span class="follow-text">Following</span>';
+      toast('Following');
+    }
+  } catch (err) {
+    console.error('Follow toggle error:', err);
+    toast('Error: ' + err.message);
+  }
 }
 
 /* ---------- intercept card taps ---------- */
 results.addEventListener('click', e => {
-  const card = e.target.closest('a.result-card');
+  // Don't navigate if clicking follow button
+  if (e.target.closest('.follow-btn')) return;
+  
+  const card = e.target.closest('.result-card');
   if (!card) return;
   e.preventDefault();
   goToPost(card.dataset.pid);
@@ -163,13 +346,17 @@ results.addEventListener('click', e => {
 function esc(str) {
   return str.replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
 }
+
 function highlight(text, query) {
   const re = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
   return text.replace(re, '<span class="highlight">$1</span>');
 }
 
 /* ---------- theme ---------- */
-if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+if (matchMedia('(prefers-color-scheme: dark)').matches) {
+  document.documentElement.setAttribute('data-theme', 'dark');
+}
+
 input.focus();
 </script>
 
