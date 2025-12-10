@@ -30,12 +30,17 @@
     .skeleton-line{height:16px;border-radius:4px;background:#e0e0e0;margin:6px 0;}
     .skeleton-line.short{width:60%;}
     .skeleton-line.long{width:85%;}
+    /* Search */
+    #searchBar{width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:9999px;font-size:15px;background:var(--bg);color:var(--text);margin-bottom:12px;}
+    #searchBar:focus{outline:none;border-color:var(--accent);}
+    #searchResults{max-height:50vh;overflow-y:auto;}
   </style>
 </head>
 <body>
 
 <header>
   <h1 class="text-2xl font-extrabold" style="color:var(--accent);">Chats</h1>
+  <input id="searchBar" placeholder="Search users…" autocomplete="off">
 </header>
 
 <main id="list" class="pb-20">
@@ -86,7 +91,7 @@
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, onValue } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, onValue, orderByChild, startAt, endAt, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -102,8 +107,9 @@ const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db   = getDatabase(app);
 
-const listEl = document.getElementById('list');
-let myUid    = null;
+const listEl      = document.getElementById('list');
+const searchBar   = document.getElementById('searchBar');
+let myUid         = null;
 
 /* dark-mode */
 if (window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -115,25 +121,59 @@ onAuthStateChanged(auth, user => {
   setupRealtimeChats();
 });
 
+/* ---------- search ---------- */
+searchBar.addEventListener('input', async e => {
+  const q = e.target.value.trim();
+  if (q.length < 2) { renderChats(); return; }               // show normal chat list
+  const usersSnap = await get(ref(db, 'users'));
+  const hits = [];
+  usersSnap.forEach(child => {
+    const prof = child.val().profile;
+    if (prof && prof.displayName && prof.displayName.toLowerCase().includes(q.toLowerCase()))
+      hits.push({ uid: child.key, ...prof });
+  });
+  renderSearchHits(hits);
+});
+
+function renderSearchHits(list) {
+  listEl.innerHTML = '';
+  if (!list.length) { listEl.innerHTML = '<div class="empty">No users found</div>'; return; }
+  list.forEach(u => {
+    const div = document.createElement('div');
+    div.className = 'chat-item';
+    div.dataset.other = u.uid;
+    div.innerHTML = `
+      <img src="${u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName||'User')}&background=ff2a6d&color=fff&bold=true`}" class="chat-avatar">
+      <div class="info">
+        <div class="chat-name">${escapeHtml(u.displayName||'User')}</div>
+        <div class="chat-last">Tap to start a chat</div>
+      </div>`;
+    div.addEventListener('click', () => {
+      const roomId = [myUid, u.uid].sort().join('_');
+      location.href = `room.html#${roomId}|${u.uid}`;
+    });
+    listEl.appendChild(div);
+  });
+}
+
+/* ---------- chats ---------- */
 function setupRealtimeChats() {
   const followingRef = ref(db, `social/${myUid}/following`);
   onValue(followingRef, snap => {
     const uids = snap.exists() ? Object.keys(snap.val() || {}) : [];
-    if (!uids.length) {
+    if (!uids.length && !searchBar.value.trim()) {
       listEl.innerHTML = '<div class="empty">No chats yet<br><small>Follow someone to start messaging</small></div>';
       return;
     }
     if (listEl.querySelector('#skeleton')) listEl.innerHTML = '';
-
     uids.forEach(uid => {
       const roomId     = [myUid, uid].sort().join('_');
       const profileRef = ref(db, `users/${uid}/profile`);
       const lastMsgRef = ref(db, `lastMessage/${roomId}`);
-
       let profile = {};
       let lastMsg = { text: 'No messages yet', time: 0, unread: false };
-
       const updateRow = () => {
+        if (searchBar.value.trim()) return;          // search active → don’t touch DOM
         let el = document.getElementById(`chat-${uid}`);
         if (!el) {
           el = document.createElement('div');
@@ -143,7 +183,6 @@ function setupRealtimeChats() {
           el.dataset.other = uid;
           listEl.appendChild(el);
         }
-
         el.innerHTML = `
           <img src="${profile.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.displayName || 'User')}&background=ff2a6d&color=fff&bold=true`}" class="chat-avatar">
           <div class="info">
@@ -152,31 +191,32 @@ function setupRealtimeChats() {
           </div>
           <div class="chat-time" data-time="${lastMsg.time}">${timeAgo(lastMsg.time)}</div>
           ${lastMsg.unread === myUid ? '<div class="unread-dot"></div>' : ''}`;
-
         sortChatList();
       };
-
       onValue(profileRef, s => { profile = s.val() || {}; updateRow(); });
       onValue(lastMsgRef, s => { lastMsg = s.val() || { text: 'No messages yet', time: 0, unread: false }; updateRow(); });
     });
   });
 }
 
-/* keep list ordered by most recent */
+function renderChats() {
+  /* re-trigger the same listener (cheap) */
+  setupRealtimeChats();
+}
+
 function sortChatList() {
   const items = [...listEl.querySelectorAll('.chat-item')];
   items.sort((a, b) => {
-    const ta = Number(a.querySelector('.chat-time').dataset.time || 0);
-    const tb = Number(b.querySelector('.chat-time').dataset.time || 0);
+    const ta = Number(a.querySelector('.chat-time')?.dataset.time || 0);
+    const tb = Number(b.querySelector('.chat-time')?.dataset.time || 0);
     return tb - ta;
   });
   items.forEach(item => listEl.appendChild(item));
 }
 
-/* open room */
 listEl.addEventListener('click', e => {
   const card = e.target.closest('.chat-item');
-  if (!card) return;
+  if (!card || !card.dataset.room) return;
   location.href = `room.html#${card.dataset.room}|${card.dataset.other}`;
 });
 
