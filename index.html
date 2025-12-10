@@ -584,19 +584,52 @@ function listenCounters(postId) {
 async function toggleLike(postId) {
   const likeRef = ref(db, `likes/${postId}/${uid}`);
   const snap = await get(likeRef);
-  if (snap.exists()) await remove(likeRef);
-  else await set(likeRef, true);
+  const alreadyLiked = snap.exists();
+
+  if (alreadyLiked) {
+    await remove(likeRef);
+  } else {
+    await set(likeRef, true);
+
+    // SEND NOTIFICATION
+    const postSnap = await get(ref(db, `posts/${postId}`));
+    const post = postSnap.val();
+    if (post && post.authorId && post.authorId !== uid) {
+      sendNotification(post.authorId, 'like', {
+        postId,
+        text: post.text || ''
+      });
+    }
+  }
 }
 async function doRepost(postId) {
-  const orig = (await get(ref(db, `posts/${postId}`))).val();
+  const origSnap = await get(ref(db, `posts/${postId}`));
+  const orig = origSnap.val();
   if (!orig) return;
+
   const newRef = push(ref(db, 'posts'));
   await set(newRef, {
-    authorId: uid, authorName: uname, authorAvatar: uavatar,
-    text: orig.text, image: orig.image, verified: false,
-    repostOf: {authorName: orig.authorName, key: postId},
-    likes: 0, replies: 0, reposts: 0, timestamp: Date.now()
+    authorId: uid,
+    authorName: uname,
+    authorAvatar: uavatar,
+    text: orig.text,
+    image: orig.image,
+    verified: false,
+    repostOf: { authorName: orig.authorName, key: postId },
+    likes: 0,
+    replies: 0,
+    reposts: 0,
+    timestamp: Date.now()
   });
+
+  // SEND NOTIFICATION to original author
+  if (orig.authorId && orig.authorId !== uid) {
+    sendNotification(orig.authorId, 'repost', {
+      postId,
+      text: orig.text || ''
+    });
+  }
+
   toast('Re-posted');
 }
 let currentPostId = null, commentsListener = null;
@@ -655,10 +688,28 @@ function closeComments() {
 commentSendBtn.onclick = async () => {
   const text = commentInput.value.trim();
   if (!text || !currentPostId) return;
+
   const parentId = commentInput.dataset.parent || null;
-  await set(push(ref(db, `comments/${currentPostId}`)), {
-    authorId: uid, authorName: uname, authorAvatar: uavatar, text, parentId, timestamp: Date.now()
+  const commentRef = push(ref(db, `comments/${currentPostId}`));
+  await set(commentRef, {
+    authorId: uid,
+    authorName: uname,
+    authorAvatar: uavatar,
+    text,
+    parentId,
+    timestamp: Date.now()
   });
+
+  // SEND NOTIFICATION to the post owner
+  const postSnap = await get(ref(db, `posts/${currentPostId}`));
+  const post = postSnap.val();
+  if (post && post.authorId && post.authorId !== uid) {
+    sendNotification(post.authorId, 'comment', {
+      postId: currentPostId,
+      commentText: text
+    });
+  }
+
   commentInput.value = '';
   delete commentInput.dataset.parent;
   commentInput.placeholder = 'Write a comment...';
@@ -726,6 +777,23 @@ alertConfirm.onclick = async () => {
     toast('Error deleting');
   }
 };
+
+  // SEND NOTIFICATION HELPER (used by like/comment/repost)
+async function sendNotification(toUid, type, data) {
+  if (!toUid || toUid === uid) return; // don't notify yourself
+
+  const notifRef = push(ref(db, `notifications/${toUid}`));
+  await set(notifRef, {
+    type,                 // 'like' | 'comment' | 'repost'
+    from: uid,
+    postId: data.postId || null,
+    text: data.text || null,
+    commentText: data.commentText || null,
+    timestamp: serverTimestamp(),
+    read: false
+  });
+}
+  
 function openImageModal(src) {
   const modal = $('#image-modal');
   const img = $('#modal-image');
