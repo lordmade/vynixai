@@ -5,8 +5,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <meta name="theme-color" content="#ff2a6d">
   <title>Room • Vynix</title>
+
+  <!-- Google icons + tailwind -->
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Page styles (keeps your original colours / dark-mode) -->
   <style>
     :root{--accent:#ff2a6d;--bg:#ffffff;--text:#0f1419;--text2:#536471;--border:#eff3f4}
     [data-theme="dark"]{--bg:#000000;--text:#e7e9ea;--text2:#71767b;--border:#2f3336}
@@ -17,13 +21,14 @@
     .mine .bubble{background:var(--accent);color:#fff}
     .bubble{max-width:70%;padding:10px 14px;border-radius:18px;font-size:15px;background:var(--border);color:var(--text)}
     .composer{position:fixed;bottom:0;left:0;right:0;height:60px;border-top:1px solid var(--border);background:var(--bg);display:flex;align-items:center;padding:0 12px;gap:8px}
-    .composer input{flex:1;background:var(--border);border:none;border-radius:999px;padding:10px 16px;font-size:16px;outline:none;color:var(--text)}
+    .composer input{flex:1;background:var(--border);border:none;border-radius:9999px;padding:10px 16px;font-size:16px;outline:none;color:var(--text)}
     .composer button{background:var(--accent);color:#fff;border:none;border-radius:50%;width:44px;height:44px;display:grid;place-items:center}
     .empty{text-align:center;padding:60px 20px;color:var(--text2)}
   </style>
 </head>
 <body>
 
+<!-- top bar -->
 <header class="sticky top-0 bg-[var(--bg)] px-4 py-3 border-b border-[var(--border)] flex items-center gap-3 z-10">
   <span id="back" class="material-icons cursor-pointer">arrow_back</span>
   <img id="hdrAva" class="w-10 h-10 rounded-full object-cover">
@@ -33,19 +38,52 @@
   </div>
 </header>
 
+<!-- messages -->
 <div id="messages">
   <div class="empty">Send the first encrypted message!</div>
 </div>
 
+<!-- composer -->
 <div class="composer">
   <input id="input" type="text" placeholder="Encrypted message…" autocomplete="off">
   <button id="send"><span class="material-icons">send</span></button>
 </div>
 
+<!-- bottom nav (identical to chat.html) -->
+<nav class="fixed bottom-0 left-0 right-0 h-16 bg-[var(--bg)] border-t border-[var(--border)] z-40">
+  <div class="h-full flex items-center justify-around text-[var(--text2)]">
+    <a href="index.html" class="flex flex-col items-center justify-center h-full w-full">
+      <span class="material-icons-outlined text-2xl">home</span>
+      <span class="text-xs mt-0.5">Home</span>
+    </a>
+    <a href="chat.html" class="flex flex-col items-center justify-center h-full w-full">
+      <span class="material-icons-outlined text-2xl">chat_bubble</span>
+      <span class="text-xs mt-0.5">Chat</span>
+    </a>
+    <a href="search.html" class="flex flex-col items-center justify-center h-full w-full">
+      <span class="material-icons-outlined text-2xl">search</span>
+      <span class="text-xs mt-0.5">Search</span>
+    </a>
+    <a href="ai.html" class="flex flex-col items-center justify-center h-full w-full">
+      <span class="material-icons-outlined text-2xl">auto_awesome</span>
+      <span class="text-xs mt-0.5">AI</span>
+    </a>
+    <a href="notifications.html" class="flex flex-col items-center justify-center h-full w-full">
+      <span class="material-icons-outlined text-2xl">notifications</span>
+      <span class="text-xs mt-0.5">Alerts</span>
+    </a>
+    <a href="profile.html" class="flex flex-col items-center justify-center h-full w-full">
+      <span class="material-icons-outlined text-2xl">person</span>
+      <span class="text-xs mt-0.5">Profile</span>
+    </a>
+  </div>
+</nav>
+
 <script type="module">
+/* ==========  Firebase + Crypto  ========== */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, onChildAdded, push, set, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, onChildAdded, push, set, serverTimestamp, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -56,59 +94,60 @@ const firebaseConfig = {
   messagingSenderId: "658673187627",
   appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
-const app = initializeApp(firebaseConfig);
+const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getDatabase(app);
+const db   = getDatabase(app);
 
 let myUid, myName, myAvatar, roomId, otherUid, otherName, otherAvatar;
-let ecdhKeys, sharedSecret; // for E2E
+let sharedSecret; // AES-GCM key derived via ECDH
 
-/* ---------- init ---------- */
+/* ---------- helpers ---------- */
+const listEl = document.getElementById('messages');
+const input  = document.getElementById('input');
+const sendBtn= document.getElementById('send');
+
+/* ---------- page init ---------- */
 onAuthStateChanged(auth, user => {
-  if (!user) return;
+  if (!user) { location.href = 'login.html'; return; }
   myUid = user.uid;
   myName = user.displayName || 'User';
-  myAvatar = user.photoURL || `https://ui-avatars.com/api/?name=${myName}&background=ff2a6d&color=fff`;
+  myAvatar = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(myName)}&background=ff2a6d&color=fff`;
   parseHash();
   initCrypto();
   loadMessages();
 });
 
+document.getElementById('back').onclick = () => history.back();
+
 function parseHash() {
   const [r, o] = location.hash.slice(1).split('|');
   roomId = r; otherUid = o;
   if (!roomId || !otherUid) { alert('Missing room'); history.back(); }
-  // header
   get(ref(db, `users/${otherUid}`)).then(s => {
     const u = s.val() || {};
-    otherName = u.displayName || 'User';
-    otherAvatar = u.photoURL || `https://ui-avatars.com/api/?name=${otherName}&background=ff2a6d&color=fff`;
+    otherName   = u.displayName   || 'User';
+    otherAvatar = u.photoURL      || `https://ui-avatars.com/api/?name=${encodeURIComponent(otherName)}&background=ff2a6d&color=fff`;
     document.getElementById('hdrName').textContent = otherName;
     document.getElementById('hdrAva').src = otherAvatar;
   });
 }
 
-document.getElementById('back').onclick = () => history.back();
-
-/* ---------- WebCrypto ECDH ---------- */
+/* ---------- WebCrypto ECDH + AES-GCM ---------- */
 async function initCrypto() {
-  // generate ECDH keypair
+  // our key-pair
   const myKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
-  const myPublicJwk = await crypto.subtle.exportKey('jwk', myKeyPair.publicKey);
-  const myPublicRaw = await crypto.subtle.exportKey('raw', myKeyPair.publicKey);
+  const myPubRaw  = await crypto.subtle.exportKey('raw', myKeyPair.publicKey);
 
-  // share / fetch other public key
+  // publish public key
   const pubRef = ref(db, `roomKeys/${roomId}/public`);
   onValue(pubRef, async snap => {
     const map = snap.val() || {};
     if (!map[myUid]) {
-      // publish our public key
-      await set(ref(db, `roomKeys/${roomId}/public/${myUid}`), { jwk: myPublicJwk, ts: serverTimestamp() });
+      await set(ref(db, `roomKeys/${roomId}/public/${myUid}`), { raw: Array.from(new Uint8Array(myPubRaw)), ts: serverTimestamp() });
     }
-    const other = map[otherUid];
-    if (!other) return; // wait for other
-    const otherPub = await crypto.subtle.importKey('jwk', other.jwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-    // derive shared AES key
+    const otherRaw = map[otherUid]?.raw;
+    if (!otherRaw) return; // wait for other side
+    const otherPub = await crypto.subtle.importKey('raw', new Uint8Array(otherRaw), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
     sharedSecret = await crypto.subtle.deriveKey(
       { name: 'ECDH', public: otherPub },
       myKeyPair.privateKey,
@@ -116,28 +155,27 @@ async function initCrypto() {
       false,
       ['encrypt', 'decrypt']
     );
-    listEl.innerHTML = ''; // ready
+    listEl.innerHTML = ''; // clear "first message" placeholder
   });
 }
 
 /* ---------- encrypt / decrypt ---------- */
 const ivLen = 12;
-async function encrypt(text) {
+async function encrypt(plain) {
   const enc = new TextEncoder();
   const iv = crypto.getRandomValues(new Uint8Array(ivLen));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, sharedSecret, enc.encode(text));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, sharedSecret, enc.encode(plain));
   return { iv: Array.from(iv), ct: Array.from(new Uint8Array(ct)) };
 }
 async function decrypt(ivArr, ctArr) {
   const iv = new Uint8Array(ivArr);
   const ct = new Uint8Array(ctArr);
-  const dec = new TextDecoder();
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, sharedSecret, ct);
-  return dec.decode(pt);
+  return new TextDecoder().decode(pt);
 }
 
 /* ---------- send ---------- */
-send.onclick = async () => {
+sendBtn.onclick = async () => {
   const plain = input.value.trim();
   if (!plain || !sharedSecret) return;
   input.value = '';
@@ -147,28 +185,25 @@ send.onclick = async () => {
     iv, ct,
     ts: serverTimestamp()
   });
-  // update last message for list
-  await set(ref(db, `lastMessage/${roomId}`), { text: plain, time: Date.now(), unread: true });
+  // update last-message node for chat-list
+  await set(ref(db, `lastMessage/${roomId}`), { text: plain, time: Date.now(), unread: otherUid });
 };
 
-/* ---------- load & decrypt ---------- */
+/* ---------- listen / decrypt ---------- */
 function loadMessages() {
-  onChildAdded(ref(db, `messages/${roomId}`), async ss => {
-    const m = ss.val();
-    if (m.from === myUid) {
-      appendBubble(m, true);
-    } else {
-      appendBubble(m, false);
-      // mark room read
-      await set(ref(db, `lastMessage/${roomId}/unread`), false);
+  onChildAdded(ref(db, `messages/${roomId}`), async snap => {
+    const m = snap.val();
+    const plain = await decrypt(m.iv, m.ct);
+    appendBubble(plain, m.from === myUid);
+    if (m.from !== myUid) { // mark read
+      set(ref(db, `lastMessage/${roomId}/unread`), false);
     }
   });
 }
 
-async function appendBubble(m, mine) {
-  const plain = await decrypt(m.iv, m.ct);
+function appendBubble(text, mine) {
   const side = mine ? 'mine' : 'other';
-  const html = `<div class="msg ${side}"><div class="bubble">${esc(plain)}</div></div>`;
+  const html = `<div class="msg ${side}"><div class="bubble">${esc(text)}</div></div>`;
   listEl.insertAdjacentHTML('beforeend', html);
   listEl.scrollTop = listEl.scrollHeight;
 }
@@ -181,6 +216,5 @@ function esc(str) {
 /* theme */
 if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
 </script>
-
 </body>
 </html>
