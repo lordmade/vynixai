@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Page styles (keeps your original colours / dark-mode) -->
+  <!-- Page styles -->
   <style>
     :root{--accent:#ff2a6d;--bg:#ffffff;--text:#0f1419;--text2:#536471;--border:#eff3f4}
     [data-theme="dark"]{--bg:#000000;--text:#e7e9ea;--text2:#71767b;--border:#2f3336}
@@ -19,10 +19,10 @@
     .msg{display:flex;margin:4px 0}
     .mine{justify-content:flex-end}
     .mine .bubble{background:var(--accent);color:#fff}
-    .bubble{max-width:70%;padding:10px 14px;border-radius:18px;font-size:15px;background:var(--border);color:var(--text)}
+    .bubble{max-width:70%;padding:10px 14px;border-radius:18px;font-size:15px;background:var(--border);color:var(--text);word-break:break-word}
     .composer{position:fixed;bottom:0;left:0;right:0;height:60px;border-top:1px solid var(--border);background:var(--bg);display:flex;align-items:center;padding:0 12px;gap:8px}
     .composer input{flex:1;background:var(--border);border:none;border-radius:9999px;padding:10px 16px;font-size:16px;outline:none;color:var(--text)}
-    .composer button{background:var(--accent);color:#fff;border:none;border-radius:50%;width:44px;height:44px;display:grid;place-items:center}
+    .composer button{background:var(--accent);color:#fff;border:none;border-radius:50%;width:44px;height:44px;display:grid;place-items:center;cursor:pointer}
     .empty{text-align:center;padding:60px 20px;color:var(--text2)}
   </style>
 </head>
@@ -31,10 +31,11 @@
 <!-- top bar -->
 <header class="sticky top-0 bg-[var(--bg)] px-4 py-3 border-b border-[var(--border)] flex items-center gap-3 z-10">
   <span id="back" class="material-icons cursor-pointer">arrow_back</span>
-  <img id="hdrAva" class="w-10 h-10 rounded-full object-cover">
+  <img id="hdrAva" class="w-10 h-10 rounded-full object-cover" src="">
   <div class="flex-1">
     <div id="hdrName" class="font-bold"></div>
     <div class="text-xs text-gray-500">Encrypted</div>
+    <div id="verifyCode" class="text-xs text-gray-500"></div>
   </div>
 </header>
 
@@ -50,10 +51,10 @@
 </div>
 
 <script type="module">
-/* ==========  Firebase + Crypto  ========== */
+/* ========== Firebase + Crypto ========== */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, onChildAdded, push, set, serverTimestamp, get } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, onChildAdded, push, set, serverTimestamp, get, onValue } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -64,12 +65,15 @@ const firebaseConfig = {
   messagingSenderId: "658673187627",
   appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
+
 const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db   = getDatabase(app);
 
 let myUid, myName, myAvatar, roomId, otherUid, otherName, otherAvatar;
-let sharedSecret; // AES-GCM key derived via ECDH
+let sharedSecret = null;
+let myKeyPair = null;
+const messageQueue = []; // for messages that arrive before key exchange
 
 /* ---------- helpers ---------- */
 const listEl = document.getElementById('messages');
@@ -83,7 +87,8 @@ onAuthStateChanged(auth, user => {
   myName = user.displayName || 'User';
   myAvatar = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(myName)}&background=ff2a6d&color=fff`;
   parseHash();
-  initCrypto();
+  generateAndPublishKeyPair();
+  loadHeader();
   loadMessages();
 });
 
@@ -92,99 +97,191 @@ document.getElementById('back').onclick = () => history.back();
 function parseHash() {
   const [r, o] = location.hash.slice(1).split('|');
   roomId = r; otherUid = o;
-  if (!roomId || !otherUid) { alert('Missing room'); history.back(); }
-  get(ref(db, `users/${otherUid}`)).then(s => {
-    const u = s.val() || {};
-    otherName   = u.displayName   || 'User';
-    otherAvatar = u.photoURL      || `https://ui-avatars.com/api/?name=${encodeURIComponent(otherName)}&background=ff2a6d&color=fff`;
-    document.getElementById('hdrName').textContent = otherName;
-    document.getElementById('hdrAva').src = otherAvatar;
-  });
+  if (!roomId || !otherUid) {
+    alert('Invalid room link');
+    history.back();
+  }
 }
 
-/* ---------- WebCrypto ECDH + AES-GCM ---------- */
-async function initCrypto() {
-  // our key-pair
-  const myKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
-  const myPubRaw  = await crypto.subtle.exportKey('raw', myKeyPair.publicKey);
+async function loadHeader() {
+  const snap = await get(ref(db, `users/${otherUid}`));
+  const u = snap.val() || {};
+  otherName   = u.displayName || 'User';
+  otherAvatar = u.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(otherName)}&background=ff2a6d&color=fff`;
+  document.getElementById('hdrName').textContent = otherName;
+  document.getElementById('hdrAva').src = otherAvatar;
+}
 
-  // publish public key
-  const pubRef = ref(db, `roomKeys/${roomId}/public`);
-  onValue(pubRef, async snap => {
+/* ---------- ECDH Key Exchange ---------- */
+async function generateAndPublishKeyPair() {
+  myKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+  const myPubRaw = await crypto.subtle.exportKey('raw', myKeyPair.publicKey);
+
+  const myPubRef = ref(db, `roomKeys/\( {roomId}/public/ \){myUid}`);
+  await set(myPubRef, {
+    raw: Array.from(new Uint8Array(myPubRaw)),
+    ts: serverTimestamp()
+  });
+
+  // Listen for partner's public key
+  const pubKeysRef = ref(db, `roomKeys/${roomId}/public`);
+  onValue(pubKeysRef, async (snap) => {
     const map = snap.val() || {};
-    if (!map[myUid]) {
-      await set(ref(db, `roomKeys/${roomId}/public/${myUid}`), { raw: Array.from(new Uint8Array(myPubRaw)), ts: serverTimestamp() });
-    }
-    const otherRaw = map[otherUid]?.raw;
-    if (!otherRaw) return; // wait for other side
-    const otherPub = await crypto.subtle.importKey('raw', new Uint8Array(otherRaw), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+    const otherPubData = map[otherUid];
+    if (!otherPubData?.raw || sharedSecret) return;
+
+    const otherPubKey = await crypto.subtle.importKey(
+      'raw',
+      new Uint8Array(otherPubData.raw),
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      []
+    );
+
     sharedSecret = await crypto.subtle.deriveKey(
-      { name: 'ECDH', public: otherPub },
+      { name: 'ECDH', public: otherPubKey },
       myKeyPair.privateKey,
       { name: 'AES-GCM', length: 256 },
       false,
       ['encrypt', 'decrypt']
     );
-    listEl.innerHTML = ''; // clear "first message" placeholder
-  });
+
+    // Compute verification hash
+    const myPubBytes = new Uint8Array(map[myUid].raw);
+    const otherPubBytes = new Uint8Array(otherPubData.raw);
+    const pub1 = myUid < otherUid ? myPubBytes : otherPubBytes;
+    const pub2 = myUid < otherUid ? otherPubBytes : myPubBytes;
+    const concat = new Uint8Array(pub1.length + pub2.length);
+    concat.set(pub1, 0);
+    concat.set(pub2, pub1.length);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', concat);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    const grouped = hashHex.match(/.{1,4}/g).join(' ');
+    document.getElementById('verifyCode').textContent = `Verify: ${grouped}`;
+
+    // Key exchange complete → decrypt queued messages
+    document.querySelector('.empty')?.remove();
+    processMessageQueue();
+  }, { onlyOnce: false });
 }
 
-/* ---------- encrypt / decrypt ---------- */
+/* ---------- Encryption / Decryption ---------- */
 const ivLen = 12;
+
 async function encrypt(plain) {
   const enc = new TextEncoder();
   const iv = crypto.getRandomValues(new Uint8Array(ivLen));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, sharedSecret, enc.encode(plain));
-  return { iv: Array.from(iv), ct: Array.from(new Uint8Array(ct)) };
-}
-async function decrypt(ivArr, ctArr) {
-  const iv = new Uint8Array(ivArr);
-  const ct = new Uint8Array(ctArr);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, sharedSecret, ct);
-  return new TextDecoder().decode(pt);
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    sharedSecret,
+    enc.encode(plain)
+  );
+  return {
+    iv: Array.from(iv),
+    ct: Array.from(new Uint8Array(ct))
+  };
 }
 
-/* ---------- send ---------- */
+async function decrypt(ivArr, ctArr) {
+  try {
+    const iv = new Uint8Array(ivArr);
+    const ct = new Uint8Array(ctArr);
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      sharedSecret,
+      ct
+    );
+    return new TextDecoder().decode(pt);
+  } catch (e) {
+    console.error('Decryption failed:', e);
+    return '[Failed to decrypt]';
+  }
+}
+
+/* ---------- Send Message ---------- */
 sendBtn.onclick = async () => {
   const plain = input.value.trim();
-  if (!plain || !sharedSecret) return;
+  if (!plain || !sharedSecret) {
+    if (!sharedSecret) alert('Waiting for secure connection…');
+    return;
+  }
   input.value = '';
+
   const { iv, ct } = await encrypt(plain);
+
   await push(ref(db, `messages/${roomId}`), {
     from: myUid,
     iv, ct,
     ts: serverTimestamp()
   });
-  // update last-message node for chat-list
-  await set(ref(db, `lastMessage/${roomId}`), { text: plain, time: Date.now(), unread: otherUid });
+
+  // Update last message preview (for chat list)
+  await set(ref(db, `lastMessage/${roomId}`), {
+    text: plain,
+    time: Date.now(),
+    unread: otherUid
+  });
+
+  // Immediately display the sent message as a bubble
+  appendBubble(plain, true);
 };
 
-/* ---------- listen / decrypt ---------- */
+/* ---------- Receive & Decrypt Messages ---------- */
 function loadMessages() {
-  onChildAdded(ref(db, `messages/${roomId}`), async snap => {
+  onChildAdded(ref(db, `messages/${roomId}`), async (snap) => {
     const m = snap.val();
+    if (m.from === myUid && sharedSecret) {
+      // Skip my own messages if already displayed (avoids duplicates)
+      return;
+    }
+    if (!sharedSecret) {
+      // Queue until key is ready
+      messageQueue.push(m);
+      return;
+    }
+
     const plain = await decrypt(m.iv, m.ct);
     appendBubble(plain, m.from === myUid);
-    if (m.from !== myUid) { // mark read
-      set(ref(db, `lastMessage/${roomId}/unread`), false);
+
+    // Mark as read if not from me
+    if (m.from !== myUid) {
+      await set(ref(db, `lastMessage/${roomId}/unread`), false);
     }
   });
 }
 
+function processMessageQueue() {
+  messageQueue.forEach(async (m) => {
+    if (m.from === myUid) return; // Skip own messages
+    const plain = await decrypt(m.iv, m.ct);
+    appendBubble(plain, m.from === myUid);
+    if (m.from !== myUid) {
+      set(ref(db, `lastMessage/${roomId}/unread`), false);
+    }
+  });
+  messageQueue.length = 0;
+}
+
 function appendBubble(text, mine) {
-  const side = mine ? 'mine' : 'other';
-  const html = `<div class="msg ${side}"><div class="bubble">${esc(text)}</div></div>`;
-  listEl.insertAdjacentHTML('beforeend', html);
+  const div = document.createElement('div');
+  div.className = `msg ${mine ? 'mine' : ''}`;
+  div.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  listEl.appendChild(div);
   listEl.scrollTop = listEl.scrollHeight;
 }
 
-/* ---------- utils ---------- */
+/* ---------- Utils ---------- */
 function esc(str) {
-  return str.replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
-/* theme */
-if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+/* ---------- Dark mode ---------- */
+if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  document.documentElement.setAttribute('data-theme', 'dark');
+}
 </script>
 </body>
 </html>
