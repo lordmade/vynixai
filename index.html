@@ -574,6 +574,8 @@
         updateProfile
     } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js';
+    import { getDatabase, ref, runTransaction } from
+  'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -584,6 +586,7 @@
     
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getDatabase(app);
     const rc = getRemoteConfig(app);
     await fetchAndActivate(rc);
     const XAI_KEY = getString(rc, 'xai_api_key') || "YOUR_XAI_KEY_HERE";
@@ -967,60 +970,75 @@ Politely decline any request outside language learning.` }];
     }
 
     window.sendMessage = async () => {
-      const msg = $i.value.trim();
-      if (!msg) return;
+  const msg = $i.value.trim();
+  if (!msg) return;
 
-      if (!auth.currentUser) {
-        showCustomSnackbar("You must be logged in to chat.");
-        openSheet('auth');
-        return;
-      }
+  if (!auth.currentUser) {
+    showCustomSnackbar("You must be logged in to chat.");
+    openSheet('auth');
+    return;
+  }
 
-      $i.value = '';
-      $send.classList.remove('active');
-      addMessage(msg, 'user');
+  const uid   = auth.currentUser.uid;
+  const today = new Date().toISOString().slice(0,10);   // YYYY-MM-DD
+  const tokenRef = ref(db, `tokens/${uid}/daily/${today}`);
 
-      const slangDetected = detectSlang(msg);
-      if (slangDetected.length > 0 && msg.toLowerCase().includes('what does') || msg.toLowerCase().includes('meaning')) {
-        const explanations = slangDetected.map(s => 
-          `**${s.word}** (${LANGUAGES[s.lang].name}): ${s.meaning} - "${s.translation}"`
-        ).join('\n\n');
-        addMessage(`Here are the slang terms I found:\n\n${explanations}`, 'ai', true);
-        return;
-      }
+  let allowed = false;
+  await runTransaction(tokenRef, (current) => {
+    // current is either a number or null
+    if (current === null) return 1;          // first message of the day
+    if (current >= 10000) return;            // refuse tx → limit hit
+    return current + 1;                      // burn 1 token
+  }).then(res => {
+    allowed = res.committed;                 // true only if tx succeeded
+  });
 
-      addLoading();
-      try {
-        const messages = [...historyStack, { role: "user", content: msg }];
-        const res = await fetch("https://api.x.ai/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${XAI_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: "grok-4-1-fast-non-reasoning",
-            messages: messages,
-            temperature: 0.7,
-            max_tokens: 1500
-          })
-        });
+  if (!allowed) {
+    showCustomSnackbar("Daily limit reached (10 000 tokens). Come back tomorrow!");
+    return;
+  }
 
-        removeLoading();
-        if (!res.ok) throw new Error("API Error");
+  /* ----- everything below is unchanged ----- */
+  $i.value = '';
+  $send.classList.remove('active');
+  addMessage(msg, 'user');
 
-        const data = await res.json();
-        const reply = data.choices[0]?.message?.content?.trim() || "No response.";
-        addMessage(reply, 'ai', currentLang !== 'en');
-        historyStack.push(
-          { role: "user", content: msg },
-          { role: "assistant", content: reply }
-        );
-      } catch (e) {
-        removeLoading();
-        addMessage("Connection error. Please try again.", 'ai');
-      }
-    };
+  const slangDetected = detectSlang(msg);
+  if (slangDetected.length && /what does|meaning/i.test(msg)) {
+    const expl = slangDetected.map(s =>
+      `**${s.word}** (${LANGUAGES[s.lang].name}): ${s.meaning} – “${s.translation}”`
+    ).join('\n\n');
+    addMessage(`Here are the slang terms I found:\n\n${expl}`, 'ai', true);
+    return;
+  }
+
+  addLoading();
+  try {
+    const messages = [...historyStack, { role: "user", content: msg }];
+    const res = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${XAI_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "grok-4-1-fast-non-reasoning",
+        messages: messages,
+        temperature: 0.7,
+        max_tokens: 1500
+      })
+    });
+
+    removeLoading();
+    if (!res.ok) throw new Error("API Error");
+    const reply = (await res.json()).choices[0]?.message?.content?.trim() || "No response.";
+    addMessage(reply, 'ai', currentLang !== 'en');
+    historyStack.push({ role: "user", content: msg }, { role: "assistant", content: reply });
+  } catch (e) {
+    removeLoading();
+    addMessage("Connection error. Please try again.", 'ai');
+  }
+};
 
     $i.addEventListener('input', () => $send.classList.toggle('active', $i.value.trim().length > 0));
     $i.addEventListener('keydown', e => {
