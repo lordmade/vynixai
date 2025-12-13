@@ -1,36 +1,34 @@
-const CACHE_NAME = 'vynix-v1';
-const urlsToCache = [
+// Cache-first strategy for the shell; network-only for API calls
+const CACHE = 'vynix-v1';
+const SHELL = [
   '/',
   '/index.html',
-  'https://cdn.tailwindcss.com',
-  'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap',
-  'https://cdn.jsdelivr.net/npm/marked/marked.min.js',
-  'https://unpkg.com/lucide@latest/dist/umd/lucide.js',
-  'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+  '/manifest.json',
+  'https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&family=Space+Grotesk:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap',
+  'https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded'
 ];
 
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache))
+    caches.open(CACHE).then(c => c.addAll(SHELL))
   );
-});
-
-self.addEventListener('fetch', e => {
-  e.respondWith(
-    caches.match(e.request).then(response => {
-      return response || fetch(e.request);
-    })
-  );
+  self.skipWaiting(); // activate immediately
 });
 
 self.addEventListener('activate', e => {
   e.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
-        cacheNames.map(name => {
-          if (name !== CACHE_NAME) return caches.delete(name);
-        })
-      );
-    })
+    caches.keys().then(keys =>
+      Promise.all(keys.map(k => k !== CACHE && caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', e => {
+  if (e.request.url.includes('api.x.ai') || e.request.url.includes('firestore')) {
+    // live data – always network
+    return;
+  }
+  e.respondWith(
+    caches.match(e.request).then(r => r || fetch(e.request))
   );
 });
