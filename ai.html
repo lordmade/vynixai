@@ -318,6 +318,7 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js';
+    import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -328,6 +329,8 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const rc = getRemoteConfig(app);
+    const db = getFirestore(app);
+const DAILY_TOKEN_LIMIT = 10000; // Adjust this number to your desired daily token limit per user
     await fetchAndActivate(rc);
     const XAI_KEY = getString(rc, 'xai_api_key') || "YOUR_XAI_KEY_HERE";
 
@@ -458,6 +461,45 @@ Keep responses conversational, accurate, and culturally relevant. Use ${lang.nam
       $customSnackbar.classList.add('show');
       setTimeout(() => $customSnackbar.classList.remove('show'), 3000);
     }
+
+async function checkAndUpdateTokenUsage(tokensToAdd) {
+  const user = auth.currentUser;
+  if (!user) return true;
+
+  const uid = user.uid;
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD format
+  const usageRef = doc(db, 'tokenUsage', uid);
+
+  try {
+    const snap = await getDoc(usageRef);
+    const data = snap.data() || {};
+
+    if (data.date !== today) {
+      // New day → reset counter
+      await setDoc(usageRef, {
+        date: today,
+        used: tokensToAdd,
+        timestamp: serverTimestamp()
+      });
+      return true;
+    }
+
+    const newTotal = data.used + tokensToAdd;
+    if (newTotal > DAILY_TOKEN_LIMIT) {
+      showCustomSnackbar(`Daily limit reached (${DAILY_TOKEN_LIMIT.toLocaleString()} tokens). Reset tomorrow.`);
+      return false;
+    }
+
+    // Update used tokens
+    await setDoc(usageRef, { used: newTotal, timestamp: serverTimestamp() }, { merge: true });
+    return true;
+  } catch (error) {
+    console.error('Token usage update failed:', error);
+    showCustomSnackbar('Error checking limit. Try again.');
+    return false;
+  }
+            }
+    
 
     window.closeSheet = type => {
       $sheetOverlay.classList.remove('open');
@@ -657,42 +699,73 @@ window.openSheet = type => {
     }
 
     window.sendMessage = async () => {
-      const msg = $i.value.trim();
-      if (!msg) return;
-      if (!auth.currentUser) {
-        showCustomSnackbar('You must be logged in to chat.');
-        openSheet('auth');
-        return;
-      }
-      $i.value = '';
-      $send.classList.remove('active');
-      addMessage(msg, 'user');
-      const slang = detectSlang(msg);
-      if (slang.length > 0 && (msg.toLowerCase().includes('what does') || msg.toLowerCase().includes('meaning'))) {
-        const expl = slang.map(s => `**${s.word}** (${LANGUAGES[s.lang].name}): ${s.meaning} – “${s.translation}”`).join('\n\n');
-        addMessage(`Here are the slang terms I found:\n\n${expl}`, 'ai', true);
-        return;
-      }
-      addLoading();
-      try {
-        const messages = [...historyStack, { role: 'user', content: msg }];
-        const res = await fetch('https://api.x.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${XAI_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'grok-4-1-fast-non-reasoning', messages, temperature: 0.7, max_tokens: 1500 })
-        });
-        removeLoading();
-        if (!res.ok) throw new Error('API Error');
-        const data = await res.json();
-        const reply = data.choices[0]?.message?.content?.trim() || 'No response.';
-        addMessage(reply, 'ai', currentLang !== 'en');
-        historyStack.push({ role: 'user', content: msg }, { role: 'assistant', content: reply });
-      } catch (e) {
-        removeLoading();
-        addMessage('Connection error. Please try again.', 'ai');
-      }
-    };
+  const msg = $i.value.trim();
+  if (!msg) return;
 
+  if (!auth.currentUser) {
+    showCustomSnackbar('You must be logged in to chat.');
+    openSheet('auth');
+    return;
+  }
+
+  $i.value = '';
+  $send.classList.remove('active');
+  addMessage(msg, 'user');
+
+  const slang = detectSlang(msg);
+  if (slang.length > 0 && (msg.toLowerCase().includes('what does') || msg.toLowerCase().includes('meaning'))) {
+    const expl = slang.map(s => `**\( {s.word}** ( \){LANGUAGES[s.lang].name}): \( {s.meaning} – “ \){s.translation}”`).join('\n\n');
+    addMessage(`Here are the slang terms I found:\n\n${expl}`, 'ai', true);
+    return;
+  }
+
+  // Rough token estimation: ~4 chars per token + overhead
+  const estimatedInputTokens = Math.ceil(msg.length / 4) + 200; // +200 for system prompt/history overhead
+
+  const allowed = await checkAndUpdateTokenUsage(estimatedInputTokens);
+  if (!allowed) {
+    addMessage('You have reached your daily token limit. Please try again tomorrow.', 'ai');
+    return;
+  }
+
+  addLoading();
+
+  try {
+    const messages = [...historyStack, { role: 'user', content: msg }];
+    const res = await fetch('https://api.x.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${XAI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'grok-4-1-fast-non-reasoning',
+        messages,
+        temperature: 0.7,
+        max_tokens: 1500
+      })
+    });
+
+    removeLoading();
+
+    if (!res.ok) {
+      // Refund input tokens on error
+      await checkAndUpdateTokenUsage(-estimatedInputTokens);
+      throw new Error(`API error: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const reply = data.choices[0]?.message?.content?.trim() || 'No response.';
+
+    // Estimate output tokens and charge them
+    const outputTokens = Math.ceil(reply.length / 4);
+    await checkAndUpdateTokenUsage(outputTokens);
+
+    addMessage(reply, 'ai', currentLang !== 'en');
+    historyStack.push({ role: 'user', content: msg }, { role: 'assistant', content: reply });
+  } catch (e) {
+    removeLoading();
+    addMessage('Connection error. Please try again later.', 'ai');
+    console.error(e);
+  }
+};
     $i.addEventListener('input', () => $send.classList.toggle('active', $i.value.trim().length > 0));
     $i.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
