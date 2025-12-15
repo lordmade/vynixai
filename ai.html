@@ -713,6 +713,7 @@
     import { getAuth, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js ';
     import { getRemoteConfig, fetchAndActivate, getString } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-remote-config.js ';
     import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js ';
+    import { collection, query, orderBy, getDocs } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -1152,6 +1153,197 @@ function addMessage(text, type, showLangBadge = false) {
       const loading = $('#loading');
       if (loading) loading.remove();
     }
+
+
+
+// Conversation history management.........
+let currentConversationId = null;
+
+// Generate conversation title from first message
+function generateTitle(message) {
+  const title = message.substring(0, 50);
+  return title.length < message.length ? title + '...' : title;
+}
+
+// Save conversation to Firebase
+async function saveConversation(messages, title = null) {
+  const user = auth.currentUser;
+  if (!user) return;
+
+  const conversationId = currentConversationId || `conv_${Date.now()}`;
+  const firstMessage = messages.find(m => m.role === 'user')?.content || 'New Conversation';
+  
+  const conversationData = {
+    id: conversationId,
+    title: title || generateTitle(firstMessage),
+    messages: messages,
+    lastMessage: new Date().toISOString(),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  try {
+    await setDoc(doc(db, 'conversations', user.uid, 'userConversations', conversationId), conversationData);
+    currentConversationId = conversationId;
+    await loadConversations();
+  } catch (error) {
+    console.error('Error saving conversation:', error);
+    showCustomSnackbar('Failed to save conversation');
+  }
+}
+
+// Load conversations from Firebase
+async function loadConversations() {
+  const user = auth.currentUser;
+  if (!user) return;
+
+  try {
+    const conversationsRef = collection(db, 'conversations', user.uid, 'userConversations');
+    const q = query(conversationsRef, orderBy('updatedAt', 'desc'));
+    const querySnapshot = await getDocs(q);
+    
+    const conversations = [];
+    querySnapshot.forEach((doc) => {
+      conversations.push(doc.data());
+    });
+
+    renderConversations(conversations);
+  } catch (error) {
+    console.error('Error loading conversations:', error);
+    showCustomSnackbar('Failed to load conversations');
+  }
+}
+
+// Render conversations in drawer
+function renderConversations(conversations) {
+  const conversationList = $('#conversationList');
+  conversationList.innerHTML = '';
+
+  if (conversations.length === 0) {
+    conversationList.innerHTML = `
+      <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
+        <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px; opacity: 0.5;">chat_bubble_outline</span>
+        <p>No conversations yet</p>
+        <p style="font-size: 13px; margin-top: 8px;">Start chatting to see them here</p>
+      </div>
+    `;
+    return;
+  }
+
+  conversations.forEach(conv => {
+    const item = document.createElement('div');
+    item.className = `conversation-item ${conv.id === currentConversationId ? 'active' : ''}`;
+    item.onclick = () => loadConversation(conv.id);
+
+    const lastMsg = conv.messages?.[conv.messages.length - 1];
+    const preview = lastMsg?.content?.substring(0, 60) || 'No messages';
+    const time = new Date(conv.lastMessage).toLocaleDateString();
+
+    item.innerHTML = `
+      <div class="conversation-title">${conv.title}</div>
+      <div class="conversation-preview">${preview}${preview.length < (lastMsg?.content?.length || 0) ? '...' : ''}</div>
+      <div class="conversation-time">${time}</div>
+    `;
+
+    conversationList.appendChild(item);
+  });
+}
+
+// Load specific conversation
+async function loadConversation(conversationId) {
+  const user = auth.currentUser;
+  if (!user) return;
+
+  try {
+    const convDoc = await getDoc(doc(db, 'conversations', user.uid, 'userConversations', conversationId));
+    if (convDoc.exists()) {
+      const conversation = convDoc.data();
+      
+      // Clear current chat
+      $list.innerHTML = '';
+      $welcome.style.display = 'none';
+      
+      // Load messages
+      conversation.messages.forEach(msg => {
+        if (msg.role !== 'system') {
+          addMessage(msg.content, msg.role === 'user' ? 'user' : 'ai', msg.role === 'ai' && currentLang !== 'en');
+        }
+      });
+
+      currentConversationId = conversationId;
+      historyStack = conversation.messages;
+      
+      // Close drawer on mobile
+      if (window.innerWidth < 768) {
+        closeDrawer();
+      }
+      
+      await loadConversations(); // Refresh active state
+    }
+  } catch (error) {
+    console.error('Error loading conversation:', error);
+    showCustomSnackbar('Failed to load conversation');
+  }
+}
+
+// Start new conversation
+function startNewConversation() {
+  currentConversationId = null;
+  historyStack = [{ role: 'system', content: historyStack[0]?.content || updateSystemInstructions() }];
+  $list.innerHTML = '';
+  $welcome.style.display = 'flex';
+  
+  // Close drawer on mobile
+  if (window.innerWidth < 768) {
+    closeDrawer();
+  }
+  
+  showCustomSnackbar('New conversation started');
+}
+
+// Drawer controls
+function openDrawer() {
+  $('#drawerOverlay').classList.add('open');
+  $('#conversationDrawer').classList.add('open');
+  loadConversations();
+}
+
+function closeDrawer() {
+  $('#drawerOverlay').classList.remove('open');
+  $('#conversationDrawer').classList.remove('open');
+}
+
+// Event listeners
+$('#drawerToggle').addEventListener('click', openDrawer);
+$('#drawerOverlay').addEventListener('click', closeDrawer);
+$('#newConversationBtn').addEventListener('click', startNewConversation);
+
+// Update your existing sendMessage function to save conversations
+const originalSendMessage = window.sendMessage;
+window.sendMessage = async () => {
+  await originalSendMessage();
+  
+  // Save conversation after each message exchange
+  if (historyStack.length > 2) { // More than just system message
+    const title = generateTitle(historyStack.find(m => m.role === 'user')?.content || 'New Conversation');
+    await saveConversation(historyStack, title);
+  }
+};
+
+// Load conversations when user logs in
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    await loadConversations();
+  } else {
+    $('#conversationList').innerHTML = '';
+    currentConversationId = null;
+  }
+});
+
+
+
+
+    
     window.sendMessage = async () => {
       const msg = $i.value.trim();
       if (!msg) return;
@@ -1318,6 +1510,11 @@ if (isIOS && !window.matchMedia('(display-mode: standalone)').matches) {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(() => console.log('SW registered'));
 }
+
+
+
+
+    
   </script>
 </body>
 </html>
