@@ -1,10 +1,12 @@
-const CACHE_NAME = 'vynix-lingua-cache-v1';
+const CACHE_NAME = 'vynix-lingua-cache-v2';
+const ICON_URL = 'https://i.postimg.cc/vT9VSrhF/Gemini-Generated-Image-uj8nvtuj8nvtuj8n.png';
+
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
   '/manifest.json',
-  // Add other local assets here if you have external CSS/JS files
-  // Do not cache the Google Fonts URLs directly here, let the browser handle those.
+  // Include the remote icon URL here so it's cached for offline use
+  ICON_URL 
 ];
 
 // Install event: Cache core assets
@@ -36,6 +38,12 @@ self.addEventListener('activate', (event) => {
 
 // Fetch event: Cache-first strategy
 self.addEventListener('fetch', (event) => {
+  // Always try to serve the icon from the cache first
+  if (event.request.url === ICON_URL) {
+      event.respondWith(caches.match(event.request));
+      return;
+  }
+  
   // Skip cross-origin requests like Google Fonts for basic caching
   if (!event.request.url.startsWith(self.location.origin)) {
      return;
@@ -45,7 +53,6 @@ self.addEventListener('fetch', (event) => {
     caches.match(event.request).then((response) => {
       // Return cached response if found, else fetch from network
       return response || fetch(event.request).then(networkResponse => {
-         // Optionally cache new requests dynamically here
          return networkResponse;
       });
     })
