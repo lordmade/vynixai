@@ -630,6 +630,31 @@
 .drawer-toggle {
   display: none;
 }
+    /* ===== VISUAL VOICE-WAVE (inside AI bubble row) ===== */
+.voice-wave {
+  position: absolute;
+  left: 50px;          /* same offset as avatar */
+  bottom: -24px;       /* sits directly under the bubble */
+  height: 24px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scaleY(0);
+  transition: opacity .25s, transform .25s;
+  transform-origin: bottom;
+}
+.voice-wave.show {
+  opacity: 1;
+  transform: scaleY(1);
+}
+.voice-wave span {
+  width: 3px;
+  background: var(--accent-blue);
+  border-radius: 2px;
+  transition: height .12s;
+}
   </style>
 </head>
 <body>
@@ -1163,29 +1188,73 @@ Keep responses conversational, accurate, and culturally relevant. Use ${lang.nam
         speakBtn.className = 'bubble-btn';
         speakBtn.innerHTML = `<span class="material-symbols-rounded" style="font-size:16px">volume_up</span>`;
         speakBtn.title = 'Speak';
-       speakBtn.onclick = async () => {
+      speakBtn.onclick = async () => {
+  /* prevent double click */
   speakBtn.disabled = true;
   speakBtn.innerHTML = `<span class="material-symbols-rounded" style="font-size:16px">hourglass_empty</span>`;
+
   try {
+    /* ---- fetch identical audio blob as before ---- */
     const voiceId = ELEVENLABS_VOICE_IDS[currentLang] || ELEVENLABS_VOICE_IDS.en;
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/  ${voiceId}/stream`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text,
-        model_id: 'eleven_multilingual_v2',  // Key change: use this model for better African language support
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.85
-        }
-      })
-    });
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.85 }
+        })
+      }
+    );
     if (!res.ok) throw new Error('TTS failed');
-    const audio = new Audio(URL.createObjectURL(await res.blob()));
+
+    /* ---- create audio + web-audio chain ---- */
+    const blob = await res.blob();
+    const audio = new Audio(URL.createObjectURL(blob));
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = ctx.createMediaElementSource(audio);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 32;                     // low-res = nicer bars
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+
+    /* ---- build 10 bar dom ---- */
+    const waveWrap = document.createElement('div');
+    waveWrap.className = 'voice-wave';
+    const bars = Array.from({ length: 10 }, () => {
+      const b = document.createElement('span');
+      waveWrap.appendChild(b);
+      return b;
+    });
+    row.appendChild(waveWrap);                 // row = the ai message-row
+    waveWrap.classList.add('show');
+
+    /* ---- real-time animation loop ---- */
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    function animate() {
+      if (audio.ended || audio.paused) return; // stop when voice finishes
+      analyser.getByteFrequencyData(dataArray);
+      bars.forEach((bar, i) => {
+        const v = dataArray[i] / 255;          // 0-1
+        bar.style.height = `${4 + v * 20}px`;  // 4-24 px
+      });
+      requestAnimationFrame(animate);
+    }
+
+    /* ---- play & clean-up ---- */
     audio.play();
+    animate();
+    audio.addEventListener('ended', () => {
+      waveWrap.classList.remove('show');
+      setTimeout(() => waveWrap.remove(), 300);
+      ctx.close();
+    });
   } catch (e) {
     showCustomSnackbar('Speech failed');
   } finally {
