@@ -4,13 +4,62 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Vynix Lingua Secure</title>
-  
-  <link rel="preconnect" href="https://fonts.googleapis.com  ">
-  <link rel="preconnect" href="https://fonts.gstatic.com  " crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400  ;500;600&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded  " rel="stylesheet">
-  
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js  "></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded" rel="stylesheet">
+
+  <!-- E2EE library -->
+  <script type="module">
+    import { box } from 'https://cdn.skypack.dev/pin/tweetnacl@v1.0.3/mode=imports/optimized/tweetnacl.js';
+    const b64 = {
+      enc: b => btoa(String.fromCharCode(...b)),
+      dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0))
+    };
+    const rand = () => crypto.getRandomValues(new Uint8Array(32));
+
+    function loadKeyPair() {
+      let secret = localStorage.getItem('e2ee_secret');
+      if (!secret) {
+        const kp = box.keyPair();
+        localStorage.setItem('e2ee_secret', b64.enc(kp.secretKey));
+        localStorage.setItem('e2ee_public',  b64.enc(kp.publicKey));
+        return kp;
+      }
+      return {
+        publicKey: b64.dec(localStorage.getItem('e2ee_public')),
+        secretKey: b64.dec(secret)
+      };
+    }
+
+    const sharedKeys = new Map();
+    function deriveShared(theirPubB64, theirId) {
+      if (sharedKeys.has(theirId)) return sharedKeys.get(theirId);
+      const key = box.before(b64.dec(theirPubB64), loadKeyPair().secretKey);
+      sharedKeys.set(theirId, key);
+      return key;
+    }
+
+    window.encryptE2EE = (text, partnerId, partnerPub) => {
+      const key   = deriveShared(partnerPub, partnerId);
+      const nonce = rand().slice(0, 24);
+      const cipher= box.after(new TextEncoder().encode(text), nonce, key);
+      const full  = new Uint8Array(24 + cipher.length);
+      full.set(nonce, 0); full.set(cipher, 24);
+      return { ct: b64.enc(full), pub: b64.enc(loadKeyPair().publicKey) };
+    };
+
+    window.decryptE2EE = (bundle, senderId, senderPub) => {
+      const key  = deriveShared(senderPub, senderId);
+      const buf  = b64.dec(bundle);
+      const plain= box.open.after(buf.slice(24), buf.slice(0, 24), key);
+      if (!plain) throw new Error('decrypt fail');
+      return new TextDecoder().decode(plain);
+    };
+
+    window.myPublicKey = () => b64.enc(loadKeyPair().publicKey);
+  </script>
 
   <style>
     :root {
@@ -27,46 +76,33 @@
       --header-height: 65px;
       --input-height: 80px;
     }
-
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-
     body {
       margin: 0; font-family: 'Inter', sans-serif; background-color: var(--bg-body);
       color: var(--text-main); height: 100vh; overflow: hidden;
     }
-
-    /* Prevent selection */
     .no-select { -webkit-user-select: none; user-select: none; }
-
-    #rainCanvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
-
+    #rainCanvas { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
     .app-container {
-      position: relative; z-index: 10; width: 100%; height: 100%; display: flex; flex-direction: column;
-      background: var(--glass-bg);
+      position: relative; z-index: 10; width: 100%; height: 100%;
+      display: flex; flex-direction: column; background: var(--glass-bg);
     }
-
     @media (min-width: 768px) {
       .app-container { max-width: 900px; margin: 0 auto; border-left: 1px solid rgba(255,255,255,0.4); border-right: 1px solid rgba(255,255,255,0.4); }
     }
-
-    /* --- Header --- */
     .chat-header {
       padding: 0 20px; display: flex; align-items: center; justify-content: space-between;
       border-bottom: 1px solid rgba(0,0,0,0.05); background: rgba(255,255,255,0.98);
       height: var(--header-height); position: fixed; top: 0; left: 0; right: 0; z-index: 50;
       max-width: 900px; margin: 0 auto;
     }
-
     .brand { display: flex; flex-direction: column; justify-content: center; }
     .brand-title { font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 6px; }
-    
     .status-row { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 500; }
     .online-count { color: var(--accent); display: flex; align-items: center; gap: 3px; }
     .dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; }
-
     .typing-indicator {
-      color: var(--primary); height: 14px; overflow: hidden;
-      display: none; align-items: center; gap: 4px;
+      color: var(--primary); height: 14px; overflow: hidden; display: none; align-items: center; gap: 4px;
     }
     .typing-indicator.active { display: flex; }
     .typing-dots span {
@@ -75,54 +111,38 @@
     }
     .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
     .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
-    
     @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
-    /* --- Messages --- */
+
     .messages-wrapper {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px;
+      flex: 1; overflow-y: auto; padding: 20px;
       padding-top: var(--header-height);
-      padding-bottom: calc(var(--input-height) + 45px); /* Increased bottom padding for extra safe space above input */
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      scroll-behavior: smooth;
+      padding-bottom: calc(var(--input-height) + 45px);
+      display: flex; flex-direction: column; gap: 2px; scroll-behavior: smooth;
     }
     .msg-group { display: flex; flex-direction: column; margin-bottom: 24px; position: relative; }
-    
     .msg-row { display: flex; gap: 8px; max-width: 85%; align-items: flex-end; }
     .msg-row.own { align-self: flex-end; flex-direction: row-reverse; }
-
     .avatar {
       width: 28px; height: 28px; border-radius: 10px; background: #e2e8f0; color: #64748b;
       display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; flex-shrink: 0;
       margin-bottom: 4px;
     }
-
     .bubble-container { display: flex; flex-direction: column; position: relative; }
-
     .sender-name { font-size: 10px; color: var(--text-muted); margin: 0 0 4px 4px; font-weight: 600; opacity: 0.8; }
     .msg-row.own .sender-name { display: none; }
-
     .bubble {
       padding: 10px 14px; font-size: 15px; line-height: 1.4; position: relative;
       box-shadow: 0 2px 4px rgba(0,0,0,0.02); cursor: pointer;
     }
-
     .msg-row:not(.own) .bubble {
       background: var(--bubble-other); color: var(--text-main); border-radius: 4px 16px 16px 16px;
     }
-    
     .msg-row.own .bubble {
       background: var(--bubble-own); color: white; border-radius: 16px 16px 4px 16px;
       box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
     }
-
     .meta-row { display: flex; justify-content: flex-end; align-items: center; gap: 4px; margin-top: 4px; }
     .timestamp { font-size: 9px; opacity: 0.7; }
-    
-    /* Reaction Pill - Visible */
     .reaction-pill {
       position: absolute; bottom: -14px; right: 0;
       background: #fff; border-radius: 12px; padding: 2px 6px;
@@ -133,29 +153,24 @@
     .msg-row.own .reaction-pill { right: auto; left: 0; }
     .reaction-pill.has-reactions { display: flex; animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
 
-    /* --- Floating Input --- */
     .input-zone {
       position: fixed; bottom: 0; left: 0; right: 0; height: var(--input-height);
       padding: 12px 16px; background: #fff; border-top: 1px solid rgba(0,0,0,0.05);
       z-index: 60; display: flex; align-items: center;
       max-width: 900px; margin: 0 auto;
     }
-    
     .input-wrapper {
       width: 100%; background: #f1f5f9; border-radius: 24px; padding: 6px 6px 6px 16px;
       display: flex; align-items: center; border: 1px solid transparent;
     }
     .input-wrapper:focus-within { background: #fff; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
-    
     .chat-input { flex: 1; border: none; background: transparent; padding: 10px 0; font-size: 15px; outline: none; }
-    
     .send-btn {
       width: 40px; height: 40px; border-radius: 50%; border: none; background: transparent;
       color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer;
     }
     .send-btn.active { background: var(--gradient); color: white; transform: rotate(-45deg); transition: 0.2s; }
 
-    /* --- Top Notification Toast --- */
     .toast-notification {
       position: fixed; top: -100px; left: 50%; transform: translateX(-50%);
       background: rgba(30, 41, 59, 0.95); color: white;
@@ -169,7 +184,6 @@
     .toast-notification.show { top: 20px; }
     .toast-avatar { width: 24px; height: 24px; background: var(--secondary); border-radius: 50%; display:flex; align-items:center; justify-content:center; font-size:10px; }
 
-    /* --- Reaction Menu (Dock) --- */
     .reaction-menu {
       position: fixed; inset: 0; z-index: 100;
       display: none; align-items: center; justify-content: center;
@@ -185,7 +199,6 @@
     .reaction-emoji { font-size: 24px; cursor: pointer; transition: transform 0.2s; padding: 4px; }
     .reaction-emoji:hover { transform: scale(1.3) translateY(-5px); }
 
-    /* Auth Sheet */
     .auth-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 300; display: none; align-items: flex-end; }
     .auth-overlay.open { display: flex; }
     .auth-box { background: #fff; width: 100%; border-radius: 24px 24px 0 0; padding: 24px; animation: slideUp 0.3s; }
@@ -198,7 +211,6 @@
     @keyframes popUp { from { transform: scale(0.8) translateY(20px); opacity: 0; } to { transform: scale(1) translateY(0); opacity: 1; } }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes popIn { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-
   </style>
 </head>
 <body>
@@ -213,9 +225,7 @@
   <div class="app-container">
     <header class="chat-header">
       <div class="brand">
-        <div class="brand-title">
-          Vynix Secure
-        </div>
+        <div class="brand-title">Vynix Secure</div>
         <div class="status-row">
           <div class="online-count">
             <div class="dot"></div> <span id="onlineCount">1</span> Online
@@ -232,16 +242,16 @@
     <main class="messages-wrapper no-select" id="messagesContainer"></main>
 
     <form autocomplete="off" onsubmit="return false">
-  <div class="input-zone">
-    <div class="input-wrapper">
-      <input type="text" id="messageInput" class="chat-input" placeholder="Type a message..."
-             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      <button id="sendButton" class="send-btn" type="button">
-        <span class="material-symbols-rounded">send</span>
-      </button>
-    </div>
-  </div>
-</form>
+      <div class="input-zone">
+        <div class="input-wrapper">
+          <input type="text" id="messageInput" class="chat-input" placeholder="Type a message..."
+                 autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button id="sendButton" class="send-btn" type="button">
+            <span class="material-symbols-rounded">send</span>
+          </button>
+        </div>
+      </div>
+    </form>
   </div>
 
   <div class="reaction-menu" id="reactionMenu">
@@ -258,19 +268,70 @@
   <div class="auth-overlay" id="authOverlay">
     <div class="auth-box">
       <h2 style="margin:0 0 20px 0; font-family:'Poppins', sans-serif;">Sign In</h2>
-     <input type="email" id="authEmail" class="auth-input" placeholder="Email" autocomplete="new-email">
-<input type="password" id="authPass" class="auth-input" placeholder="Password" autocomplete="new-password">
+      <input type="email" id="authEmail" class="auth-input" placeholder="Email" autocomplete="new-email">
+      <input type="password" id="authPass" class="auth-input" placeholder="Password" autocomplete="new-password">
       <button class="auth-btn" onclick="handleAuth()">Start Chatting</button>
       <button onclick="toggleAuthMode()" style="background:none; border:none; color:#666; width:100%; margin-top:10px; font-size:13px;">Create Account instead</button>
     </div>
   </div>
 
+  <!-- =========  E2EE UTILS  ========= -->
   <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js  ';
-    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js  ';
-    import { getFirestore, collection, query, orderBy, limit, addDoc, onSnapshot, serverTimestamp, doc, updateDoc, setDoc, where } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js  ';
+    import { box } from 'https://cdn.skypack.dev/pin/tweetnacl@v1.0.3/mode=imports/optimized/tweetnacl.js';
+    const b64 = {
+      enc: b => btoa(String.fromCharCode(...b)),
+      dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0))
+    };
+    const rand = () => crypto.getRandomValues(new Uint8Array(32));
 
-    // Config
+    function loadKeyPair() {
+      let secret = localStorage.getItem('e2ee_secret');
+      if (!secret) {
+        const kp = box.keyPair();
+        localStorage.setItem('e2ee_secret', b64.enc(kp.secretKey));
+        localStorage.setItem('e2ee_public',  b64.enc(kp.publicKey));
+        return kp;
+      }
+      return {
+        publicKey: b64.dec(localStorage.getItem('e2ee_public')),
+        secretKey: b64.dec(secret)
+      };
+    }
+
+    const sharedKeys = new Map();
+    function deriveShared(theirPubB64, theirId) {
+      if (sharedKeys.has(theirId)) return sharedKeys.get(theirId);
+      const key = box.before(b64.dec(theirPubB64), loadKeyPair().secretKey);
+      sharedKeys.set(theirId, key);
+      return key;
+    }
+
+    window.encryptE2EE = (text, partnerId, partnerPub) => {
+      const key   = deriveShared(partnerPub, partnerId);
+      const nonce = rand().slice(0, 24);
+      const cipher= box.after(new TextEncoder().encode(text), nonce, key);
+      const full  = new Uint8Array(24 + cipher.length);
+      full.set(nonce, 0); full.set(cipher, 24);
+      return { ct: b64.enc(full), pub: b64.enc(loadKeyPair().publicKey) };
+    };
+
+    window.decryptE2EE = (bundle, senderId, senderPub) => {
+      const key  = deriveShared(senderPub, senderId);
+      const buf  = b64.dec(bundle);
+      const plain= box.open.after(buf.slice(24), buf.slice(0, 24), key);
+      if (!plain) throw new Error('decrypt fail');
+      return new TextDecoder().decode(plain);
+    };
+
+    window.myPublicKey = () => b64.enc(loadKeyPair().publicKey);
+  </script>
+
+  <!-- =========  MAIN APP  ========= -->
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+    import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+    import { getFirestore, collection, query, orderBy, limit, addDoc, onSnapshot, serverTimestamp, doc, updateDoc, setDoc, where } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -280,23 +341,9 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
-    const db = getFirestore(app);
+    const db   = getFirestore(app);
 
-    // Encryption
-    const ROOM_KEY = "VYNIX_LINGUA_COMMUNITY_SECURE_KEY_2025";
-    const encrypt = (text) => CryptoJS.AES.encrypt(text, ROOM_KEY).toString();
-    const decrypt = (cipher) => {
-      try { return CryptoJS.AES.decrypt(cipher, ROOM_KEY).toString(CryptoJS.enc.Utf8) || '⚠️ Error'; } 
-      catch (e) { return '⚠️ Encrypted'; }
-    };
-
-    // State
-    let currentUser = null;
-    let selectedMessageId = null;
-    let typingTimeout;
-    let isInitialLoad = true;
-    
-    // Notification Sound (Base64 for reliability)
+    let currentUser = null, selectedMessageId = null, typingTimeout, isInitialLoad = true;
     const notifSound = new Audio("data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU");
 
     const els = {
@@ -313,9 +360,7 @@
       toastAvatar: document.getElementById('toastAvatar')
     };
 
-
-
-    // Auth
+    /* ---------------  AUTH  --------------- */
     window.isSignUp = false;
     window.toggleAuthMode = () => {
       window.isSignUp = !window.isSignUp;
@@ -338,117 +383,82 @@
       } catch (e) { alert(e.message); }
     };
 
-    onAuthStateChanged(auth, (user) => {
+    onAuthStateChanged(auth, user => {
       currentUser = user;
       if (!user) els.authOverlay.classList.add('open');
-      else {
-        setupListeners();
-        startHeartbeat();
-      }
+      else { setupListeners(); startHeartbeat(); }
     });
 
-    // Core Logic
+    /* ---------------  LISTENERS  --------------- */
     function setupListeners() {
-      // 1. Messages Listener
       const q = query(collection(db, 'communityMessages'), orderBy('createdAt', 'asc'), limit(50));
-      onSnapshot(q, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
+      onSnapshot(q, snapshot => {
+        snapshot.docChanges().forEach(change => {
           if (change.type === "added") {
             const data = change.doc.data();
             appendMessage(change.doc);
-            
-            // Notification Logic (Only if not own message and not initial load)
-            if (!isInitialLoad && data.userId !== currentUser.uid) {
-              triggerNotification(data.userName);
-            }
+            if (!isInitialLoad && data.userId !== currentUser.uid) triggerNotification(data.userName);
           }
-          if (change.type === "modified") {
-            updateMessageInDOM(change.doc);
-          }
+          if (change.type === "modified") updateMessageInDOM(change.doc);
         });
-        
-        if (isInitialLoad) {
-          scrollToBottom();
-          isInitialLoad = false;
-        } else {
-          scrollToBottom();
-        }
+        if (isInitialLoad) { scrollToBottom(); isInitialLoad = false; }
+        else scrollToBottom();
       });
 
-      // 2. Typing Listener
       const typingQ = query(collection(db, 'typingStatus'), where('isTyping', '==', true));
-      onSnapshot(typingQ, (snap) => {
+      onSnapshot(typingQ, snap => {
         const typers = [];
         snap.forEach(doc => {
           if (doc.id !== currentUser.uid) {
-             const data = doc.data();
-             if (Date.now() - data.timestamp?.toMillis() < 3000) typers.push(data.userName);
+            const data = doc.data();
+            if (Date.now() - data.timestamp?.toMillis() < 3000) typers.push(data.userName);
           }
         });
-        
         if (typers.length > 0) {
           els.typingText.textContent = `${typers.join(', ')} is typing...`;
           els.typingIndicator.classList.add('active');
-        } else {
-          els.typingIndicator.classList.remove('active');
-        }
+        } else els.typingIndicator.classList.remove('active');
       });
 
-      // 3. Online Users Listener
       const usersQ = query(collection(db, 'communityUsers'));
-      onSnapshot(usersQ, (snap) => {
-        let count = 0;
-        const now = Date.now();
+      onSnapshot(usersQ, snap => {
+        let count = 0; const now = Date.now();
         snap.forEach(doc => {
           const data = doc.data();
-          // User is online if seen in last 2 minutes
-          if (data.lastSeen && (now - data.lastSeen.toMillis() < 120000)) {
-            count++;
-          }
+          if (data.lastSeen && (now - data.lastSeen.toMillis() < 120000)) count++;
         });
         els.onlineCount.textContent = count;
       });
     }
 
-    // Heartbeat for Online Status
     function startHeartbeat() {
       const update = async () => {
-        if(currentUser) {
-           await setDoc(doc(db, 'communityUsers', currentUser.uid), {
-             lastSeen: serverTimestamp(),
-             userName: currentUser.displayName
-           }, { merge: true });
+        if (currentUser) {
+          await setDoc(doc(db, 'communityUsers', currentUser.uid), {
+            lastSeen: serverTimestamp(),
+            userName: currentUser.displayName
+          }, { merge: true });
         }
       };
-      update();
-      setInterval(update, 60000); // Update every minute
+      update(); setInterval(update, 60000);
     }
 
-    // Notification System
     function triggerNotification(senderName) {
-      // 1. Sound
-      try { notifSound.play().catch(() => {}); } catch(e){}
-
-      // 2. Vibrate
+      try { notifSound.play().catch(() => {}); } catch (e) {}
       if (navigator.vibrate) navigator.vibrate(200);
-
-      // 3. Toast
       els.toastAvatar.textContent = senderName.charAt(0).toUpperCase();
       els.toastMsg.textContent = `New message from ${senderName}`;
       els.toast.classList.add('show');
-      
-      // Hide after 5 seconds
-      setTimeout(() => {
-        els.toast.classList.remove('show');
-      }, 5000);
+      setTimeout(() => els.toast.classList.remove('show'), 5000);
     }
 
+    /* ---------------  MESSAGES  --------------- */
     function appendMessage(doc) {
       const data = doc.data();
       const id = doc.id;
       const isOwn = currentUser && data.userId === currentUser.uid;
-      const decryptedText = decrypt(data.text);
-      const time = data.createdAt ? new Date(data.createdAt.toDate()).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+      const decryptedText = decryptE2EE(data.text, data.userId, data.pubKey);
+      const time = data.createdAt ? new Date(data.createdAt.toDate()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
       const initials = (data.userName || 'U').charAt(0).toUpperCase();
 
       const div = document.createElement('div');
@@ -462,58 +472,44 @@
             <div class="bubble" data-id="${id}">
               ${escapeHtml(decryptedText)}
               <div class="meta-row">
-                <span class="timestamp" style="color:${isOwn?'rgba(255,255,255,0.7)':'rgba(0,0,0,0.4)'}">${time}</span>
+                <span class="timestamp" style="color:${isOwn ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.4)'}">${time}</span>
               </div>
             </div>
             <div class="reaction-pill" id="react-${id}"></div>
           </div>
         </div>
       `;
-
-      // Long Press
       const bubble = div.querySelector('.bubble');
       bindLongPress(bubble, id);
-
       els.container.appendChild(div);
       renderReactions(id, data.reactions);
     }
 
     function updateMessageInDOM(doc) {
-      const data = doc.data();
-      renderReactions(doc.id, data.reactions);
+      renderReactions(doc.id, doc.data().reactions);
     }
 
     function renderReactions(msgId, reactions) {
       const pill = document.getElementById(`react-${msgId}`);
       if (!pill) return;
-      
       if (!reactions || Object.keys(reactions).length === 0) {
         pill.classList.remove('has-reactions');
         pill.innerHTML = '';
         return;
       }
-      
       const counts = {};
-      Object.values(reactions).forEach(emoji => {
-        counts[emoji] = (counts[emoji] || 0) + 1;
-      });
-
-      const entries = Object.entries(counts).sort((a,b) => b[1] - a[1]).slice(0, 3);
+      Object.values(reactions).forEach(emoji => { counts[emoji] = (counts[emoji] || 0) + 1; });
+      const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3);
       pill.innerHTML = entries.map(([e, c]) => `<span>${e}${c > 1 ? c : ''}</span>`).join('');
       pill.classList.add('has-reactions');
     }
 
-    // Interactions
+    /* ---------------  REACTIONS / LONG PRESS  --------------- */
     let longPressTimer;
     function bindLongPress(element, id) {
-      element.addEventListener('contextmenu', (e) => { e.preventDefault(); });
-      const start = (e) => {
-        longPressTimer = setTimeout(() => {
-          if (navigator.vibrate) navigator.vibrate(50);
-          openReactionMenu(id);
-        }, 500);
-      };
-      const cancel = () => { clearTimeout(longPressTimer); };
+      element.addEventListener('contextmenu', e => e.preventDefault());
+      const start = () => longPressTimer = setTimeout(() => { if (navigator.vibrate) navigator.vibrate(50); openReactionMenu(id); }, 500);
+      const cancel = () => clearTimeout(longPressTimer);
       element.addEventListener('touchstart', start);
       element.addEventListener('touchend', cancel);
       element.addEventListener('touchmove', cancel);
@@ -532,29 +528,25 @@
         els.reactionMenu.classList.remove('open');
         if (selectedMessageId && currentUser) {
           const msgRef = doc(db, 'communityMessages', selectedMessageId);
-          await updateDoc(msgRef, {
-  [`reactions.${currentUser.uid}`]: emoji
-});
+          await updateDoc(msgRef, { [`reactions.${currentUser.uid}`]: emoji });
         }
       });
     });
 
-    els.reactionMenu.addEventListener('click', (e) => {
-      if (e.target === els.reactionMenu) els.reactionMenu.classList.remove('open');
-    });
+    els.reactionMenu.addEventListener('click', e => { if (e.target === els.reactionMenu) els.reactionMenu.classList.remove('open'); });
 
-    // Sending
+    /* ---------------  SEND MESSAGE  --------------- */
     async function sendMessage() {
       const text = els.input.value.trim();
       if (!text || !currentUser) return;
-      const encryptedText = encrypt(text);
+      const encrypted = encryptE2EE(text, 'community', myPublicKey());
       els.input.value = '';
       els.btn.classList.remove('active');
-      
       await addDoc(collection(db, 'communityMessages'), {
-        text: encryptedText,
+        text: encrypted.ct,
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anon',
+        pubKey: encrypted.pub,
         createdAt: serverTimestamp(),
         reactions: {}
       });
@@ -570,37 +562,50 @@
           timestamp: serverTimestamp()
         });
         clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(() => {
-          setDoc(userStatusRef, { isTyping: false }, { merge: true });
-        }, 2000);
+        typingTimeout = setTimeout(() => setDoc(userStatusRef, { isTyping: false }, { merge: true }), 2000);
       }
     });
     
-    els.input.addEventListener('keydown', (e) => { if(e.key === 'Enter') sendMessage(); });
+    els.input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
     els.btn.addEventListener('click', sendMessage);
 
     function scrollToBottom() { els.container.scrollTop = els.container.scrollHeight; }
     function escapeHtml(text) {
-      const div = document.createElement('div'); div.textContent = text; return div.innerHTML;
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
-    // Rain Bg
+    /* ---------------  RAIN BG  --------------- */
     const canvas = document.getElementById('rainCanvas');
     const ctx = canvas.getContext('2d');
     let w, h, drops = [];
     const resize = () => {
-      w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight;
-      drops = Array(Math.floor(w/20)).fill(0).map(() => ({ x: Math.random()*w, y: Math.random()*h, s: Math.random()*2+2, l: Math.random()*15+5 }));
+      w = canvas.width = window.innerWidth;
+      h = canvas.height = window.innerHeight;
+      drops = Array(Math.floor(w / 20)).fill(0).map(() => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        s: Math.random() * 2 + 2,
+        l: Math.random() * 15 + 5
+      }));
     };
-    window.addEventListener('resize', resize); resize();
-    const draw = () => {
-      ctx.clearRect(0,0,w,h); ctx.strokeStyle='#2563eb'; ctx.lineWidth=1;
+    window.addEventListener('resize', resize);
+    resize();
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 1;
       drops.forEach(d => {
-        ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x, d.y+d.l); ctx.stroke();
-        d.y += d.s; if(d.y>h) { d.y=-d.l; d.x=Math.random()*w; }
+        ctx.beginPath();
+        ctx.moveTo(d.x, d.y);
+        ctx.lineTo(d.x, d.y + d.l);
+        ctx.stroke();
+        d.y += d.s;
+        if (d.y > h) { d.y = -d.l; d.x = Math.random() * w; }
       });
       requestAnimationFrame(draw);
-    };
+    }
     draw();
   </script>
 </body>
