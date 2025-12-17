@@ -160,6 +160,7 @@
       transition: all .2s ease;
       border: 1px solid transparent;
       animation: fadeIn 0.3s ease;
+      position: relative;
     }
 
     @keyframes fadeIn {
@@ -186,6 +187,22 @@
       font-size: 24px;
       font-weight: 600;
       flex-shrink: 0;
+      position: relative;
+    }
+
+    .online-indicator {
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      border: 3px solid var(--bg-color);
+    }
+
+    .online-indicator.offline {
+      background: var(--text-muted);
     }
 
     .friend-info {
@@ -202,23 +219,39 @@
       text-overflow: ellipsis;
     }
 
-    .friend-status {
+    .last-message {
       font-size: 13px;
       color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 2px;
+    }
+
+    .last-message.unread {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .message-meta {
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
     }
 
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--accent-green);
+    .timestamp {
+      font-size: 11px;
     }
 
-    .status-dot.offline {
-      background: var(--text-muted);
+    .unread-badge {
+      background: var(--accent-blue);
+      color: white;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-weight: 600;
     }
 
     .friend-action {
@@ -590,7 +623,61 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getFirestore, collection, query, where, getDocs, doc, getDoc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+    import { getFirestore, collection, query, where, getDocs, doc, getDoc, setDoc, onSnapshot, orderBy, limit } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+
+    // Crypto utilities for end-to-end encryption
+    class CryptoUtils {
+      static async generateKeyPair() {
+        return await window.crypto.subtle.generateKey(
+          {
+            name: "RSA-OAEP",
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-256",
+          },
+          true,
+          ["encrypt", "decrypt"]
+        );
+      }
+
+      static async exportKey(key) {
+        return await window.crypto.subtle.exportKey("spki", key);
+      }
+
+      static async importPublicKey(keyData) {
+        return await window.crypto.subtle.importKey(
+          "spki",
+          keyData,
+          {
+            name: "RSA-OAEP",
+            hash: "SHA-256",
+          },
+          true,
+          ["encrypt"]
+        );
+      }
+
+      static async encryptMessage(message, publicKey) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(message);
+        const encrypted = await window.crypto.subtle.encrypt(
+          { name: "RSA-OAEP" },
+          publicKey,
+          data
+        );
+        return new Uint8Array(encrypted);
+      }
+
+      static async decryptMessage(encryptedData, privateKey) {
+        const decrypted = await window.crypto.subtle.decrypt(
+          { name: "RSA-OAEP" },
+          privateKey,
+          encryptedData
+        );
+        const decoder = new TextDecoder();
+        return decoder.decode(decrypted);
+      }
+    }
 
     // Firebase config
     const firebaseConfig = {
@@ -609,6 +696,7 @@
     let friendsSet = new Set();
     let allCommunityUsers = [];
     let friendsUnsubscribe = null;
+    let userKeyPair = null;
 
     // DOM Elements
     const friendsList = document.getElementById('friendsList');
@@ -622,18 +710,52 @@
     const usersEmptyState = document.getElementById('usersEmptyState');
 
     // Auth state
-    onAuthStateChanged(auth, (user) => {
+    onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUser = user;
+        
+        // Generate or load encryption keys
+        await initializeUserEncryption();
+        
         initFriendsListener();
       } else {
         window.location.href = 'index.html';
       }
     });
 
-    // 1. REAL-TIME FRIENDS LISTENER
+    // Initialize user encryption keys
+    async function initializeUserEncryption() {
+      try {
+        // Check if keys already exist
+        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        const userData = userDoc.data();
+        
+        if (userData?.encryptionKeys) {
+          // Load existing keys
+          userKeyPair = userData.encryptionKeys;
+        } else {
+          // Generate new key pair
+          const keyPair = await CryptoUtils.generateKeyPair();
+          const publicKey = await CryptoUtils.exportKey(keyPair.publicKey);
+          
+          // Store public key in user profile
+          await setDoc(doc(db, 'users', currentUser.uid), {
+            encryptionKeys: {
+              publicKey: Array.from(new Uint8Array(publicKey)),
+              createdAt: new Date().toISOString()
+            }
+          }, { merge: true });
+          
+          // Store private key locally (in a real app, this would be more secure)
+          localStorage.setItem(`privateKey_${currentUser.uid}`, JSON.stringify(Array.from(new Uint8Array(await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey)))));
+        }
+      } catch (error) {
+        console.error('Error initializing encryption:', error);
+      }
+    }
+
+    // REAL-TIME FRIENDS LISTENER with last message
     function initFriendsListener() {
-      // Listen to a dedicated 'friends' subcollection for the current user
       const friendsRef = collection(db, 'users', currentUser.uid, 'friends');
       
       friendsUnsubscribe = onSnapshot(friendsRef, (snapshot) => {
@@ -642,17 +764,65 @@
 
         snapshot.forEach((doc) => {
           friendsData.push({ id: doc.id, ...doc.data() });
-          friendsSet.add(doc.id); // Add ID to set for filtering discovery list
+          friendsSet.add(doc.id);
         });
 
-        renderFriends(friendsData);
-        // If bottom sheet is open, refresh it to hide newly added friends
-        if (bottomSheet.classList.contains('open')) {
-            filterAndRenderUsers(searchInput.value);
-        }
+        // Load last messages for each friend
+        loadLastMessages(friendsData);
       }, (error) => {
         console.error("Error listening to friends:", error);
       });
+    }
+
+    // Load last messages for all friends
+    async function loadLastMessages(friendsData) {
+      const friendsWithMessages = await Promise.all(
+        friendsData.map(async (friend) => {
+          const lastMessage = await getLastMessage(friend.id);
+          return { ...friend, lastMessage };
+        })
+      );
+      
+      renderFriends(friendsWithMessages);
+    }
+
+    // Get last message between current user and friend
+    async function getLastMessage(friendId) {
+      try {
+        // Create conversation ID (sorted to ensure consistency)
+        const conversationId = [currentUser.uid, friendId].sort().join('_');
+        
+        const messagesRef = collection(db, 'conversations', conversationId, 'messages');
+        const q = query(messagesRef, orderBy('timestamp', 'desc'), limit(1));
+        const snapshot = await getDocs(q);
+        
+        if (!snapshot.empty) {
+          const messageDoc = snapshot.docs[0];
+          const messageData = messageDoc.data();
+          
+          // Decrypt message if encrypted
+          let messageText = messageData.text;
+          if (messageData.encrypted && userKeyPair) {
+            try {
+              const encryptedData = new Uint8Array(messageData.encrypted);
+              messageText = await CryptoUtils.decryptMessage(encryptedData, userKeyPair.privateKey);
+            } catch (error) {
+              console.error('Error decrypting message:', error);
+              messageText = '🔒 Encrypted message';
+            }
+          }
+          
+          return {
+            text: messageText,
+            timestamp: messageData.timestamp,
+            isUnread: messageData.senderId !== currentUser.uid && !messageData.read,
+            senderId: messageData.senderId
+          };
+        }
+      } catch (error) {
+        console.error('Error getting last message:', error);
+      }
+      return null;
     }
 
     // Render main friends list
@@ -665,23 +835,52 @@
       friendsList.style.display = 'grid';
       emptyState.style.display = 'none';
       
-      friendsList.innerHTML = friendData.map(friend => `
-        <div class="friend-card" onclick="startChat('${friend.id}', '${friend.displayName || friend.userName}')">
-          <div class="friend-avatar">
-            ${(friend.displayName || friend.userName || 'U').charAt(0).toUpperCase()}
-          </div>
-          <div class="friend-info">
-            <div class="friend-name">${friend.displayName || friend.userName || 'Unknown User'}</div>
-            <div class="friend-status">
-              <div class="status-dot ${friend.isOnline ? '' : 'offline'}"></div>
-              ${friend.email || 'Friend'}
+      friendsList.innerHTML = friendData.map(friend => {
+        const lastMessage = friend.lastMessage;
+        const timeAgo = lastMessage ? formatTimeAgo(lastMessage.timestamp) : '';
+        const isUnread = lastMessage?.isUnread;
+        const messagePreview = lastMessage ? 
+          (lastMessage.senderId === currentUser.uid ? 'You: ' : '') + lastMessage.text : 
+          'Start a conversation';
+        
+        return `
+          <div class="friend-card" onclick="startChat('${friend.id}', '${friend.displayName || friend.userName}')">
+            <div class="friend-avatar">
+              ${(friend.displayName || friend.userName || 'U').charAt(0).toUpperCase()}
+              <div class="online-indicator ${friend.isOnline ? '' : 'offline'}"></div>
             </div>
+            <div class="friend-info">
+              <div class="friend-name">${friend.displayName || friend.userName || 'Unknown User'}</div>
+              <div class="last-message ${isUnread ? 'unread' : ''}">${messagePreview}</div>
+              ${lastMessage ? `
+                <div class="message-meta">
+                  <span class="timestamp">${timeAgo}</span>
+                  ${isUnread ? '<span class="unread-badge">New</span>' : ''}
+                </div>
+              ` : ''}
+            </div>
+            <button class="friend-action" onclick="event.stopPropagation(); startChat('${friend.id}', '${friend.displayName || friend.userName}')" title="Message">
+              <span class="material-symbols-rounded">chat_bubble</span>
+            </button>
           </div>
-          <button class="friend-action" onclick="event.stopPropagation(); startChat('${friend.id}', '${friend.displayName || friend.userName}')" title="Message">
-            <span class="material-symbols-rounded">chat_bubble</span>
-          </button>
-        </div>
-      `).join('');
+        `;
+      }).join('');
+    }
+
+    function formatTimeAgo(timestamp) {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      if (diffMins < 1) return 'Just now';
+      if (diffMins < 60) return `${diffMins}m`;
+      if (diffHours < 24) return `${diffHours}h`;
+      if (diffDays < 7) return `${diffDays}d`;
+      
+      return date.toLocaleDateString();
     }
 
     function showEmptyState() {
@@ -689,17 +888,15 @@
       emptyState.style.display = 'block';
     }
 
-    // 2. LOAD ALL COMMUNITY USERS (For Discovery)
+    // Load all community users for discovery
     async function loadCommunityUsers() {
       try {
         usersList.innerHTML = '<div style="padding:20px; text-align:center; color:#888;">Loading users...</div>';
         
-        // Fetch all users from public community collection
         const querySnapshot = await getDocs(collection(db, 'communityUsers'));
         
         allCommunityUsers = [];
         querySnapshot.forEach((doc) => {
-          // Exclude self
           if (doc.id !== currentUser.uid) {
             allCommunityUsers.push({ id: doc.id, ...doc.data() });
           }
@@ -712,11 +909,10 @@
       }
     }
 
-    // Filter and Render Users in Bottom Sheet
+    // Filter and render users in bottom sheet
     function filterAndRenderUsers(searchTerm) {
       const term = searchTerm.toLowerCase();
       
-      // Filter: Match search term AND exclude existing friends
       const filtered = allCommunityUsers.filter(user => {
         const matchesSearch = (user.userName || '').toLowerCase().includes(term) || 
                               (user.email || '').toLowerCase().includes(term);
@@ -753,34 +949,36 @@
       `).join('');
     }
 
-    // 3. ADD FRIEND FUNCTION (No Redirect)
+    // ADD FRIEND with encryption key exchange
     window.addFriend = async function(btnElement, userId, userName, userEmail) {
       try {
-        // UI Feedback
         const originalText = btnElement.innerText;
         btnElement.innerText = '...';
         btnElement.classList.add('loading');
         btnElement.disabled = true;
 
-        // Data to save
-        const friendData = {
+        // Get friend's public key
+        const friendDoc = await getDoc(doc(db, 'users', userId));
+        const friendData = friendDoc.data();
+        
+        if (!friendData?.encryptionKeys?.publicKey) {
+          throw new Error('Friend does not have encryption setup');
+        }
+
+        const friendDataWithKeys = {
             displayName: userName,
             userName: userName,
             email: userEmail,
             addedAt: new Date().toISOString(),
-            isOnline: false // Default, logic can be added later
+            isOnline: false,
+            publicKey: friendData.encryptionKeys.publicKey
         };
 
-        // Write to Firestore - This triggers the onSnapshot listener above automatically!
-        await setDoc(doc(db, 'users', currentUser.uid, 'friends', userId), friendData);
+        await setDoc(doc(db, 'users', currentUser.uid, 'friends', userId), friendDataWithKeys);
         
-        // Update Button State
         btnElement.innerText = 'Added';
         btnElement.classList.remove('loading');
-        btnElement.disabled = true; // Keep disabled so they don't add again
-        
-        // Note: We don't need to manually reload the background list. 
-        // The onSnapshot in initFriendsListener handles it instantly.
+        btnElement.disabled = true;
 
       } catch (error) {
         console.error('Error adding friend:', error);
@@ -791,16 +989,17 @@
       }
     };
 
-    // Start chat (redirects to main page with specific intent)
+    // Start chat with encryption setup
     window.startChat = function(userId, userName) {
       sessionStorage.setItem('chatPartner', JSON.stringify({
         id: userId,
-        name: userName
+        name: userName,
+        encrypted: true // Flag to enable encryption in chat
       }));
       window.location.href = 'index.html';
     };
 
-    // Search functionality in bottom sheet
+    // Search functionality
     searchInput.addEventListener('input', (e) => {
       filterAndRenderUsers(e.target.value);
     });
@@ -809,7 +1008,7 @@
     fabBtn.addEventListener('click', () => {
       sheetOverlay.classList.add('open');
       bottomSheet.classList.add('open');
-      loadCommunityUsers(); // Load users when opening
+      loadCommunityUsers();
     });
 
     closeSheet.addEventListener('click', closeBottomSheet);
