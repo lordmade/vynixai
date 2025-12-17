@@ -159,6 +159,12 @@
       cursor: pointer;
       transition: all .2s ease;
       border: 1px solid transparent;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
     }
 
     .friend-card:hover {
@@ -302,7 +308,8 @@
       transform: translateY(100%);
       transition: transform .3s ease-out;
       max-height: 80vh;
-      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
     }
 
     .bottom-sheet.open {
@@ -314,6 +321,7 @@
       align-items: center;
       justify-content: space-between;
       margin-bottom: 24px;
+      flex-shrink: 0;
     }
 
     .sheet-title {
@@ -343,6 +351,7 @@
     .search-container {
       position: relative;
       margin-bottom: 20px;
+      flex-shrink: 0;
     }
 
     .search-input {
@@ -379,6 +388,8 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      overflow-y: auto;
+      padding-bottom: 20px;
     }
 
     .user-item {
@@ -387,7 +398,7 @@
       gap: 12px;
       padding: 12px;
       border-radius: 12px;
-      cursor: pointer;
+      cursor: default;
       transition: all .2s;
     }
 
@@ -442,6 +453,7 @@
       cursor: pointer;
       transition: all .2s;
       flex-shrink: 0;
+      min-width: 80px;
     }
 
     .add-friend-btn:hover {
@@ -450,13 +462,16 @@
     }
 
     .add-friend-btn:disabled {
-      background: var(--text-muted);
-      cursor: not-allowed;
+      background: var(--surface-color);
+      color: var(--accent-green);
+      cursor: default;
       transform: none;
+      border: 1px solid var(--accent-green);
     }
-
-    .add-friend-btn.added {
-      background: var(--accent-green);
+    
+    .add-friend-btn.loading {
+      background: var(--text-muted);
+      cursor: wait;
     }
 
     /* Empty States */
@@ -508,7 +523,6 @@
   </style>
 </head>
 <body>
-  <!-- Header -->
   <header class="header">
     <div class="header-left">
       <button class="back-btn" onclick="window.location.href='index.html'">
@@ -522,12 +536,10 @@
     </div>
   </header>
 
-  <!-- Main Content -->
   <main class="friends-container">
     <h1 class="section-header">Your Friends</h1>
     <div id="friendsList" class="friends-grid">
-      <!-- Friends will be loaded here -->
-    </div>
+      </div>
     
     <div id="emptyState" class="empty-state" style="display: none;">
       <div class="empty-state-icon">
@@ -535,22 +547,20 @@
       </div>
       <div class="empty-state-title">No friends yet</div>
       <div class="empty-state-text">
-        Start conversations with other users to add them as friends,<br>
-        or discover new friends using the + button below.
+        Discover new people using the + button below<br>
+        and add them to your friends list.
       </div>
     </div>
   </main>
 
-  <!-- Floating Action Button -->
-  <button class="fab" id="addFriendBtn" title="Add Friends">
+  <button class="fab" id="addFriendBtn" title="Discover Friends">
     <span class="material-symbols-rounded">person_add</span>
   </button>
 
-  <!-- Bottom Sheet -->
   <div class="bottom-sheet-overlay" id="sheetOverlay"></div>
   <div class="bottom-sheet" id="bottomSheet">
     <div class="sheet-header">
-      <h2 class="sheet-title">Discover New Friends</h2>
+      <h2 class="sheet-title">Discover People</h2>
       <button class="sheet-close" id="closeSheet">
         <span class="material-symbols-rounded">close</span>
       </button>
@@ -560,12 +570,11 @@
       <div class="search-icon">
         <span class="material-symbols-rounded">search</span>
       </div>
-      <input type="text" class="search-input" id="searchInput" placeholder="Search users by name or email...">
+      <input type="text" class="search-input" id="searchInput" placeholder="Search by name or email...">
     </div>
     
     <div id="usersList" class="users-list">
-      <!-- Users will be loaded here -->
-    </div>
+      </div>
     
     <div id="usersEmptyState" class="empty-state" style="display: none;">
       <div class="empty-state-icon">
@@ -573,7 +582,7 @@
       </div>
       <div class="empty-state-title">No users found</div>
       <div class="empty-state-text">
-        Try searching with a different name or email address.
+        Try searching with a different name.
       </div>
     </div>
   </div>
@@ -597,13 +606,14 @@
 
     // State
     let currentUser = null;
-    let friends = new Set();
-    let allUsers = [];
+    let friendsSet = new Set();
+    let allCommunityUsers = [];
+    let friendsUnsubscribe = null;
 
     // DOM Elements
     const friendsList = document.getElementById('friendsList');
     const emptyState = document.getElementById('emptyState');
-    const addFriendBtn = document.getElementById('addFriendBtn');
+    const fabBtn = document.getElementById('addFriendBtn');
     const sheetOverlay = document.getElementById('sheetOverlay');
     const bottomSheet = document.getElementById('bottomSheet');
     const closeSheet = document.getElementById('closeSheet');
@@ -615,70 +625,45 @@
     onAuthStateChanged(auth, (user) => {
       if (user) {
         currentUser = user;
-        loadFriends();
-        loadAllUsers();
+        initFriendsListener();
       } else {
         window.location.href = 'index.html';
       }
     });
 
-    // Load friends from conversations
-    async function loadFriends() {
-      try {
-        const conversationsRef = collection(db, 'conversations', currentUser.uid, 'userConversations');
-        const snapshot = await getDocs(conversationsRef);
-        
-        friends.clear();
-        const friendPromises = [];
-        
+    // 1. REAL-TIME FRIENDS LISTENER
+    function initFriendsListener() {
+      // Listen to a dedicated 'friends' subcollection for the current user
+      const friendsRef = collection(db, 'users', currentUser.uid, 'friends');
+      
+      friendsUnsubscribe = onSnapshot(friendsRef, (snapshot) => {
+        const friendsData = [];
+        friendsSet.clear();
+
         snapshot.forEach((doc) => {
-          const data = doc.data();
-          // Extract unique user IDs from messages
-          if (data.messages) {
-            data.messages.forEach(msg => {
-              if (msg.role === 'user' && msg.userId && msg.userId !== currentUser.uid) {
-                friends.add(msg.userId);
-                friendPromises.push(getUserInfo(msg.userId));
-              }
-            });
-          }
+          friendsData.push({ id: doc.id, ...doc.data() });
+          friendsSet.add(doc.id); // Add ID to set for filtering discovery list
         });
-        
-        const friendData = await Promise.all(friendPromises);
-        renderFriends(friendData.filter(Boolean));
-      } catch (error) {
-        console.error('Error loading friends:', error);
-        showEmptyState();
-      }
+
+        renderFriends(friendsData);
+        // If bottom sheet is open, refresh it to hide newly added friends
+        if (bottomSheet.classList.contains('open')) {
+            filterAndRenderUsers(searchInput.value);
+        }
+      }, (error) => {
+        console.error("Error listening to friends:", error);
+      });
     }
 
-    // Get user info
-    async function getUserInfo(userId) {
-      try {
-        const userDoc = await getDoc(doc(db, 'users', userId));
-        if (userDoc.exists()) {
-          return { id: userId, ...userDoc.data() };
-        }
-        
-        // Fallback to auth profile
-        const userRef = await getDoc(doc(db, 'communityUsers', userId));
-        if (userRef.exists()) {
-          return { id: userId, ...userRef.data() };
-        }
-        
-        return null;
-      } catch (error) {
-        console.error('Error getting user info:', error);
-        return null;
-      }
-    }
-
-    // Render friends list
+    // Render main friends list
     function renderFriends(friendData) {
       if (friendData.length === 0) {
         showEmptyState();
         return;
       }
+      
+      friendsList.style.display = 'grid';
+      emptyState.style.display = 'none';
       
       friendsList.innerHTML = friendData.map(friend => `
         <div class="friend-card" onclick="startChat('${friend.id}', '${friend.displayName || friend.userName}')">
@@ -688,8 +673,8 @@
           <div class="friend-info">
             <div class="friend-name">${friend.displayName || friend.userName || 'Unknown User'}</div>
             <div class="friend-status">
-              <div class="status-dot ${friend.lastSeen && (Date.now() - friend.lastSeen.toMillis() < 300000) ? '' : 'offline'}"></div>
-              ${friend.lastSeen && (Date.now() - friend.lastSeen.toMillis() < 300000) ? 'Online' : 'Offline'}
+              <div class="status-dot ${friend.isOnline ? '' : 'offline'}"></div>
+              ${friend.email || 'Friend'}
             </div>
           </div>
           <button class="friend-action" onclick="event.stopPropagation(); startChat('${friend.id}', '${friend.displayName || friend.userName}')" title="Message">
@@ -699,44 +684,60 @@
       `).join('');
     }
 
-    // Show empty state
     function showEmptyState() {
       friendsList.style.display = 'none';
       emptyState.style.display = 'block';
     }
 
-    // Load all users for discovery
-    async function loadAllUsers() {
+    // 2. LOAD ALL COMMUNITY USERS (For Discovery)
+    async function loadCommunityUsers() {
       try {
-        // Get users from community
-        const communitySnapshot = await getDocs(collection(db, 'communityUsers'));
-        const users = [];
+        usersList.innerHTML = '<div style="padding:20px; text-align:center; color:#888;">Loading users...</div>';
         
-        communitySnapshot.forEach((doc) => {
-          if (doc.id !== currentUser.uid && !friends.has(doc.id)) {
-            users.push({ id: doc.id, ...doc.data() });
+        // Fetch all users from public community collection
+        const querySnapshot = await getDocs(collection(db, 'communityUsers'));
+        
+        allCommunityUsers = [];
+        querySnapshot.forEach((doc) => {
+          // Exclude self
+          if (doc.id !== currentUser.uid) {
+            allCommunityUsers.push({ id: doc.id, ...doc.data() });
           }
         });
-        
-        allUsers = users;
-        renderUsers(allUsers);
+
+        filterAndRenderUsers('');
       } catch (error) {
-        console.error('Error loading users:', error);
+        console.error('Error loading community users:', error);
+        usersList.innerHTML = '<div style="padding:20px; text-align:center; color:red;">Failed to load users.</div>';
       }
     }
 
-    // Render users list
-    function renderUsers(users) {
-      if (users.length === 0) {
+    // Filter and Render Users in Bottom Sheet
+    function filterAndRenderUsers(searchTerm) {
+      const term = searchTerm.toLowerCase();
+      
+      // Filter: Match search term AND exclude existing friends
+      const filtered = allCommunityUsers.filter(user => {
+        const matchesSearch = (user.userName || '').toLowerCase().includes(term) || 
+                              (user.email || '').toLowerCase().includes(term);
+        const isAlreadyFriend = friendsSet.has(user.id);
+        
+        return matchesSearch && !isAlreadyFriend;
+      });
+
+      if (filtered.length === 0) {
         usersList.style.display = 'none';
         usersEmptyState.style.display = 'block';
+        if(friendsSet.size > 0 && searchTerm === '') {
+             usersEmptyState.querySelector('.empty-state-text').innerText = "You're friends with everyone here!";
+        }
         return;
       }
       
       usersList.style.display = 'flex';
       usersEmptyState.style.display = 'none';
       
-      usersList.innerHTML = users.map(user => `
+      usersList.innerHTML = filtered.map(user => `
         <div class="user-item">
           <div class="user-avatar">
             ${(user.userName || 'U').charAt(0).toUpperCase()}
@@ -745,27 +746,70 @@
             <div class="user-name">${user.userName || 'Unknown User'}</div>
             <div class="user-email">${user.email || ''}</div>
           </div>
-          <button class="add-friend-btn" onclick="addFriend('${user.id}', '${user.userName}')" title="Add Friend">
-            <span class="material-symbols-rounded">person_add</span>
+          <button class="add-friend-btn" onclick="addFriend(this, '${user.id}', '${user.userName}', '${user.email || ''}')">
+            Add
           </button>
         </div>
       `).join('');
     }
 
-    // Search functionality
+    // 3. ADD FRIEND FUNCTION (No Redirect)
+    window.addFriend = async function(btnElement, userId, userName, userEmail) {
+      try {
+        // UI Feedback
+        const originalText = btnElement.innerText;
+        btnElement.innerText = '...';
+        btnElement.classList.add('loading');
+        btnElement.disabled = true;
+
+        // Data to save
+        const friendData = {
+            displayName: userName,
+            userName: userName,
+            email: userEmail,
+            addedAt: new Date().toISOString(),
+            isOnline: false // Default, logic can be added later
+        };
+
+        // Write to Firestore - This triggers the onSnapshot listener above automatically!
+        await setDoc(doc(db, 'users', currentUser.uid, 'friends', userId), friendData);
+        
+        // Update Button State
+        btnElement.innerText = 'Added';
+        btnElement.classList.remove('loading');
+        btnElement.disabled = true; // Keep disabled so they don't add again
+        
+        // Note: We don't need to manually reload the background list. 
+        // The onSnapshot in initFriendsListener handles it instantly.
+
+      } catch (error) {
+        console.error('Error adding friend:', error);
+        btnElement.innerText = 'Retry';
+        btnElement.classList.remove('loading');
+        btnElement.disabled = false;
+        alert('Failed to add friend.');
+      }
+    };
+
+    // Start chat (redirects to main page with specific intent)
+    window.startChat = function(userId, userName) {
+      sessionStorage.setItem('chatPartner', JSON.stringify({
+        id: userId,
+        name: userName
+      }));
+      window.location.href = 'index.html';
+    };
+
+    // Search functionality in bottom sheet
     searchInput.addEventListener('input', (e) => {
-      const query = e.target.value.toLowerCase();
-      const filtered = allUsers.filter(user => 
-        (user.userName || '').toLowerCase().includes(query) ||
-        (user.email || '').toLowerCase().includes(query)
-      );
-      renderUsers(filtered);
+      filterAndRenderUsers(e.target.value);
     });
 
     // Sheet controls
-    addFriendBtn.addEventListener('click', () => {
+    fabBtn.addEventListener('click', () => {
       sheetOverlay.classList.add('open');
       bottomSheet.classList.add('open');
+      loadCommunityUsers(); // Load users when opening
     });
 
     closeSheet.addEventListener('click', closeBottomSheet);
@@ -775,48 +819,7 @@
       sheetOverlay.classList.remove('open');
       bottomSheet.classList.remove('open');
       searchInput.value = '';
-      renderUsers(allUsers);
     }
-
-    // Add friend (start conversation)
-    window.addFriend = async function(userId, userName) {
-      try {
-        // Create a new conversation
-        const conversationId = `conv_${Date.now()}`;
-        const conversationData = {
-          id: conversationId,
-          title: `Chat with ${userName}`,
-          messages: [],
-          participants: [currentUser.uid, userId],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-        
-        await setDoc(
-          doc(db, 'conversations', currentUser.uid, 'userConversations', conversationId),
-          conversationData
-        );
-        
-        // Close sheet and navigate to chat
-        closeBottomSheet();
-        startChat(conversationId, userName);
-      } catch (error) {
-        console.error('Error adding friend:', error);
-        alert('Failed to add friend. Please try again.');
-      }
-    };
-
-    // Start chat
-    window.startChat = function(userIdOrConvId, userName) {
-      // Store chat partner info in sessionStorage for the chat page
-      sessionStorage.setItem('chatPartner', JSON.stringify({
-        id: userIdOrConvId,
-        name: userName
-      }));
-      
-      // Navigate to main chat
-      window.location.href = 'index.html';
-    };
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
@@ -828,6 +831,10 @@
     // Rain animation background
     const canvas = document.createElement('canvas');
     canvas.id = 'rainCanvas';
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.zIndex = '-1';
     document.body.appendChild(canvas);
     const ctx = canvas.getContext('2d');
     let w, h, drops = [];
