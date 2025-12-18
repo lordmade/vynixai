@@ -156,66 +156,6 @@
       overflow-y: auto;
       padding-top: 8px;
     }
-    /* Shimmer Skeleton */
-    .shimmer {
-      background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-      background-size: 200% 100%;
-      animation: shimmer 1.5s infinite;
-    }
-    @keyframes shimmer {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
-    .skeleton-chat-item {
-      display: flex;
-      align-items: center;
-      padding: 12px 16px;
-      gap: 12px;
-    }
-    .skeleton-avatar {
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: #e0e0e0;
-      flex-shrink: 0;
-    }
-    .skeleton-lines {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .skeleton-line {
-      height: 16px;
-      border-radius: 8px;
-      background: #e0e0e0;
-    }
-    .skeleton-line.short { width: 60%; }
-    .skeleton-line.long { width: 90%; }
-    .skeleton-status-card {
-      background: var(--gray-light);
-      border-radius: 16px;
-      padding: 16px;
-      margin: 0 16px 12px;
-    }
-    .skeleton-status-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    .skeleton-status-avatar {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: #e0e0e0;
-    }
-    .skeleton-status-lines {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
     .chat-item-whatsapp {
       display: flex;
       align-items: center;
@@ -265,7 +205,6 @@
     .chat-info-whatsapp {
       flex: 1;
       min-width: 0;
-      position: relative;
     }
     .chat-header-row {
       display: flex;
@@ -293,21 +232,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .delete-chat-btn {
-      position: absolute;
-      right: 16px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: #ff4444;
-      font-size: 20px;
-      opacity: 0;
-      transition: opacity 0.2s;
-      pointer-events: none;
-    }
-    .chat-item-whatsapp:hover .delete-chat-btn {
-      opacity: 1;
-      pointer-events: all;
-    }
     .chat-view {
       position: absolute;
       top: 0;
@@ -330,7 +254,7 @@
       overflow-y: auto;
       padding: 16px 16px 80px 16px;
       background: var(--gray-light);
-      contain: strict;
+      contain: strict; /* Performance boost */
     }
     .whatsapp-bubble {
       max-width: 70%;
@@ -339,7 +263,7 @@
       word-wrap: break-word;
       font-size: 14px;
       line-height: 1.3;
-      contain: layout style paint;
+      contain: layout style paint; /* Major performance improvement */
     }
     .whatsapp-bubble.own {
       background: var(--bubble-own);
@@ -426,8 +350,11 @@
       cursor: pointer;
       display: none;
     }
-    .chat-view.active #floatingBackBtn {
-      display: block;
+    /* Show floating back button only on desktop (≥768px) when chat is active */
+    @media (min-width: 768px) {
+      .chat-view.active #floatingBackBtn {
+        display: block;
+      }
     }
     .add-friend-fab {
       position: fixed;
@@ -822,8 +749,8 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, push, onValue, update, set, get, query, orderByChild, limitToLast, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
-   
+    import { getDatabase, ref, push, onValue, update, set, get, query, orderByChild, limitToLast, endBefore } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+  
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -837,12 +764,14 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getDatabase(app);
-
     let currentUser = null;
     let activeChatId = null;
     let isPrivateChatMode = false;
     const chatListeners = new Map();
-
+    // Pagination for large chats
+    const MESSAGES_PER_LOAD = 50;
+    let oldestMessageKey = null;
+    let isLoadingMore = false;
     const els = {
       chatsList: document.getElementById('chatsList'),
       statusCards: document.getElementById('statusCards'),
@@ -861,39 +790,18 @@
       mainHeader: document.getElementById('mainHeader'),
     };
 
-    function showShimmerChats() {
-      els.chatsList.innerHTML = '';
-      for (let i = 0; i < 8; i++) {
-        const skeleton = document.createElement('div');
-        skeleton.className = 'skeleton-chat-item shimmer';
-        skeleton.innerHTML = `
-          <div class="skeleton-avatar shimmer"></div>
-          <div class="skeleton-lines">
-            <div class="skeleton-line long shimmer"></div>
-            <div class="skeleton-line short shimmer"></div>
-          </div>
-        `;
-        els.chatsList.appendChild(skeleton);
-      }
-    }
-
-    function showShimmerStatus() {
-      els.statusCards.innerHTML = '';
-      for (let i = 0; i < 5; i++) {
-        const card = document.createElement('div');
-        card.className = 'skeleton-status-card shimmer';
-        card.innerHTML = `
-          <div class="skeleton-status-header">
-            <div class="skeleton-status-avatar shimmer"></div>
-            <div class="skeleton-status-lines">
-              <div class="skeleton-line long shimmer"></div>
-              <div class="skeleton-line short shimmer"></div>
-            </div>
-          </div>
-          <div class="skeleton-line long shimmer" style="height:60px;"></div>
-        `;
-        els.statusCards.appendChild(card);
-      }
+    function closeChatView() {
+      els.mainHeader.classList.remove('hidden');
+      els.tabbar.classList.remove('hidden');
+      els.addFriendFab.classList.remove('hidden');
+      els.chatView.classList.remove('active');
+      isPrivateChatMode = false;
+      activeChatId = null;
+      oldestMessageKey = null;
+      isLoadingMore = false;
+      els.messagesContainer.innerHTML = '';
+      // Clean up listeners if needed
+      els.messagesContainer.removeEventListener('scroll', handleScroll);
     }
 
     function switchTab(tabName) {
@@ -903,16 +811,73 @@
       });
       if (tabName === 'chats') {
         els.swipeContainer.classList.remove('status-active');
-        showShimmerChats();
         loadFriendsChatsRealTime();
       } else {
         els.swipeContainer.classList.add('status-active');
-        showShimmerStatus();
         loadStatusPostsRealTime();
       }
     }
     document.querySelectorAll('.pill-tab').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
     els.addFriendFab.addEventListener('click', openUsersSheet);
+
+    // Back button only works on desktop
+    els.floatingBackBtn.addEventListener('click', (e) => {
+      if (window.matchMedia('(min-width: 768px)').matches) {
+        closeChatView();
+      }
+    });
+
+    // Handle device back button on mobile
+    window.addEventListener('popstate', (e) => {
+      if (isPrivateChatMode && !window.matchMedia('(min-width: 768px)').matches) {
+        e.preventDefault();
+        closeChatView();
+        // Keep the URL clean (optional – prevents adding extra history entries)
+        history.pushState({}, '', window.location.pathname);
+      }
+    });
+
+    // When opening a chat, push a history state on mobile so back button works
+    async function openPrivateChat(chatId) {
+      els.mainHeader.classList.add('hidden');
+      els.tabbar.classList.add('hidden');
+      els.addFriendFab.classList.add('hidden');
+      els.chatView.classList.add('active');
+      isPrivateChatMode = true;
+      activeChatId = chatId;
+      oldestMessageKey = null;
+      isLoadingMore = false;
+      els.messagesContainer.innerHTML = '';
+
+      // Push history state only on mobile
+      if (!window.matchMedia('(min-width: 768px)').matches) {
+        history.pushState({ chatOpen: true }, '', '#chat');
+      }
+
+      // Initial load: latest 50 messages
+      loadMoreMessages();
+      // Listen for new messages
+      const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1));
+      onValue(newMessagesQuery, (snap) => {
+        if (snap.size > 0) {
+          let hasNew = false;
+          snap.forEach((child) => {
+            if (!document.getElementById(child.key)) {
+              hasNew = true;
+              appendWhatsAppMessage(child.val(), child.key);
+            }
+          });
+          if (hasNew) scrollToBottom();
+        }
+      });
+      // Infinite scroll for older messages
+      const handleScroll = () => {
+        if (els.messagesContainer.scrollTop < 100 && !isLoadingMore && oldestMessageKey) {
+          loadMoreMessages();
+        }
+      };
+      els.messagesContainer.addEventListener('scroll', handleScroll);
+    }
 
     async function loadFriendsChatsRealTime() {
       if (!currentUser) return;
@@ -944,18 +909,9 @@
               </div>
               <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
             </div>
-            <span class="material-symbols-rounded delete-chat-btn" data-frienduid="${friendUid}">delete</span>
           `;
-          item.addEventListener('click', (e) => {
-            if (e.target.classList.contains('delete-chat-btn')) {
-              e.stopPropagation();
-              deleteChat(friendUid, item);
-            } else {
-              openPrivateChat(chatId);
-            }
-          });
+          item.addEventListener('click', () => openPrivateChat(chatId));
           els.chatsList.appendChild(item);
-
           if (chatListeners.has(chatId)) chatListeners.get(chatId)();
           const messagesRef = ref(db, `privateChats/${chatId}/messages`);
           const messagesQuery = query(messagesRef, orderByChild('createdAt'), limitToLast(1));
@@ -985,21 +941,6 @@
         }
       });
     }
-
-    async function deleteChat(friendUid, chatItemElement) {
-      if (!confirm('Delete this chat? This will remove it from your list.')) return;
-      const chatId = [currentUser.uid, friendUid].sort().join('_');
-      const myFriendsRef = ref(db, `users/${currentUser.uid}/friends`);
-      const myFriendsSnap = await get(myFriendsRef);
-      const myFriends = myFriendsSnap.val() || [];
-      const updatedFriends = myFriends.filter(uid => uid !== friendUid);
-      await set(myFriendsRef, updatedFriends);
-      // Optionally delete messages
-      await remove(ref(db, `privateChats/${chatId}`));
-      chatItemElement.remove();
-      showToast('Chat deleted');
-    }
-
     function loadStatusPostsRealTime() {
       const statusRef = ref(db, 'statusPosts');
       const statusQuery = query(statusRef, orderByChild('createdAt'), limitToLast(20));
@@ -1050,7 +991,6 @@
         });
       });
     }
-
     window.likeStatus = async (statusId) => {
       const statusRef = ref(db, `statusPosts/${statusId}`);
       const statusSnap = await get(statusRef);
@@ -1064,48 +1004,9 @@
     window.commentStatus = () => showToast('Comment feature coming soon!');
     window.shareStatus = () => showToast('Share feature coming soon!');
 
-    const MESSAGES_PER_LOAD = 50;
-    let oldestMessageKey = null;
-    let isLoadingMore = false;
-
-    async function openPrivateChat(chatId) {
-      els.mainHeader.classList.add('hidden');
-      els.tabbar.classList.add('hidden');
-      els.addFriendFab.classList.add('hidden');
-      els.chatView.classList.add('active');
-      isPrivateChatMode = true;
-      activeChatId = chatId;
-      oldestMessageKey = null;
-      isLoadingMore = false;
-      els.messagesContainer.innerHTML = '';
-
-      loadMoreMessages();
-
-      const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1));
-      onValue(newMessagesQuery, (snap) => {
-        if (snap.size > 0) {
-          let hasNew = false;
-          snap.forEach((child) => {
-            if (!document.getElementById(child.key)) {
-              hasNew = true;
-              appendWhatsAppMessage(child.val(), child.key);
-            }
-          });
-          if (hasNew) scrollToBottom();
-        }
-      });
-
-      els.messagesContainer.addEventListener('scroll', () => {
-        if (els.messagesContainer.scrollTop < 100 && !isLoadingMore && oldestMessageKey) {
-          loadMoreMessages();
-        }
-      });
-    }
-
     async function loadMoreMessages() {
       if (isLoadingMore) return;
       isLoadingMore = true;
-
       let messagesQuery;
       if (oldestMessageKey) {
         messagesQuery = query(
@@ -1121,55 +1022,46 @@
           limitToLast(MESSAGES_PER_LOAD)
         );
       }
-
       const snapshot = await get(messagesQuery);
       if (snapshot.size === 0) {
         isLoadingMore = false;
         return;
       }
-
       const messages = [];
       snapshot.forEach((child) => {
-        messages.unshift({ key: child.key, data: child.val() });
+        messages.unshift({ key: child.key, data: child.val() }); // reverse order for prepending
         oldestMessageKey = child.val().createdAt;
       });
-
       const fragment = document.createDocumentFragment();
       messages.forEach(({ key, data }) => {
         const bubble = createMessageBubble(data, key);
         fragment.appendChild(bubble);
       });
-
       const scrollHeightBefore = els.messagesContainer.scrollHeight;
       els.messagesContainer.prepend(fragment);
       const scrollHeightAfter = els.messagesContainer.scrollHeight;
       els.messagesContainer.scrollTop = scrollHeightAfter - scrollHeightBefore;
-
       isLoadingMore = false;
     }
-
     function createMessageBubble(data, key) {
       const isOwn = data.userId === currentUser.uid;
       const time = new Date(data.createdAt);
       const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const bubble = document.createElement('div');
       bubble.className = `whatsapp-bubble ${isOwn ? 'own' : 'other'}`;
-      bubble.id = key;
+      bubble.id = key; // for detecting duplicates
       bubble.innerHTML = `${escapeHtml(data.text)}<div class="bubble-time">${timeStr}</div>`;
       return bubble;
     }
-
     function appendWhatsAppMessage(data, key) {
       const bubble = createMessageBubble(data, key);
       els.messagesContainer.appendChild(bubble);
     }
-
     async function sendMessage() {
       const text = els.messageInput.value.trim();
       if (!text || !currentUser || !activeChatId) return;
       els.messageInput.value = '';
       els.messageInput.style.height = 'auto';
-
       const messagesRef = ref(db, `privateChats/${activeChatId}/messages`);
       await push(messagesRef, {
         text: text,
@@ -1179,7 +1071,6 @@
       });
       scrollToBottom();
     }
-
     els.messageInput.addEventListener('input', function () {
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 100) + 'px';
@@ -1191,17 +1082,14 @@
       }
     });
     els.sendButton.addEventListener('click', sendMessage);
-
     function scrollToBottom() {
       els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
     }
-
     function escapeHtml(text) {
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
     }
-
     function showToast(message) {
       const toast = document.createElement('div');
       toast.className = 'toast-notification show';
@@ -1209,7 +1097,6 @@
       document.body.appendChild(toast);
       setTimeout(() => toast.remove(), 3000);
     }
-
     els.addStatusBtn.addEventListener('click', () => els.statusComposer.classList.toggle('open'));
     els.statusPostBtn.addEventListener('click', async () => {
       const content = els.statusInput.value.trim();
@@ -1226,7 +1113,6 @@
       els.statusComposer.classList.remove('open');
       showToast('Status posted!');
     });
-
     async function openUsersSheet() {
       const sheet = document.createElement('div');
       sheet.className = 'users-sheet open';
@@ -1277,7 +1163,6 @@
         usersList.innerHTML = `<div style="text-align:center;padding:40px;color:var(--gray-mid);"><span class="material-symbols-rounded" style="font-size:48px;">group</span><p>No other users found</p><p style="font-size:14px;margin-top:8px;">Invite friends to join!</p></div>`;
       }
     }
-
     async function addFriend(friendUid, btn) {
       if (friendUid === currentUser.uid) return;
       const myRef = ref(db, `users/${currentUser.uid}/friends`);
@@ -1291,7 +1176,6 @@
       btn.disabled = true;
       showToast('Friend added successfully!');
     }
-
     let isSignUp = false;
     document.getElementById('authSwitchBtn').addEventListener('click', () => {
       isSignUp = !isSignUp;
@@ -1323,7 +1207,6 @@
         showToast(e.message || 'Authentication failed');
       }
     });
-
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (!user) {
@@ -1333,7 +1216,6 @@
         startHeartbeat();
       }
     });
-
     function startHeartbeat() {
       const update = async () => {
         if (currentUser) await update(ref(db, `users/${currentUser.uid}`), { lastSeen: Date.now() });
@@ -1341,7 +1223,6 @@
       update();
       setInterval(update, 60000);
     }
-
     switchTab('chats');
   </script>
 </body>
