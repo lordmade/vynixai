@@ -825,7 +825,7 @@
       transform: translateY(100%);
     }
 
-    /* Auth Overlay (missing styles added) */
+    /* Auth Overlay */
     .auth-overlay {
       position: fixed;
       inset: 0;
@@ -910,7 +910,7 @@
       cursor: pointer;
     }
 
-    /* Status Composer (missing styles) */
+    /* Status Composer */
     .status-composer {
       background: white;
       border-radius: 16px;
@@ -1104,10 +1104,8 @@
       encryptMessage(message, sessionKey) {
         const aesKey = CryptoJS.lib.WordArray.random(256/8).toString();
         const iv = CryptoJS.lib.WordArray.random(128/8);
-
         const encrypted = CryptoJS.AES.encrypt(message, aesKey, { iv: iv }).toString();
         const encryptedAesKey = CryptoJS.AES.encrypt(aesKey, sessionKey).toString();
-
         return {
           encrypted: encrypted,
           key: encryptedAesKey,
@@ -1118,11 +1116,9 @@
         try {
           const aesKey = CryptoJS.AES.decrypt(encryptedData.key, sessionKey).toString(CryptoJS.enc.Utf8);
           if (!aesKey) throw new Error('Failed to decrypt AES key');
-
           const decrypted = CryptoJS.AES.decrypt(encryptedData.encrypted, aesKey, {
             iv: CryptoJS.enc.Hex.parse(encryptedData.iv)
           }).toString(CryptoJS.enc.Utf8);
-
           return decrypted || '⚠️ Decryption failed';
         } catch (e) {
           return '⚠️ Encrypted message';
@@ -1147,6 +1143,7 @@
     let unreadCounts = { chats: 0, private: {} };
     let userStatusMap = new Map();
     let isPrivateChatMode = false;
+    let friendsSnapshotUnsub = null; // Real-time listener for friends list
     // DOM Elements
     const els = {
       chatsList: document.getElementById('chatsList'),
@@ -1208,7 +1205,6 @@
         const myRef = doc(db, 'users', currentUser.uid);
         const mySnap = await getDoc(myRef);
         const myFriends = mySnap.data()?.friends || [];
-        // Get all authenticated users
         const usersQ = query(collection(db, 'users'));
         const snapshot = await getDocs(usersQ);
         els.usersList.innerHTML = '';
@@ -1250,11 +1246,12 @@
           `;
         }
       } catch (error) {
+        console.error('Error loading users:', error);
         els.usersList.innerHTML = `
           <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
             <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px;">error</span>
             <p>Failed to load users</p>
-            <p style="font-size: 14px; margin-top: 8px;">Please try again</p>
+            <p style="font-size: 14px; margin-top: 8px;">Check console for details</p>
           </div>
         `;
       }
@@ -1263,22 +1260,17 @@
       try {
         const myRef = doc(db, 'users', currentUser.uid);
         const friendRef = doc(db, 'users', friendUid);
+        // Use a transaction-like approach with separate updates
         await updateDoc(myRef, { friends: arrayUnion(friendUid) });
         await updateDoc(friendRef, { friends: arrayUnion(currentUser.uid) });
         btn.textContent = 'Added';
         btn.classList.add('added');
         btn.disabled = true;
         showToast('Friend added successfully!');
-
-        // Reload chats list to show new friend
-        loadFriendsChats();
-
-        // Close the sheet after adding
-        setTimeout(() => {
-          els.usersSheet.classList.remove('open');
-        }, 1000);
+        // No reload needed - real-time listener will update the list
       } catch (error) {
-        showToast('Failed to add friend');
+        console.error('Add friend error:', error);
+        showToast('Failed to add friend - check console');
       }
     }
     // Close sheet handlers
@@ -1297,7 +1289,7 @@
       isPrivateChatMode = false;
       activeChatId = null;
       stopAllListeners();
-      loadFriendsChats();
+      loadFriendsChatsRealTime(); // Now real-time
     }
     function showStatusList() {
       els.chatView.classList.remove('active');
@@ -1307,112 +1299,103 @@
       activeChatId = null;
       loadStatusPosts();
     }
-    // Load Friends for Chats List - WhatsApp Style
-    async function loadFriendsChats() {
-      els.chatsList.innerHTML = '';
+    // Real-time friends list loader (fixes the "not appearing" issue)
+    function loadFriendsChatsRealTime() {
+      if (friendsSnapshotUnsub) friendsSnapshotUnsub(); // Clean previous
       const userRef = doc(db, 'users', currentUser.uid);
-      const userSnap = await getDoc(userRef);
-      const friends = userSnap.data()?.friends || [];
-      if (friends.length === 0) {
-        els.chatsList.innerHTML = `
-          <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
-            <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px;">group_add</span>
-            <p>No friends yet</p>
-            <p style="font-size: 14px; margin-top: 8px;">Tap the + button to add friends and start chatting</p>
-          </div>
-        `;
-        return;
-      }
-      setupOnlineStatusListener();
-      for (const friendUid of friends) {
-        const friendRef = doc(db, 'users', friendUid);
-        const friendSnap = await getDoc(friendRef);
-        if (!friendSnap.exists()) continue;
-        const friend = friendSnap.data();
-        const chatId = [currentUser.uid, friendUid].sort().join('_');
-        const isOnline = userStatusMap.get(friendUid) || false;
-        const chatItem = document.createElement('div');
-        chatItem.className = 'chat-item-whatsapp';
-        chatItem.innerHTML = `
-          <div class="whatsapp-avatar ${isOnline ? 'online' : ''}">
-            ${friend.displayName.charAt(0).toUpperCase()}
-          </div>
-          <div class="chat-info-whatsapp">
-            <div class="chat-header-row">
-              <div class="chat-name-whatsapp">${friend.displayName}</div>
-              <div class="chat-time-whatsapp" id="time-${chatId}"></div>
+      friendsSnapshotUnsub = onSnapshot(userRef, async (docSnap) => {
+        if (!docSnap.exists()) return;
+        const friends = docSnap.data()?.friends || [];
+        els.chatsList.innerHTML = '';
+        if (friends.length === 0) {
+          els.chatsList.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
+              <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px;">group_add</span>
+              <p>No friends yet</p>
+              <p style="font-size: 14px; margin-top: 8px;">Tap the + button to add friends and start chatting</p>
             </div>
-            <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
-          </div>
-          <div class="unread-dot" id="unread-${chatId}" style="display: none;"></div>
-        `;
-
-        // Add click handler to open chat
-        chatItem.addEventListener('click', () => openPrivateChat(chatId, {
-          uid: friendUid,
-          displayName: friend.displayName,
-          publicKey: friend.publicKey
-        }));
-        els.chatsList.appendChild(chatItem);
-        // Real-time last message for preview
-        const messagesQ = query(
-          collection(db, 'privateChats', chatId, 'messages'),
-          orderBy('createdAt', 'desc'),
-          limit(1)
-        );
-
-        onSnapshot(messagesQ, (snapshot) => {
-          const previewEl = document.getElementById(`preview-${chatId}`);
-          const timeEl = document.getElementById(`time-${chatId}`);
-          const unreadEl = document.getElementById(`unread-${chatId}`);
-
-          if (snapshot.empty) {
-            previewEl.textContent = 'Tap to start chatting';
-            timeEl.textContent = '';
-            unreadEl.style.display = 'none';
-            return;
-          }
-
-          const lastMsg = snapshot.docs[0].data();
-          const isOwn = lastMsg.userId === currentUser.uid;
-
-          // Decrypt message for preview
-          const sessionKey = e2eeManager.sessionKeys.get(chatId) || 'fallback-key';
-          const decrypted = e2eeManager.decryptMessage({
-            encrypted: lastMsg.text.encrypted,
-            key: lastMsg.text.key,
-            iv: lastMsg.text.iv
-          }, sessionKey);
-
-          const shortText = decrypted.length > 30 ? decrypted.slice(0, 27) + '...' : decrypted;
-          previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
-
-          if (lastMsg.createdAt) {
-            const time = new Date(lastMsg.createdAt.toDate());
-            const now = new Date();
-            const diffMs = now - time;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-
-            let timeStr;
-            if (diffMins < 1) timeStr = 'now';
-            else if (diffMins < 60) timeStr = `${diffMins}m`;
-            else if (diffHours < 24) timeStr = `${diffHours}h`;
-            else if (diffDays < 7) timeStr = `${diffDays}d`;
-            else timeStr = time.toLocaleDateString();
-
-            timeEl.textContent = timeStr;
-          }
-
-          // Show unread indicator if message is not from current user
-          if (!isOwn && lastMsg.userId !== currentUser.uid) {
-            unreadEl.style.display = 'block';
-          } else {
-            unreadEl.style.display = 'none';
-          }
-        });
-      }
+          `;
+          return;
+        }
+        // Load each friend and create chat item
+        for (const friendUid of friends) {
+          const friendRef = doc(db, 'users', friendUid);
+          const friendSnap = await getDoc(friendRef);
+          if (!friendSnap.exists()) continue;
+          const friend = friendSnap.data();
+          const chatId = [currentUser.uid, friendUid].sort().join('_');
+          const isOnline = userStatusMap.get(friendUid) || false;
+          const chatItem = document.createElement('div');
+          chatItem.className = 'chat-item-whatsapp';
+          chatItem.innerHTML = `
+            <div class="whatsapp-avatar ${isOnline ? 'online' : ''}">
+              ${friend.displayName.charAt(0).toUpperCase()}
+            </div>
+            <div class="chat-info-whatsapp">
+              <div class="chat-header-row">
+                <div class="chat-name-whatsapp">${friend.displayName}</div>
+                <div class="chat-time-whatsapp" id="time-${chatId}"></div>
+              </div>
+              <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
+            </div>
+            <div class="unread-dot" id="unread-${chatId}" style="display: none;"></div>
+          `;
+          chatItem.addEventListener('click', () => openPrivateChat(chatId, {
+            uid: friendUid,
+            displayName: friend.displayName,
+            publicKey: friend.publicKey
+          }));
+          els.chatsList.appendChild(chatItem);
+          // Last message preview listener
+          const messagesQ = query(
+            collection(db, 'privateChats', chatId, 'messages'),
+            orderBy('createdAt', 'desc'),
+            limit(1)
+          );
+          onSnapshot(messagesQ, (snapshot) => {
+            const previewEl = document.getElementById(`preview-${chatId}`);
+            const timeEl = document.getElementById(`time-${chatId}`);
+            const unreadEl = document.getElementById(`unread-${chatId}`);
+            if (snapshot.empty) {
+              previewEl.textContent = 'Tap to start chatting';
+              timeEl.textContent = '';
+              unreadEl.style.display = 'none';
+              return;
+            }
+            const lastMsg = snapshot.docs[0].data();
+            const isOwn = lastMsg.userId === currentUser.uid;
+            const sessionKey = e2eeManager.sessionKeys.get(chatId) || 'fallback-key';
+            const decrypted = e2eeManager.decryptMessage({
+              encrypted: lastMsg.text.encrypted,
+              key: lastMsg.text.key,
+              iv: lastMsg.text.iv
+            }, sessionKey);
+            const shortText = decrypted.length > 30 ? decrypted.slice(0, 27) + '...' : decrypted;
+            previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
+            if (lastMsg.createdAt) {
+              const time = new Date(lastMsg.createdAt.toDate());
+              const now = new Date();
+              const diffMs = now - time;
+              const diffMins = Math.floor(diffMs / 60000);
+              const diffHours = Math.floor(diffMs / 3600000);
+              const diffDays = Math.floor(diffMs / 86400000);
+              let timeStr;
+              if (diffMins < 1) timeStr = 'now';
+              else if (diffMins < 60) timeStr = `${diffMins}m`;
+              else if (diffHours < 24) timeStr = `${diffHours}h`;
+              else if (diffDays < 7) timeStr = `${diffDays}d`;
+              else timeStr = time.toLocaleDateString();
+              timeEl.textContent = timeStr;
+            }
+            if (!isOwn && lastMsg.userId !== currentUser.uid) {
+              unreadEl.style.display = 'block';
+            } else {
+              unreadEl.style.display = 'none';
+            }
+          });
+        }
+      });
+      unsubscribes.push(friendsSnapshotUnsub);
     }
     function setupOnlineStatusListener() {
       const usersQ = query(collection(db, 'users'));
@@ -1421,16 +1404,11 @@
           const data = doc.data();
           const isOnline = data.lastSeen && (Date.now() - data.lastSeen.toMillis() < 120000);
           const wasOnline = userStatusMap.get(doc.id);
-
-          // Show toast if user just came online
           if (isOnline && !wasOnline && doc.id !== currentUser.uid) {
             showOnlineToast(data.displayName);
           }
-
           userStatusMap.set(doc.id, isOnline);
-
-          // Update online indicator
-          const avatar = document.querySelector(`[onclick*="${doc.id}"]`)?.closest('.chat-item-whatsapp')?.querySelector('.whatsapp-avatar');
+          const avatar = document.querySelector(`.chat-item-whatsapp .whatsapp-avatar`)?.closest('.chat-item-whatsapp')?.querySelector('.whatsapp-avatar');
           if (avatar) {
             avatar.classList.toggle('online', isOnline);
           }
@@ -1445,41 +1423,32 @@
     }
     // Open a chat with E2EE - WhatsApp Style
     async function openPrivateChat(chatId, partner) {
-      // Hide tabbar for private chats (WhatsApp style)
       els.tabbar.classList.add('hidden');
       els.chatView.classList.add('active');
       els.e2eeIndicator.classList.add('visible');
       isPrivateChatMode = true;
-
       stopAllListeners();
       activeChatId = chatId;
       activeChatPartner = partner;
       els.messagesContainer.innerHTML = '';
-
-      // Set chat header
       els.chatHeaderAvatar.textContent = partner.displayName.charAt(0).toUpperCase();
       els.chatHeaderName.textContent = partner.displayName;
-
-      // Generate session key for E2EE
       const userRef = doc(db, 'users', currentUser.uid);
       const userSnap = await getDoc(userRef);
       const userPrivateKey = userSnap.data()?.privateKey || 'fallback-private';
       const partnerPublicKey = partner.publicKey || 'fallback-public';
-
       const sessionKey = e2eeManager.generateSessionKey(
         currentUser.uid,
         partner.uid,
         userPrivateKey,
         partnerPublicKey
       );
-
       isInitialLoad = true;
       const messagesQuery = query(
         collection(db, 'privateChats', chatId, 'messages'),
         orderBy('createdAt', 'asc'),
         limit(50)
       );
-
       const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
         snapshot.docChanges().forEach(change => {
           if (change.type === 'added') {
@@ -1505,18 +1474,16 @@
       els.e2eeIndicator.classList.remove('visible');
       isPrivateChatMode = false;
       stopAllListeners();
+      showChatsList(); // Refresh chats list
     });
     function appendWhatsAppMessage(doc, sessionKey) {
       const data = doc.data();
       const isOwn = data.userId === currentUser.uid;
-
-      // Decrypt message
       const decryptedText = e2eeManager.decryptMessage({
         encrypted: data.text.encrypted,
         key: data.text.key,
         iv: data.text.iv
       }, sessionKey);
-
       const time = data.createdAt ? new Date(data.createdAt.toDate()) : new Date();
       const timeStr = time.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
       const bubble = document.createElement('div');
@@ -1532,7 +1499,7 @@
       const text = els.messageInput.value.trim();
       if (!text || !currentUser || !activeChatId) return;
       els.messageInput.value = '';
-      els.messageInput.style.height = 'auto'; // Reset height
+      els.messageInput.style.height = 'auto';
       const sessionKey = e2eeManager.sessionKeys.get(activeChatId) || 'fallback-key';
       const encrypted = e2eeManager.encryptMessage(text, sessionKey);
       await addDoc(collection(db, 'privateChats', activeChatId, 'messages'), {
@@ -1577,13 +1544,13 @@
           userId: currentUser.uid,
           userName: currentUser.displayName || 'Anonymous',
           createdAt: serverTimestamp(),
-          likes: 0,
+          likes: [],
           comments: []
         });
         els.statusInput.value = '';
         showToast('Status posted!');
-        loadStatusPosts();
       } catch (error) {
+        console.error('Post status error:', error);
         showToast('Failed to post status');
       }
     });
@@ -1595,7 +1562,6 @@
       );
       onSnapshot(statusQuery, (snapshot) => {
         els.statusCards.innerHTML = '';
-
         if (snapshot.empty) {
           els.statusCards.innerHTML = `
             <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
@@ -1610,10 +1576,8 @@
           const data = doc.data();
           const card = document.createElement('div');
           card.className = 'status-card';
-
           const time = data.createdAt ? new Date(data.createdAt.toDate()) : new Date();
           const timeAgo = getTimeAgo(time);
-
           card.innerHTML = `
             <div class="status-card-header">
               <div class="status-avatar">
@@ -1628,7 +1592,7 @@
             <div class="status-actions">
               <div class="status-action" onclick="likeStatus('${doc.id}')">
                 <span class="material-symbols-rounded" style="font-size: 18px;">favorite</span>
-                <span>${data.likes || 0}</span>
+                <span>${data.likes?.length || 0}</span>
               </div>
               <div class="status-action" onclick="commentStatus('${doc.id}')">
                 <span class="material-symbols-rounded" style="font-size: 18px;">comment</span>
@@ -1640,7 +1604,6 @@
               </div>
             </div>
           `;
-
           els.statusCards.appendChild(card);
         });
       });
@@ -1651,7 +1614,6 @@
       const diffMins = Math.floor(diffMs / 60000);
       const diffHours = Math.floor(diffMs / 3600000);
       const diffDays = Math.floor(diffMs / 86400000);
-
       if (diffMins < 1) return 'just now';
       if (diffMins < 60) return `${diffMins}m ago`;
       if (diffHours < 24) return `${diffHours}h ago`;
@@ -1684,7 +1646,6 @@
       const email = document.getElementById('authEmail').value.trim();
       const pass = document.getElementById('authPass').value;
       if (!email || !pass) return showToast('Please fill in all fields');
-
       try {
         let cred;
         if (isSignUp) {
@@ -1693,11 +1654,7 @@
         } else {
           cred = await signInWithEmailAndPassword(auth, email, pass);
         }
-
-        // Generate E2EE key pair for user
         const keyPair = await e2eeManager.generateKeyPair(cred.user.uid);
-
-        // Store public key in Firestore
         const userRef = doc(db, 'users', cred.user.uid);
         await setDoc(userRef, {
           displayName: cred.user.displayName,
@@ -1706,7 +1663,6 @@
           friends: [],
           publicKey: keyPair.publicKey
         }, { merge: true });
-
         els.authOverlay.classList.remove('open');
         showToast(isSignUp ? 'Account created successfully!' : 'Welcome back!');
       } catch (e) {
@@ -1721,6 +1677,7 @@
       } else {
         switchTab('chats');
         startHeartbeat();
+        setupOnlineStatusListener();
       }
     });
     // Heartbeat for online status
@@ -1734,8 +1691,16 @@
       update();
       setInterval(update, 60000);
     }
+    function stopAllListeners() {
+      unsubscribes.forEach(unsub => unsub());
+      unsubscribes = [];
+      if (friendsSnapshotUnsub) {
+        friendsSnapshotUnsub();
+        friendsSnapshotUnsub = null;
+      }
+    }
     // Initialize
     switchTab('chats');
   </script>
 </body>
-</html>
+  </html>
