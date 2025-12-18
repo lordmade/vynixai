@@ -258,6 +258,23 @@
       color: #4caf50;
       font-style: italic;
     }
+    .unread-count {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      background: #4caf50;
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      min-width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 6px;
+      z-index: 3;
+    }
     .delete-chat-btn {
       position: absolute;
       top: 50%;
@@ -897,6 +914,7 @@
     let isLoadingMore = false;
     let allChatItems = [];
     let lastNotifiedMessageKey = {};
+    let lastReadTimestamps = {}; // chatId -> last read timestamp
     const els = {
       chatsList: document.getElementById('chatsList'),
       statusCards: document.getElementById('statusCards'),
@@ -1025,6 +1043,15 @@
         history.pushState({ chatOpen: true }, '', '#chat');
       }
 
+      // Mark all messages as read when opening chat
+      const lastMsgSnap = await get(query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
+      if (lastMsgSnap.size > 0) {
+        let lastTimestamp = 0;
+        lastMsgSnap.forEach(child => lastTimestamp = child.val().createdAt);
+        lastReadTimestamps[chatId] = lastTimestamp;
+        updateUnreadCount(chatId, 0);
+      }
+
       loadMoreMessages();
 
       const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(20));
@@ -1099,7 +1126,6 @@
         userName: currentUser.displayName || 'Anon',
         createdAt: Date.now(),
       });
-      // Move this chat to top when sending message
       const card = document.getElementById(`friend-card-${activeChatId.split('_').find(uid => uid !== currentUser.uid)}`);
       if (card) {
         els.chatsList.prepend(card);
@@ -1119,7 +1145,27 @@
       const card = document.getElementById(`friend-card-${friendUid}`);
       if (card) card.remove();
       allChatItems = allChatItems.filter(item => item.id !== `friend-card-${friendUid}`);
+      delete lastReadTimestamps[chatId];
       showToast('Chat deleted');
+    }
+
+    function updateUnreadCount(chatId, count) {
+      const unreadEl = document.getElementById(`unread-${chatId}`);
+      if (count > 0) {
+        if (!unreadEl) {
+          const newBadge = document.createElement('div');
+          newBadge.id = `unread-${chatId}`;
+          newBadge.className = 'unread-count';
+          newBadge.textContent = count > 99 ? '99+' : count;
+          const card = document.querySelector(`[data-chat-id="${chatId}"]`);
+          if (card) card.appendChild(newBadge);
+        } else {
+          unreadEl.textContent = count > 99 ? '99+' : count;
+          unreadEl.style.display = 'flex';
+        }
+      } else {
+        if (unreadEl) unreadEl.style.display = 'none';
+      }
     }
 
     function showLoadingShimmer() {
@@ -1192,21 +1238,35 @@
           });
 
           const messagesRef = ref(db, `privateChats/${chatId}/messages`);
-          const messagesQuery = query(messagesRef, orderByChild('createdAt'), limitToLast(1));
+          const messagesQuery = query(messagesRef, orderByChild('createdAt'));
           const unsubscribeMsg = onValue(messagesQuery, (snap) => {
             const previewEl = document.getElementById(`preview-${chatId}`);
             const timeEl = document.getElementById(`time-${chatId}`);
             if (!previewEl || !timeEl) return;
 
+            let unreadCount = 0;
             let lastTimestamp = 0;
+            let lastMsgText = 'Tap to start chatting';
+
             if (snap.size > 0) {
-              let lastMsg;
-              snap.forEach((child) => lastMsg = child.val());
-              const isOwn = lastMsg.userId === currentUser.uid;
-              const shortText = lastMsg.text.length > 30 ? lastMsg.text.slice(0, 27) + '...' : lastMsg.text;
-              previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
-              previewEl.classList.remove('typing-indicator');
-              lastTimestamp = lastMsg.createdAt;
+              snap.forEach((child) => {
+                const msg = child.val();
+                if (msg.createdAt > (lastReadTimestamps[chatId] || 0) && msg.userId !== currentUser.uid) {
+                  unreadCount++;
+                }
+                if (msg.createdAt > lastTimestamp) {
+                  lastTimestamp = msg.createdAt;
+                  const isOwn = msg.userId === currentUser.uid;
+                  const shortText = msg.text.length > 30 ? msg.text.slice(0, 27) + '...' : msg.text;
+                  lastMsgText = isOwn ? `You: ${shortText}` : shortText;
+                }
+              });
+            }
+
+            previewEl.textContent = lastMsgText;
+            previewEl.classList.remove('typing-indicator');
+
+            if (lastTimestamp > 0) {
               const time = new Date(lastTimestamp);
               const now = new Date();
               const diffMs = now - time;
@@ -1216,12 +1276,12 @@
               let timeStr = diffMins < 1 ? 'now' : diffMins < 60 ? `${diffMins}m` : diffHours < 24 ? `${diffHours}h` : diffDays < 7 ? `${diffDays}d` : time.toLocaleDateString();
               timeEl.textContent = timeStr;
             } else {
-              previewEl.textContent = 'Tap to start chatting';
-              previewEl.classList.remove('typing-indicator');
               timeEl.textContent = '';
             }
 
-            // Move card to top on new message
+            updateUnreadCount(chatId, unreadCount);
+
+            // Move to top if new message
             if (lastTimestamp > 0) {
               els.chatsList.prepend(item);
             }
@@ -1238,11 +1298,10 @@
           });
 
           chatListeners.set(chatId, unsubscribeMsg);
-          chatCards.push({ card: item, timestamp: 0 }); // initial timestamp 0
+          chatCards.push({ card: item, timestamp: lastReadTimestamps[chatId] || 0 });
         }
 
-        // Initial sort (oldest first)
-        chatCards.sort((a, b) => a.timestamp - b.timestamp);
+        chatCards.sort((a, b) => b.timestamp - a.timestamp);
         chatCards.forEach(({ card }) => {
           els.chatsList.appendChild(card);
           allChatItems.push(card);
@@ -1273,7 +1332,7 @@
         }
         const posts = [];
         snapshot.forEach((child) => posts.push({ id: child.key, ...child.val() }));
-        posts.sort((a, b) => b.createdAt - a.createdAt); // newest first
+        posts.sort((a, b) => b.createdAt - a.createdAt);
         posts.forEach((post) => {
           const card = document.createElement('div');
           card.className = 'status-card';
