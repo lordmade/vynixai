@@ -761,42 +761,47 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    /* ---------- E2EE Manager - FINAL WORKING VERSION ---------- */
+   
+      /* ---------- FIXED E2EE Manager ---------- */
     class E2EEManager {
       constructor() {
-        this.sessionKeys = new Map(); // chatId -> WordArray session key
+        this.sessionKeys = new Map();
       }
 
-      // Generate 256-bit keys as hex strings
       generateKeyPair() {
         const publicKey = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);
         const privateKey = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);
         return { publicKey, privateKey };
       }
 
-      // Derive symmetric session key from private + partner's public (same on both sides)
-      getSessionKey(chatId, myPrivateKeyHex, partnerPublicKeyHex) {
+      getSharedSecret(myPrivateKeyHex, partnerPublicKeyHex) {
+        const shared = CryptoJS.SHA256(myPrivateKeyHex + partnerPublicKeyHex);
+        return shared.toString(CryptoJS.enc.Hex);
+      }
+
+      getSessionKey(chatId, myPrivateKey, partnerPublicKey) {
         if (this.sessionKeys.has(chatId)) {
           return this.sessionKeys.get(chatId);
         }
-        const shared = CryptoJS.SHA256(myPrivateKeyHex + partnerPublicKeyHex);
-        const sessionKeyHex = CryptoJS.SHA256(shared.toString(CryptoJS.enc.Hex) + chatId).toString(CryptoJS.enc.Hex);
+        const sharedSecret = this.getSharedSecret(myPrivateKey, partnerPublicKey);
+        const sessionKeyHex = CryptoJS.SHA256(sharedSecret + chatId).toString(CryptoJS.enc.Hex);
         const sessionKey = CryptoJS.enc.Hex.parse(sessionKeyHex);
         this.sessionKeys.set(chatId, sessionKey);
         return sessionKey;
       }
 
       encryptMessage(message, sessionKey) {
-        const aesKey = CryptoJS.lib.WordArray.random(32); // 256-bit
-        const iv = CryptoJS.lib.WordArray.random(16); // 128-bit
-        const encryptedMsg = CryptoJS.AES.encrypt(message, aesKey, { iv: iv }).toString();
-
-        // Encrypt the AES key with the session key (ECB mode - no IV needed)
+        const aesKey = CryptoJS.lib.WordArray.random(32);
+        const iv = CryptoJS.lib.WordArray.random(16);
+        const encryptedMsg = CryptoJS.AES.encrypt(message, aesKey, { 
+          iv: iv,
+          mode: CryptoJS.mode.CBC,
+          padding: CryptoJS.pad.Pkcs7
+        }).toString();
         const encryptedAesKey = CryptoJS.AES.encrypt(aesKey.toString(CryptoJS.enc.Hex), sessionKey, {
           mode: CryptoJS.mode.ECB,
           padding: CryptoJS.pad.Pkcs7
         }).toString();
-
         return {
           encrypted: encryptedMsg,
           key: encryptedAesKey,
@@ -806,23 +811,22 @@
 
       decryptMessage(encryptedData, sessionKey) {
         try {
-          // Decrypt the AES key using session key
           const aesKeyHex = CryptoJS.AES.decrypt(encryptedData.key, sessionKey, {
             mode: CryptoJS.mode.ECB,
             padding: CryptoJS.pad.Pkcs7
           }).toString(CryptoJS.enc.Utf8);
-
           if (!aesKeyHex || aesKeyHex.length !== 64) {
-            return '⚠️ Decryption failed (invalid key)';
+            return '⚠️ Decryption failed';
           }
-
           const aesKey = CryptoJS.enc.Hex.parse(aesKeyHex);
           const iv = CryptoJS.enc.Hex.parse(encryptedData.iv);
-
-          const decrypted = CryptoJS.AES.decrypt(encryptedData.encrypted, aesKey, { iv: iv }).toString(CryptoJS.enc.Utf8);
+          const decrypted = CryptoJS.AES.decrypt(encryptedData.encrypted, aesKey, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+          }).toString(CryptoJS.enc.Utf8);
           return decrypted || '⚠️ Empty message';
         } catch (e) {
-          console.error('Decryption error:', e);
           return '⚠️ Encrypted message';
         }
       }
