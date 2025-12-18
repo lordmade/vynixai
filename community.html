@@ -321,6 +321,57 @@
       animation: pulse 1.5s infinite;
     }
 
+    /* Shimmer Skeleton */
+    .shimmer {
+      background: #e0e0e0;
+      border-radius: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .shimmer::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -150%;
+      width: 50%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+      animation: shimmer 1.5s infinite;
+    }
+
+    @keyframes shimmer {
+      0% { left: -150%; }
+      100% { left: 150%; }
+    }
+
+    .skeleton-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+    }
+
+    .skeleton-avatar {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      margin-right: 12px;
+      flex-shrink: 0;
+    }
+
+    .skeleton-lines {
+      flex: 1;
+    }
+
+    .skeleton-line {
+      height: 16px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+
+    .skeleton-line.short { width: 120px; }
+    .skeleton-line.long { width: 200px; }
+
     /* Add Friend Floating Button */
     .add-friend-fab {
       position: fixed;
@@ -959,7 +1010,7 @@
       <!-- Chats List View with Friends -->
       <div class="chats-list-view">
         <div id="chatsList" class="chats-list">
-          <!-- Friends/Chat items will be generated here -->
+          <!-- Skeleton will be injected here -->
         </div>
       </div>
       <!-- Status View -->
@@ -1140,10 +1191,10 @@
     let typingTimeout;
     let isInitialLoad = true;
     let unsubscribes = [];
-    let unreadCounts = { chats: 0, private: {} };
     let userStatusMap = new Map();
     let isPrivateChatMode = false;
-    let friendsSnapshotUnsub = null; // Real-time listener for friends list
+    let friendsListener = null;
+    let statusListener = null;
     // DOM Elements
     const els = {
       chatsList: document.getElementById('chatsList'),
@@ -1260,17 +1311,15 @@
       try {
         const myRef = doc(db, 'users', currentUser.uid);
         const friendRef = doc(db, 'users', friendUid);
-        // Use a transaction-like approach with separate updates
         await updateDoc(myRef, { friends: arrayUnion(friendUid) });
         await updateDoc(friendRef, { friends: arrayUnion(currentUser.uid) });
         btn.textContent = 'Added';
         btn.classList.add('added');
         btn.disabled = true;
         showToast('Friend added successfully!');
-        // No reload needed - real-time listener will update the list
       } catch (error) {
         console.error('Add friend error:', error);
-        showToast('Failed to add friend - check console');
+        showToast('Failed to add friend');
       }
     }
     // Close sheet handlers
@@ -1289,7 +1338,7 @@
       isPrivateChatMode = false;
       activeChatId = null;
       stopAllListeners();
-      loadFriendsChatsRealTime(); // Now real-time
+      loadFriendsChatsRealTime(); // Real-time, no reload
     }
     function showStatusList() {
       els.chatView.classList.remove('active');
@@ -1297,16 +1346,34 @@
       els.e2eeIndicator.classList.remove('visible');
       isPrivateChatMode = false;
       activeChatId = null;
-      loadStatusPosts();
+      stopAllListeners();
+      loadStatusPostsRealTime(); // Real-time
     }
-    // Real-time friends list loader (fixes the "not appearing" issue)
+    // Shimmer skeleton for chats list
+    function renderChatsSkeleton() {
+      els.chatsList.innerHTML = '';
+      for (let i = 0; i < 8; i++) {
+        const item = document.createElement('div');
+        item.className = 'skeleton-item';
+        item.innerHTML = `
+          <div class="skeleton-avatar shimmer"></div>
+          <div class="skeleton-lines">
+            <div class="skeleton-line short shimmer"></div>
+            <div class="skeleton-line long shimmer"></div>
+          </div>
+        `;
+        els.chatsList.appendChild(item);
+      }
+    }
+    // Real-time friends list loader (no duplicate, no reload)
     function loadFriendsChatsRealTime() {
-      if (friendsSnapshotUnsub) friendsSnapshotUnsub(); // Clean previous
+      renderChatsSkeleton();
+      if (friendsListener) friendsListener();
       const userRef = doc(db, 'users', currentUser.uid);
-      friendsSnapshotUnsub = onSnapshot(userRef, async (docSnap) => {
+      friendsListener = onSnapshot(userRef, async (docSnap) => {
         if (!docSnap.exists()) return;
-        const friends = docSnap.data()?.friends || [];
-        els.chatsList.innerHTML = '';
+        const data = docSnap.data();
+        const friends = data.friends || [];
         if (friends.length === 0) {
           els.chatsList.innerHTML = `
             <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
@@ -1317,7 +1384,8 @@
           `;
           return;
         }
-        // Load each friend and create chat item
+        // Clear and rebuild list to avoid duplicates
+        els.chatsList.innerHTML = '';
         for (const friendUid of friends) {
           const friendRef = doc(db, 'users', friendUid);
           const friendSnap = await getDoc(friendRef);
@@ -1327,6 +1395,7 @@
           const isOnline = userStatusMap.get(friendUid) || false;
           const chatItem = document.createElement('div');
           chatItem.className = 'chat-item-whatsapp';
+          chatItem.dataset.friendUid = friendUid; // For deduplication
           chatItem.innerHTML = `
             <div class="whatsapp-avatar ${isOnline ? 'online' : ''}">
               ${friend.displayName.charAt(0).toUpperCase()}
@@ -1346,7 +1415,7 @@
             publicKey: friend.publicKey
           }));
           els.chatsList.appendChild(chatItem);
-          // Last message preview listener
+          // Last message listener
           const messagesQ = query(
             collection(db, 'privateChats', chatId, 'messages'),
             orderBy('createdAt', 'desc'),
@@ -1387,15 +1456,13 @@
               else timeStr = time.toLocaleDateString();
               timeEl.textContent = timeStr;
             }
-            if (!isOwn && lastMsg.userId !== currentUser.uid) {
+            if (!isOwn) {
               unreadEl.style.display = 'block';
-            } else {
-              unreadEl.style.display = 'none';
             }
           });
         }
       });
-      unsubscribes.push(friendsSnapshotUnsub);
+      unsubscribes.push(friendsListener);
     }
     function setupOnlineStatusListener() {
       const usersQ = query(collection(db, 'users'));
@@ -1403,24 +1470,105 @@
         snap.forEach(doc => {
           const data = doc.data();
           const isOnline = data.lastSeen && (Date.now() - data.lastSeen.toMillis() < 120000);
-          const wasOnline = userStatusMap.get(doc.id);
-          if (isOnline && !wasOnline && doc.id !== currentUser.uid) {
-            showOnlineToast(data.displayName);
-          }
           userStatusMap.set(doc.id, isOnline);
-          const avatar = document.querySelector(`.chat-item-whatsapp .whatsapp-avatar`)?.closest('.chat-item-whatsapp')?.querySelector('.whatsapp-avatar');
-          if (avatar) {
-            avatar.classList.toggle('online', isOnline);
-          }
+          // Update avatars in chat list
+          const items = els.chatsList.querySelectorAll('.chat-item-whatsapp');
+          items.forEach(item => {
+            if (item.dataset.friendUid === doc.id) {
+              const avatar = item.querySelector('.whatsapp-avatar');
+              if (avatar) avatar.classList.toggle('online', isOnline);
+            }
+          });
         });
       });
       unsubscribes.push(onlineUnsub);
     }
-    function showOnlineToast(userName) {
-      els.toastMessage.textContent = `${userName} is online`;
-      els.toast.classList.add('show');
-      setTimeout(() => els.toast.classList.remove('show'), 3000);
+    // Real-time status posts (no reload, fixes like count disappearing)
+    function loadStatusPostsRealTime() {
+      if (statusListener) statusListener();
+      const statusQuery = query(
+        collection(db, 'statusPosts'),
+        orderBy('createdAt', 'desc'),
+        limit(20)
+      );
+      statusListener = onSnapshot(statusQuery, (snapshot) => {
+        els.statusCards.innerHTML = '';
+        if (snapshot.empty) {
+          els.statusCards.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
+              <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px;">post_add</span>
+              <p>No status updates yet</p>
+              <p style="font-size: 14px; margin-top: 8px;">Be the first to share your thoughts!</p>
+            </div>
+          `;
+          return;
+        }
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          const card = document.createElement('div');
+          card.className = 'status-card';
+          card.dataset.postId = doc.id;
+          const time = data.createdAt ? new Date(data.createdAt.toDate()) : new Date();
+          const timeAgo = getTimeAgo(time);
+          const likeCount = data.likes?.length || 0;
+          card.innerHTML = `
+            <div class="status-card-header">
+              <div class="status-avatar">
+                ${data.userName.charAt(0).toUpperCase()}
+              </div>
+              <div class="status-meta">
+                <div class="status-author">${data.userName}</div>
+                <div class="status-time">${timeAgo}</div>
+              </div>
+            </div>
+            <div class="status-content">${escapeHtml(data.content)}</div>
+            <div class="status-actions">
+              <div class="status-action" onclick="likeStatus('${doc.id}')">
+                <span class="material-symbols-rounded" style="font-size: 18px;">favorite</span>
+                <span class="like-count">${likeCount}</span>
+              </div>
+              <div class="status-action" onclick="commentStatus('${doc.id}')">
+                <span class="material-symbols-rounded" style="font-size: 18px;">comment</span>
+                <span>Comment</span>
+              </div>
+              <div class="status-action" onclick="shareStatus('${doc.id}')">
+                <span class="material-symbols-rounded" style="font-size: 18px;">share</span>
+                <span>Share</span>
+              </div>
+            </div>
+          `;
+          els.statusCards.appendChild(card);
+        });
+      });
+      unsubscribes.push(statusListener);
     }
+    function getTimeAgo(date) {
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return date.toLocaleDateString();
+    }
+    // Status actions
+    window.likeStatus = async (statusId) => {
+      const statusRef = doc(db, 'statusPosts', statusId);
+      await updateDoc(statusRef, {
+        likes: arrayUnion(currentUser.uid)
+      });
+      showToast('Status liked!');
+      // Count updates automatically via real-time listener
+    };
+    window.commentStatus = (statusId) => {
+      showToast('Comment feature coming soon!');
+    };
+    window.shareStatus = (statusId) => {
+      showToast('Share feature coming soon!');
+    };
     // Open a chat with E2EE - WhatsApp Style
     async function openPrivateChat(chatId, partner) {
       els.tabbar.classList.add('hidden');
@@ -1453,16 +1601,11 @@
         snapshot.docChanges().forEach(change => {
           if (change.type === 'added') {
             appendWhatsAppMessage(change.doc, sessionKey);
-            if (!isInitialLoad && change.doc.data().userId !== currentUser.uid) {
-              showToast(`New message from ${change.doc.data().userName}`);
-            }
           }
         });
         if (isInitialLoad) {
           scrollToBottom();
           isInitialLoad = false;
-        } else {
-          scrollToBottom();
         }
       });
       unsubscribes.push(unsubscribe);
@@ -1474,7 +1617,7 @@
       els.e2eeIndicator.classList.remove('visible');
       isPrivateChatMode = false;
       stopAllListeners();
-      showChatsList(); // Refresh chats list
+      switchTab('chats'); // Return to chats without reload
     });
     function appendWhatsAppMessage(doc, sessionKey) {
       const data = doc.data();
@@ -1493,6 +1636,7 @@
         <div class="bubble-time">${timeStr}</div>
       `;
       els.messagesContainer.appendChild(bubble);
+      scrollToBottom();
     }
     // Send Message
     async function sendMessage() {
@@ -1554,86 +1698,6 @@
         showToast('Failed to post status');
       }
     });
-    async function loadStatusPosts() {
-      const statusQuery = query(
-        collection(db, 'statusPosts'),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      );
-      onSnapshot(statusQuery, (snapshot) => {
-        els.statusCards.innerHTML = '';
-        if (snapshot.empty) {
-          els.statusCards.innerHTML = `
-            <div style="text-align: center; padding: 40px; color: var(--whatsapp-text-secondary);">
-              <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px;">post_add</span>
-              <p>No status updates yet</p>
-              <p style="font-size: 14px; margin-top: 8px;">Be the first to share your thoughts!</p>
-            </div>
-          `;
-          return;
-        }
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          const card = document.createElement('div');
-          card.className = 'status-card';
-          const time = data.createdAt ? new Date(data.createdAt.toDate()) : new Date();
-          const timeAgo = getTimeAgo(time);
-          card.innerHTML = `
-            <div class="status-card-header">
-              <div class="status-avatar">
-                ${data.userName.charAt(0).toUpperCase()}
-              </div>
-              <div class="status-meta">
-                <div class="status-author">${data.userName}</div>
-                <div class="status-time">${timeAgo}</div>
-              </div>
-            </div>
-            <div class="status-content">${escapeHtml(data.content)}</div>
-            <div class="status-actions">
-              <div class="status-action" onclick="likeStatus('${doc.id}')">
-                <span class="material-symbols-rounded" style="font-size: 18px;">favorite</span>
-                <span>${data.likes?.length || 0}</span>
-              </div>
-              <div class="status-action" onclick="commentStatus('${doc.id}')">
-                <span class="material-symbols-rounded" style="font-size: 18px;">comment</span>
-                <span>Comment</span>
-              </div>
-              <div class="status-action" onclick="shareStatus('${doc.id}')">
-                <span class="material-symbols-rounded" style="font-size: 18px;">share</span>
-                <span>Share</span>
-              </div>
-            </div>
-          `;
-          els.statusCards.appendChild(card);
-        });
-      });
-    }
-    function getTimeAgo(date) {
-      const now = new Date();
-      const diffMs = now - date;
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMs / 3600000);
-      const diffDays = Math.floor(diffMs / 86400000);
-      if (diffMins < 1) return 'just now';
-      if (diffMins < 60) return `${diffMins}m ago`;
-      if (diffHours < 24) return `${diffHours}h ago`;
-      if (diffDays < 7) return `${diffDays}d ago`;
-      return date.toLocaleDateString();
-    }
-    // Status actions
-    window.likeStatus = async (statusId) => {
-      const statusRef = doc(db, 'statusPosts', statusId);
-      await updateDoc(statusRef, {
-        likes: arrayUnion(currentUser.uid)
-      });
-      showToast('Status liked!');
-    };
-    window.commentStatus = (statusId) => {
-      showToast('Comment feature coming soon!');
-    };
-    window.shareStatus = (statusId) => {
-      showToast('Share feature coming soon!');
-    };
     // Auth
     let isSignUp = false;
     els.authSwitchBtn.addEventListener('click', () => {
@@ -1694,10 +1758,8 @@
     function stopAllListeners() {
       unsubscribes.forEach(unsub => unsub());
       unsubscribes = [];
-      if (friendsSnapshotUnsub) {
-        friendsSnapshotUnsub();
-        friendsSnapshotUnsub = null;
-      }
+      if (friendsListener) friendsListener = null;
+      if (statusListener) statusListener = null;
     }
     // Initialize
     switchTab('chats');
