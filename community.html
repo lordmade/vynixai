@@ -26,7 +26,7 @@
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body {
       margin: 0; font-family: 'Inter', sans-serif; background-color: var(--bg-body);
-      color: var(--text-main); height: 100vh; overflow: hidden;
+      color: var(--text-main); height: 100vh; overflow: hidden; user-select: none; /* Prevent long-press highlight */
     }
     .no-select { -webkit-user-select: none; user-select: none; }
     .app-container {
@@ -51,6 +51,7 @@
     }
     .member-item {
       display: flex; align-items: center; padding: 12px 0; border-bottom: 1px solid rgba(0,0,0,0.05);
+      gap: 12px;
     }
     .member-avatar {
       width: 48px; height: 48px; border-radius: 50%; background: #e2e8f0;
@@ -62,15 +63,61 @@
       background: var(--offline); border: 3px solid #fff; border-radius: 50%;
     }
     .status-dot.online { background: var(--online); }
-    .member-info { flex: 1; margin-left: 16px; }
+    .member-info { flex: 1; }
     .member-name { font-weight: 600; font-size: 15px; }
     .member-status { font-size: 13px; color: var(--text-muted); }
     .member-status.online { color: var(--accent); }
+    .add-friend-btn {
+      padding: 6px 16px;
+      border-radius: 50px;
+      border: none;
+      background: var(--primary);
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      min-width: 80px;
+    }
+    .add-friend-btn.added {
+      background: #94a3b8;
+      cursor: default;
+    }
+    .add-friend-btn:active:not(.added) {
+      transform: scale(0.95);
+    }
+    /* Shimmer loading effect */
+    .shimmer {
+      background: #e2e8f0;
+      border-radius: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+    .shimmer::after {
+      content: '';
+      position: absolute;
+      top: 0; left: -150%;
+      width: 50%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+      animation: shimmer 1.5s infinite;
+    }
+    @keyframes shimmer {
+      0% { left: -150%; }
+      100% { left: 150%; }
+    }
+    .skeleton-avatar {
+      width: 48px; height: 48px; border-radius: 50%;
+    }
+    .skeleton-line {
+      height: 16px; border-radius: 8px; margin-bottom: 8px;
+    }
+    .skeleton-line.short { width: 120px; }
+    .skeleton-line.long { width: 80px; }
     /* Empty state */
     .empty-state {
       text-align: center; color: var(--text-muted); margin-top: 60px;
     }
-    /* Toast, Auth */
+    /* Toast */
     .toast-notification {
       position: fixed; top: -100px; left: 50%; transform: translateX(-50%);
       background: rgba(30, 41, 59, 0.95); color: white;
@@ -125,7 +172,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, GoogleAuthProvider, signInWithPopup } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getFirestore, collection, query, onSnapshot, serverTimestamp, doc, setDoc, updateDoc } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+    import { getFirestore, collection, query, onSnapshot, serverTimestamp, doc, setDoc, updateDoc, arrayUnion, arrayRemove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -140,6 +187,7 @@
 
     let currentUser = null;
     let unsubscribes = [];
+    let friendsList = [];
 
     const els = {
       membersContainer: document.getElementById('membersContainer'),
@@ -180,7 +228,8 @@
         await setDoc(userRef, { 
           displayName: cred.user.displayName || email.split('@')[0], 
           email: cred.user.email,
-          lastSeen: serverTimestamp() 
+          lastSeen: serverTimestamp(),
+          friends: [] 
         }, { merge: true });
         els.authOverlay.classList.remove('open');
         showToast(window.isSignUp ? "Account created!" : "Signed in successfully");
@@ -190,41 +239,19 @@
       }
     };
 
-    window.signInWithGoogle = async () => {
-      const provider = new GoogleAuthProvider();
-      try {
-        const cred = await signInWithPopup(auth, provider);
-        const userRef = doc(db, 'users', cred.user.uid);
-        await setDoc(userRef, { 
-          displayName: cred.user.displayName || cred.user.email.split('@')[0],
-          email: cred.user.email,
-          lastSeen: serverTimestamp() 
-        }, { merge: true });
-        showToast("Signed in with Google");
-      } catch (e) {
-        showToast('Google Sign-In failed: ' + e.message);
-        console.error(e);
-      }
-    };
-
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
-      console.log('Auth state changed:', user ? `User ${user.uid} logged in` : 'No user');
       if (!user) {
         els.authOverlay.classList.add('open');
         stopAllListeners();
-        els.emptyState.textContent = 'Please sign in to view members';
-        els.emptyState.style.display = 'block';
-        els.membersContainer.innerHTML = '';
         return;
       }
-      // Ensure user doc exists
       const userRef = doc(db, 'users', currentUser.uid);
-      await setDoc(userRef, { 
-        displayName: currentUser.displayName || currentUser.email.split('@')[0],
-        email: currentUser.email,
-        lastSeen: serverTimestamp() 
-      }, { merge: true });
+      await setDoc(userRef, { lastSeen: serverTimestamp() }, { merge: true });
+
+      // Load current user's friends
+      const userSnap = await getDoc(userRef);
+      friendsList = userSnap.data()?.friends || [];
 
       startHeartbeat();
       loadMembersList();
@@ -245,38 +272,70 @@
       unsubscribes = [];
     }
 
-    function loadMembersList() {
+    async function addFriend(friendUid, button) {
+      if (friendsList.includes(friendUid)) return;
+      try {
+        const myRef = doc(db, 'users', currentUser.uid);
+        const friendRef = doc(db, 'users', friendUid);
+
+        await updateDoc(myRef, { friends: arrayUnion(friendUid) });
+        await updateDoc(friendRef, { friends: arrayUnion(currentUser.uid) });
+
+        friendsList.push(friendUid);
+        button.textContent = 'Added';
+        button.classList.add('added');
+        showToast('Friend added!');
+      } catch (e) {
+        showToast('Failed to add friend');
+        console.error(e);
+      }
+    }
+
+    function renderSkeleton() {
       els.membersContainer.innerHTML = '';
-      els.emptyState.style.display = 'block';
-      els.emptyState.textContent = 'Loading members...';
+      for (let i = 0; i < 6; i++) {
+        const item = document.createElement('div');
+        item.className = 'member-item';
+        item.innerHTML = `
+          <div class="member-avatar skeleton-avatar shimmer"></div>
+          <div class="member-info" style="flex:1">
+            <div class="skeleton-line short shimmer"></div>
+            <div class="skeleton-line long shimmer"></div>
+          </div>
+          <div class="add-friend-btn shimmer" style="width:80px;height:32px;"></div>
+        `;
+        els.membersContainer.appendChild(item);
+      }
+    }
+
+    function loadMembersList() {
+      renderSkeleton();
+      els.emptyState.style.display = 'none';
 
       const usersQuery = query(collection(db, 'users'));
       const unsubscribe = onSnapshot(usersQuery, (snapshot) => {
-        console.log('Snapshot received:', snapshot.size, 'documents');
         if (snapshot.empty) {
           els.emptyState.textContent = 'No members yet. Be the first to join!';
           els.emptyState.style.display = 'block';
+          els.membersContainer.innerHTML = '';
           return;
         }
-        els.emptyState.style.display = 'none';
 
         const now = Date.now();
         const members = [];
         snapshot.forEach(doc => {
+          if (doc.id === currentUser?.uid) return; // Skip self
           const data = doc.data();
-          const isOnline = data.lastSeen && (now - data.lastSeen.toMillis() < 120000); // 2 minutes
+          const isOnline = data.lastSeen && (now - data.lastSeen.toMillis() < 120000);
           members.push({
             uid: doc.id,
             displayName: data.displayName || 'Anonymous',
-            isOnline,
-            isCurrent: doc.id === currentUser?.uid
+            isOnline
           });
         });
 
-        // Sort: current user first → online → offline (alphabetical)
+        // Sort: online first, then alphabetical
         members.sort((a, b) => {
-          if (a.isCurrent) return -1;
-          if (b.isCurrent) return 1;
           if (a.isOnline && !b.isOnline) return -1;
           if (!a.isOnline && b.isOnline) return 1;
           return a.displayName.localeCompare(b.displayName);
@@ -285,6 +344,7 @@
         els.membersContainer.innerHTML = '';
         members.forEach(member => {
           const initials = member.displayName.charAt(0).toUpperCase();
+          const isAdded = friendsList.includes(member.uid);
           const item = document.createElement('div');
           item.className = 'member-item';
           item.innerHTML = `
@@ -293,24 +353,35 @@
               <div class="status-dot ${member.isOnline ? 'online' : ''}"></div>
             </div>
             <div class="member-info">
-              <div class="member-name">${member.displayName}${member.isCurrent ? ' (You)' : ''}</div>
+              <div class="member-name">${member.displayName}</div>
               <div class="member-status ${member.isOnline ? 'online' : ''}">${member.isOnline ? 'Online' : 'Offline'}</div>
             </div>
+            <button class="add-friend-btn ${isAdded ? 'added' : ''}" ${isAdded ? 'disabled' : ''}>
+              ${isAdded ? 'Added' : 'Add Friend'}
+            </button>
           `;
+          if (!isAdded) {
+            item.querySelector('.add-friend-btn').addEventListener('click', () => addFriend(member.uid, item.querySelector('.add-friend-btn')));
+          }
           els.membersContainer.appendChild(item);
         });
+
+        if (members.length === 0) {
+          els.emptyState.textContent = 'No other members yet.';
+          els.emptyState.style.display = 'block';
+        }
       }, (error) => {
         console.error("Snapshot error:", error);
-        els.emptyState.textContent = `Error: ${error.message}. Check console (F12) for details.`;
+        els.emptyState.textContent = `Error: ${error.message}`;
+        els.emptyState.style.display = 'block';
         showToast("Failed to load members");
       });
 
       unsubscribes.push(unsubscribe);
     }
 
-    // Back button
     els.backBtn.addEventListener('click', () => {
-      window.location.href = 'index.html'; // Change to your main chat page if different
+      window.location.href = 'index.html';
     });
   </script>
 </body>
