@@ -914,7 +914,7 @@
     let isLoadingMore = false;
     let allChatItems = [];
     let lastNotifiedMessageKey = {};
-    let lastReadTimestamps = {}; // chatId -> last read timestamp
+    let lastReadTimestamps = {};
     const els = {
       chatsList: document.getElementById('chatsList'),
       statusCards: document.getElementById('statusCards'),
@@ -1043,7 +1043,7 @@
         history.pushState({ chatOpen: true }, '', '#chat');
       }
 
-      // Mark all messages as read when opening chat
+      // Mark as read
       const lastMsgSnap = await get(query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
       if (lastMsgSnap.size > 0) {
         let lastTimestamp = 0;
@@ -1120,16 +1120,12 @@
       els.messageInput.value = '';
       els.messageInput.style.height = 'auto';
       const messagesRef = ref(db, `privateChats/${activeChatId}/messages`);
-      const newMsgRef = await push(messagesRef, {
+      await push(messagesRef, {
         text: text,
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anon',
         createdAt: Date.now(),
       });
-      const card = document.getElementById(`friend-card-${activeChatId.split('_').find(uid => uid !== currentUser.uid)}`);
-      if (card) {
-        els.chatsList.prepend(card);
-      }
       scrollToBottom();
       stopTypingIndicator();
     }
@@ -1150,19 +1146,17 @@
     }
 
     function updateUnreadCount(chatId, count) {
-      const unreadEl = document.getElementById(`unread-${chatId}`);
+      let unreadEl = document.getElementById(`unread-${chatId}`);
       if (count > 0) {
         if (!unreadEl) {
-          const newBadge = document.createElement('div');
-          newBadge.id = `unread-${chatId}`;
-          newBadge.className = 'unread-count';
-          newBadge.textContent = count > 99 ? '99+' : count;
+          unreadEl = document.createElement('div');
+          unreadEl.id = `unread-${chatId}`;
+          unreadEl.className = 'unread-count';
           const card = document.querySelector(`[data-chat-id="${chatId}"]`);
-          if (card) card.appendChild(newBadge);
-        } else {
-          unreadEl.textContent = count > 99 ? '99+' : count;
-          unreadEl.style.display = 'flex';
+          if (card) card.appendChild(unreadEl);
         }
+        unreadEl.textContent = count > 99 ? '99+' : count;
+        unreadEl.style.display = 'flex';
       } else {
         if (unreadEl) unreadEl.style.display = 'none';
       }
@@ -1199,13 +1193,15 @@
           return;
         }
 
-        const chatCards = [];
-
         for (const friendUid of friends) {
           const friendSnap = await get(ref(db, `users/${friendUid}`));
           if (!friendSnap.exists()) continue;
           const friend = friendSnap.val();
           const chatId = [currentUser.uid, friendUid].sort().join('_');
+
+          // Skip if card already exists (prevents duplication)
+          if (document.getElementById(`friend-card-${friendUid}`)) continue;
+
           const item = document.createElement('div');
           item.className = 'chat-item-whatsapp';
           item.id = `friend-card-${friendUid}`;
@@ -1236,6 +1232,9 @@
             e.stopPropagation();
             deleteChat(chatId, friendUid);
           });
+
+          els.chatsList.appendChild(item);
+          allChatItems.push(item);
 
           const messagesRef = ref(db, `privateChats/${chatId}/messages`);
           const messagesQuery = query(messagesRef, orderByChild('createdAt'));
@@ -1281,9 +1280,12 @@
 
             updateUnreadCount(chatId, unreadCount);
 
-            // Move to top if new message
-            if (lastTimestamp > 0) {
-              els.chatsList.prepend(item);
+            // Move to top only if there's a new message and card exists
+            if (lastTimestamp > (item.dataset.lastTs || 0)) {
+              item.dataset.lastTs = lastTimestamp;
+              if (item.parentElement) {
+                els.chatsList.prepend(item);
+              }
             }
           });
 
@@ -1298,14 +1300,7 @@
           });
 
           chatListeners.set(chatId, unsubscribeMsg);
-          chatCards.push({ card: item, timestamp: lastReadTimestamps[chatId] || 0 });
         }
-
-        chatCards.sort((a, b) => b.timestamp - a.timestamp);
-        chatCards.forEach(({ card }) => {
-          els.chatsList.appendChild(card);
-          allChatItems.push(card);
-        });
       });
     }
 
