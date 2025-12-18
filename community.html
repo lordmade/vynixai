@@ -296,7 +296,7 @@
     .messages-wrapper-whatsapp {
       flex: 1;
       overflow-y: auto;
-      padding: 16px 16px 100px 16px; /* Increased bottom padding */
+      padding: 16px 16px 100px 16px;
       background: var(--gray-light);
       contain: strict;
     }
@@ -1093,29 +1093,32 @@
       els.messageInput.value = '';
       els.messageInput.style.height = 'auto';
       const messagesRef = ref(db, `privateChats/${activeChatId}/messages`);
-      await push(messagesRef, {
+      const newMsgRef = await push(messagesRef, {
         text: text,
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anon',
         createdAt: Date.now(),
       });
+      // Move this chat to top when sending message
+      const card = document.getElementById(`friend-card-${activeChatId.split('_').find(uid => uid !== currentUser.uid)}`);
+      if (card) {
+        els.chatsList.prepend(card);
+      }
       scrollToBottom();
       stopTypingIndicator();
     }
 
     async function deleteChat(chatId, friendUid) {
       if (!confirm('Delete this chat? This will remove it for you only.')) return;
-      // Remove chat data
       await remove(ref(db, `privateChats/${chatId}`));
-      // Remove friend from my friends list
       const myFriendsRef = ref(db, `users/${currentUser.uid}/friends`);
       const myFriendsSnap = await get(myFriendsRef);
       const myFriends = myFriendsSnap.val() || [];
       const updatedFriends = myFriends.filter(uid => uid !== friendUid);
       await set(myFriendsRef, updatedFriends);
-      // Remove chat card from UI
       const card = document.getElementById(`friend-card-${friendUid}`);
       if (card) card.remove();
+      allChatItems = allChatItems.filter(item => item.id !== `friend-card-${friendUid}`);
       showToast('Chat deleted');
     }
 
@@ -1149,16 +1152,19 @@
           els.chatsList.innerHTML = `<div style="text-align:center;padding:40px;color:var(--gray-mid);"><span class="material-symbols-rounded" style="font-size:48px;">group_add</span><p>No friends yet</p><p style="font-size:14px;margin-top:8px;">Tap the + button to add friends</p></div>`;
           return;
         }
+
+        const chatCards = [];
+
         for (const friendUid of friends) {
           const friendSnap = await get(ref(db, `users/${friendUid}`));
           if (!friendSnap.exists()) continue;
           const friend = friendSnap.val();
           const chatId = [currentUser.uid, friendUid].sort().join('_');
-          if (document.getElementById(`friend-card-${friendUid}`)) continue;
           const item = document.createElement('div');
           item.className = 'chat-item-whatsapp';
           item.id = `friend-card-${friendUid}`;
           item.dataset.name = (friend.displayName || '').toLowerCase();
+          item.dataset.chatId = chatId;
           const verifiedBadge = friend.verified ? '<span class="verified-badge">✓</span>' : '';
           item.innerHTML = `
             <div class="whatsapp-avatar ${friend.online ? 'online' : ''}">${friend.displayName.charAt(0).toUpperCase()}</div>
@@ -1184,36 +1190,41 @@
             e.stopPropagation();
             deleteChat(chatId, friendUid);
           });
-          els.chatsList.appendChild(item);
-          allChatItems.push(item);
 
-          if (chatListeners.has(chatId)) chatListeners.get(chatId)();
           const messagesRef = ref(db, `privateChats/${chatId}/messages`);
           const messagesQuery = query(messagesRef, orderByChild('createdAt'), limitToLast(1));
           const unsubscribeMsg = onValue(messagesQuery, (snap) => {
             const previewEl = document.getElementById(`preview-${chatId}`);
             const timeEl = document.getElementById(`time-${chatId}`);
             if (!previewEl || !timeEl) return;
-            if (snap.size === 0) {
+
+            let lastTimestamp = 0;
+            if (snap.size > 0) {
+              let lastMsg;
+              snap.forEach((child) => lastMsg = child.val());
+              const isOwn = lastMsg.userId === currentUser.uid;
+              const shortText = lastMsg.text.length > 30 ? lastMsg.text.slice(0, 27) + '...' : lastMsg.text;
+              previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
+              previewEl.classList.remove('typing-indicator');
+              lastTimestamp = lastMsg.createdAt;
+              const time = new Date(lastTimestamp);
+              const now = new Date();
+              const diffMs = now - time;
+              const diffMins = Math.floor(diffMs / 60000);
+              const diffHours = Math.floor(diffMs / 3600000);
+              const diffDays = Math.floor(diffMs / 86400000);
+              let timeStr = diffMins < 1 ? 'now' : diffMins < 60 ? `${diffMins}m` : diffHours < 24 ? `${diffHours}h` : diffDays < 7 ? `${diffDays}d` : time.toLocaleDateString();
+              timeEl.textContent = timeStr;
+            } else {
               previewEl.textContent = 'Tap to start chatting';
               previewEl.classList.remove('typing-indicator');
               timeEl.textContent = '';
-              return;
             }
-            let lastMsg;
-            snap.forEach((child) => lastMsg = child.val());
-            const isOwn = lastMsg.userId === currentUser.uid;
-            const shortText = lastMsg.text.length > 30 ? lastMsg.text.slice(0, 27) + '...' : lastMsg.text;
-            previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
-            previewEl.classList.remove('typing-indicator');
-            const time = new Date(lastMsg.createdAt);
-            const now = new Date();
-            const diffMs = now - time;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-            let timeStr = diffMins < 1 ? 'now' : diffMins < 60 ? `${diffMins}m` : diffHours < 24 ? `${diffHours}h` : diffDays < 7 ? `${diffDays}d` : time.toLocaleDateString();
-            timeEl.textContent = timeStr;
+
+            // Move card to top on new message
+            if (lastTimestamp > 0) {
+              els.chatsList.prepend(item);
+            }
           });
 
           const onlineRef = ref(db, `users/${friendUid}/online`);
@@ -1227,7 +1238,15 @@
           });
 
           chatListeners.set(chatId, unsubscribeMsg);
+          chatCards.push({ card: item, timestamp: 0 }); // initial timestamp 0
         }
+
+        // Initial sort (oldest first)
+        chatCards.sort((a, b) => a.timestamp - b.timestamp);
+        chatCards.forEach(({ card }) => {
+          els.chatsList.appendChild(card);
+          allChatItems.push(card);
+        });
       });
     }
 
@@ -1254,6 +1273,7 @@
         }
         const posts = [];
         snapshot.forEach((child) => posts.push({ id: child.key, ...child.val() }));
+        posts.sort((a, b) => b.createdAt - a.createdAt); // newest first
         posts.forEach((post) => {
           const card = document.createElement('div');
           card.className = 'status-card';
