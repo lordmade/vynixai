@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Vynix Lingua Secure</title>
+  <title>Vynix Lingua Messenger</title>
  
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -220,6 +220,56 @@
     @keyframes popUp { from { transform: scale(0.8) translateY(20px); opacity: 0; } to { transform: scale(1) translateY(0); opacity: 1; } }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes popIn { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    
+    /* New Instant Messaging Features */
+    .message-status {
+      font-size: 10px;
+      opacity: 0.7;
+      margin-left: 4px;
+    }
+    .msg-row.own .message-status {
+      color: rgba(255,255,255,0.8);
+    }
+    .msg-row:not(.own) .message-status {
+      color: rgba(0,0,0,0.5);
+    }
+    .online-indicator {
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      border: 2px solid white;
+    }
+    .offline-indicator {
+      width: 8px;
+      height: 8px;
+      background: #94a3b8;
+      border-radius: 50%;
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      border: 2px solid white;
+    }
+    .chat-item {
+      position: relative;
+    }
+    .message-time {
+      font-size: 9px;
+      opacity: 0.6;
+      margin-left: 4px;
+    }
+    .unread-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--primary);
+      border-radius: 50%;
+      position: absolute;
+      top: 12px;
+      right: 20px;
+    }
   </style>
 </head>
 <body>
@@ -238,6 +288,10 @@
       <div class="tab-btn" data-tab="community">
         <span class="material-symbols-rounded tab-icon">group</span>
         <span>Community</span>
+      </div>
+      <div class="tab-btn" data-tab="status">
+        <span class="material-symbols-rounded tab-icon">circle</span>
+        <span>Status</span>
       </div>
     </nav>
 
@@ -270,6 +324,15 @@
         <div style="font-size: 18px;" class="material-symbols-rounded" id="shieldIcon">shield</div>
       </header>
       <main class="messages-wrapper no-select" id="messagesContainer"></main>
+    </div>
+
+    <!-- Status View -->
+    <div id="statusView" class="main-view">
+      <div style="padding: 20px; text-align: center; color: var(--text-muted);">
+        <span class="material-symbols-rounded" style="font-size: 48px; margin-bottom: 16px; opacity: 0.5;">update</span>
+        <h3>Status Updates</h3>
+        <p>Share your status with friends</p>
+      </div>
     </div>
 
     <!-- Input Zone -->
@@ -353,6 +416,7 @@
     let typingTimeout;
     let isInitialLoad = true;
     let unsubscribes = [];
+    let messageStatusTimeouts = new Map();
 
     const notifSound = new Audio("data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU");
     const els = {
@@ -372,6 +436,7 @@
       toastAvatar: document.getElementById('toastAvatar'),
       chatsView: document.getElementById('chatsView'),
       chatView: document.getElementById('chatView'),
+      statusView: document.getElementById('statusView'),
       chatHeader: document.getElementById('chatHeader'),
       backBtn: document.getElementById('backBtn'),
       chatTitle: document.getElementById('chatTitle'),
@@ -391,8 +456,10 @@
         const tab = btn.dataset.tab;
         if (tab === 'chats') {
           showChatsList();
-        } else {
+        } else if (tab === 'community') {
           openChat('community');
+        } else if (tab === 'status') {
+          showStatusView();
         }
       });
     });
@@ -400,8 +467,19 @@
     function showChatsList() {
       els.chatsView.classList.add('active');
       els.chatView.classList.remove('active');
+      els.statusView.classList.remove('active');
       els.inputZone.style.display = 'none';
       els.addFriendFab.style.display = 'flex';
+      activeChatId = null;
+      stopAllListeners();
+    }
+
+    function showStatusView() {
+      els.chatsView.classList.remove('active');
+      els.chatView.classList.remove('active');
+      els.statusView.classList.add('active');
+      els.inputZone.style.display = 'none';
+      els.addFriendFab.style.display = 'none';
       activeChatId = null;
       stopAllListeners();
     }
@@ -427,7 +505,13 @@
         }
         // Create user doc if not exists
         const userRef = doc(db, 'users', cred.user.uid);
-        await setDoc(userRef, { displayName: cred.user.displayName, lastSeen: serverTimestamp(), friends: [] }, { merge: true });
+        await setDoc(userRef, { 
+          displayName: cred.user.displayName, 
+          lastSeen: serverTimestamp(), 
+          friends: [],
+          online: true,
+          lastMessageRead: {}
+        }, { merge: true });
         els.authOverlay.classList.remove('open');
       } catch (e) { alert(e.message); }
     };
@@ -475,12 +559,16 @@
         chatItem.dataset.chatId = chatId;
         chatItem.dataset.partnerUid = friendUid;
         chatItem.innerHTML = `
-          <div class="chat-avatar">${friend.displayName.charAt(0).toUpperCase()}</div>
+          <div class="chat-avatar">
+            ${friend.displayName.charAt(0).toUpperCase()}
+            <div class="${friend.online ? 'online-indicator' : 'offline-indicator'}"></div>
+          </div>
           <div class="chat-info">
             <div class="chat-name">${friend.displayName}</div>
             <div class="chat-preview" id="preview-${chatId}">Tap to start chatting</div>
           </div>
           <div class="chat-time" id="time-${chatId}"></div>
+          <div class="unread-dot" id="unread-${chatId}" style="display:none;"></div>
         `;
         chatItem.addEventListener('click', () => openPrivateChat(chatId, {uid: friendUid, displayName: friend.displayName}));
 
@@ -495,9 +583,12 @@
         onSnapshot(messagesQ, (snapshot) => {
           const previewEl = document.getElementById(`preview-${chatId}`);
           const timeEl = document.getElementById(`time-${chatId}`);
+          const unreadEl = document.getElementById(`unread-${chatId}`);
+          
           if (snapshot.empty) {
             previewEl.textContent = 'Tap to start chatting';
             timeEl.textContent = '';
+            unreadEl.style.display = 'none';
             return;
           }
           const lastMsg = snapshot.docs[0].data();
@@ -506,8 +597,32 @@
           const decrypted = decrypt(lastMsg.text, key);
           const shortText = decrypted.length > 30 ? decrypted.slice(0, 27) + '...' : decrypted;
           previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
+          
           if (lastMsg.createdAt) {
-            timeEl.textContent = new Date(lastMsg.createdAt.toDate()).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            const msgTime = lastMsg.createdAt.toDate();
+            const now = new Date();
+            const diffMs = now - msgTime;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+            
+            let timeStr;
+            if (diffMins < 1) timeStr = 'now';
+            else if (diffMins < 60) timeStr = `${diffMins}m`;
+            else if (diffHours < 24) timeStr = `${diffHours}h`;
+            else timeStr = `${diffDays}d`;
+            
+            timeEl.textContent = timeStr;
+          }
+          
+          // Show unread indicator if message is not from current user and hasn't been read
+          if (!isOwn && lastMsg.userId !== currentUser.uid) {
+            const lastReadTime = userSnap.data()?.lastMessageRead?.[chatId];
+            if (!lastReadTime || lastMsg.createdAt.toDate() > lastReadTime.toDate()) {
+              unreadEl.style.display = 'block';
+            } else {
+              unreadEl.style.display = 'none';
+            }
           }
         });
       }
@@ -522,6 +637,7 @@
       els.inputZone.style.display = 'flex';
       els.addFriendFab.style.display = 'none';
       els.chatsView.classList.remove('active');
+      els.statusView.classList.remove('active');
       els.chatView.classList.add('active');
       isInitialLoad = true;
 
@@ -538,8 +654,13 @@
         els.chatTitle.textContent = partner.displayName;
         els.communityStatus.style.display = 'none';
         els.privateStatus.style.display = 'block';
-        els.privateStatus.textContent = 'Online'; // Placeholder, can add real online check
+        
+        // Update online status for private chat
+        updatePrivateChatStatus(partner.uid);
         els.shieldIcon.style.display = 'none';
+        
+        // Mark messages as read
+        markMessagesAsRead(chatId);
       }
 
       let messagesQuery;
@@ -553,25 +674,21 @@
       }
 
       const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added') {
+            appendMessage(change.doc, key, chatId === 'community');
+            if (!isInitialLoad && change.doc.data().userId !== currentUser.uid) {
+              if (chatId === 'community') triggerNotification(change.doc.data().userName);
+            }
+          }
+          if (change.type === 'modified') {
+            updateMessageInDOM(change.doc);
+          }
+        });
         if (isInitialLoad) {
-          els.messagesContainer.innerHTML = '';
-          snapshot.docs.forEach(doc => {
-            appendMessage(doc, key, chatId === 'community');
-          });
-          isInitialLoad = false;
           scrollToBottom();
+          isInitialLoad = false;
         } else {
-          snapshot.docChanges().forEach(change => {
-            if (change.type === 'added') {
-              appendMessage(change.doc, key, chatId === 'community');
-              if (change.doc.data().userId !== currentUser.uid && chatId === 'community') {
-                triggerNotification(change.doc.data().userName);
-              }
-            }
-            if (change.type === 'modified') {
-              updateMessageInDOM(change.doc);
-            }
-          });
           scrollToBottom();
         }
       });
@@ -580,6 +697,51 @@
 
     function openPrivateChat(chatId, partner) {
       openChat(chatId, partner);
+    }
+
+    async function updatePrivateChatStatus(partnerUid) {
+      const partnerRef = doc(db, 'users', partnerUid);
+      const partnerSnap = await getDoc(partnerRef);
+      if (partnerSnap.exists()) {
+        const partner = partnerSnap.data();
+        const isOnline = partner.online && (Date.now() - partner.lastSeen?.toMillis() < 120000);
+        els.privateStatus.textContent = isOnline ? 'Online' : `Last seen ${getTimeAgo(partner.lastSeen?.toDate())}`;
+      }
+      
+      // Real-time status updates
+      const unsubscribe = onSnapshot(partnerRef, (snap) => {
+        if (snap.exists()) {
+          const partner = snap.data();
+          const isOnline = partner.online && (Date.now() - partner.lastSeen?.toMillis() < 120000);
+          els.privateStatus.textContent = isOnline ? 'Online' : `Last seen ${getTimeAgo(partner.lastSeen?.toDate())}`;
+        }
+      });
+      unsubscribes.push(unsubscribe);
+    }
+
+    function getTimeAgo(date) {
+      if (!date) return 'a while ago';
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+      
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins} minutes ago`;
+      if (diffHours < 24) return `${diffHours} hours ago`;
+      return `${diffDays} days ago`;
+    }
+
+    async function markMessagesAsRead(chatId) {
+      const userRef = doc(db, 'users', currentUser.uid);
+      await updateDoc(userRef, {
+        [`lastMessageRead.${chatId}`]: serverTimestamp()
+      });
+      
+      // Hide unread dot
+      const unreadEl = document.getElementById(`unread-${chatId}`);
+      if (unreadEl) unreadEl.style.display = 'none';
     }
 
     els.backBtn.addEventListener('click', () => {
@@ -622,17 +784,19 @@
       unsubscribes.forEach(unsub => unsub());
       unsubscribes = [];
       els.typingIndicator.classList.remove('active');
+      messageStatusTimeouts.forEach(timeout => clearTimeout(timeout));
+      messageStatusTimeouts.clear();
     }
 
     function startHeartbeat() {
       const update = async () => {
         if (currentUser) {
           const userRef = doc(db, 'users', currentUser.uid);
-          await updateDoc(userRef, { lastSeen: serverTimestamp() });
+          await updateDoc(userRef, { lastSeen: serverTimestamp(), online: true });
         }
       };
       update();
-      setInterval(update, 60000);
+      setInterval(update, 30000); // Update every 30 seconds
     }
 
     function triggerNotification(senderName) {
@@ -657,13 +821,14 @@
       div.id = `msg-${id}`;
       div.innerHTML = `
         <div class="msg-row ${isOwn ? 'own' : ''}">
-          \( {!isOwn ? `<div class="avatar"> \){initials}</div>` : ''}
+          ${!isOwn ? `<div class="avatar">${initials}</div>` : ''}
           <div class="bubble-container">
-            \( {!isOwn && isCommunity ? `<span class="sender-name"> \){data.userName}</span>` : ''}
+            ${!isOwn ? `<span class="sender-name">${data.userName}</span>` : ''}
             <div class="bubble" data-id="${id}">
               ${escapeHtml(decryptedText)}
               <div class="meta-row">
-                <span class="timestamp" style="color:\( {isOwn?'rgba(255,255,255,0.7)':'rgba(0,0,0,0.4)'}"> \){time}</span>
+                <span class="timestamp" style="color:${isOwn?'rgba(255,255,255,0.7)':'rgba(0,0,0,0.4)'}">${time}</span>
+                <span class="message-status" id="status-${id}">✓</span>
               </div>
             </div>
             <div class="reaction-pill" id="react-${id}"></div>
@@ -675,6 +840,35 @@
       bindLongPress(bubble, id, collectionPath);
       els.messagesContainer.appendChild(div);
       renderReactions(id, data.reactions || {});
+
+      // Update message status for own messages
+      if (isOwn && !isCommunity) {
+        updateMessageStatus(id, 'sent');
+        
+        // Simulate delivered status after 1 second
+        const timeout = setTimeout(() => {
+          updateMessageStatus(id, 'delivered');
+        }, 1000);
+        messageStatusTimeouts.set(id, timeout);
+      }
+    }
+
+    function updateMessageStatus(messageId, status) {
+      const statusEl = document.getElementById(`status-${messageId}`);
+      if (statusEl) {
+        switch(status) {
+          case 'sent':
+            statusEl.textContent = '✓';
+            break;
+          case 'delivered':
+            statusEl.textContent = '✓✓';
+            break;
+          case 'read':
+            statusEl.textContent = '✓✓';
+            statusEl.style.color = '#10b981';
+            break;
+        }
+      }
     }
 
     function updateMessageInDOM(doc) {
@@ -692,7 +886,7 @@
       const counts = {};
       Object.values(reactions).forEach(emoji => counts[emoji] = (counts[emoji] || 0) + 1);
       const entries = Object.entries(counts).sort((a,b) => b[1] - a[1]).slice(0, 3);
-      pill.innerHTML = entries.map(([e, c]) => `<span>\( {e} \){c > 1 ? c : ''}</span>`).join('');
+      pill.innerHTML = entries.map(([e, c]) => `<span>${e}${c > 1 ? c : ''}</span>`).join('');
       pill.classList.add('has-reactions');
     }
 
@@ -711,7 +905,6 @@
       element.addEventListener('touchmove', cancel);
       element.addEventListener('mousedown', start);
       element.addEventListener('mouseup', cancel);
-      element.addEventListener('mouseleave', cancel);
     }
 
     function openReactionMenu(msgId, collectionPath) {
@@ -752,13 +945,22 @@
         col = collection(db, 'privateChats', activeChatId, 'messages');
       }
 
-      await addDoc(col, {
+      const newMsg = await addDoc(col, {
         text: encryptedText,
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anon',
         createdAt: serverTimestamp(),
         reactions: {}
       });
+
+      // Update last message time for chat ordering
+      if (activeChatId !== 'community') {
+        const chatRef = doc(db, 'privateChats', activeChatId);
+        await setDoc(chatRef, {
+          lastMessageAt: serverTimestamp(),
+          participants: activeChatId.split('_')
+        }, { merge: true });
+      }
     }
 
     els.messageInput.addEventListener('input', () => {
@@ -780,12 +982,7 @@
       }
     });
 
-    els.messageInput.addEventListener('keydown', e => { 
-      if (e.key === 'Enter' && !e.shiftKey) { 
-        e.preventDefault(); 
-        sendMessage(); 
-      } 
-    });
+    els.messageInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
     els.sendButton.addEventListener('click', sendMessage);
 
     function scrollToBottom() {
@@ -800,7 +997,6 @@
 
     // FAB and Bottom Sheet
     els.addFriendFab.addEventListener('click', openUsersSheet);
-
     async function openUsersSheet() {
       els.usersList.innerHTML = '';
       els.usersSheet.classList.add('open');
@@ -816,12 +1012,15 @@
       const userIds = new Set();
       snapshot.forEach(doc => {
         const data = doc.data();
-        if (data.userId && data.userId !== currentUser.uid) userIds.add(data.userId);
+        if (data.userId) userIds.add(data.userId);
       });
 
       let hasUsers = false;
 
+      // Fetch user details
       for (const uid of userIds) {
+        if (uid === currentUser.uid) continue;
+
         const userRef = doc(db, 'users', uid);
         const userSnap = await getDoc(userRef);
         if (!userSnap.exists()) continue;
@@ -850,7 +1049,7 @@
       }
 
       if (!hasUsers) {
-        els.usersList.innerHTML = '<p style="text-align:center; color:var(--text-muted);">No other users in community yet.</p>';
+        els.usersList.innerHTML = '<p style="text-align:center; color:var(--text-muted);">No users in community yet.</p>';
       }
     }
 
@@ -866,7 +1065,7 @@
       btn.disabled = true;
 
       // Reload chats list
-      await loadFriendsChats();
+      loadFriendsChats();
     }
 
     els.usersSheet.addEventListener('click', e => {
@@ -880,7 +1079,7 @@
     const resize = () => {
       w = canvas.width = window.innerWidth;
       h = canvas.height = window.innerHeight;
-      drops = Array(Math.floor(w / 20)).fill(0).map(() => ({
+      drops = Array(Math.floor(w/20)).fill(0).map(() => ({
         x: Math.random() * w,
         y: Math.random() * h,
         s: Math.random() * 2 + 2,
@@ -891,14 +1090,14 @@
     resize();
     const draw = () => {
       ctx.clearRect(0, 0, w, h);
-      ctx.strokeStyle = '#2563eb66';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 1;
       drops.forEach(d => {
         ctx.beginPath();
         ctx.moveTo(d.x, d.y);
         ctx.lineTo(d.x, d.y + d.l);
         ctx.stroke();
-        d.y += d.s * 1.5;
+        d.y += d.s;
         if (d.y > h) {
           d.y = -d.l;
           d.x = Math.random() * w;
@@ -907,6 +1106,14 @@
       requestAnimationFrame(draw);
     };
     draw();
+
+    // Handle user going offline
+    window.addEventListener('beforeunload', async () => {
+      if (currentUser) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        await updateDoc(userRef, { online: false, lastSeen: serverTimestamp() });
+      }
+    });
   </script>
 </body>
-  </html>
+</html>
