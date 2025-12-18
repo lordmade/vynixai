@@ -545,30 +545,34 @@
       let messagesQuery;
       let key;
       if (chatId === 'community') {
-        messagesQuery = query(collection(db, 'communityMessages'), orderBy('createdAt', 'asc'), limit(50));
+        messagesQuery = query(collection(db, 'communityMessages'), orderBy('createdAt', 'asc'));
         key = COMMUNITY_KEY;
       } else {
-        messagesQuery = query(collection(db, 'privateChats', chatId, 'messages'), orderBy('createdAt', 'asc'), limit(50));
+        messagesQuery = query(collection(db, 'privateChats', chatId, 'messages'), orderBy('createdAt', 'asc'));
         key = 'PRIVATE_DEMO_KEY';
       }
 
       const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+        if (isInitialLoad) {
+          els.messagesContainer.innerHTML = '';
+        }
+
         snapshot.docChanges().forEach(change => {
           if (change.type === 'added') {
             appendMessage(change.doc, key, chatId === 'community');
-            if (!isInitialLoad && change.doc.data().userId !== currentUser.uid) {
-              if (chatId === 'community') triggerNotification(change.doc.data().userName);
+            if (!isInitialLoad && change.doc.data().userId !== currentUser.uid && chatId === 'community') {
+              triggerNotification(change.doc.data().userName);
             }
           }
           if (change.type === 'modified') {
             updateMessageInDOM(change.doc);
           }
         });
+
+        scrollToBottom();
+
         if (isInitialLoad) {
-          scrollToBottom();
           isInitialLoad = false;
-        } else {
-          scrollToBottom();
         }
       });
       unsubscribes.push(unsubscribe);
@@ -653,13 +657,13 @@
       div.id = `msg-${id}`;
       div.innerHTML = `
         <div class="msg-row ${isOwn ? 'own' : ''}">
-          ${!isOwn ? `<div class="avatar">${initials}</div>` : ''}
+          \( {!isOwn ? `<div class="avatar"> \){initials}</div>` : ''}
           <div class="bubble-container">
-            ${!isOwn ? `<span class="sender-name">${data.userName}</span>` : ''}
+            \( {!isOwn && isCommunity ? `<span class="sender-name"> \){data.userName}</span>` : ''}
             <div class="bubble" data-id="${id}">
               ${escapeHtml(decryptedText)}
               <div class="meta-row">
-                <span class="timestamp" style="color:${isOwn?'rgba(255,255,255,0.7)':'rgba(0,0,0,0.4)'}">${time}</span>
+                <span class="timestamp" style="color:\( {isOwn?'rgba(255,255,255,0.7)':'rgba(0,0,0,0.4)'}"> \){time}</span>
               </div>
             </div>
             <div class="reaction-pill" id="react-${id}"></div>
@@ -688,7 +692,7 @@
       const counts = {};
       Object.values(reactions).forEach(emoji => counts[emoji] = (counts[emoji] || 0) + 1);
       const entries = Object.entries(counts).sort((a,b) => b[1] - a[1]).slice(0, 3);
-      pill.innerHTML = entries.map(([e, c]) => `<span>${e}${c > 1 ? c : ''}</span>`).join('');
+      pill.innerHTML = entries.map(([e, c]) => `<span>\( {e} \){c > 1 ? c : ''}</span>`).join('');
       pill.classList.add('has-reactions');
     }
 
@@ -707,6 +711,7 @@
       element.addEventListener('touchmove', cancel);
       element.addEventListener('mousedown', start);
       element.addEventListener('mouseup', cancel);
+      element.addEventListener('mouseleave', cancel);
     }
 
     function openReactionMenu(msgId, collectionPath) {
@@ -775,7 +780,7 @@
       }
     });
 
-    els.messageInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+    els.messageInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
     els.sendButton.addEventListener('click', sendMessage);
 
     function scrollToBottom() {
@@ -790,61 +795,59 @@
 
     // FAB and Bottom Sheet
     els.addFriendFab.addEventListener('click', openUsersSheet);
-async function openUsersSheet() {
-  els.usersList.innerHTML = '';
-  els.usersSheet.classList.add('open');
 
-  const myRef = doc(db, 'users', currentUser.uid);
-  const mySnap = await getDoc(myRef);
-  const myFriends = mySnap.data()?.friends || [];
+    async function openUsersSheet() {
+      els.usersList.innerHTML = '';
+      els.usersSheet.classList.add('open');
 
-  // Get unique users who have sent messages in community
-  const communityMsgsQ = query(collection(db, 'communityMessages'));
-  const snapshot = await getDocs(communityMsgsQ);
+      const myRef = doc(db, 'users', currentUser.uid);
+      const mySnap = await getDoc(myRef);
+      const myFriends = mySnap.data()?.friends || [];
 
-  const userIds = new Set();
-  snapshot.forEach(doc => {
-    const data = doc.data();
-    if (data.userId) userIds.add(data.userId);
-  });
+      // Get unique users who have sent messages in community
+      const communityMsgsQ = query(collection(db, 'communityMessages'), orderBy('createdAt'));
+      const snapshot = await getDocs(communityMsgsQ);
 
-  let hasUsers = false;
-
-  // Fetch user details
-  for (const uid of userIds) {
-    if (uid === currentUser.uid) continue;
-
-    const userRef = doc(db, 'users', uid);
-    const userSnap = await getDoc(userRef);
-    if (!userSnap.exists()) continue;
-
-    const user = userSnap.data();
-    const isFriend = myFriends.includes(uid);
-    hasUsers = true;
-
-    const item = document.createElement('div');
-    item.className = 'user-item';
-    item.innerHTML = `
-      <div class="user-avatar">${user.displayName?.charAt(0).toUpperCase() || '?'}</div>
-      <div class="user-name">${user.displayName || 'Anonymous'}</div>
-      <button class="add-btn ${isFriend ? 'added' : ''}" ${isFriend ? 'disabled' : ''}>
-        ${isFriend ? 'Added' : 'Add'}
-      </button>
-    `;
-
-    if (!isFriend) {
-      item.querySelector('.add-btn').addEventListener('click', async () => {
-        await addFriend(uid, item.querySelector('.add-btn'));
+      const userIds = new Set();
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.userId && data.userId !== currentUser.uid) userIds.add(data.userId);
       });
+
+      let hasUsers = false;
+
+      for (const uid of userIds) {
+        const userRef = doc(db, 'users', uid);
+        const userSnap = await getDoc(userRef);
+        if (!userSnap.exists()) continue;
+
+        const user = userSnap.data();
+        const isFriend = myFriends.includes(uid);
+        hasUsers = true;
+
+        const item = document.createElement('div');
+        item.className = 'user-item';
+        item.innerHTML = `
+          <div class="user-avatar">${user.displayName?.charAt(0).toUpperCase() || '?'}</div>
+          <div class="user-name">${user.displayName || 'Anonymous'}</div>
+          <button class="add-btn ${isFriend ? 'added' : ''}" ${isFriend ? 'disabled' : ''}>
+            ${isFriend ? 'Added' : 'Add'}
+          </button>
+        `;
+
+        if (!isFriend) {
+          item.querySelector('.add-btn').addEventListener('click', async () => {
+            await addFriend(uid, item.querySelector('.add-btn'));
+          });
+        }
+
+        els.usersList.appendChild(item);
+      }
+
+      if (!hasUsers) {
+        els.usersList.innerHTML = '<p style="text-align:center; color:var(--text-muted);">No other users in community yet.</p>';
+      }
     }
-
-    els.usersList.appendChild(item);
-  }
-
-  if (!hasUsers) {
-    els.usersList.innerHTML = '<p style="text-align:center; color:var(--text-muted);">No users in community yet.</p>';
-  }
-}
 
     async function addFriend(friendUid, btn) {
       const myRef = doc(db, 'users', currentUser.uid);
@@ -858,7 +861,7 @@ async function openUsersSheet() {
       btn.disabled = true;
 
       // Reload chats list
-      loadFriendsChats();
+      await loadFriendsChats();
     }
 
     els.usersSheet.addEventListener('click', e => {
@@ -872,7 +875,7 @@ async function openUsersSheet() {
     const resize = () => {
       w = canvas.width = window.innerWidth;
       h = canvas.height = window.innerHeight;
-      drops = Array(Math.floor(w/20)).fill(0).map(() => ({
+      drops = Array(Math.floor(w / 20)).fill(0).map(() => ({
         x: Math.random() * w,
         y: Math.random() * h,
         s: Math.random() * 2 + 2,
@@ -883,14 +886,14 @@ async function openUsersSheet() {
     resize();
     const draw = () => {
       ctx.clearRect(0, 0, w, h);
-      ctx.strokeStyle = '#2563eb';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#2563eb66';
+      ctx.lineWidth = 1.5;
       drops.forEach(d => {
         ctx.beginPath();
         ctx.moveTo(d.x, d.y);
         ctx.lineTo(d.x, d.y + d.l);
         ctx.stroke();
-        d.y += d.s;
+        d.y += d.s * 1.5;
         if (d.y > h) {
           d.y = -d.l;
           d.x = Math.random() * w;
