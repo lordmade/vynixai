@@ -340,7 +340,6 @@
       font-size: 14px;
       line-height: 1.3;
       contain: layout style paint;
-      position: relative;
     }
     .whatsapp-bubble.own {
       background: var(--bubble-own);
@@ -359,51 +358,6 @@
       color: rgba(0, 0, 0, 0.5);
       margin-top: 4px;
       text-align: right;
-    }
-    .message-actions {
-      position: absolute;
-      top: 4px;
-      right: 4px;
-      display: flex;
-      gap: 8px;
-      opacity: 0;
-      transition: opacity 0.2s;
-      pointer-events: none;
-    }
-    .whatsapp-bubble.own:hover .message-actions {
-      opacity: 1;
-      pointer-events: all;
-    }
-    .action-btn {
-      font-size: 18px;
-      cursor: pointer;
-      color: #444;
-    }
-    .action-btn.delete {
-      color: #ff4444;
-    }
-    .action-btn.edit {
-      color: #0066ff;
-    }
-    .reactions-container {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      margin-top: 2px;
-      justify-content: flex-end;
-    }
-    .reaction {
-      font-size: 12px;
-      padding: 2px 6px;
-      border-radius: 12px;
-      background: rgba(0, 0, 0, 0.05);
-      cursor: pointer;
-      user-select: none;
-    }
-    .edited-label {
-      font-size: 10px;
-      color: rgba(0, 0, 0, 0.4);
-      margin-left: 4px;
     }
     .input-area-whatsapp {
       position: fixed;
@@ -889,13 +843,6 @@
     let isPrivateChatMode = false;
     const chatListeners = new Map();
 
-    const MESSAGES_PER_LOAD = 50;
-    let oldestMessageKey = null;
-    let isLoadingMore = false;
-
-    // Edit time limit: 5 minutes (300000 ms)
-    const EDIT_TIME_LIMIT_MS = 300000;
-
     const els = {
       chatsList: document.getElementById('chatsList'),
       statusCards: document.getElementById('statusCards'),
@@ -1040,13 +987,14 @@
     }
 
     async function deleteChat(friendUid, chatItemElement) {
-      if (!confirm('Delete this chat? This will remove it from your list and delete all messages.')) return;
+      if (!confirm('Delete this chat? This will remove it from your list.')) return;
       const chatId = [currentUser.uid, friendUid].sort().join('_');
       const myFriendsRef = ref(db, `users/${currentUser.uid}/friends`);
       const myFriendsSnap = await get(myFriendsRef);
       const myFriends = myFriendsSnap.val() || [];
       const updatedFriends = myFriends.filter(uid => uid !== friendUid);
       await set(myFriendsRef, updatedFriends);
+      // Optionally delete messages
       await remove(ref(db, `privateChats/${chatId}`));
       chatItemElement.remove();
       showToast('Chat deleted');
@@ -1204,122 +1152,11 @@
       const isOwn = data.userId === currentUser.uid;
       const time = new Date(data.createdAt);
       const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const now = Date.now();
-      const age = now - data.createdAt;
-      const canEdit = isOwn && age < EDIT_TIME_LIMIT_MS;
-
       const bubble = document.createElement('div');
       bubble.className = `whatsapp-bubble ${isOwn ? 'own' : 'other'}`;
       bubble.id = key;
-      const edited = data.edited ? '<span class="edited-label">(edited)</span>' : '';
-      const reactionsHtml = data.reactions ? Object.entries(data.reactions).map(([emoji, count]) => `<span class="reaction">${emoji} ${count}</span>`).join('') : '';
-
-      bubble.innerHTML = `
-        ${escapeHtml(data.text)}${edited}
-        <div class="bubble-time">${timeStr}</div>
-        <div class="reactions-container">${reactionsHtml}</div>
-        ${isOwn ? '<div class="message-actions">' +
-          (canEdit ? '<span class="material-symbols-rounded action-btn edit" data-key="' + key + '">edit</span>' : '') +
-          '<span class="material-symbols-rounded action-btn delete" data-key="' + key + '">delete</span></div>' : ''}
-      `;
-      if (isOwn) {
-        if (canEdit) {
-          bubble.querySelector('.edit').addEventListener('click', (e) => {
-            e.stopPropagation();
-            startEditMessage(key, data.text, bubble);
-          });
-        }
-        bubble.querySelector('.delete').addEventListener('click', (e) => {
-          e.stopPropagation();
-          deleteMessage(key, bubble);
-        });
-      }
-      const reactionsContainer = bubble.querySelector('.reactions-container');
-      reactionsContainer.addEventListener('click', (e) => {
-        e.stopPropagation();
-        showReactionPicker(key, bubble);
-      });
+      bubble.innerHTML = `${escapeHtml(data.text)}<div class="bubble-time">${timeStr}</div>`;
       return bubble;
-    }
-
-    let editingMessageKey = null;
-    let editingBubble = null;
-
-    function startEditMessage(messageKey, currentText, bubbleElement) {
-      if (editingMessageKey) return;
-      editingMessageKey = messageKey;
-      editingBubble = bubbleElement;
-
-      els.messageInput.value = currentText;
-      els.messageInput.focus();
-      els.messageInput.setSelectionRange(currentText.length, currentText.length);
-
-      els.sendButton.innerHTML = '<span class="material-symbols-rounded">check</span>';
-      showToast('Editing message — press send to save');
-    }
-
-    async function saveEdit() {
-      if (!editingMessageKey) return;
-      const newText = els.messageInput.value.trim();
-      if (!newText) {
-        showToast('Message cannot be empty');
-        return;
-      }
-
-      await update(ref(db, `privateChats/${activeChatId}/messages/${editingMessageKey}`), {
-        text: newText,
-        edited: true
-      });
-
-      els.messageInput.value = '';
-      els.messageInput.style.height = 'auto';
-      els.sendButton.innerHTML = '<span class="material-symbols-rounded">send</span>';
-      editingMessageKey = null;
-      editingBubble = null;
-      showToast('Message edited');
-    }
-
-    async function deleteMessage(messageKey, bubbleElement) {
-      if (!confirm('Delete this message?')) return;
-      await remove(ref(db, `privateChats/${activeChatId}/messages/${messageKey}`));
-      bubbleElement.remove();
-      showToast('Message deleted');
-    }
-
-    async function addReaction(messageKey, emoji, bubbleElement) {
-      const reactionsRef = ref(db, `privateChats/${activeChatId}/messages/${messageKey}/reactions`);
-      const reactionsSnap = await get(reactionsRef);
-      const reactions = reactionsSnap.val() || {};
-      reactions[emoji] = (reactions[emoji] || 0) + 1;
-      await update(reactionsRef, reactions);
-      showToast(`Added ${emoji} reaction`);
-    }
-
-    function showReactionPicker(messageKey, bubbleElement) {
-      const picker = document.createElement('div');
-      picker.style.position = 'absolute';
-      picker.style.bottom = '100%';
-      picker.style.right: '0';
-      picker.style.background = 'white';
-      picker.style.border = '1px solid #ccc';
-      picker.style.borderRadius = '8px';
-      picker.style.padding = '8px';
-      picker.style.display = 'flex';
-      picker.style.gap = '8px';
-      picker.style.zIndex = '500';
-      REACTIONS.forEach((emoji) => {
-        const btn = document.createElement('span');
-        btn.style.fontSize = '20px';
-        btn.style.cursor = 'pointer';
-        btn.textContent = emoji;
-        btn.addEventListener('click', () => {
-          addReaction(messageKey, emoji, bubbleElement);
-          picker.remove();
-        });
-        btn.appendChild(btn);
-      });
-      bubbleElement.appendChild(picker);
-      setTimeout(() => picker.remove(), 5000);
     }
 
     function appendWhatsAppMessage(data, key) {
@@ -1328,11 +1165,6 @@
     }
 
     async function sendMessage() {
-      if (editingMessageKey) {
-        await saveEdit();
-        return;
-      }
-
       const text = els.messageInput.value.trim();
       if (!text || !currentUser || !activeChatId) return;
       els.messageInput.value = '';
@@ -1344,8 +1176,6 @@
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anon',
         createdAt: Date.now(),
-        edited: false,
-        reactions: {}
       });
       scrollToBottom();
     }
@@ -1358,14 +1188,6 @@
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
-      }
-      if (e.key === 'Escape' && editingMessageKey) {
-        els.messageInput.value = '';
-        els.messageInput.style.height = 'auto';
-        els.sendButton.innerHTML = '<span class="material-symbols-rounded">send</span>';
-        editingMessageKey = null;
-        editingBubble = null;
-        showToast('Edit cancelled');
       }
     });
     els.sendButton.addEventListener('click', sendMessage);
