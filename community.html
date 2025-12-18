@@ -156,7 +156,6 @@
       background: var(--primary-white);
       overflow-y: auto;
       padding-top: 8px;
-      /* Add bottom padding so last item is not hidden behind tabbar */
       padding-bottom: calc(var(--tabbar-height) + 20px);
     }
     .chat-item-whatsapp {
@@ -762,7 +761,6 @@
       to {
         transform: translateY(0);
       }
-      }
     }
     .search-bar {
       padding: 12px 16px;
@@ -802,7 +800,7 @@
     .loading-lines {
       flex: 1;
     }
-    .loading-line {
+    .loading-loader {
       height: 16px;
       background: #e0e0e0;
       border-radius: 8px;
@@ -810,6 +808,15 @@
     }
     .loading-line.short {
       width: 60%;
+    }
+    /* Infinite scroll loader for chats list */
+    .chats-loader {
+      padding: 20px;
+      text-align: center;
+      display: none;
+    }
+    .chats-loader.show {
+      display: block;
     }
 
     /* Custom Confirm Dialog */
@@ -877,9 +884,25 @@
     </header>
     <div class="main-content">
       <div class="swipe-container" id="swipeContainer">
-        <div class="chats-list-view">
+        <div class="chats-list-view" id="chatsListView">
           <div class="search-bar">
             <input type="text" class="search-input" id="chatSearchInput" placeholder="Search chats..." />
+          </div>
+          <div id="chatsLoader" class="chats-loader">
+            <div class="loading-placeholder shimmer">
+              <div class="loading-avatar shimmer"></div>
+              <div class="loading-lines">
+                <div class="loading-line shimmer"></div>
+                <div class="loading-line short shimmer"></div>
+              </div>
+            </div>
+            <div class="loading-placeholder shimmer">
+              <div class="loading-avatar shimmer"></div>
+              <div class="loading-lines">
+                <div class="loading-line shimmer"></div>
+                <div class="loading-line short shimmer"></div>
+              </div>
+            </div>
           </div>
           <div id="chatsList" class="chats-list"></div>
         </div>
@@ -958,7 +981,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, push, onValue, update, set, get, query, orderByChild, limitToLast, endBefore, onDisconnect, serverTimestamp, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, push, onValue, update, set, get, query, orderByChild, limitToLast, startAfter, onDisconnect, serverTimestamp, remove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
   
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -984,8 +1007,14 @@
     let allChatItems = [];
     let lastNotifiedMessageKey = {};
     let lastReadTimestamps = {};
+    let lastFriendKey = null; // For infinite scroll in friends list
+    let isLoadingFriends = false;
+    const FRIENDS_PER_LOAD = 20;
+
     const els = {
       chatsList: document.getElementById('chatsList'),
+      chatsLoader: document.getElementById('chatsLoader'),
+      chatsListView: document.getElementById('chatsListView'),
       statusCards: document.getElementById('statusCards'),
       statusComposer: document.getElementById('statusComposer'),
       statusInput: document.getElementById('statusInput'),
@@ -1069,18 +1098,18 @@
       });
       if (tabName === 'chats') {
         els.swipeContainer.classList.remove('status-active');
-        els.addFriendFab.style.display = 'flex'; // Show FAB on Chats
+        els.addFriendFab.style.display = 'flex';
         loadFriendsChatsRealTime();
       } else {
         els.swipeContainer.classList.add('status-active');
-        els.addFriendFab.style.display = 'none'; // Hide FAB on Status
+        els.addFriendFab.style.display = 'none';
         loadStatusPostsRealTime();
       }
     }
     document.querySelectorAll('.pill-tab').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
     els.addFriendFab.addEventListener('click', openUsersSheet);
 
-    els.floatingBackBtn.addEventListener('click', (e) => {
+    els.floatingBackBtn.addEventListener(click', (e) => {
       if (window.matchMedia('(min-width: 768px)').matches) {
         closeChatView();
       }
@@ -1270,145 +1299,176 @@
       }
     }
 
-    function showLoadingShimmer() {
-      els.chatsList.innerHTML = '';
-      for (let i = 0; i < 8; i++) {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'loading-placeholder shimmer';
-        placeholder.innerHTML = `
-          <div class="loading-avatar shimmer"></div>
-          <div class="loading-lines">
-            <div class="loading-line shimmer"></div>
-            <div class="loading-line short shimmer"></div>
-          </div>
-        `;
-        els.chatsList.appendChild(placeholder);
+    async function loadMoreFriends() {
+      if (isLoadingFriends || !currentUser) return;
+      isLoadingFriends = true;
+      els.chatsLoader.classList.add('show');
+
+      const friendsRef = ref(db, `users/${currentUser.uid}/friends`);
+      let friendsQuery;
+      if (lastFriendKey) {
+        friendsQuery = query(friendsRef, orderByKey(), startAfter(lastFriendKey), limitToLast(FRIENDS_PER_LOAD));
+      } else {
+        friendsQuery = query(friendsRef, orderByKey(), limitToLast(FRIENDS_PER_LOAD));
       }
+
+      const snapshot = await get(friendsQuery);
+      if (snapshot.size === 0) {
+        els.chatsLoader.classList.remove('show');
+        isLoadingFriends = false;
+        return;
+      }
+
+      const friendUids = [];
+      snapshot.forEach(child => {
+        friendUids.push(child.val());
+        lastFriendKey = child.key;
+      });
+
+      for (const friendUid of friendUids) {
+        const friendSnap = await get(ref(db, `users/${friendUid}`));
+        if (!friendSnap.exists()) continue;
+        const friend = friendSnap.val();
+        const chatId = [currentUser.uid, friendUid].sort().join('_');
+
+        if (document.getElementById(`friend-card-${friendUid}`)) continue;
+
+        const item = createFriendCard(friend, chatId, friendUid);
+        els.chatsList.appendChild(item);
+        allChatItems.push(item);
+        setupFriendListeners(item, friendUid, chatId);
+      }
+
+      els.chatsLoader.classList.remove('show');
+      isLoadingFriends = false;
+    }
+
+    function createFriendCard(friend, chatId, friendUid) {
+      const item = document.createElement('div');
+      item.className = 'chat-item-whatsapp';
+      item.id = `friend-card-${friendUid}`;
+      item.dataset.name = (friend.displayName || '').toLowerCase();
+      item.dataset.chatId = chatId;
+      const verifiedBadge = friend.verified ? '<span class="verified-badge">✓</span>' : '';
+      item.innerHTML = `
+        <div class="whatsapp-avatar \( {friend.online ? 'online' : ''}"> \){friend.displayName?.charAt(0).toUpperCase() || '?'}</div>
+        <div class="chat-info-whatsapp">
+          <div class="chat-header-row">
+            <div class="chat-name-wrapper">
+              <div class="chat-name-whatsapp">${friend.displayName || 'Anonymous'}</div>
+              ${verifiedBadge}
+            </div>
+            <div class="chat-time-whatsapp" id="time-${chatId}"></div>
+          </div>
+          <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
+        </div>
+        <button class="delete-chat-btn" title="Clear chat">
+          <span class="material-symbols-rounded" style="font-size:20px;">delete</span>
+        </button>
+      `;
+      return item;
+    }
+
+    function setupFriendListeners(item, friendUid, chatId) {
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.delete-chat-btn')) return;
+        openPrivateChat(chatId);
+      });
+      item.querySelector('.delete-chat-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteChat(chatId, friendUid);
+      });
+
+      const messagesRef = ref(db, `privateChats/${chatId}/messages`);
+      const messagesQuery = query(messagesRef, orderByChild('createdAt'));
+      const unsubscribeMsg = onValue(messagesQuery, (snap) => {
+        const previewEl = document.getElementById(`preview-${chatId}`);
+        const timeEl = document.getElementById(`time-${chatId}`);
+        if (!previewEl || !timeEl) return;
+
+        let unreadCount = 0;
+        let lastTimestamp = 0;
+        let lastMsgText = 'Tap to start chatting';
+
+        if (snap.size > 0) {
+          snap.forEach((child) => {
+            const msg = child.val();
+            if (msg.createdAt > (lastReadTimestamps[chatId] || 0) && msg.userId !== currentUser.uid) {
+              unreadCount++;
+            }
+            if (msg.createdAt > lastTimestamp) {
+              lastTimestamp = msg.createdAt;
+              const isOwn = msg.userId === currentUser.uid;
+              const shortText = msg.text.length > 30 ? msg.text.slice(0, 27) + '...' : msg.text;
+              lastMsgText = isOwn ? `You: ${shortText}` : shortText;
+            }
+          });
+        }
+
+        previewEl.textContent = lastMsgText;
+        previewEl.classList.remove('typing-indicator');
+
+        if (lastTimestamp > 0) {
+          const time = new Date(lastTimestamp);
+          const now = new Date();
+          const diffMs = now - time;
+          const diffMins = Math.floor(diffMs / 60000);
+          const diffHours = Math.floor(diffMs / 3600000);
+          const diffDays = Math.floor(diffMs / 86400000);
+          let timeStr = diffMins < 1 ? 'now' : diffMins < 60 ? `\( {diffMins}m` : diffHours < 24 ? ` \){diffHours}h` : diffDays < 7 ? `${diffDays}d` : time.toLocaleDateString();
+          timeEl.textContent = timeStr;
+        } else {
+          timeEl.textContent = '';
+        }
+
+        updateUnreadCount(chatId, unreadCount);
+
+        if (lastTimestamp > (item.dataset.lastTs || 0)) {
+          item.dataset.lastTs = lastTimestamp;
+          els.chatsList.prepend(item);
+        }
+      });
+
+      const onlineRef = ref(db, `users/${friendUid}/online`);
+      onValue(onlineRef, (snap) => {
+        const avatar = item.querySelector('.whatsapp-avatar');
+        if (snap.val() === true) {
+          avatar.classList.add('online');
+        } else {
+          avatar.classList.remove('online');
+        }
+      });
+
+      chatListeners.set(chatId, unsubscribeMsg);
     }
 
     async function loadFriendsChatsRealTime() {
       if (!currentUser) return;
-      showLoadingShimmer();
-      const userRef = ref(db, `users/${currentUser.uid}`);
-      onValue(userRef, async (snapshot) => {
-        if (!snapshot.exists()) return;
-        els.chatsList.innerHTML = '';
-        allChatItems = [];
-        const data = snapshot.val();
-        const friends = [...new Set(data.friends || [])];
-        if (friends.length === 0) {
-          els.chatsList.innerHTML = `<div style="text-align:center;padding:40px;color:var(--gray-mid);"><span class="material-symbols-rounded" style="font-size:48px;">group_add</span><p>No friends yet</p><p style="font-size:14px;margin-top:8px;">Tap the + button to add friends</p></div>`;
-          return;
-        }
 
-        for (const friendUid of friends) {
-          const friendSnap = await get(ref(db, `users/${friendUid}`));
-          if (!friendSnap.exists()) continue;
-          const friend = friendSnap.val();
-          const chatId = [currentUser.uid, friendUid].sort().join('_');
+      // Reset for new load
+      lastFriendKey = null;
+      isLoadingFriends = false;
+      allChatItems = [];
+      els.chatsList.innerHTML = '';
+      els.chatsLoader.classList.remove('show');
 
-          if (document.getElementById(`friend-card-${friendUid}`)) continue;
+      const friendsSnap = await get(ref(db, `users/${currentUser.uid}/friends`));
+      if (!friendsSnap.exists() || friendsSnap.val().length === 0) {
+        els.chatsList.innerHTML = `<div style="text-align:center;padding:40px;color:var(--gray-mid);"><span class="material-symbols-rounded" style="font-size:48px;">group_add</span><p>No friends yet</p><p style="font-size:14px;margin-top:8px;">Tap the + button to add friends</p></div>`;
+        return;
+      }
 
-          const item = document.createElement('div');
-          item.className = 'chat-item-whatsapp';
-          item.id = `friend-card-${friendUid}`;
-          item.dataset.name = (friend.displayName || '').toLowerCase();
-          item.dataset.chatId = chatId;
-          const verifiedBadge = friend.verified ? '<span class="verified-badge">✓</span>' : '';
-          item.innerHTML = `
-            <div class="whatsapp-avatar \( {friend.online ? 'online' : ''}"> \){friend.displayName.charAt(0).toUpperCase()}</div>
-            <div class="chat-info-whatsapp">
-              <div class="chat-header-row">
-                <div class="chat-name-wrapper">
-                  <div class="chat-name-whatsapp">${friend.displayName}</div>
-                  ${verifiedBadge}
-                </div>
-                <div class="chat-time-whatsapp" id="time-${chatId}"></div>
-              </div>
-              <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
-            </div>
-            <button class="delete-chat-btn" title="Clear chat">
-              <span class="material-symbols-rounded" style="font-size:20px;">delete</span>
-            </button>
-          `;
-          item.addEventListener('click', (e) => {
-            if (e.target.closest('.delete-chat-btn')) return;
-            openPrivateChat(chatId);
-          });
-          item.querySelector('.delete-chat-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            deleteChat(chatId, friendUid);
-          });
-
-          els.chatsList.appendChild(item);
-          allChatItems.push(item);
-
-          const messagesRef = ref(db, `privateChats/${chatId}/messages`);
-          const messagesQuery = query(messagesRef, orderByChild('createdAt'));
-          const unsubscribeMsg = onValue(messagesQuery, (snap) => {
-            const previewEl = document.getElementById(`preview-${chatId}`);
-            const timeEl = document.getElementById(`time-${chatId}`);
-            if (!previewEl || !timeEl) return;
-
-            let unreadCount = 0;
-            let lastTimestamp = 0;
-            let lastMsgText = 'Tap to start chatting';
-
-            if (snap.size > 0) {
-              snap.forEach((child) => {
-                const msg = child.val();
-                if (msg.createdAt > (lastReadTimestamps[chatId] || 0) && msg.userId !== currentUser.uid) {
-                  unreadCount++;
-                }
-                if (msg.createdAt > lastTimestamp) {
-                  lastTimestamp = msg.createdAt;
-                  const isOwn = msg.userId === currentUser.uid;
-                  const shortText = msg.text.length > 30 ? msg.text.slice(0, 27) + '...' : msg.text;
-                  lastMsgText = isOwn ? `You: ${shortText}` : shortText;
-                }
-              });
-            }
-
-            previewEl.textContent = lastMsgText;
-            previewEl.classList.remove('typing-indicator');
-
-            if (lastTimestamp > 0) {
-              const time = new Date(lastTimestamp);
-              const now = new Date();
-              const diffMs = now - time;
-              const diffMins = Math.floor(diffMs / 60000);
-              const diffHours = Math.floor(diffMs / 3600000);
-              const diffDays = Math.floor(diffMs / 86400000);
-              let timeStr = diffMins < 1 ? 'now' : diffMins < 60 ? `\( {diffMins}m` : diffHours < 24 ? ` \){diffHours}h` : diffDays < 7 ? `${diffDays}d` : time.toLocaleDateString();
-              timeEl.textContent = timeStr;
-            } else {
-              timeEl.textContent = '';
-            }
-
-            updateUnreadCount(chatId, unreadCount);
-
-            if (lastTimestamp > (item.dataset.lastTs || 0)) {
-              item.dataset.lastTs = lastTimestamp;
-              if (item.parentElement) {
-                els.chatsList.prepend(item);
-              }
-            }
-          });
-
-          const onlineRef = ref(db, `users/${friendUid}/online`);
-          onValue(onlineRef, (snap) => {
-            const avatar = item.querySelector('.whatsapp-avatar');
-            if (snap.val() === true) {
-              avatar.classList.add('online');
-            } else {
-              avatar.classList.remove('online');
-            }
-          });
-
-          chatListeners.set(chatId, unsubscribeMsg);
-        }
-      });
+      await loadMoreFriends();
     }
+
+    // Infinite scroll for friends list
+    els.chatsListView.addEventListener('scroll', () => {
+      if (isLoadingFriends) return;
+      const { scrollTop, scrollHeight, clientHeight } = els.chatsListView;
+      if (scrollTop + clientHeight >= scrollHeight - 100) {
+        loadMoreFriends();
+      }
+    });
 
     els.chatSearchInput.addEventListener('input', () => {
       const query = els.chatSearchInput.value.toLowerCase().trim();
@@ -1656,6 +1716,7 @@
       btn.classList.add('added');
       btn.disabled = true;
       showToast('Friend added successfully!');
+      // Reload friends list with infinite scroll reset
       loadFriendsChatsRealTime();
     }
 
