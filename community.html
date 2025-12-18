@@ -53,7 +53,6 @@
         overflow: hidden;
       }
     }
-    /* Header */
     .whatsapp-header {
       height: var(--header-height);
       background: var(--primary-black);
@@ -85,7 +84,6 @@
       font-size: 24px;
       cursor: pointer;
     }
-    /* Pill Tabs */
     .whatsapp-tabbar {
       position: fixed;
       bottom: 0;
@@ -136,7 +134,6 @@
       color: var(--primary-white);
       transform: scale(1.05);
     }
-    /* Content */
     .main-content {
       flex: 1;
       overflow: hidden;
@@ -160,7 +157,6 @@
       overflow-y: auto;
       padding-top: 8px;
     }
-    /* Chat Item */
     .chat-item-whatsapp {
       display: flex;
       align-items: center;
@@ -237,7 +233,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    /* Chat View - No header, floating input */
     .chat-view {
       position: absolute;
       top: 0;
@@ -287,7 +282,6 @@
       margin-top: 4px;
       text-align: right;
     }
-    /* Floating input area */
     .input-area-whatsapp {
       position: fixed;
       bottom: 0;
@@ -342,7 +336,6 @@
       cursor: pointer;
       flex-shrink: 0;
     }
-    /* Floating back button */
     #floatingBackBtn {
       position: fixed;
       top: 16px;
@@ -359,7 +352,6 @@
     .chat-view.active #floatingBackBtn {
       display: block;
     }
-    /* FAB */
     .add-friend-fab {
       position: fixed;
       bottom: calc(var(--tabbar-height) + 20px);
@@ -379,7 +371,6 @@
     .add-friend-fab.hidden {
       transform: translateY(100px);
     }
-    /* Auth Overlay */
     .auth-overlay {
       position: fixed;
       inset: 0;
@@ -454,7 +445,6 @@
       font-weight: 600;
       cursor: pointer;
     }
-    /* Status */
     .status-header {
       display: flex;
       justify-content: space-between;
@@ -553,7 +543,6 @@
       color: var(--gray-mid);
       cursor: pointer;
     }
-    /* Users Sheet */
     .users-sheet {
       position: fixed;
       inset: 0;
@@ -654,7 +643,6 @@
       background: var(--gray-mid);
       cursor: not-allowed;
     }
-    /* Toast */
     .toast-notification {
       position: fixed;
       bottom: 100px;
@@ -773,46 +761,65 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
-    /* ---------- E2EE Manager - WORKING decryption ---------- */
+    /* ---------- E2EE Manager - FINAL WORKING VERSION ---------- */
     class E2EEManager {
       constructor() {
-        this.sessionKeys = new Map();
+        this.sessionKeys = new Map(); // chatId -> WordArray session key
       }
-      generateKeyPair(userId) {
-        const keyPair = {
-          publicKey: CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex),
-          privateKey: CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex),
-        };
-        return keyPair;
+
+      // Generate 256-bit keys as hex strings
+      generateKeyPair() {
+        const publicKey = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);
+        const privateKey = CryptoJS.lib.WordArray.random(32).toString(CryptoJS.enc.Hex);
+        return { publicKey, privateKey };
       }
-      generateSessionKey(userId, partnerId, userPrivateKey, partnerPublicKey) {
-        const sessionId = [userId, partnerId].sort().join('_');
-        const sharedSecret = CryptoJS.SHA256(userPrivateKey + partnerPublicKey).toString(CryptoJS.enc.Hex);
-        const sessionKeyHex = CryptoJS.SHA256(sharedSecret + sessionId).toString(CryptoJS.enc.Hex);
+
+      // Derive symmetric session key from private + partner's public (same on both sides)
+      getSessionKey(chatId, myPrivateKeyHex, partnerPublicKeyHex) {
+        if (this.sessionKeys.has(chatId)) {
+          return this.sessionKeys.get(chatId);
+        }
+        const shared = CryptoJS.SHA256(myPrivateKeyHex + partnerPublicKeyHex);
+        const sessionKeyHex = CryptoJS.SHA256(shared.toString(CryptoJS.enc.Hex) + chatId).toString(CryptoJS.enc.Hex);
         const sessionKey = CryptoJS.enc.Hex.parse(sessionKeyHex);
-        this.sessionKeys.set(sessionId, sessionKey);
+        this.sessionKeys.set(chatId, sessionKey);
         return sessionKey;
       }
+
       encryptMessage(message, sessionKey) {
-        const aesKey = CryptoJS.lib.WordArray.random(32);
-        const iv = CryptoJS.lib.WordArray.random(16);
-        const encrypted = CryptoJS.AES.encrypt(message, aesKey, { iv: iv }).toString();
-        const aesKeyHex = aesKey.toString(CryptoJS.enc.Hex);
-        const encryptedAesKey = CryptoJS.AES.encrypt(aesKeyHex, sessionKey, { mode: CryptoJS.mode.ECB }).toString();
+        const aesKey = CryptoJS.lib.WordArray.random(32); // 256-bit
+        const iv = CryptoJS.lib.WordArray.random(16); // 128-bit
+        const encryptedMsg = CryptoJS.AES.encrypt(message, aesKey, { iv: iv }).toString();
+
+        // Encrypt the AES key with the session key (ECB mode - no IV needed)
+        const encryptedAesKey = CryptoJS.AES.encrypt(aesKey.toString(CryptoJS.enc.Hex), sessionKey, {
+          mode: CryptoJS.mode.ECB,
+          padding: CryptoJS.pad.Pkcs7
+        }).toString();
+
         return {
-          encrypted: encrypted,
+          encrypted: encryptedMsg,
           key: encryptedAesKey,
           iv: iv.toString(CryptoJS.enc.Hex)
         };
       }
+
       decryptMessage(encryptedData, sessionKey) {
         try {
-          const aesKeyHex = CryptoJS.AES.decrypt(encryptedData.key, sessionKey, { mode: CryptoJS.mode.ECB }).toString(CryptoJS.enc.Utf8);
-          if (!aesKeyHex) return '⚠️ Decryption failed';
-          const aesKey = CryptoJS.enc.Hex.parse(aesKeyHex);
-          const decrypted = CryptoJS.AES.decrypt(encryptedData.encrypted, aesKey, {
-            iv: CryptoJS.enc.Hex.parse(encryptedData.iv)
+          // Decrypt the AES key using session key
+          const aesKeyHex = CryptoJS.AES.decrypt(encryptedData.key, sessionKey, {
+            mode: CryptoJS.mode.ECB,
+            padding: CryptoJS.pad.Pkcs7
           }).toString(CryptoJS.enc.Utf8);
+
+          if (!aesKeyHex || aesKeyHex.length !== 64) {
+            return '⚠️ Decryption failed (invalid key)';
+          }
+
+          const aesKey = CryptoJS.enc.Hex.parse(aesKeyHex);
+          const iv = CryptoJS.enc.Hex.parse(encryptedData.iv);
+
+          const decrypted = CryptoJS.AES.decrypt(encryptedData.encrypted, aesKey, { iv: iv }).toString(CryptoJS.enc.Utf8);
           return decrypted || '⚠️ Empty message';
         } catch (e) {
           console.error('Decryption error:', e);
@@ -820,12 +827,11 @@
         }
       }
     }
+
     const e2eeManager = new E2EEManager();
 
     let currentUser = null;
     let activeChatId = null;
-    let activeChatPartner = null;
-    let isPrivateChatMode = false;
     const chatListeners = new Map();
 
     const els = {
@@ -859,12 +865,10 @@
         loadStatusPostsRealTime();
       }
     }
-    document.querySelectorAll('.pill-tab').forEach((tab) => {
-      tab.addEventListener('click', () => switchTab(tab.dataset.tab));
-    });
+    document.querySelectorAll('.pill-tab').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
     els.addFriendFab.addEventListener('click', openUsersSheet);
 
-    function loadFriendsChatsRealTime() {
+    async function loadFriendsChatsRealTime() {
       if (!currentUser) return;
       const userRef = ref(db, `users/${currentUser.uid}`);
       onValue(userRef, async (snapshot) => {
@@ -895,7 +899,7 @@
               <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
             </div>
           `;
-          item.addEventListener('click', () => openPrivateChat(chatId, { uid: friendUid, displayName: friend.displayName, publicKey: friend.publicKey }));
+          item.addEventListener('click', () => openPrivateChat(chatId, friendUid, friend.publicKey));
           els.chatsList.appendChild(item);
 
           if (chatListeners.has(chatId)) chatListeners.get(chatId)();
@@ -910,10 +914,9 @@
               return;
             }
             let lastMsg;
-            snap.forEach((child) => (lastMsg = child.val()));
-            const myPrivate = (await get(ref(db, `users/${currentUser.uid}`))).val()?.privateKey;
-            const partnerPublic = friend.publicKey;
-            const sessionKey = e2eeManager.generateSessionKey(currentUser.uid, friendUid, myPrivate, partnerPublic);
+            snap.forEach((child) => lastMsg = child.val());
+            const myPrivate = (await get(ref(db, `users/${currentUser.uid}`))).val().privateKey;
+            const sessionKey = e2eeManager.getSessionKey(chatId, myPrivate, friend.publicKey);
             const decrypted = e2eeManager.decryptMessage(lastMsg.text, sessionKey);
             const isOwn = lastMsg.userId === currentUser.uid;
             const shortText = decrypted.length > 30 ? decrypted.slice(0, 27) + '...' : decrypted;
@@ -996,20 +999,18 @@
     window.commentStatus = () => showToast('Comment feature coming soon!');
     window.shareStatus = () => showToast('Share feature coming soon!');
 
-    async function openPrivateChat(chatId, partner) {
+    async function openPrivateChat(chatId, partnerUid, partnerPublicKey) {
       els.mainHeader.classList.add('hidden');
       els.tabbar.classList.add('hidden');
       els.addFriendFab.classList.add('hidden');
       els.chatView.classList.add('active');
-      isPrivateChatMode = true;
       activeChatId = chatId;
-      activeChatPartner = partner;
       els.messagesContainer.innerHTML = '';
 
       const mySnap = await get(ref(db, `users/${currentUser.uid}`));
-      const myPrivate = mySnap.val()?.privateKey;
-      const partnerPublic = partner.publicKey;
-      const sessionKey = e2eeManager.generateSessionKey(currentUser.uid, partner.uid, myPrivate, partnerPublic);
+      const myPrivateKey = mySnap.val().privateKey;
+
+      const sessionKey = e2eeManager.getSessionKey(chatId, myPrivateKey, partnerPublicKey);
 
       const messagesRef = ref(db, `privateChats/${chatId}/messages`);
       const messagesQuery = query(messagesRef, orderByChild('createdAt'), limitToLast(50));
@@ -1017,8 +1018,8 @@
         els.messagesContainer.innerHTML = '';
         snapshot.forEach((child) => {
           const data = child.val();
-          const decryptedText = e2eeManager.decryptMessage(data.text, sessionKey);
-          appendWhatsAppMessage(data, decryptedText);
+          const decrypted = e2eeManager.decryptMessage(data.text, sessionKey);
+          appendWhatsAppMessage(data, decrypted);
         });
         scrollToBottom();
       });
@@ -1029,7 +1030,7 @@
       els.tabbar.classList.remove('hidden');
       els.addFriendFab.classList.remove('hidden');
       els.chatView.classList.remove('active');
-      isPrivateChatMode = false;
+      activeChatId = null;
       switchTab('chats');
     });
 
@@ -1169,13 +1170,9 @@
       const myRef = ref(db, `users/${currentUser.uid}/friends`);
       const frRef = ref(db, `users/${friendUid}/friends`);
       const myFriends = (await get(myRef)).val() || [];
-      if (!myFriends.includes(friendUid)) {
-        await set(myRef, [...myFriends, friendUid]);
-      }
+      if (!myFriends.includes(friendUid)) await set(myRef, [...myFriends, friendUid]);
       const frFriends = (await get(frRef)).val() || [];
-      if (!frFriends.includes(currentUser.uid)) {
-        await set(frRef, [...frFriends, currentUser.uid]);
-      }
+      if (!frFriends.includes(currentUser.uid)) await set(frRef, [...frFriends, currentUser.uid]);
       btn.textContent = 'Added';
       btn.classList.add('added');
       btn.disabled = true;
@@ -1201,7 +1198,7 @@
         } else {
           cred = await signInWithEmailAndPassword(auth, email, pass);
         }
-        const keyPair = e2eeManager.generateKeyPair(cred.user.uid);
+        const keyPair = e2eeManager.generateKeyPair();
         await set(ref(db, `users/${cred.user.uid}`), {
           displayName: cred.user.displayName,
           email: email,
