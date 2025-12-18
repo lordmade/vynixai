@@ -270,6 +270,97 @@
       top: 12px;
       right: 20px;
     }
+    
+    /* New Email Search Features */
+    .search-container {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      padding: 0 4px;
+    }
+    .search-input {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      font-size: 14px;
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    .search-btn {
+      padding: 12px 16px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .search-btn:hover {
+      background: #1d4ed8;
+    }
+    .search-result {
+      margin-top: 16px;
+    }
+    .no-results {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 20px;
+      font-size: 14px;
+    }
+    .user-details {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .user-email {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    
+    /* New Guest Bottom Sheet */
+    .guest-bottom-sheet {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 350;
+      display: none;
+      align-items: flex-end;
+    }
+    .guest-bottom-sheet.open {
+      display: flex;
+    }
+    .guest-box {
+      background: #fff;
+      width: 100%;
+      border-radius: 24px 24px 0 0;
+      padding: 24px;
+      animation: slideUp 0.3s;
+    }
+    @media(min-width: 768px) {
+      .guest-bottom-sheet {
+        align-items: center;
+        justify-content: center;
+      }
+      .guest-box {
+        width: 380px;
+        border-radius: 20px;
+      }
+    }
+    .guest-title {
+      font-family: 'Poppins', sans-serif;
+      font-weight: 600;
+      font-size: 18px;
+      margin: 0 0 8px 0;
+    }
+    .guest-subtitle {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin: 0 0 20px 0;
+    }
   </style>
 </head>
 <body>
@@ -374,11 +465,28 @@
     </div>
   </div>
 
-  <!-- Users Bottom Sheet -->
+  <!-- Email Search Bottom Sheet -->
   <div class="users-sheet" id="usersSheet">
     <div class="users-box">
-      <h2 style="margin:0 0 20px 0; font-family:'Poppins', sans-serif;">Add Friends</h2>
-      <div id="usersList"></div>
+      <h2 style="margin:0 0 20px 0; font-family:'Poppins', sans-serif;">Add Friend by Email</h2>
+      <div class="search-container">
+        <input type="email" id="friendEmailInput" class="search-input" placeholder="Enter friend's email address">
+        <button class="search-btn" onclick="searchByEmail()">Search</button>
+      </div>
+      <div id="searchResult" class="search-result"></div>
+    </div>
+  </div>
+
+  <!-- Guest User Bottom Sheet -->
+  <div class="guest-bottom-sheet" id="guestBottomSheet">
+    <div class="guest-box">
+      <h2 class="guest-title">Join Vynix Lingua</h2>
+      <p class="guest-subtitle">Sign up to add friends and start chatting</p>
+      <input type="email" id="guestEmail" class="auth-input" placeholder="Your email address">
+      <input type="password" id="guestPassword" class="auth-input" placeholder="Create password">
+      <input type="text" id="guestName" class="auth-input" placeholder="Your name">
+      <button class="auth-btn" onclick="handleGuestSignUp()">Create Account</button>
+      <button onclick="closeGuestSheet()" style="background:none; border:none; color:#666; width:100%; margin-top:10px; font-size:13px;">Maybe later</button>
     </div>
   </div>
 
@@ -386,6 +494,7 @@
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
     import { getFirestore, collection, query, orderBy, limit, addDoc, onSnapshot, serverTimestamp, doc, updateDoc, setDoc, where, getDocs, arrayUnion, getDoc, arrayRemove } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+    import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-functions.js';
 
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -396,6 +505,7 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db = getFirestore(app);
+    const functions = getFunctions(app);
 
     // Community E2EE key
     const COMMUNITY_KEY = "66G+aI1?Z&LxYnrFb^xv;Fg=RA%PqJb0d&C3C2Sd7K=ZF=0K5Ers5%1wBBz80RPW";
@@ -415,7 +525,7 @@
     let selectedMessageId = null;
     let typingTimeout;
     let isInitialLoad = true;
-    let unsubscribes = [];
+    let unsubscribes = new Set();
     let messageStatusTimeouts = new Map();
 
     const notifSound = new Audio("data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU");
@@ -445,7 +555,10 @@
       shieldIcon: document.getElementById('shieldIcon'),
       addFriendFab: document.getElementById('addFriendFab'),
       usersSheet: document.getElementById('usersSheet'),
-      usersList: document.getElementById('usersList')
+      usersList: document.getElementById('usersList'),
+      guestBottomSheet: document.getElementById('guestBottomSheet'),
+      friendEmailInput: document.getElementById('friendEmailInput'),
+      searchResult: document.getElementById('searchResult')
     };
 
     // Tab Switching
@@ -492,7 +605,7 @@
       document.querySelector('.auth-btn').textContent = window.isSignUp ? "Sign Up" : "Start Chatting";
     };
     window.handleAuth = async () => {
-      const email = document.getElementById('authEmail').value.trim();
+      const email = document.getElementById('authEmail').value.trim().toLowerCase();
       const pass = document.getElementById('authPass').value;
       if (!email || !pass) return alert("Please fill fields");
       try {
@@ -506,6 +619,7 @@
         // Create user doc if not exists
         const userRef = doc(db, 'users', cred.user.uid);
         await setDoc(userRef, { 
+          email: email,
           displayName: cred.user.displayName, 
           lastSeen: serverTimestamp(), 
           friends: [],
@@ -514,6 +628,41 @@
         }, { merge: true });
         els.authOverlay.classList.remove('open');
       } catch (e) { alert(e.message); }
+    };
+
+    // Guest Bottom Sheet Functions
+    window.closeGuestSheet = () => {
+      els.guestBottomSheet.classList.remove('open');
+    };
+    window.handleGuestSignUp = async () => {
+      const email = document.getElementById('guestEmail').value.trim().toLowerCase();
+      const password = document.getElementById('guestPassword').value;
+      const displayName = document.getElementById('guestName').value.trim();
+      
+      if (!email || !password || !displayName) {
+        alert('Please fill in all fields');
+        return;
+      }
+      
+      try {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(cred.user, { displayName: displayName });
+        
+        const userRef = doc(db, 'users', cred.user.uid);
+        await setDoc(userRef, { 
+          email: email,
+          displayName: displayName, 
+          lastSeen: serverTimestamp(), 
+          friends: [],
+          online: true,
+          lastMessageRead: {}
+        }, { merge: true });
+        
+        els.guestBottomSheet.classList.remove('open');
+        showToast('Account created successfully!', '✓');
+      } catch (e) { 
+        alert(e.message); 
+      }
     };
 
     onAuthStateChanged(auth, async (user) => {
@@ -580,7 +729,7 @@
           orderBy('createdAt', 'desc'),
           limit(1)
         );
-        onSnapshot(messagesQ, (snapshot) => {
+        const unsubscribe = onSnapshot(messagesQ, (snapshot) => {
           const previewEl = document.getElementById(`preview-${chatId}`);
           const timeEl = document.getElementById(`time-${chatId}`);
           const unreadEl = document.getElementById(`unread-${chatId}`);
@@ -625,8 +774,78 @@
             }
           }
         });
+        unsubscribes.add(unsubscribe);
       }
     }
+
+    // Email Search Functions
+    window.searchByEmail = async () => {
+      const email = document.getElementById('friendEmailInput').value.trim().toLowerCase();
+      const resultDiv = document.getElementById('searchResult');
+      
+      if (!email) {
+        resultDiv.innerHTML = '<div class="no-results">Please enter an email address</div>';
+        return;
+      }
+      
+      if (email === currentUser.email) {
+        resultDiv.innerHTML = '<div class="no-results">You cannot add yourself as a friend</div>';
+        return;
+      }
+      
+      try {
+        // Search for user by email
+        const usersRef = collection(db, 'users');
+        const q = query(usersRef, where('email', '==', email));
+        const querySnapshot = await getDocs(q);
+        
+        resultDiv.innerHTML = '';
+        
+        if (querySnapshot.empty) {
+          resultDiv.innerHTML = '<div class="no-results">No user found with this email address</div>';
+          return;
+        }
+        
+        // Check if already friends
+        const userRef = doc(db, 'users', currentUser.uid);
+        const userSnap = await getDoc(userRef);
+        const friends = userSnap.data()?.friends || [];
+        
+        querySnapshot.forEach((doc) => {
+          const userData = doc.data();
+          const isAlreadyFriend = friends.includes(doc.id);
+          
+          const userItem = document.createElement('div');
+          userItem.className = 'user-item';
+          userItem.innerHTML = `
+            <div class="user-avatar">${userData.displayName?.charAt(0).toUpperCase() || '?'}</div>
+            <div class="user-details">
+              <div class="user-name">${userData.displayName || 'Anonymous'}</div>
+              <div class="user-email">${userData.email}</div>
+            </div>
+            <button class="add-btn ${isAlreadyFriend ? 'added' : ''}" ${isAlreadyFriend ? 'disabled' : ''}>
+              ${isAlreadyFriend ? 'Added' : 'Add Friend'}
+            </button>
+          `;
+          
+          if (!isAlreadyFriend) {
+            userItem.querySelector('.add-btn').addEventListener('click', async () => {
+              await addFriend(doc.id);
+              userItem.querySelector('.add-btn').textContent = 'Added';
+              userItem.querySelector('.add-btn').classList.add('added');
+              userItem.querySelector('.add-btn').disabled = true;
+              showToast(`Added ${userData.displayName || userData.email} as friend!`, '✓');
+            });
+          }
+          
+          resultDiv.appendChild(userItem);
+        });
+        
+      } catch (error) {
+        console.error('Error searching for user:', error);
+        resultDiv.innerHTML = '<div class="no-results">Error searching for user. Please try again.</div>';
+      }
+    };
 
     // Open a chat
     function openChat(chatId, partner = null) {
@@ -692,12 +911,16 @@
           scrollToBottom();
         }
       });
-      unsubscribes.push(unsubscribe);
+      unsubscribes.add(unsubscribe);
     }
 
     function openPrivateChat(chatId, partner) {
       openChat(chatId, partner);
     }
+
+    els.backBtn.addEventListener('click', () => {
+      document.querySelector('.tab-btn[data-tab="chats"]').click();
+    });
 
     async function updatePrivateChatStatus(partnerUid) {
       const partnerRef = doc(db, 'users', partnerUid);
@@ -716,7 +939,7 @@
           els.privateStatus.textContent = isOnline ? 'Online' : `Last seen ${getTimeAgo(partner.lastSeen?.toDate())}`;
         }
       });
-      unsubscribes.push(unsubscribe);
+      unsubscribes.add(unsubscribe);
     }
 
     function getTimeAgo(date) {
@@ -744,10 +967,6 @@
       if (unreadEl) unreadEl.style.display = 'none';
     }
 
-    els.backBtn.addEventListener('click', () => {
-      document.querySelector('.tab-btn[data-tab="chats"]').click();
-    });
-
     function setupCommunityExtras() {
       const typingQ = query(collection(db, 'typingStatus'), where('isTyping', '==', true));
       const typingUnsub = onSnapshot(typingQ, (snap) => {
@@ -765,7 +984,7 @@
           els.typingIndicator.classList.remove('active');
         }
       });
-      unsubscribes.push(typingUnsub);
+      unsubscribes.add(typingUnsub);
 
       const usersQ = query(collection(db, 'users'));
       const onlineUnsub = onSnapshot(usersQ, (snap) => {
@@ -777,12 +996,12 @@
         });
         els.onlineCount.textContent = count;
       });
-      unsubscribes.push(onlineUnsub);
+      unsubscribes.add(onlineUnsub);
     }
 
     function stopAllListeners() {
       unsubscribes.forEach(unsub => unsub());
-      unsubscribes = [];
+      unsubscribes.clear();
       els.typingIndicator.classList.remove('active');
       messageStatusTimeouts.forEach(timeout => clearTimeout(timeout));
       messageStatusTimeouts.clear();
@@ -806,6 +1025,13 @@
       els.toastMsg.textContent = `New message from ${senderName}`;
       els.toast.classList.add('show');
       setTimeout(() => els.toast.classList.remove('show'), 5000);
+    }
+
+    function showToast(message, icon = '✓') {
+      els.toastAvatar.textContent = icon;
+      els.toastMsg.textContent = message;
+      els.toast.classList.add('show');
+      setTimeout(() => els.toast.classList.remove('show'), 3000);
     }
 
     function appendMessage(doc, key, isCommunity) {
@@ -996,80 +1222,36 @@
     }
 
     // FAB and Bottom Sheet
-    els.addFriendFab.addEventListener('click', openUsersSheet);
-    async function openUsersSheet() {
-      els.usersList.innerHTML = '';
-      els.usersSheet.classList.add('open');
-
-      const myRef = doc(db, 'users', currentUser.uid);
-      const mySnap = await getDoc(myRef);
-      const myFriends = mySnap.data()?.friends || [];
-
-      // Get unique users who have sent messages in community
-      const communityMsgsQ = query(collection(db, 'communityMessages'));
-      const snapshot = await getDocs(communityMsgsQ);
-
-      const userIds = new Set();
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.userId) userIds.add(data.userId);
-      });
-
-      let hasUsers = false;
-
-      // Fetch user details
-      for (const uid of userIds) {
-        if (uid === currentUser.uid) continue;
-
-        const userRef = doc(db, 'users', uid);
-        const userSnap = await getDoc(userRef);
-        if (!userSnap.exists()) continue;
-
-        const user = userSnap.data();
-        const isFriend = myFriends.includes(uid);
-        hasUsers = true;
-
-        const item = document.createElement('div');
-        item.className = 'user-item';
-        item.innerHTML = `
-          <div class="user-avatar">${user.displayName?.charAt(0).toUpperCase() || '?'}</div>
-          <div class="user-name">${user.displayName || 'Anonymous'}</div>
-          <button class="add-btn ${isFriend ? 'added' : ''}" ${isFriend ? 'disabled' : ''}>
-            ${isFriend ? 'Added' : 'Add'}
-          </button>
-        `;
-
-        if (!isFriend) {
-          item.querySelector('.add-btn').addEventListener('click', async () => {
-            await addFriend(uid, item.querySelector('.add-btn'));
-          });
-        }
-
-        els.usersList.appendChild(item);
+    els.addFriendFab.addEventListener('click', () => {
+      if (!currentUser) {
+        // Show guest bottom sheet for non-authenticated users
+        els.guestBottomSheet.classList.add('open');
+      } else {
+        // Show email search for authenticated users
+        els.usersSheet.classList.add('open');
+        document.getElementById('friendEmailInput').value = '';
+        document.getElementById('searchResult').innerHTML = '';
       }
+    });
 
-      if (!hasUsers) {
-        els.usersList.innerHTML = '<p style="text-align:center; color:var(--text-muted);">No users in community yet.</p>';
-      }
-    }
-
-    async function addFriend(friendUid, btn) {
+    async function addFriend(friendUid) {
       const myRef = doc(db, 'users', currentUser.uid);
       const friendRef = doc(db, 'users', friendUid);
 
       await updateDoc(myRef, { friends: arrayUnion(friendUid) });
       await updateDoc(friendRef, { friends: arrayUnion(currentUser.uid) });
 
-      btn.textContent = 'Added';
-      btn.classList.add('added');
-      btn.disabled = true;
-
       // Reload chats list
-      loadFriendsChats();
+      await loadFriendsChats();
     }
 
+    // Close bottom sheets when clicking outside
     els.usersSheet.addEventListener('click', e => {
       if (e.target === els.usersSheet) els.usersSheet.classList.remove('open');
+    });
+    
+    els.guestBottomSheet.addEventListener('click', e => {
+      if (e.target === els.guestBottomSheet) els.guestBottomSheet.classList.remove('open');
     });
 
     // Rain Background
