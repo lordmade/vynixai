@@ -202,6 +202,23 @@
       border-radius: 50%;
       z-index: 2;
     }
+    .whatsapp-avatar.verified::after {
+      content: '✓';
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      width: 20px;
+      height: 20px;
+      background: #000;
+      color: #fff;
+      border-radius: 50%;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform: translate(30%, 30%);
+      z-index: 3;
+    }
     .chat-info-whatsapp {
       flex: 1;
       min-width: 0;
@@ -231,6 +248,11 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .typing-indicator {
+      font-size: 14px;
+      color: #4caf50;
+      font-style: italic;
     }
     .chat-view {
       position: absolute;
@@ -749,7 +771,7 @@
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-    import { getDatabase, ref, push, onValue, update, set, get, query, orderByChild, limitToLast, endBefore } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+    import { getDatabase, ref, push, onValue, update, set, get, query, orderByChild, limitToLast, endBefore, onDisconnect, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
   
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -768,6 +790,7 @@
     let activeChatId = null;
     let isPrivateChatMode = false;
     const chatListeners = new Map();
+    const typingTimeouts = new Map();
     // Pagination for large chats
     const MESSAGES_PER_LOAD = 50;
     let oldestMessageKey = null;
@@ -801,7 +824,8 @@
       oldestMessageKey = null;
       isLoadingMore = false;
       els.messagesContainer.innerHTML = '';
-      // Clean up listeners if needed
+      // Stop typing if closing
+      if (activeChatId) stopTypingIndicator();
       els.messagesContainer.removeEventListener('scroll', handleScroll);
     }
 
@@ -833,12 +857,47 @@
       if (isPrivateChatMode && !window.matchMedia('(min-width: 768px)').matches) {
         e.preventDefault();
         closeChatView();
-        // Keep the URL clean (optional – prevents adding extra history entries)
         history.pushState({}, '', window.location.pathname);
       }
     });
 
-    // When opening a chat, push a history state on mobile so back button works
+    // Swipe gestures for tabs (only on mobile)
+    let touchStartX = 0;
+    let touchEndX = 0;
+    const swipeThreshold = 50;
+
+    if (els.mainContent && window.matchMedia('(max-width: 767px)').matches) {
+      els.mainContent.addEventListener('touchstart', (e) => {
+        if (isPrivateChatMode) return;
+        touchStartX = e.changedTouches[0].screenX;
+      }, { passive: true });
+
+      els.mainContent.addEventListener('touchend', (e) => {
+        if (isPrivateChatMode) return;
+        touchEndX = e.changedTouches[0].screenX;
+        const deltaX = touchEndX - touchStartX;
+        if (Math.abs(deltaX) > swipeThreshold) {
+          if (deltaX > 0) {
+            switchTab('chats');
+          } else {
+            switchTab('status');
+          }
+        }
+      }, { passive: true });
+    }
+
+    function startTypingIndicator() {
+      if (!activeChatId || !currentUser) return;
+      const typingRef = ref(db, `privateChats/${activeChatId}/typing/${currentUser.uid}`);
+      set(typingRef, serverTimestamp());
+    }
+
+    function stopTypingIndicator() {
+      if (!activeChatId || !currentUser) return;
+      const typingRef = ref(db, `privateChats/${activeChatId}/typing/${currentUser.uid}`);
+      set(typingRef, null);
+    }
+
     async function openPrivateChat(chatId) {
       els.mainHeader.classList.add('hidden');
       els.tabbar.classList.add('hidden');
@@ -850,14 +909,12 @@
       isLoadingMore = false;
       els.messagesContainer.innerHTML = '';
 
-      // Push history state only on mobile
       if (!window.matchMedia('(min-width: 768px)').matches) {
         history.pushState({ chatOpen: true }, '', '#chat');
       }
 
-      // Initial load: latest 50 messages
       loadMoreMessages();
-      // Listen for new messages
+
       const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1));
       onValue(newMessagesQuery, (snap) => {
         if (snap.size > 0) {
@@ -871,40 +928,66 @@
           if (hasNew) scrollToBottom();
         }
       });
-      // Infinite scroll for older messages
+
+      // Typing listener for this chat
+      const typingRef = ref(db, `privateChats/${chatId}/typing`);
+      onValue(typingRef, (snap) => {
+        const previewEl = document.getElementById(`preview-${chatId}`);
+        if (!previewEl) return;
+        const typingUsers = [];
+        snap.forEach((child) => {
+          if (child.key !== currentUser.uid) {
+            typingUsers.push(child.key);
+          }
+        });
+        if (typingUsers.length > 0) {
+          previewEl.textContent = 'typing...';
+          previewEl.classList.add('typing-indicator');
+        } else {
+          // Restore last message preview if needed (but we have separate listener for last msg)
+          previewEl.classList.remove('typing-indicator');
+        }
+      });
+
       const handleScroll = () => {
         if (els.messagesContainer.scrollTop < 100 && !isLoadingMore && oldestMessageKey) {
           loadMoreMessages();
         }
       };
       els.messagesContainer.addEventListener('scroll', handleScroll);
+
+      // Typing events
+      els.messageInput.addEventListener('input', handleTypingInput);
     }
 
-    // Swipe gestures for tabs (only on mobile)
-    let touchStartX = 0;
-    let touchEndX = 0;
-    const swipeThreshold = 50; // minimum distance for swipe
+    function handleTypingInput() {
+      startTypingIndicator();
+      if (typingTimeouts.has(activeChatId)) {
+        clearTimeout(typingTimeouts.get(activeChatId));
+      }
+      const timeout = setTimeout(stopTypingIndicator, 2000);
+      typingTimeouts.set(activeChatId, timeout);
+    }
 
-    if (els.mainContent && window.matchMedia('(max-width: 767px)').matches) {
-      els.mainContent.addEventListener('touchstart', (e) => {
-        if (isPrivateChatMode) return; // Disable tab swipe when in chat view
-        touchStartX = e.changedTouches[0].screenX;
-      }, { passive: true });
+    els.sendButton.addEventListener('click', () => {
+      sendMessage();
+      stopTypingIndicator();
+    });
 
-      els.mainContent.addEventListener('touchend', (e) => {
-        if (isPrivateChatMode) return;
-        touchEndX = e.changedTouches[0].screenX;
-        const deltaX = touchEndX - touchStartX;
-        if (Math.abs(deltaX) > swipeThreshold) {
-          if (deltaX > 0) {
-            // Swipe right -> go to Chats
-            switchTab('chats');
-          } else {
-            // Swipe left -> go to Status
-            switchTab('status');
-          }
-        }
-      }, { passive: true });
+    async function sendMessage() {
+      const text = els.messageInput.value.trim();
+      if (!text || !currentUser || !activeChatId) return;
+      els.messageInput.value = '';
+      els.messageInput.style.height = 'auto';
+      const messagesRef = ref(db, `privateChats/${activeChatId}/messages`);
+      await push(messagesRef, {
+        text: text,
+        userId: currentUser.uid,
+        userName: currentUser.displayName || 'Anon',
+        createdAt: Date.now(),
+      });
+      scrollToBottom();
+      stopTypingIndicator();
     }
 
     async function loadFriendsChatsRealTime() {
@@ -928,8 +1011,9 @@
           const item = document.createElement('div');
           item.className = 'chat-item-whatsapp';
           item.id = `friend-card-${friendUid}`;
+          const verifiedClass = friend.verified ? 'verified' : '';
           item.innerHTML = `
-            <div class="whatsapp-avatar">${friend.displayName.charAt(0).toUpperCase()}</div>
+            <div class="whatsapp-avatar ${friend.online ? 'online' : ''} ${verifiedClass}">${friend.displayName.charAt(0).toUpperCase()}</div>
             <div class="chat-info-whatsapp">
               <div class="chat-header-row">
                 <div class="chat-name-whatsapp">${friend.displayName}</div>
@@ -940,14 +1024,18 @@
           `;
           item.addEventListener('click', () => openPrivateChat(chatId));
           els.chatsList.appendChild(item);
+
+          // Last message listener (already there)
           if (chatListeners.has(chatId)) chatListeners.get(chatId)();
           const messagesRef = ref(db, `privateChats/${chatId}/messages`);
           const messagesQuery = query(messagesRef, orderByChild('createdAt'), limitToLast(1));
-          const unsubscribe = onValue(messagesQuery, (snap) => {
+          const unsubscribeMsg = onValue(messagesQuery, (snap) => {
             const previewEl = document.getElementById(`preview-${chatId}`);
             const timeEl = document.getElementById(`time-${chatId}`);
+            if (!previewEl || !timeEl) return;
             if (snap.size === 0) {
               previewEl.textContent = 'Tap to start chatting';
+              previewEl.classList.remove('typing-indicator');
               timeEl.textContent = '';
               return;
             }
@@ -956,6 +1044,7 @@
             const isOwn = lastMsg.userId === currentUser.uid;
             const shortText = lastMsg.text.length > 30 ? lastMsg.text.slice(0, 27) + '...' : lastMsg.text;
             previewEl.textContent = isOwn ? `You: ${shortText}` : shortText;
+            previewEl.classList.remove('typing-indicator');
             const time = new Date(lastMsg.createdAt);
             const now = new Date();
             const diffMs = now - time;
@@ -965,10 +1054,34 @@
             let timeStr = diffMins < 1 ? 'now' : diffMins < 60 ? `${diffMins}m` : diffHours < 24 ? `${diffHours}h` : diffDays < 7 ? `${diffDays}d` : time.toLocaleDateString();
             timeEl.textContent = timeStr;
           });
-          chatListeners.set(chatId, unsubscribe);
+
+          // Online status listener
+          const onlineRef = ref(db, `users/${friendUid}/online`);
+          onValue(onlineRef, (snap) => {
+            const avatar = item.querySelector('.whatsapp-avatar');
+            if (snap.val() === true) {
+              avatar.classList.add('online');
+            } else {
+              avatar.classList.remove('online');
+            }
+          });
+
+          // Verified listener (in case changed)
+          const verifiedRef = ref(db, `users/${friendUid}/verified`);
+          onValue(verifiedRef, (snap) => {
+            const avatar = item.querySelector('.whatsapp-avatar');
+            if (snap.val() === true) {
+              avatar.classList.add('verified');
+            } else {
+              avatar.classList.remove('verified');
+            }
+          });
+
+          chatListeners.set(chatId, unsubscribeMsg);
         }
       });
     }
+
     function loadStatusPostsRealTime() {
       const statusRef = ref(db, 'statusPosts');
       const statusQuery = query(statusRef, orderByChild('createdAt'), limitToLast(20));
@@ -1057,7 +1170,7 @@
       }
       const messages = [];
       snapshot.forEach((child) => {
-        messages.unshift({ key: child.key, data: child.val() }); // reverse order for prepending
+        messages.unshift({ key: child.key, data: child.val() });
         oldestMessageKey = child.val().createdAt;
       });
       const fragment = document.createDocumentFragment();
@@ -1077,7 +1190,7 @@
       const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const bubble = document.createElement('div');
       bubble.className = `whatsapp-bubble ${isOwn ? 'own' : 'other'}`;
-      bubble.id = key; // for detecting duplicates
+      bubble.id = key;
       bubble.innerHTML = `${escapeHtml(data.text)}<div class="bubble-time">${timeStr}</div>`;
       return bubble;
     }
@@ -1085,20 +1198,7 @@
       const bubble = createMessageBubble(data, key);
       els.messagesContainer.appendChild(bubble);
     }
-    async function sendMessage() {
-      const text = els.messageInput.value.trim();
-      if (!text || !currentUser || !activeChatId) return;
-      els.messageInput.value = '';
-      els.messageInput.style.height = 'auto';
-      const messagesRef = ref(db, `privateChats/${activeChatId}/messages`);
-      await push(messagesRef, {
-        text: text,
-        userId: currentUser.uid,
-        userName: currentUser.displayName || 'Anon',
-        createdAt: Date.now(),
-      });
-      scrollToBottom();
-    }
+
     els.messageInput.addEventListener('input', function () {
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 100) + 'px';
@@ -1109,7 +1209,7 @@
         sendMessage();
       }
     });
-    els.sendButton.addEventListener('click', sendMessage);
+
     function scrollToBottom() {
       els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
     }
@@ -1173,7 +1273,7 @@
         const item = document.createElement('div');
         item.className = 'user-item-whatsapp';
         item.innerHTML = `
-          <div class="user-avatar-whatsapp">${user.displayName?.charAt(0).toUpperCase() || '?'}</div>
+          <div class="user-avatar-whatsapp ${user.online ? 'online' : ''}">${user.displayName?.charAt(0).toUpperCase() || '?'}</div>
           <div class="user-info-whatsapp">
             <div class="user-name-whatsapp">${user.displayName || 'Anonymous'}</div>
             <div class="user-email-whatsapp">${user.email || 'No email'}</div>
@@ -1224,9 +1324,11 @@
           cred = await signInWithEmailAndPassword(auth, email, pass);
         }
         await set(ref(db, `users/${cred.user.uid}`), {
-          displayName: cred.user.displayName,
+          displayName: cred.user.displayName || email.split('@')[0],
           email: email,
           lastSeen: Date.now(),
+          online: true,
+          verified: false,
           friends: [],
         });
         document.getElementById('authOverlay').classList.remove('open');
@@ -1240,6 +1342,10 @@
       if (!user) {
         document.getElementById('authOverlay').classList.add('open');
       } else {
+        // Set online true
+        await update(ref(db, `users/${user.uid}`), { online: true });
+        const onlineRef = ref(db, `users/${user.uid}/online`);
+        onDisconnect(onlineRef).set(false);
         switchTab('chats');
         startHeartbeat();
       }
