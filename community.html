@@ -1603,7 +1603,16 @@ function loadStatusPostsRealTime() {
   const statusQuery = query(statusRef, orderByChild('createdAt'), limitToLast(50));
 
   onValue(statusQuery, snapshot => {
-    els.statusCards.innerHTML = '';
+    // Clear only if it's the first load or no posts exist yet
+    // But better: we'll check for duplicates instead of blindly clearing
+
+    const existingIds = new Set();
+    document.querySelectorAll('.status-card[data-post-id]').forEach(card => {
+      existingIds.add(card.dataset.postId);
+    });
+
+    const fragment = document.createDocumentFragment();
+    const posts = [];
 
     if (snapshot.size === 0) {
       els.statusCards.innerHTML = `
@@ -1615,7 +1624,6 @@ function loadStatusPostsRealTime() {
       return;
     }
 
-    const posts = [];
     snapshot.forEach(child => {
       posts.push({ id: child.key, ...child.val() });
     });
@@ -1623,11 +1631,13 @@ function loadStatusPostsRealTime() {
     posts.sort((a, b) => b.createdAt - a.createdAt);
 
     posts.forEach(post => {
+      // SKIP if already rendered
+      if (existingIds.has(post.id)) return;
+
       const isOwner = post.userId === currentUser?.uid;
       const likes = Array.isArray(post.likes) ? post.likes : [];
       const hasLiked = likes.includes(currentUser?.uid);
       const likeCount = likes.length;
-
       const comments = post.comments || {};
       const commentEntries = Object.entries(comments);
       commentEntries.sort((a, b) => a[1].createdAt - b[1].createdAt);
@@ -1646,6 +1656,7 @@ function loadStatusPostsRealTime() {
 
       const card = document.createElement('div');
       card.className = 'status-card';
+      card.dataset.postId = post.id;  // Critical for deduplication
       card.innerHTML = `
         <div class="status-card-header">
           <div class="status-avatar">${initial}</div>
@@ -1655,7 +1666,6 @@ function loadStatusPostsRealTime() {
           </div>
         </div>
         <div class="status-content">${escapeHtml(post.content)}</div>
-
         <div class="status-actions">
           <div class="status-action like-btn ${hasLiked ? 'liked' : ''}" data-id="${post.id}">
             <span class="material-symbols-rounded" style="font-size:18px;">
@@ -1672,9 +1682,7 @@ function loadStatusPostsRealTime() {
             <span>Share</span>
           </div>
         </div>
-
         ${isOwner ? `<div class="delete-status-btn" data-id="${post.id}">Delete</div>` : ''}
-
         <div class="comments-section" id="comments-${post.id}" style="display:none;">
           ${commentEntries.map(([key, c]) => `
             <div class="comment-item">
@@ -1685,7 +1693,6 @@ function loadStatusPostsRealTime() {
               </div>
             </div>
           `).join('')}
-
           <div class="comment-input-area">
             <input type="text" class="comment-input" placeholder="Write a comment..." data-post-id="${post.id}" />
             <button class="comment-send-btn" data-post-id="${post.id}">
@@ -1695,27 +1702,29 @@ function loadStatusPostsRealTime() {
         </div>
       `;
 
-      els.statusCards.appendChild(card);
+      fragment.appendChild(card);
     });
 
-    // Attach event listeners after rendering
-    document.querySelectorAll('.like-btn').forEach(btn => {
+    // Only prepend new posts (at the top) to maintain chronological order
+    if (fragment.children.length > 0) {
+      els.statusCards.prepend(fragment);
+    }
+
+    // Re-attach event listeners for NEW cards only
+    fragment.querySelectorAll('.like-btn').forEach(btn => {
       btn.onclick = () => toggleLike(btn.dataset.id, btn);
     });
-
-    document.querySelectorAll('[id^="comment-toggle-"]').forEach(toggle => {
+    fragment.querySelectorAll('[id^="comment-toggle-"]').forEach(toggle => {
       toggle.onclick = () => {
         const postId = toggle.id.split('-')[2];
-        const commentsSection = document.getElementById(`comments-${postId}`);
-        commentsSection.style.display = commentsSection.style.display === 'none' ? 'block' : 'none';
+        const section = document.getElementById(`comments-${postId}`);
+        if (section) section.style.display = section.style.display === 'none' ? 'block' : 'none';
       };
     });
-
-    document.querySelectorAll('.comment-send-btn').forEach(btn => {
+    fragment.querySelectorAll('.comment-send-btn').forEach(btn => {
       btn.onclick = () => sendComment(btn.dataset.postId);
     });
-
-    document.querySelectorAll('.comment-input').forEach(input => {
+    fragment.querySelectorAll('.comment-input').forEach(input => {
       input.addEventListener('keydown', e => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -1723,8 +1732,7 @@ function loadStatusPostsRealTime() {
         }
       });
     });
-
-    document.querySelectorAll('.delete-status-btn').forEach(btn => {
+    fragment.querySelectorAll('.delete-status-btn').forEach(btn => {
       btn.onclick = () => deleteStatus(btn.dataset.id);
     });
   });
