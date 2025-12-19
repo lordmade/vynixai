@@ -1599,22 +1599,39 @@ body.sheet-open .whatsapp-tabbar {
 
    // ----------  STATUS POSTS - FULLY UPGRADED ----------
 function loadStatusPostsRealTime() {
+  // Clean up any previous listeners to avoid multiples
+  if (window.statusUnsubscribe) {
+    window.statusUnsubscribe();
+  }
+
+  els.statusCards.innerHTML = `
+    <div style="text-align:center;padding:40px;color:var(--gray-mid);">
+      <span class="material-symbols-rounded" style="font-size:48px;">hourglass_empty</span>
+      <p>Loading statuses...</p>
+    </div>`;
+
   const statusRef = ref(db, 'statusPosts');
   const statusQuery = query(statusRef, orderByChild('createdAt'), limitToLast(50));
 
-  onValue(statusQuery, snapshot => {
-    // Clear only if it's the first load or no posts exist yet
-    // But better: we'll check for duplicates instead of blindly clearing
-
-    const existingIds = new Set();
+  // Main real-time listener
+  window.statusUnsubscribe = onValue(statusQuery, snapshot => {
+    const existingCards = new Map();
     document.querySelectorAll('.status-card[data-post-id]').forEach(card => {
-      existingIds.add(card.dataset.postId);
+      existingCards.set(card.dataset.postId, card);
     });
 
     const fragment = document.createDocumentFragment();
-    const posts = [];
+    let hasNewPosts = false;
 
-    if (snapshot.size === 0) {
+    const posts = [];
+    snapshot.forEach(child => {
+      posts.push({ id: child.key, ...child.val() });
+    });
+
+    // Sort newest first
+    posts.sort((a, b) => b.createdAt - a.createdAt);
+
+    if (posts.length === 0) {
       els.statusCards.innerHTML = `
         <div style="text-align:center;padding:40px;color:var(--gray-mid);">
           <span class="material-symbols-rounded" style="font-size:48px;">post_add</span>
@@ -1624,118 +1641,189 @@ function loadStatusPostsRealTime() {
       return;
     }
 
-    snapshot.forEach(child => {
-      posts.push({ id: child.key, ...child.val() });
-    });
-
-    posts.sort((a, b) => b.createdAt - a.createdAt);
-
     posts.forEach(post => {
-      // SKIP if already rendered
-      if (existingIds.has(post.id)) return;
+      const existingCard = existingCards.get(post.id);
 
-      const isOwner = post.userId === currentUser?.uid;
-      const likes = Array.isArray(post.likes) ? post.likes : [];
-      const hasLiked = likes.includes(currentUser?.uid);
-      const likeCount = likes.length;
-      const comments = post.comments || {};
-      const commentEntries = Object.entries(comments);
-      commentEntries.sort((a, b) => a[1].createdAt - b[1].createdAt);
-
-      const diffMs = Date.now() - post.createdAt;
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMs / 3600000);
-      const diffDays = Math.floor(diffMs / 86400000);
-      const timeAgo = diffMins < 1 ? 'just now'
-        : diffMins < 60 ? `${diffMins}m ago`
-        : diffHours < 24 ? `${diffHours}h ago`
-        : diffDays < 7 ? `${diffDays}d ago`
-        : new Date(post.createdAt).toLocaleDateString();
-
-      const initial = (post.userName || 'A').charAt(0).toUpperCase();
-
-      const card = document.createElement('div');
-      card.className = 'status-card';
-      card.dataset.postId = post.id;  // Critical for deduplication
-      card.innerHTML = `
-        <div class="status-card-header">
-          <div class="status-avatar">${initial}</div>
-          <div class="status-meta">
-            <div class="status-author">${escapeHtml(post.userName || 'Anonymous')}</div>
-            <div class="status-time">${timeAgo}</div>
-          </div>
-        </div>
-        <div class="status-content">${escapeHtml(post.content)}</div>
-        <div class="status-actions">
-          <div class="status-action like-btn ${hasLiked ? 'liked' : ''}" data-id="${post.id}">
-            <span class="material-symbols-rounded" style="font-size:18px;">
-              ${hasLiked ? 'favorite' : 'favorite_border'}
-            </span>
-            <span class="like-count">${likeCount}</span>
-          </div>
-          <div class="status-action" id="comment-toggle-${post.id}">
-            <span class="material-symbols-rounded" style="font-size:18px;">comment</span>
-            <span>${commentEntries.length}</span>
-          </div>
-          <div class="status-action" onclick="navigator.clipboard.writeText('${escapeHtml(post.content)}'); showToast('Copied!')">
-            <span class="material-symbols-rounded" style="font-size:18px;">share</span>
-            <span>Share</span>
-          </div>
-        </div>
-        ${isOwner ? `<div class="delete-status-btn" data-id="${post.id}">Delete</div>` : ''}
-        <div class="comments-section" id="comments-${post.id}" style="display:none;">
-          ${commentEntries.map(([key, c]) => `
-            <div class="comment-item">
-              <div class="comment-avatar">${(c.userName || 'A').charAt(0).toUpperCase()}</div>
-              <div class="comment-body">
-                <div class="comment-author">${escapeHtml(c.userName || 'Anonymous')}</div>
-                <div class="comment-text">${escapeHtml(c.text)}</div>
-              </div>
-            </div>
-          `).join('')}
-          <div class="comment-input-area">
-            <input type="text" class="comment-input" placeholder="Write a comment..." data-post-id="${post.id}" />
-            <button class="comment-send-btn" data-post-id="${post.id}">
-              <span class="material-symbols-rounded" style="font-size:18px;">send</span>
-            </button>
-          </div>
-        </div>
-      `;
-
-      fragment.appendChild(card);
+      if (existingCard) {
+        // UPDATE existing card (likes, comments, etc.)
+        updateStatusCard(existingCard, post);
+      } else {
+        // CREATE new card
+        const card = createStatusCard(post);
+        fragment.appendChild(card);
+        hasNewPosts = true;
+      }
     });
 
-    // Only prepend new posts (at the top) to maintain chronological order
-    if (fragment.children.length > 0) {
+    // Only prepend new cards at the top
+    if (hasNewPosts && fragment.children.length > 0) {
       els.statusCards.prepend(fragment);
     }
 
-    // Re-attach event listeners for NEW cards only
-    fragment.querySelectorAll('.like-btn').forEach(btn => {
-      btn.onclick = () => toggleLike(btn.dataset.id, btn);
-    });
-    fragment.querySelectorAll('[id^="comment-toggle-"]').forEach(toggle => {
-      toggle.onclick = () => {
-        const postId = toggle.id.split('-')[2];
-        const section = document.getElementById(`comments-${postId}`);
-        if (section) section.style.display = section.style.display === 'none' ? 'block' : 'none';
-      };
-    });
-    fragment.querySelectorAll('.comment-send-btn').forEach(btn => {
-      btn.onclick = () => sendComment(btn.dataset.postId);
-    });
-    fragment.querySelectorAll('.comment-input').forEach(input => {
-      input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          sendComment(input.dataset.postId);
-        }
-      });
-    });
-    fragment.querySelectorAll('.delete-status-btn').forEach(btn => {
-      btn.onclick = () => deleteStatus(btn.dataset.id);
-    });
+    // Scroll to top if new post was added by current user
+    if (hasNewPosts) {
+      els.statusCards.scrollTop = 0;
+    }
   });
+}
+
+// Helper: Create a fresh status card
+function createStatusCard(post) {
+  const isOwner = post.userId === currentUser?.uid;
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const hasLiked = likes.includes(currentUser?.uid);
+  const likeCount = likes.length;
+
+  const comments = post.comments || {};
+  const commentEntries = Object.entries(comments);
+  commentEntries.sort((a, b) => a[1].createdAt - b[1].createdAt);
+
+  const timeAgo = formatTimeAgo(post.createdAt);
+  const initial = (post.userName || 'A').charAt(0).toUpperCase();
+
+  const card = document.createElement('div');
+  card.className = 'status-card';
+  card.dataset.postId = post.id;
+
+  card.innerHTML = `
+    <div class="status-card-header">
+      <div class="status-avatar">${initial}</div>
+      <div class="status-meta">
+        <div class="status-author">${escapeHtml(post.userName || 'Anonymous')}</div>
+        <div class="status-time">${timeAgo}</div>
+      </div>
+    </div>
+    <div class="status-content">${escapeHtml(post.content)}</div>
+    <div class="status-actions">
+      <div class="status-action like-btn ${hasLiked ? 'liked' : ''}" data-id="${post.id}">
+        <span class="material-symbols-rounded" style="font-size:18px;">
+          ${hasLiked ? 'favorite' : 'favorite_border'}
+        </span>
+        <span class="like-count">${likeCount}</span>
+      </div>
+      <div class="status-action comment-toggle" data-id="${post.id}">
+        <span class="material-symbols-rounded" style="font-size:18px;">comment</span>
+        <span class="comment-count">${commentEntries.length}</span>
+      </div>
+      <div class="status-action" onclick="navigator.clipboard.writeText('${escapeHtml(post.content)}'); showToast('Copied!')">
+        <span class="material-symbols-rounded" style="font-size:18px;">share</span>
+        <span>Share</span>
+      </div>
+    </div>
+    ${isOwner ? `<div class="delete-status-btn" data-id="${post.id}">Delete</div>` : ''}
+    <div class="comments-section" id="comments-${post.id}" style="display:none;">
+      ${commentEntries.map(([key, c]) => `
+        <div class="comment-item">
+          <div class="comment-avatar">${(c.userName || 'A').charAt(0).toUpperCase()}</div>
+          <div class="comment-body">
+            <div class="comment-author">${escapeHtml(c.userName || 'Anonymous')}</div>
+            <div class="comment-text">${escapeHtml(c.text)}</div>
+          </div>
+        </div>
+      `).join('')}
+      <div class="comment-input-area">
+        <input type="text" class="comment-input" placeholder="Write a comment..." data-post-id="${post.id}" />
+        <button class="comment-send-btn" data-post-id="${post.id}">
+          <span class="material-symbols-rounded" style="font-size:18px;">send</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Attach events to this card
+  attachStatusCardEvents(card);
+
+  return card;
+}
+
+// Helper: Update an existing card (for likes, comments, etc.)
+function updateStatusCard(card, post) {
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const hasLiked = likes.includes(currentUser?.uid);
+  const likeCount = likes.length;
+
+  const comments = post.comments || {};
+  const commentEntries = Object.entries(comments);
+  commentEntries.sort((a, b) => a[1].createdAt - b[1].createdAt);
+
+  // Update like button
+  const likeBtn = card.querySelector('.like-btn');
+  if (likeBtn) {
+    likeBtn.classList.toggle('liked', hasLiked);
+    likeBtn.querySelector('.material-symbols-rounded').textContent = hasLiked ? 'favorite' : 'favorite_border';
+    likeBtn.querySelector('.like-count').textContent = likeCount;
+  }
+
+  // Update comment count
+  const commentToggle = card.querySelector('.comment-toggle');
+  if (commentToggle) {
+    commentToggle.querySelector('.comment-count').textContent = commentEntries.length;
+  }
+
+  // Update time
+  card.querySelector('.status-time').textContent = formatTimeAgo(post.createdAt);
+
+  // Update comments section
+  const commentsSection = card.querySelector(`#comments-${post.id}`);
+  if (commentsSection) {
+    const commentsList = commentsSection.querySelectorAll('.comment-item');
+    // Simple: rebuild comments if changed
+    commentsSection.children[0].outerHTML = commentEntries.map(([key, c]) => `
+      <div class="comment-item">
+        <div class="comment-avatar">${(c.userName || 'A').charAt(0).toUpperCase()}</div>
+        <div class="comment-body">
+          <div class="comment-author">${escapeHtml(c.userName || 'Anonymous')}</div>
+          <div class="comment-text">${escapeHtml(c.text)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+}
+
+// Helper: Attach all events to a card
+function attachStatusCardEvents(card) {
+  // Like button
+  card.querySelector('.like-btn')?.addEventListener('click', () => {
+    toggleLike(card.dataset.postId, card.querySelector('.like-btn'));
+  });
+
+  // Comment toggle
+  card.querySelector('.comment-toggle')?.addEventListener('click', () => {
+    const commentsSection = card.querySelector('.comments-section');
+    commentsSection.style.display = commentsSection.style.display === 'none' ? 'block' : 'none';
+  });
+
+  // Send comment
+  card.querySelector('.comment-send-btn')?.addEventListener('click', () => {
+    sendComment(card.dataset.postId);
+  });
+
+  // Enter key in comment input
+  card.querySelector('.comment-input')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendComment(card.dataset.postId);
+    }
+  });
+
+  // Delete button
+  card.querySelector('.delete-status-btn')?.addEventListener('click', () => {
+    deleteStatus(card.dataset.postId);
+  });
+}
+
+// Helper: Format time ago
+function formatTimeAgo(timestamp) {
+  const diffMs = Date.now() - timestamp;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return new Date(timestamp).toLocaleDateString();
 }
 
 // Toggle Like
