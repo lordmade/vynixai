@@ -884,7 +884,7 @@ body.sheet-open .whatsapp-tabbar {
     <header class="whatsapp-header" id="mainHeader">
       <div class="header-title">Vynix Lingua</div>
       <div class="header-actions">
-     
+    
         <span class="material-symbols-rounded header-icon" id="openProfileBtn">more_vert</span>
       </div>
     </header>
@@ -1054,6 +1054,8 @@ body.sheet-open .whatsapp-tabbar {
     let allChatItems = [];
     let lastNotifiedMessageKey = {};
     let lastReadTimestamps = {};
+    let currentMessagesListener = null; // To store the unsubscribe function for the active chat
+    let currentTypingListener = null;
     // ---------- DOM SHORTCUTS ----------
     const els = {
       chatsList: document.getElementById('chatsList'),
@@ -1133,6 +1135,18 @@ body.sheet-open .whatsapp-tabbar {
       isLoadingMore = false;
       els.messagesContainer.innerHTML = '';
       els.messagesContainer.removeEventListener('scroll', handleScroll);
+
+      // Detach previous listener if exists
+      if (currentMessagesListener) {
+        currentMessagesListener();
+        currentMessagesListener = null;
+      }
+      if (currentTypingListener) {
+        currentTypingListener();
+        currentTypingListener = null;
+      }
+
+      stopTypingIndicator(); // optional cleanup
     }
     // ---------- TAB SWITCH ----------
     function switchTab(tabName) {
@@ -1213,35 +1227,56 @@ if (lastMsgSnap.size > 0) {
   });
 }
 updateUnreadCount(activeChatId, 0);
-    
+   
       loadMoreMessages();
-      // Replace the existing newMessagesQuery onValue block with this updated one
-const newMessagesQuery = query(ref(db, `privateChats/${activeChatId}/messages`), orderByChild('createdAt'));
-onValue(newMessagesQuery, snap => {
-  snap.forEach(child => {
-    const msgData = child.val();
-    const msgKey = child.key;
-    // Update last read timestamp for EVERY new/seen message while chat is open
-    if (msgData.createdAt > (lastReadTimestamps[activeChatId] || 0)) {
-      lastReadTimestamps[activeChatId] = msgData.createdAt;
-    }
-    if (!document.getElementById(msgKey)) {
-      appendWhatsAppMessage(msgData, msgKey);
-      scrollToBottom();
-      // Only notify if message is from someone else AND chat is NOT currently open
-      if (msgData.userId !== currentUser.uid && !isPrivateChatMode) {
-        if (lastNotifiedMessageKey[activeChatId] !== msgKey) {
-          lastNotifiedMessageKey[activeChatId] = msgKey;
-          showNewMessageNotification(msgData.userName || 'Someone', msgData.text);
-        }
+
+      // Detach previous listener if exists
+      if (currentMessagesListener) {
+        currentMessagesListener();
+        currentMessagesListener = null;
       }
-    }
-  });
-  // Force unread count to 0 while this chat is open
-  updateUnreadCount(activeChatId, 0);
-});
+
+      // Attach new real-time listener for incoming messages
+      const newMessagesQuery = query(ref(db, `privateChats/${activeChatId}/messages`), orderByChild('createdAt'));
+
+      currentMessagesListener = onValue(newMessagesQuery, snap => {
+        let hasNew = false;
+        snap.forEach(child => {
+          const msgData = child.val();
+          const msgKey = child.key;
+
+          // Only append if message doesn't already exist in DOM
+          if (!document.getElementById(msgKey)) {
+            appendWhatsAppMessage(msgData, msgKey);
+            hasNew = true;
+
+            // Update last read timestamp
+            if (msgData.createdAt > (lastReadTimestamps[activeChatId] || 0)) {
+              lastReadTimestamps[activeChatId] = msgData.createdAt;
+            }
+
+            // Notification only if from other user and chat was in background
+            if (msgData.userId !== currentUser.uid && !isPrivateChatMode) {
+              if (lastNotifiedMessageKey[activeChatId] !== msgKey) {
+                lastNotifiedMessageKey[activeChatId] = msgKey;
+                showNewMessageNotification(msgData.userName || 'Someone', msgData.text);
+              }
+            }
+          }
+        });
+
+        if (hasNew) {
+          scrollToBottom();
+        }
+
+        // Force unread count to 0 while chat is open
+        updateUnreadCount(activeChatId, 0);
+      });
+
+      if (currentTypingListener) currentTypingListener();
+
       const typingRef = ref(db, `privateChats/${chatId}/typing`);
-      onValue(typingRef, snap => {
+      currentTypingListener = onValue(typingRef, snap => {
         const previewEl = document.getElementById(`preview-${chatId}`);
         if (!previewEl) return;
         let typing = false;
@@ -1533,7 +1568,7 @@ function loadStatusPostsRealTime() {
     });
   });
 }
-  
+ 
     window.likeStatus = async statusId => {
       const statusRef = ref(db, `statusPosts/${statusId}`);
       const statusSnap = await get(statusRef);
