@@ -1205,31 +1205,45 @@ body.sheet-open .whatsapp-tabbar {
       if (!window.matchMedia('(min-width: 768px)').matches) {
         history.pushState({ chatOpen: true }, '', '#chat');
       }
-      const lastMsgSnap = await get(query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
-      if (lastMsgSnap.size > 0) {
-        let lastTimestamp = 0;
-        lastMsgSnap.forEach(child => lastTimestamp = child.val().createdAt);
-        lastReadTimestamps[chatId] = lastTimestamp;
-        updateUnreadCount(chatId, 0);
-      }
+      // Mark all current messages as read when opening chat
+const lastMsgSnap = await get(query(ref(db, `privateChats/${activeChatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
+if (lastMsgSnap.size > 0) {
+  lastMsgSnap.forEach(child => {
+    lastReadTimestamps[activeChatId] = child.val().createdAt;
+  });
+}
+updateUnreadCount(activeChatId, 0);
+      
       loadMoreMessages();
-      const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(20));
-      onValue(newMessagesQuery, snap => {
-        snap.forEach(child => {
-          const msgData = child.val();
-          const msgKey = child.key;
-          if (!document.getElementById(msgKey)) {
-            appendWhatsAppMessage(msgData, msgKey);
-            scrollToBottom();
-            if (msgData.userId !== currentUser.uid && !isPrivateChatMode) {
-              if (lastNotifiedMessageKey[chatId] !== msgKey) {
-                lastNotifiedMessageKey[chatId] = msgKey;
-                showNewMessageNotification(msgData.userName || 'Someone', msgData.text);
-              }
-            }
-          }
-        });
-      });
+      // Replace the existing newMessagesQuery onValue block with this updated one
+const newMessagesQuery = query(ref(db, `privateChats/${activeChatId}/messages`), orderByChild('createdAt'));
+onValue(newMessagesQuery, snap => {
+  snap.forEach(child => {
+    const msgData = child.val();
+    const msgKey = child.key;
+
+    // Update last read timestamp for EVERY new/seen message while chat is open
+    if (msgData.createdAt > (lastReadTimestamps[activeChatId] || 0)) {
+      lastReadTimestamps[activeChatId] = msgData.createdAt;
+    }
+
+    if (!document.getElementById(msgKey)) {
+      appendWhatsAppMessage(msgData, msgKey);
+      scrollToBottom();
+
+      // Only notify if message is from someone else AND chat is NOT currently open
+      if (msgData.userId !== currentUser.uid && !isPrivateChatMode) {
+        if (lastNotifiedMessageKey[activeChatId] !== msgKey) {
+          lastNotifiedMessageKey[activeChatId] = msgKey;
+          showNewMessageNotification(msgData.userName || 'Someone', msgData.text);
+        }
+      }
+    }
+  });
+
+  // Force unread count to 0 while this chat is open
+  updateUnreadCount(activeChatId, 0);
+});
       const typingRef = ref(db, `privateChats/${chatId}/typing`);
       onValue(typingRef, snap => {
         const previewEl = document.getElementById(`preview-${chatId}`);
