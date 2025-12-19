@@ -864,18 +864,87 @@ body.sheet-open .whatsapp-header {
 body.sheet-open .whatsapp-tabbar {
   transform: translateY(100%);
 }
-    .delete-status-btn {
-  background: none;
-  border: none;
+    /* Status enhancements */
+.status-actions {
+  display: flex;
+  gap: 20px;
+  margin-top: 12px;
+}
+.status-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--gray-mid);
   cursor: pointer;
-  padding: 8px;
+  user-select: none;
+}
+.status-action.liked {
+  color: #ff3040;
+}
+.comments-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0,0,0,0.1);
+}
+.comment-item {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.comment-avatar {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
+  background: var(--gray-light);
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
 }
-.delete-status-btn:hover {
-  background: rgba(255, 59, 48, 0.1);
+.comment-body {
+  flex: 1;
+}
+.comment-author {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.comment-text {
+  color: #333;
+}
+.comment-input-area {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.comment-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid rgba(0,0,0,0.1);
+  border-radius: 20px;
+  background: var(--gray-light);
+  font-size: 14px;
+}
+.comment-send-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--primary-black);
+  color: white;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.delete-status-btn {
+  color: #ff3b30;
+  font-size: 13px;
+  margin-top: 12px;
+  text-align: right;
+  cursor: pointer;
 }
   </style>
 </head>
@@ -884,7 +953,7 @@ body.sheet-open .whatsapp-tabbar {
     <header class="whatsapp-header" id="mainHeader">
       <div class="header-title">Vynix Lingua</div>
       <div class="header-actions">
-      
+       
         <span class="material-symbols-rounded header-icon" id="openProfileBtn">more_vert</span>
       </div>
     </header>
@@ -1205,41 +1274,31 @@ body.sheet-open .whatsapp-tabbar {
       if (!window.matchMedia('(min-width: 768px)').matches) {
         history.pushState({ chatOpen: true }, '', '#chat');
       }
-      // Mark all current messages as read when opening chat
-const lastMsgSnap = await get(query(ref(db, `privateChats/${activeChatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
-if (lastMsgSnap.size > 0) {
-  lastMsgSnap.forEach(child => {
-    lastReadTimestamps[activeChatId] = child.val().createdAt;
-  });
-}
-updateUnreadCount(activeChatId, 0);
-     
-      loadMoreMessages();
-      // Replace the existing newMessagesQuery onValue block with this updated one
-const newMessagesQuery = query(ref(db, `privateChats/${activeChatId}/messages`), orderByChild('createdAt'));
-onValue(newMessagesQuery, snap => {
-  snap.forEach(child => {
-    const msgData = child.val();
-    const msgKey = child.key;
-    // Update last read timestamp for EVERY new/seen message while chat is open
-    if (msgData.createdAt > (lastReadTimestamps[activeChatId] || 0)) {
-      lastReadTimestamps[activeChatId] = msgData.createdAt;
-    }
-    if (!document.getElementById(msgKey)) {
-      appendWhatsAppMessage(msgData, msgKey);
-      scrollToBottom();
-      // Only notify if message is from someone else AND chat is NOT currently open
-      if (msgData.userId !== currentUser.uid && !isPrivateChatMode) {
-        if (lastNotifiedMessageKey[activeChatId] !== msgKey) {
-          lastNotifiedMessageKey[activeChatId] = msgKey;
-          showNewMessageNotification(msgData.userName || 'Someone', msgData.text);
-        }
+      const lastMsgSnap = await get(query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
+      if (lastMsgSnap.size > 0) {
+        let lastTimestamp = 0;
+        lastMsgSnap.forEach(child => lastTimestamp = child.val().createdAt);
+        lastReadTimestamps[chatId] = lastTimestamp;
+        updateUnreadCount(chatId, 0);
       }
-    }
-  });
-  // Force unread count to 0 while this chat is open
-  updateUnreadCount(activeChatId, 0);
-});
+      loadMoreMessages();
+      const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(20));
+      onValue(newMessagesQuery, snap => {
+        snap.forEach(child => {
+          const msgData = child.val();
+          const msgKey = child.key;
+          if (!document.getElementById(msgKey)) {
+            appendWhatsAppMessage(msgData, msgKey);
+            scrollToBottom();
+            if (msgData.userId !== currentUser.uid && !isPrivateChatMode) {
+              if (lastNotifiedMessageKey[chatId] !== msgKey) {
+                lastNotifiedMessageKey[chatId] = msgKey;
+                showNewMessageNotification(msgData.userName || 'Someone', msgData.text);
+              }
+            }
+          }
+        });
+      });
       const typingRef = ref(db, `privateChats/${chatId}/typing`);
       onValue(typingRef, snap => {
         const previewEl = document.getElementById(`preview-${chatId}`);
@@ -1451,13 +1510,41 @@ onValue(newMessagesQuery, snap => {
         item.style.display = name.includes(query) ? 'flex' : 'none';
       });
     });
-    // ---------- STATUS POSTS ----------
+   // ---------- STATUS POSTS - FULLY UPGRADED ----------
 function loadStatusPostsRealTime() {
+  // Clean up any previous listeners to avoid multiples
+  if (window.statusUnsubscribe) {
+    window.statusUnsubscribe();
+  }
+
+  els.statusCards.innerHTML = `
+    <div style="text-align:center;padding:40px;color:var(--gray-mid);">
+      <span class="material-symbols-rounded" style="font-size:48px;">hourglass_empty</span>
+      <p>Loading statuses...</p>
+    </div>`;
+
   const statusRef = ref(db, 'statusPosts');
-  const statusQuery = query(statusRef, orderByChild('createdAt'));
-  onValue(statusQuery, snapshot => {
-    els.statusCards.innerHTML = ''; // Always clear first
-    if (snapshot.size === 0) {
+  const statusQuery = query(statusRef, orderByChild('createdAt'), limitToLast(50));
+
+  // Main real-time listener
+  window.statusUnsubscribe = onValue(statusQuery, snapshot => {
+    const existingCards = new Map();
+    document.querySelectorAll('.status-card[data-post-id]').forEach(card => {
+      existingCards.set(card.dataset.postId, card);
+    });
+
+    const fragment = document.createDocumentFragment();
+    let hasNewPosts = false;
+
+    const posts = [];
+    snapshot.forEach(child => {
+      posts.push({ id: child.key, ...child.val() });
+    });
+
+    // Sort newest first
+    posts.sort((a, b) => b.createdAt - a.createdAt);
+
+    if (posts.length === 0) {
       els.statusCards.innerHTML = `
         <div style="text-align:center;padding:40px;color:var(--gray-mid);">
           <span class="material-symbols-rounded" style="font-size:48px;">post_add</span>
@@ -1466,74 +1553,250 @@ function loadStatusPostsRealTime() {
         </div>`;
       return;
     }
-    const posts = [];
-    snapshot.forEach(child => {
-      posts.push({
-        id: child.key,
-        ...child.val()
-      });
-    });
-    posts.sort((a, b) => b.createdAt - a.createdAt);
+
     posts.forEach(post => {
-      const isOwnPost = post.userId === currentUser?.uid;
-      const isLiked = post.likes?.includes(currentUser?.uid);
-      const likeCount = post.likes?.length || 0;
-      const initial = (post.userName || 'Anonymous').charAt(0).toUpperCase();
-      const diffMs = Date.now() - post.createdAt;
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMs / 3600000);
-      const diffDays = Math.floor(diffMs / 86400000);
-      const timeAgo = diffMins < 1 ? 'just now'
-        : diffMins < 60 ? `${diffMins}m ago`
-        : diffHours < 24 ? `${diffHours}h ago`
-        : diffDays < 7 ? `${diffDays}d ago`
-        : new Date(post.createdAt).toLocaleDateString();
-      const card = document.createElement('div');
-      card.className = 'status-card';
-      card.innerHTML = `
-        <div class="status-card-header">
-          <div class="status-avatar">${initial}</div>
-          <div style="flex:1;">
-            <div class="status-author">${escapeHtml(post.userName || 'Anonymous')}</div>
-            <div class="status-time">${timeAgo}</div>
-          </div>
-          ${isOwnPost ? `<button class="status-action delete-status-btn" data-id="${post.id}" title="Delete status">
-            <span class="material-symbols-rounded" style="font-size:18px;color:#ff3b30;">delete</span>
-          </button>` : ''}
-        </div>
-        <div class="status-content">${escapeHtml(post.content)}</div>
-        <div class="status-actions">
-          <div class="status-action" onclick="likeStatus('${post.id}')">
-            <span class="material-symbols-rounded" style="font-size:18px;">${isLiked ? 'favorite' : 'favorite_border'}</span>
-            <span class="like-count">${likeCount}</span>
-          </div>
-          <div class="status-action" onclick="commentStatus('${post.id}')">
-            <span class="material-symbols-rounded" style="font-size:18px;">comment</span>
-            <span>Comment</span>
-          </div>
-          <div class="status-action" onclick="shareStatus('${post.id}')">
-            <span class="material-symbols-rounded" style="font-size:18px;">share</span>
-            <span>Share</span>
-          </div>
-        </div>
-      `;
-      els.statusCards.appendChild(card);
+      const existingCard = existingCards.get(post.id);
+
+      if (existingCard) {
+        // UPDATE existing card (likes, comments, etc.)
+        updateStatusCard(existingCard, post);
+      } else {
+        // CREATE new card
+        const card = createStatusCard(post);
+        fragment.appendChild(card);
+        hasNewPosts = true;
+      }
     });
-    // Attach delete listeners after rendering
-    document.querySelectorAll('.delete-status-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const statusId = btn.dataset.id;
-        const confirmed = await customConfirm('Delete Status', 'This status will be permanently deleted.');
-        if (confirmed) {
-          await remove(ref(db, `statusPosts/${statusId}`));
-          showToast('Status deleted');
-        }
-      });
-    });
+
+    // Only prepend new cards at the top
+    if (hasNewPosts && fragment.children.length > 0) {
+      els.statusCards.prepend(fragment);
+    }
+
+    // Scroll to top if new post was added by current user
+    if (hasNewPosts) {
+      els.statusCards.scrollTop = 0;
+    }
   });
 }
-   
+
+// Helper: Create a fresh status card
+function createStatusCard(post) {
+  const isOwner = post.userId === currentUser?.uid;
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const hasLiked = likes.includes(currentUser?.uid);
+  const likeCount = likes.length;
+
+  const comments = post.comments || {};
+  const commentEntries = Object.entries(comments);
+  commentEntries.sort((a, b) => a[1].createdAt - b[1].createdAt);
+
+  const timeAgo = formatTimeAgo(post.createdAt);
+  const initial = (post.userName || 'A').charAt(0).toUpperCase();
+
+  const card = document.createElement('div');
+  card.className = 'status-card';
+  card.dataset.postId = post.id;
+
+  card.innerHTML = `
+    <div class="status-card-header">
+      <div class="status-avatar">${initial}</div>
+      <div class="status-meta">
+        <div class="status-author">${escapeHtml(post.userName || 'Anonymous')}</div>
+        <div class="status-time">${timeAgo}</div>
+      </div>
+    </div>
+    <div class="status-content">${escapeHtml(post.content)}</div>
+    <div class="status-actions">
+      <div class="status-action like-btn ${hasLiked ? 'liked' : ''}" data-id="${post.id}">
+        <span class="material-symbols-rounded" style="font-size:18px;">
+          ${hasLiked ? 'favorite' : 'favorite_border'}
+        </span>
+        <span class="like-count">${likeCount}</span>
+      </div>
+      <div class="status-action comment-toggle" data-id="${post.id}">
+        <span class="material-symbols-rounded" style="font-size:18px;">comment</span>
+        <span class="comment-count">${commentEntries.length}</span>
+      </div>
+      <div class="status-action" onclick="navigator.clipboard.writeText('${escapeHtml(post.content)}'); showToast('Copied!')">
+        <span class="material-symbols-rounded" style="font-size:18px;">share</span>
+        <span>Share</span>
+      </div>
+    </div>
+    ${isOwner ? `<div class="delete-status-btn" data-id="${post.id}">Delete</div>` : ''}
+    <div class="comments-section" id="comments-${post.id}" style="display:none;">
+      ${commentEntries.map(([key, c]) => `
+        <div class="comment-item">
+          <div class="comment-avatar">${(c.userName || 'A').charAt(0).toUpperCase()}</div>
+          <div class="comment-body">
+            <div class="comment-author">${escapeHtml(c.userName || 'Anonymous')}</div>
+            <div class="comment-text">${escapeHtml(c.text)}</div>
+          </div>
+        </div>
+      `).join('')}
+      <div class="comment-input-area">
+        <input type="text" class="comment-input" placeholder="Write a comment..." data-post-id="${post.id}" />
+        <button class="comment-send-btn" data-post-id="${post.id}">
+          <span class="material-symbols-rounded" style="font-size:18px;">send</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Attach events to this card
+  attachStatusCardEvents(card);
+
+  return card;
+}
+
+// Helper: Update an existing card (for likes, comments, etc.)
+function updateStatusCard(card, post) {
+  const likes = Array.isArray(post.likes) ? post.likes : [];
+  const hasLiked = likes.includes(currentUser?.uid);
+  const likeCount = likes.length;
+
+  const comments = post.comments || {};
+  const commentEntries = Object.entries(comments);
+  commentEntries.sort((a, b) => a[1].createdAt - b[1].createdAt);
+
+  // Update like button
+  const likeBtn = card.querySelector('.like-btn');
+  if (likeBtn) {
+    likeBtn.classList.toggle('liked', hasLiked);
+    likeBtn.querySelector('.material-symbols-rounded').textContent = hasLiked ? 'favorite' : 'favorite_border';
+    likeBtn.querySelector('.like-count').textContent = likeCount;
+  }
+
+  // Update comment count
+  const commentToggle = card.querySelector('.comment-toggle');
+  if (commentToggle) {
+    commentToggle.querySelector('.comment-count').textContent = commentEntries.length;
+  }
+
+  // Update time
+  card.querySelector('.status-time').textContent = formatTimeAgo(post.createdAt);
+
+  // Update comments section
+  const commentsSection = card.querySelector(`#comments-${post.id}`);
+  if (commentsSection) {
+    const commentsList = commentsSection.querySelectorAll('.comment-item');
+    // Simple: rebuild comments if changed
+    commentsSection.children[0].outerHTML = commentEntries.map(([key, c]) => `
+      <div class="comment-item">
+        <div class="comment-avatar">${(c.userName || 'A').charAt(0).toUpperCase()}</div>
+        <div class="comment-body">
+          <div class="comment-author">${escapeHtml(c.userName || 'Anonymous')}</div>
+          <div class="comment-text">${escapeHtml(c.text)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+}
+
+// Helper: Attach all events to a card
+function attachStatusCardEvents(card) {
+  // Like button
+  card.querySelector('.like-btn')?.addEventListener('click', () => {
+    toggleLike(card.dataset.postId, card.querySelector('.like-btn'));
+  });
+
+  // Comment toggle
+  card.querySelector('.comment-toggle')?.addEventListener('click', () => {
+    const commentsSection = card.querySelector('.comments-section');
+    commentsSection.style.display = commentsSection.style.display === 'none' ? 'block' : 'none';
+  });
+
+  // Send comment
+  card.querySelector('.comment-send-btn')?.addEventListener('click', () => {
+    sendComment(card.dataset.postId);
+  });
+
+  // Enter key in comment input
+  card.querySelector('.comment-input')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendComment(card.dataset.postId);
+    }
+  });
+
+  // Delete button
+  card.querySelector('.delete-status-btn')?.addEventListener('click', () => {
+    deleteStatus(card.dataset.postId);
+  });
+}
+
+// Helper: Format time ago
+function formatTimeAgo(timestamp) {
+  const diffMs = Date.now() - timestamp;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return new Date(timestamp).toLocaleDateString();
+}
+// Toggle Like
+async function toggleLike(statusId, btnElement) {
+  if (!currentUser) return;
+  const statusRef = ref(db, `statusPosts/${statusId}/likes`);
+  const snap = await get(statusRef.parent); // get whole post
+  if (!snap.exists()) return;
+  let likes = snap.val().likes || [];
+  if (!Array.isArray(likes)) likes = [];
+  const uid = currentUser.uid;
+  const index = likes.indexOf(uid);
+  if (index === -1) {
+    likes.push(uid);
+    showToast('Status liked!');
+  } else {
+    likes.splice(index, 1);
+    showToast('Like removed');
+  }
+  await update(ref(db, `statusPosts/${statusId}`), { likes });
+  // UI updates automatically via onValue listener
+}
+// Send Comment
+async function sendComment(postId) {
+  const input = document.querySelector(`.comment-input[data-post-id="${postId}"]`);
+  const text = input.value.trim();
+  if (!text || !currentUser) return;
+  const commentsRef = ref(db, `statusPosts/${postId}/comments`);
+  await push(commentsRef, {
+    text,
+    userId: currentUser.uid,
+    userName: currentUser.displayName || currentUser.email.split('@')[0] || 'Anonymous',
+    createdAt: Date.now(),
+  });
+  input.value = '';
+  showToast('Comment added');
+}
+// Delete Status (only owner)
+async function deleteStatus(statusId) {
+  const confirmed = await customConfirm('Delete Status', 'This status will be permanently deleted. Continue?');
+  if (!confirmed) return;
+  await remove(ref(db, `statusPosts/${statusId}`));
+  showToast('Status deleted');
+}
+// Posting (unchanged, just improved userName fallback)
+els.statusPostBtn.addEventListener('click', async () => {
+  const content = els.statusInput.value.trim();
+  if (!content || !currentUser) return;
+  await push(ref(db, 'statusPosts'), {
+    content,
+    userId: currentUser.uid,
+    userName: currentUser.displayName || currentUser.email.split('@')[0] || 'Anonymous',
+    createdAt: Date.now(),
+    likes: [],
+    comments: {},
+  });
+  els.statusInput.value = '';
+  els.statusComposer.classList.remove('open');
+  showToast('Status posted!');
+  els.statusCards.scrollTop = 0;
+});
     window.likeStatus = async statusId => {
       const statusRef = ref(db, `statusPosts/${statusId}`);
       const statusSnap = await get(statusRef);
