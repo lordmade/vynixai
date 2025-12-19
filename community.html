@@ -977,10 +977,15 @@
               <span class="material-symbols-rounded">add</span>
             </button>
           </div>
-          <div class="status-composer" id="statusComposer">
-            <textarea class="status-input" id="statusInput" placeholder="What's on your mind?"></textarea>
-            <button class="status-post-btn" id="statusPostBtn">Post Status</button>
-          </div>
+         <div class="status-composer" id="statusComposer">
+  <textarea class="status-input" id="statusInput" placeholder="What's on your mind? (optional text)"></textarea>
+  <input type="file" id="statusFileInput" accept="image/*,video/*" style="margin-top:12px;" />
+  <div id="statusPreview" style="margin-top:12px; max-width:100%; max-height:300px; overflow:hidden; border-radius:12px; display:none;">
+    <img id="statusImagePreview" style="max-width:100%; display:none;" />
+    <video id="statusVideoPreview" style="max-width:100%; display:none;" controls></video>
+  </div>
+  <button class="status-post-btn" id="statusPostBtn">Post Status</button>
+</div>
           <div id="statusCards" class="status-cards"></div>
         </div>
       </div>
@@ -1122,6 +1127,10 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
 
+    const CLOUDINARY_CLOUD_NAME = 'your-cloud-name';  // Replace with your cloud name
+const CLOUDINARY_UPLOAD_PRESET = 'vynix_status_unsigned';  // Replace with your preset name
+const CLOUDINARY_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/upload`;
+
     let currentUser = null;
     let activeChatId = null;
     let isPrivateChatMode = false;
@@ -1167,6 +1176,32 @@
       pillText: document.getElementById('pillText')
     };
 
+
+    const statusFileInput = document.getElementById('statusFileInput');
+const statusPreview = document.getElementById('statusPreview');
+const statusImagePreview = document.getElementById('statusImagePreview');
+const statusVideoPreview = document.getElementById('statusVideoPreview');
+
+statusFileInput.addEventListener('change', () => {
+  const file = statusFileInput.files[0];
+  if (!file) {
+    statusPreview.style.display = 'none';
+    return;
+  }
+
+  const url = URL.createObjectURL(file);
+  if (file.type.startsWith('image/')) {
+    statusImagePreview.src = url;
+    statusImagePreview.style.display = 'block';
+    statusVideoPreview.style.display = 'none';
+  } else if (file.type.startsWith('video/')) {
+    statusVideoPreview.src = url;
+    statusVideoPreview.style.display = 'block';
+    statusImagePreview.style.display = 'none';
+  }
+  statusPreview.style.display = 'block';
+});
+
     // ---------- UTILS ----------
     function customConfirm(title, message) {
       return new Promise((resolve) => {
@@ -1189,6 +1224,37 @@
         els.confirmOk.addEventListener('click', onConfirm);
       });
     }
+
+
+    async function uploadToCloudinary(file) {
+  if (!file) return null;
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+  // Optional: add tags/folder
+  // formData.append('folder', 'vynix_status');
+  // formData.append('tags', 'status');
+
+  try {
+    const response = await fetch(CLOUDINARY_UPLOAD_URL, {
+      method: 'POST',
+      body: formData
+    });
+    if (!response.ok) throw new Error('Upload failed');
+    const data = await response.json();
+    return {
+      url: data.secure_url,
+      resource_type: data.resource_type,  // 'image' or 'video'
+      public_id: data.public_id
+    };
+  } catch (err) {
+    console.error(err);
+    showToast('Upload failed: ' + err.message);
+    return null;
+  }
+}
 
     function showToast(message) {
       const toast = document.createElement('div');
@@ -1705,6 +1771,15 @@
               </button>` : ''}
             </div>
             <div class="status-content">${escapeHtml(post.content)}</div>
+
+            ${post.mediaUrl ? `
+  <div style="margin-top:12px; border-radius:12px; overflow:hidden;">
+    ${post.mediaType === 'video' ? 
+      `<video src="${post.mediaUrl}" controls style="max-width:100%;"></video>` :
+      `<img src="${post.mediaUrl}" style="max-width:100%;">`
+    }
+  </div>
+` : ''}
             <div class="status-actions">
               <div class="status-action" onclick="likeStatus('${post.id}')">
                 <span class="material-symbols-rounded" style="font-size:18px;">${isLiked ? 'favorite' : 'favorite_border'}</span>
@@ -1832,21 +1907,47 @@
 
     // ---------- STATUS COMPOSER ----------
     els.addStatusBtn.addEventListener('click', () => els.statusComposer.classList.toggle('open'));
-    els.statusPostBtn.addEventListener('click', async () => {
-      const content = els.statusInput.value.trim();
-      if (!content || !currentUser) return;
-      await push(ref(db, 'statusPosts'), {
-        content,
-        userId: currentUser.uid,
-        userName: currentUser.displayName || 'Anonymous',
-        createdAt: Date.now(),
-        likes: [],
-        comments: [],
-      });
-      els.statusInput.value = '';
-      els.statusComposer.classList.remove('open');
-      showToast('Status posted!');
-    });
+   els.statusPostBtn.addEventListener('click', async () => {
+  const text = els.statusInput.value.trim();
+  const file = statusFileInput.files[0];
+
+  if (!text && !file) {
+    showToast('Add text or media to post');
+    return;
+  }
+
+  let mediaUrl = null;
+  let mediaType = null;
+
+  if (file) {
+    els.statusPostBtn.disabled = true;
+    els.statusPostBtn.textContent = 'Uploading...';
+    const uploadResult = await uploadToCloudinary(file);
+    els.statusPostBtn.disabled = false;
+    els.statusPostBtn.textContent = 'Post Status';
+
+    if (!uploadResult) return;
+
+    mediaUrl = uploadResult.url;
+    mediaType = uploadResult.resource_type;  // 'image' or 'video'
+  }
+
+  await push(ref(db, 'statusPosts'), {
+    content: text || '',
+    mediaUrl: mediaUrl || null,
+    mediaType: mediaType || null,
+    userId: currentUser.uid,
+    userName: currentUser.displayName || 'Anonymous',
+    createdAt: Date.now(),
+    likes: [],
+  });
+
+  els.statusInput.value = '';
+  statusFileInput.value = '';
+  statusPreview.style.display = 'none';
+  els.statusComposer.classList.remove('open');
+  showToast('Status posted!');
+});
 
     // ---------- ADD FRIEND ----------
     async function openUsersSheet() {
