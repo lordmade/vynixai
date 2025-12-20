@@ -1155,79 +1155,6 @@ const CLOUDINARY_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOU
     let currentMessagesListener = null;
     let currentTypingListener = null;
     let incomingPillTimeout = null;
-    // ---------- PUSH NOTIFICATIONS ----------
-    let pushSubscription = null;
-    const vapidPublicKey = "BEpCmXfedbcXA08fnfK-zQ8eGAImakPRmwPwsF9iAS-UXMfTKEkXVY5ZJGtgjBa0pLAM3fd2jxVjpEYaT4vldCc"; // <<< REPLACE WITH YOUR ACTUAL VAPID PUBLIC KEY >>>
-    async function urlBase64ToUint8Array(base64String) {
-      const padding = '='.repeat((4 - base64String.length % 4) % 4);
-      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-      const rawData = window.atob(base64);
-      const outputArray = new Uint8Array(rawData.length);
-      for (let i = 0; i < rawData.length; ++i) {
-        outputArray[i] = rawData.charCodeAt(i);
-      }
-      return outputArray;
-    }
-    async function registerServiceWorker() {
-      if ('serviceWorker' in navigator && 'PushManager' in window) {
-        try {
-          const registration = await navigator.serviceWorker.register('/sw.js'); // You need to create this file
-          console.log('Service Worker registered');
-          const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
-          const subscription = await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: convertedVapidKey
-          });
-          pushSubscription = subscription;
-          // Save subscription to Firebase (per user)
-          if (currentUser) {
-            await set(ref(db, `pushSubscriptions/${currentUser.uid}`), {
-              subscription: JSON.parse(JSON.stringify(subscription)),
-              timestamp: Date.now()
-            });
-          }
-          showToast('Push notifications enabled!');
-        } catch (err) {
-          console.error('Push registration failed:', err);
-          if (err.name === 'NotAllowedError') {
-            showToast('Push notifications blocked. Please allow them in browser settings.');
-          }
-        }
-      }
-    }
-    async function requestPushPermission() {
-      if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-        console.log('Push notifications not supported');
-        return;
-      }
-      if (Notification.permission === 'granted') {
-        await registerServiceWorker();
-      } else if (Notification.permission !== 'denied') {
-        const permission = await Notification.requestPermission();
-        if (permission === 'granted') {
-          await registerServiceWorker();
-        } else {
-          showToast('Push notifications denied');
-        }
-      }
-    }
-    // Show native push notification (fallback when tab is in background)
-    function showNativePush(senderName, messageText) {
-      if (Notification.permission === 'granted' && pushSubscription) {
-        // We rely on the service worker to show the notification via push event
-        // This function is just a fallback for foreground (though we already have the pill)
-        return;
-      }
-      if (Notification.permission === 'granted') {
-        new Notification(senderName || 'Vynix Lingua', {
-          body: messageText,
-          icon: '/icon-192.png', // Optional: add your app icon
-          badge: '/badge-72.png',
-          tag: 'vynix-message',
-          renotify: true
-        });
-      }
-    }
     // ---------- DOM SHORTCUTS ----------
     const els = {
       chatsList: document.getElementById('chatsList'),
@@ -1321,6 +1248,9 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  // Optional: add tags/folder
+  // formData.append('folder', 'vynix_status');
+  // formData.append('tags', 'status');
   try {
     const response = await fetch(CLOUDINARY_UPLOAD_URL, {
       method: 'POST',
@@ -1330,7 +1260,7 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
     const data = await response.json();
     return {
       url: data.secure_url,
-      resource_type: data.resource_type,
+      resource_type: data.resource_type, // 'image' or 'video'
       public_id: data.public_id
     };
   } catch (err) {
@@ -1368,8 +1298,6 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
         if (incomingPillTimeout) clearTimeout(incomingPillTimeout);
         openPrivateChat(chatId);
       };
-      // Also show native notification if app is in foreground
-      showNativePush(senderName, shortText);
     }
     // ---------- CHAT VIEW ----------
     function closeChatView() {
@@ -1397,6 +1325,7 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
       }
       els.incomingPill.classList.remove('show');
       stopTypingIndicator();
+      // Clean up lastRead listeners
       lastReadListeners.forEach(unsub => unsub());
       lastReadListeners.clear();
     }
@@ -1471,10 +1400,12 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
       if (!window.matchMedia('(min-width: 768px)').matches) {
         history.pushState({ chatOpen: true }, '', '#chat');
       }
+      // Load persisted last read timestamp
       const lastReadRef = ref(db, `users/${currentUser.uid}/lastRead/${chatId}`);
       const lastReadSnap = await get(lastReadRef);
       const persistedLastRead = lastReadSnap.val() || 0;
       lastReadTimestamps[chatId] = persistedLastRead;
+      // Mark all messages as read up to the latest one
       const lastMsgSnap = await get(query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'), limitToLast(1)));
       if (lastMsgSnap.size > 0) {
         let latestTime = persistedLastRead;
@@ -1489,6 +1420,7 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
       }
       updateUnreadCount(chatId, 0);
       loadMoreMessages();
+      // Real-time messages listener
       if (currentMessagesListener) currentMessagesListener();
       const newMessagesQuery = query(ref(db, `privateChats/${chatId}/messages`), orderByChild('createdAt'));
       currentMessagesListener = onValue(newMessagesQuery, snap => {
@@ -1499,10 +1431,12 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
           if (!document.getElementById(msgKey)) {
             appendWhatsAppMessage(msgData, msgKey);
             hasNew = true;
+            // Update last read timestamp for any new message (even own)
             if (msgData.createdAt > (lastReadTimestamps[chatId] || 0)) {
               lastReadTimestamps[chatId] = msgData.createdAt;
               set(ref(db, `users/${currentUser.uid}/lastRead/${chatId}`), msgData.createdAt);
             }
+            // Show pill only for incoming messages
             if (msgData.userId !== currentUser.uid) {
               const chatItem = document.querySelector(`[data-chat-id="${chatId}"]`);
               const name = msgData.userName || chatItem?.querySelector('.chat-name-whatsapp')?.textContent || 'Someone';
@@ -1514,6 +1448,7 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
         if (hasNew) scrollToBottom();
         updateUnreadCount(chatId, 0);
       });
+      // Typing indicator listener
       if (currentTypingListener) currentTypingListener();
       const typingRef = ref(db, `privateChats/${chatId}/typing`);
       currentTypingListener = onValue(typingRef, snap => {
@@ -1611,182 +1546,140 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
     }
     // ---------- LOAD FRIENDS / CHATS ----------
     async function loadFriendsChatsRealTime() {
-    if (!currentUser) return;
-
-    // Clean up any existing listeners first
-    chatListeners.forEach(listenerObj => {
-      if (listenerObj.messages) listenerObj.messages();
-      if (listenerObj.online) listenerObj.online();
-    });
-    chatListeners.clear();
-    lastReadListeners.forEach(unsub => unsub());
-    lastReadListeners.clear();
-
-    showLoadingShimmer();
-
-    const userRef = ref(db, `users/${currentUser.uid}`);
-
-    // We only need to listen to the current user's friends list once
-    const unsubscribeUser = onValue(userRef, async snapshot => {
-      if (!snapshot.exists()) return;
-
-      els.chatsList.innerHTML = '';
-      allChatItems = [];
-
-      const data = snapshot.val();
-      const friends = [...new Set(data.friends || [])];
-
-      if (friends.length === 0) {
-        els.chatsList.innerHTML = `<div style="text-align:center;padding:40px;color:var(--gray-mid);"><span class="material-symbols-rounded" style="font-size:48px;">group_add</span><p>No friends yet</p><p style="font-size:14px;margin-top:8px;">Tap the + button to add friends</p></div>`;
-        return;
-      }
-
-      // Process each friend
-      for (const friendUid of friends) {
-        const friendSnap = await get(ref(db, `users/${friendUid}`));
-        if (!friendSnap.exists()) continue;
-
-        const friend = friendSnap.val();
-        const chatId = [currentUser.uid, friendUid].sort().join('_');
-
-        // Skip if already rendered
-        if (document.getElementById(`friend-card-${friendUid}`)) continue;
-
-        const item = document.createElement('div');
-        item.className = 'chat-item-whatsapp';
-        item.id = `friend-card-${friendUid}`;
-        item.dataset.name = (friend.displayName || '').toLowerCase();
-        item.dataset.chatId = chatId;
-        item.dataset.lastTs = '0';
-
-        const verifiedBadge = friend.verified ? `
-          <svg class="verified-badge" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-            <path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.71-3.998-3.818-3.998-.47 0-.92.084-1.336.25C14.818 2.415 13.51 1.5 12 1.5s-2.816.917-3.437 2.25c-.415-.165-.866-.25-1.336-.25-2.11 0-3.818 1.79-3.818 4 0 .495.083.965.238 1.4-1.272.65-2.147 2.02-2.147 3.6 0 1.56.86 2.91 2.115 3.567-.146.432-.225.898-.225 1.383 0 2.21 1.71 4 3.818 4 .47 0 .92-.084 1.336-.25.62 1.333 1.926 2.25 3.437 2.25 1.512 0 2.818-.917 3.437-2.25.415.165.866.25 1.336.25 2.11 0 3.818-1.79 3.818-4 0-.485-.08-.95-.225-1.383 1.255-.657 2.115-2.007 2.115-3.567z" fill="#1DA1F2"/>
-            <path d="M10.198 16.556l-3.812-3.812 1.415-1.415 2.397 2.397 5.613-5.613 1.414 1.414-7.027 7.03z" fill="#FFFFFF"/>
-          </svg>` : '';
-
-        const initial = friend.displayName ? friend.displayName.charAt(0).toUpperCase() : '?';
-        const onlineClass = friend.online ? 'online' : '';
-
-        item.innerHTML = `
-          <div class="whatsapp-avatar ${onlineClass}">${initial}</div>
-          <div class="chat-info-whatsapp">
-            <div class="chat-header-row">
-              <div class="chat-name-wrapper">
-                <div class="chat-name-whatsapp">${escapeHtml(friend.displayName || 'Anonymous')}</div>
-                ${verifiedBadge}
+      if (!currentUser) return;
+      showLoadingShimmer();
+      const userRef = ref(db, `users/${currentUser.uid}`);
+      onValue(userRef, async snapshot => {
+        if (!snapshot.exists()) return;
+        els.chatsList.innerHTML = '';
+        allChatItems = [];
+        const data = snapshot.val();
+        const friends = [...new Set(data.friends || [])];
+        if (friends.length === 0) {
+          els.chatsList.innerHTML = `<div style="text-align:center;padding:40px;color:var(--gray-mid);"><span class="material-symbols-rounded" style="font-size:48px;">group_add</span><p>No friends yet</p><p style="font-size:14px;margin-top:8px;">Tap the + button to add friends</p></div>`;
+          return;
+        }
+        for (const friendUid of friends) {
+          const friendSnap = await get(ref(db, `users/${friendUid}`));
+          if (!friendSnap.exists()) continue;
+          const friend = friendSnap.val();
+          const chatId = [currentUser.uid, friendUid].sort().join('_');
+          if (document.getElementById(`friend-card-${friendUid}`)) continue;
+          const item = document.createElement('div');
+          item.className = 'chat-item-whatsapp';
+          item.id = `friend-card-${friendUid}`;
+          item.dataset.name = (friend.displayName || '').toLowerCase();
+          item.dataset.chatId = chatId;
+          const verifiedBadge = friend.verified ? `
+  <svg class="verified-badge" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+    <path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.71-3.998-3.818-3.998-.47 0-.92.084-1.336.25C14.818 2.415 13.51 1.5 12 1.5s-2.816.917-3.437 2.25c-.415-.165-.866-.25-1.336-.25-2.11 0-3.818 1.79-3.818 4 0 .495.083.965.238 1.4-1.272.65-2.147 2.02-2.147 3.6 0 1.56.86 2.91 2.115 3.567-.146.432-.225.898-.225 1.383 0 2.21 1.71 4 3.818 4 .47 0 .92-.084 1.336-.25.62 1.333 1.926 2.25 3.437 2.25 1.512 0 2.818-.917 3.437-2.25.415.165.866.25 1.336.25 2.11 0 3.818-1.79 3.818-4 0-.485-.08-.95-.225-1.383 1.255-.657 2.115-2.007 2.115-3.567z" fill="#1DA1F2"/>
+    <path d="M10.198 16.556l-3.812-3.812 1.415-1.415 2.397 2.397 5.613-5.613 1.414 1.414-7.027 7.03z" fill="#FFFFFF"/>
+  </svg>
+` : '';
+          const initial = friend.displayName ? friend.displayName.charAt(0).toUpperCase() : '?';
+          const onlineClass = friend.online ? 'online' : '';
+          item.innerHTML = `
+            <div class="whatsapp-avatar ${onlineClass}">${initial}</div>
+            <div class="chat-info-whatsapp">
+              <div class="chat-header-row">
+                <div class="chat-name-wrapper">
+                  <div class="chat-name-whatsapp">${friend.displayName || 'Anonymous'}</div>
+                  ${verifiedBadge}
+                </div>
+                <div class="chat-time-whatsapp" id="time-${chatId}"></div>
               </div>
-              <div class="chat-time-whatsapp" id="time-${chatId}"></div>
+              <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
             </div>
-            <div class="chat-preview-whatsapp" id="preview-${chatId}">Tap to start chatting</div>
-          </div>
-          <button class="delete-chat-btn" title="Clear chat">
-            <span class="material-symbols-rounded" style="font-size:20px;">delete</span>
-          </button>
-        `;
-
-        item.addEventListener('click', e => {
-          if (e.target.closest('.delete-chat-btn')) return;
-          openPrivateChat(chatId);
-        });
-        item.querySelector('.delete-chat-btn').addEventListener('click', e => {
-          e.stopPropagation();
-          deleteChat(chatId, friendUid);
-        });
-
-        els.chatsList.appendChild(item);
-        allChatItems.push(item);
-
-        // ---------- Message listener for this chat ----------
-        const messagesRef = ref(db, `privateChats/${chatId}/messages`);
-        const messagesQuery = query(messagesRef, orderByChild('createdAt'));
-
-        const unsubMessages = onValue(messagesQuery, async snap => {
-          const previewEl = document.getElementById(`preview-${chatId}`);
-          const timeEl = document.getElementById(`time-${chatId}`);
-          if (!previewEl || !timeEl) return;
-
-          let unreadCount = 0;
-          let lastTimestamp = 0;
-          let lastMsgText = 'Tap to start chatting';
-
-          // Ensure lastRead listener exists
-          if (!lastReadListeners.has(chatId)) {
-            const lastReadRef = ref(db, `users/${currentUser.uid}/lastRead/${chatId}`);
-            const unsub = onValue(lastReadRef, s => {
-              if (s.val()) lastReadTimestamps[chatId] = s.val();
-            });
-            lastReadListeners.set(chatId, unsub);
-          }
-
-          const currentLastRead = lastReadTimestamps[chatId] || 0;
-
-          snap.forEach(child => {
-            const msg = child.val();
-            if (msg.createdAt > lastTimestamp) {
-              lastTimestamp = msg.createdAt;
-              const isOwn = msg.userId === currentUser.uid;
-              const shortText = msg.text.length > 30 ? msg.text.slice(0, 27) + '...' : msg.text;
-              lastMsgText = isOwn ? `You: ${shortText}` : shortText;
+            <button class="delete-chat-btn" title="Clear chat">
+              <span class="material-symbols-rounded" style="font-size:20px;">delete</span>
+            </button>
+          `;
+          item.addEventListener('click', e => {
+            if (e.target.closest('.delete-chat-btn')) return;
+            openPrivateChat(chatId);
+          });
+          item.querySelector('.delete-chat-btn').addEventListener('click', e => {
+            e.stopPropagation();
+            deleteChat(chatId, friendUid);
+          });
+          els.chatsList.appendChild(item);
+          allChatItems.push(item);
+          // Messages listener for preview, time, and unread
+          const messagesRef = ref(db, `privateChats/${chatId}/messages`);
+          const messagesQuery = query(messagesRef, orderByChild('createdAt'));
+          const unsubscribeMsg = onValue(messagesQuery, async snap => {
+            const previewEl = document.getElementById(`preview-${chatId}`);
+            const timeEl = document.getElementById(`time-${chatId}`);
+            if (!previewEl || !timeEl) return;
+            let unreadCount = 0;
+            let lastTimestamp = 0;
+            let lastMsgText = 'Tap to start chatting';
+            // Ensure we have the latest persisted lastRead
+            if (!lastReadListeners.has(chatId)) {
+              const lastReadRef = ref(db, `users/${currentUser.uid}/lastRead/${chatId}`);
+              const unsub = onValue(lastReadRef, s => {
+                if (s.val()) lastReadTimestamps[chatId] = s.val();
+              });
+              lastReadListeners.set(chatId, unsub);
             }
-            if (msg.userId !== currentUser.uid && msg.createdAt > currentLastRead) {
-              unreadCount++;
-              // Show pill + native notification even when in Chats tab (but not when in that specific chat)
-              if (!(isPrivateChatMode && activeChatId === chatId)) {
-                const name = friend.displayName || 'Someone';
-                const initial = friend.displayName ? friend.displayName.charAt(0).toUpperCase() : '?';
-                showIncomingMessagePill(name, initial, msg.text, chatId);
+            const currentLastRead = lastReadTimestamps[chatId] || 0;
+            snap.forEach(child => {
+              const msg = child.val();
+              if (msg.createdAt > currentLastRead && msg.userId !== currentUser.uid) {
+                unreadCount++;
               }
+              if (msg.createdAt > lastTimestamp) {
+                lastTimestamp = msg.createdAt;
+                const isOwn = msg.userId === currentUser.uid;
+                const shortText = msg.text.length > 30 ? msg.text.slice(0, 27) + '...' : msg.text;
+                lastMsgText = isOwn ? `You: ${shortText}` : shortText;
+              }
+              // Incoming message pill
+              if (msg.userId !== currentUser.uid && msg.createdAt > currentLastRead) {
+                if (!(isPrivateChatMode && activeChatId === chatId)) {
+                  const name = friend.displayName || 'Someone';
+                  const initial = friend.displayName ? friend.displayName.charAt(0).toUpperCase() : '?';
+                  showIncomingMessagePill(name, initial, msg.text, chatId);
+                }
+              }
+            });
+            previewEl.textContent = lastMsgText;
+            previewEl.classList.remove('typing-indicator');
+            if (lastTimestamp > 0) {
+              const time = new Date(lastTimestamp);
+              const now = new Date();
+              const diffMs = now - time;
+              const diffMins = Math.floor(diffMs / 60000);
+              const diffHours = Math.floor(diffMs / 3600000);
+              const diffDays = Math.floor(diffMs / 86400000);
+              const timeStr = diffMins < 1 ? 'now'
+                : diffMins < 60 ? `${diffMins}m`
+                : diffHours < 24 ? `${diffHours}h`
+                : diffDays < 7 ? `${diffDays}d`
+                : time.toLocaleDateString();
+              timeEl.textContent = timeStr;
+            } else {
+              timeEl.textContent = '';
+            }
+            updateUnreadCount(chatId, unreadCount);
+            // Sort by latest message
+            if (lastTimestamp > (item.dataset.lastTs || 0)) {
+              item.dataset.lastTs = lastTimestamp;
+              if (item.parentElement) els.chatsList.prepend(item);
             }
           });
-
-          previewEl.textContent = lastMsgText;
-          previewEl.classList.remove('typing-indicator');
-
-          if (lastTimestamp > 0) {
-            const time = new Date(lastTimestamp);
-            const now = new Date();
-            const diffMs = now - time;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-            const timeStr = diffMins < 1 ? 'now'
-              : diffMins < 60 ? `${diffMins}m`
-              : diffHours < 24 ? `${diffHours}h`
-              : diffDays < 7 ? `${diffDays}d`
-              : time.toLocaleDateString();
-            timeEl.textContent = timeStr;
-          } else {
-            timeEl.textContent = '';
-          }
-
-          updateUnreadCount(chatId, unreadCount);
-
-          // Sort: move to top if newer
-          if (lastTimestamp > Number(item.dataset.lastTs)) {
-            item.dataset.lastTs = lastTimestamp;
-            els.chatsList.prepend(item);
-          }
-        });
-
-        // ---------- Online status listener ----------
-        const onlineRef = ref(db, `users/${friendUid}/online`);
-        const unsubOnline = onValue(onlineRef, snap => {
-          const avatar = item.querySelector('.whatsapp-avatar');
-          if (snap.val() === true) avatar.classList.add('online');
-          else avatar.classList.remove('online');
-        });
-
-        // Store both listeners so we can clean them later
-        chatListeners.set(chatId, { messages: unsubMessages, online: unsubOnline });
-      }
-    });
-
-    // Keep reference if you ever need to detach the main user listener (optional)
-    // return unsubscribeUser;
-  }
-
-  els.chatSearchInput.addEventListener('input', () => {
+          // Online status
+          const onlineRef = ref(db, `users/${friendUid}/online`);
+          onValue(onlineRef, snap => {
+            const avatar = item.querySelector('.whatsapp-avatar');
+            if (snap.val() === true) avatar.classList.add('online');
+            else avatar.classList.remove('online');
+          });
+          chatListeners.set(chatId, unsubscribeMsg);
+        }
+      });
+    }
+    els.chatSearchInput.addEventListener('input', () => {
       const query = els.chatSearchInput.value.toLowerCase().trim();
       allChatItems.forEach(item => {
         const name = item.dataset.name || '';
@@ -1794,6 +1687,7 @@ document.getElementById('statusFileInput').addEventListener('change', () => {
       });
     });
     // ---------- STATUS ----------
+// ---------- STATUS ----------
 function loadStatusPostsRealTime() {
   const statusRef = ref(db, 'statusPosts');
   const statusQuery = query(statusRef, orderByChild('createdAt'));
@@ -1818,6 +1712,7 @@ function loadStatusPostsRealTime() {
       const isLiked = post.likes?.includes(currentUser?.uid);
       const likeCount = post.likes?.length || 0;
       const initial = (post.userName || 'Anonymous').charAt(0).toUpperCase();
+      // >>> SVG VERIFIED BADGE <<<
       const verifiedBadge = (post.userVerified || false)
         ? `<svg class="verified-badge" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
              <path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.71-3.998-3.818-3.998-.47 0-.92.084-1.336.25C14.818 2.415 13.51 1.5 12 1.5s-2.816.917-3.437 2.25c-.415-.165-.866-.25-1.336-.25-2.11 0-3.818 1.79-3.818 4 0 .495.083.965.238 1.4-1.272.65-2.147 2.02-2.147 3.6 0 1.56.86 2.91 2.115 3.567-.146.432-.225.898-.225 1.383 0 2.21 1.71 4 3.818 4 .47 0 .92-.084 1.336-.25.62 1.333 1.926 2.25 3.437 2.25 1.512 0 2.818-.917 3.437-2.25.415.165.866.25 1.336.25 2.11 0 3.818-1.79 3.818-4 0-.485-.08-.95-.225-1.383 1.255-.657 2.115-2.007 2.115-3.567z" fill="#1DA1F2"/>
@@ -1841,7 +1736,7 @@ function loadStatusPostsRealTime() {
           <div style="flex:1;">
             <div class="status-author">
               ${escapeHtml(post.userName || 'Anonymous')}
-              ${verifiedBadge}
+              ${verifiedBadge} <!-- badge injected here -->
             </div>
             <div class="status-time">${timeAgo}</div>
           </div>
@@ -1873,6 +1768,7 @@ function loadStatusPostsRealTime() {
         </div>`;
       els.statusCards.appendChild(card);
     });
+    // bind delete buttons
     document.querySelectorAll('.delete-status-btn').forEach(btn => {
       btn.addEventListener('click', async e => {
         e.stopPropagation();
@@ -1984,7 +1880,7 @@ function loadStatusPostsRealTime() {
     els.statusPostBtn.textContent = 'Post Status';
     if (!uploadResult) return;
     mediaUrl = uploadResult.url;
-    mediaType = uploadResult.resource_type;
+    mediaType = uploadResult.resource_type; // 'image' or 'video'
   }
   await push(ref(db, 'statusPosts'), {
     content: text || '',
@@ -2127,8 +2023,6 @@ function loadStatusPostsRealTime() {
         onDisconnect(onlineRef).set(false);
         switchTab('chats');
         startHeartbeat();
-        // Request push permission after login
-        requestPushPermission();
       }
     });
     function startHeartbeat() {
@@ -2217,22 +2111,11 @@ document.querySelector('.pill-tab[data-tab="ai"]').addEventListener('click', () 
 });
     // ---------- INITIAL ----------
     switchTab('chats');
-  
+   
     // If current page is ai.html, don't highlight any tab (or optionally highlight AI if you keep navigation there)
 if (window.location.pathname.includes('ai.html')) {
   document.querySelectorAll('.pill-tab').forEach(tab => tab.classList.remove('active'));
 }
-
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && currentUser) {
-        loadFriendsChatsRealTime();  // Re-attach all listeners instantly
-      }
-    });
-
-        // Optional: Also wake up on resume (Android)
-    window.addEventListener("focus", () => {
-      if (currentUser) loadFriendsChatsRealTime();
-    });
   </script>
 </body>
 </html>
