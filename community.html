@@ -345,6 +345,9 @@
             margin-top: 8px;
             min-height: 20px;
         }
+        #recaptcha-container {
+            margin: 20px 0;
+        }
 
         .fab { position: fixed; bottom: 24px; right: 20px; width: 60px; height: 60px; background: #000; color: #fff; border-radius: 20px; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(0,0,0,0.2); cursor: pointer; z-index: 9; }
         .loading-spinner { display: none; margin-top: 10px; font-size: 12px; color: var(--accent-purple); }
@@ -376,7 +379,10 @@
 
     <input type="file" id="imageInput" accept="image/*" style="display:none;">
 
-    <!-- Auth / Sign In / Sign Up Bottom Sheet -->
+    <!-- reCAPTCHA container (required for phone auth) -->
+    <div id="recaptcha-container"></div>
+
+    <!-- Auth Bottom Sheet -->
     <div class="auth-overlay" id="authOverlay">
         <div class="auth-sheet">
             <div class="sheet-handle"></div>
@@ -390,12 +396,25 @@
                 <button id="emailAuthBtn" class="auth-btn">Sign In</button>
             </div>
 
+            <div id="phoneAuthFields" style="display:none;">
+                <input type="tel" id="phoneInput" class="auth-input" placeholder="Phone number (e.g. +1234567890)">
+                <div id="phoneError" class="error-msg"></div>
+                <button id="sendCodeBtn" class="auth-btn">Send Verification Code</button>
+            </div>
+
+            <div id="otpFields" style="display:none;">
+                <input type="text" id="otpInput" class="auth-input" placeholder="Enter 6-digit code">
+                <div id="otpError" class="error-msg"></div>
+                <button id="verifyOtpBtn" class="auth-btn">Verify Code</button>
+            </div>
+
             <button class="google-btn" id="googleBtn">
                 <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/0/google.svg" alt="Google">
                 <span id="googleBtnText">Continue with Google</span>
             </button>
 
-            <div id="authToggle" class="auth-toggle">Sign up with Email</div>
+            <div id="authToggleEmail" class="auth-toggle">Sign in with Email/Password</div>
+            <div id="authTogglePhone" class="auth-toggle" style="display:none;">Sign in with Phone</div>
 
             <div id="uploadStatus" class="loading-spinner">Uploading to Cloudinary...</div>
         </div>
@@ -435,7 +454,9 @@
             signInWithPopup, 
             GoogleAuthProvider,
             signInWithEmailAndPassword,
-            createUserWithEmailAndPassword
+            createUserWithEmailAndPassword,
+            RecaptchaVerifier,
+            signInWithPhoneNumber
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { getDatabase, ref, set, onValue, serverTimestamp, off } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
@@ -455,6 +476,7 @@
         const db = getDatabase(app);
         const googleProvider = new GoogleAuthProvider();
 
+        // UI elements
         const authOverlay = document.getElementById('authOverlay');
         const mainApp = document.getElementById('main-app');
         const listContainer = document.getElementById('list-container');
@@ -468,19 +490,29 @@
         const profileEmail = document.getElementById('profileEmail');
         const profileActionBtn = document.getElementById('profileActionBtn');
 
-        // Auth UI elements
+        // Auth UI
         const authTitle = document.getElementById('authTitle');
         const authSubtitle = document.getElementById('authSubtitle');
         const emailAuthFields = document.getElementById('emailAuthFields');
+        const phoneAuthFields = document.getElementById('phoneAuthFields');
+        const otpFields = document.getElementById('otpFields');
         const emailInput = document.getElementById('emailInput');
         const passwordInput = document.getElementById('passwordInput');
+        const phoneInput = document.getElementById('phoneInput');
+        const otpInput = document.getElementById('otpInput');
         const emailAuthBtn = document.getElementById('emailAuthBtn');
+        const sendCodeBtn = document.getElementById('sendCodeBtn');
+        const verifyOtpBtn = document.getElementById('verifyOtpBtn');
         const googleBtn = document.getElementById('googleBtn');
-        const googleBtnText = document.getElementById('googleBtnText');
-        const authToggle = document.getElementById('authToggle');
+        const authToggleEmail = document.getElementById('authToggleEmail');
+        const authTogglePhone = document.getElementById('authTogglePhone');
         const errorMsg = document.getElementById('errorMsg');
+        const phoneError = document.getElementById('phoneError');
+        const otpError = document.getElementById('otpError');
 
         let isSignUp = false;
+        let confirmationResult = null;
+        let recaptchaVerifier = null;
 
         let usersListener = null;
 
@@ -500,26 +532,56 @@
             listContainer.innerHTML = skeletonHTML;
         }
 
-        // Toggle between Sign In and Sign Up
-        authToggle.onclick = () => {
-            isSignUp = !isSignUp;
-            if (isSignUp) {
-                authTitle.textContent = "Create Account";
-                authSubtitle.textContent = "Join Vynix and start chatting!";
-                emailAuthBtn.textContent = "Sign Up";
-                authToggle.textContent = "Already have an account? Sign In";
-                emailAuthFields.style.display = 'block';
-            } else {
-                authTitle.textContent = "Welcome Back";
-                authSubtitle.textContent = "Sign in to continue to Vynix.";
-                emailAuthBtn.textContent = "Sign In";
-                authToggle.textContent = "Don't have an account? Sign Up";
-                emailAuthFields.style.display = 'block';
-            }
+        // Reset auth UI to default state
+        function resetAuthUI() {
+            authTitle.textContent = "Join Vynix";
+            authSubtitle.textContent = "Connect with your community instantly.";
+            emailAuthFields.style.display = 'none';
+            phoneAuthFields.style.display = 'none';
+            otpFields.style.display = 'none';
+            authToggleEmail.style.display = 'block';
+            authTogglePhone.style.display = 'block';
+            authToggleEmail.textContent = "Sign in with Email/Password";
+            authTogglePhone.textContent = "Sign in with Phone";
+            errorMsg.textContent = '';
+            phoneError.textContent = '';
+            otpError.textContent = '';
+            emailInput.value = '';
+            passwordInput.value = '';
+            phoneInput.value = '';
+            otpInput.value = '';
+            isSignUp = false;
+        }
+
+        // Email/Password toggle
+        authToggleEmail.onclick = () => {
+            isSignUp = false;
+            authTitle.textContent = "Welcome Back";
+            authSubtitle.textContent = "Sign in to continue to Vynix.";
+            emailAuthBtn.textContent = "Sign In";
+            authToggleEmail.textContent = "Don't have an account? Sign Up";
+            emailAuthFields.style.display = 'block';
+            phoneAuthFields.style.display = 'none';
+            otpFields.style.display = 'none';
+            authTogglePhone.style.display = 'none';
             errorMsg.textContent = '';
         };
 
-        // Email/Password authentication
+        // Toggle to Sign Up (email)
+        // (Handled inside emailAuthBtn logic)
+
+        // Phone authentication toggle
+        authTogglePhone.onclick = () => {
+            authTitle.textContent = "Verify Phone Number";
+            authSubtitle.textContent = "We'll send you a verification code.";
+            phoneAuthFields.style.display = 'block';
+            emailAuthFields.style.display = 'none';
+            otpFields.style.display = 'none';
+            authToggleEmail.style.display = 'none';
+            authTogglePhone.style.display = 'none';
+        };
+
+        // Email auth button
         emailAuthBtn.onclick = async () => {
             const email = emailInput.value.trim();
             const password = passwordInput.value;
@@ -538,50 +600,105 @@
                 } else {
                     userCredential = await signInWithEmailAndPassword(auth, email, password);
                 }
-                // Success handled by onAuthStateChanged
             } catch (error) {
                 let msg = "Authentication failed.";
                 if (error.code === 'auth/weak-password') msg = "Password should be at least 6 characters.";
-                else if (error.code === 'auth/email-already-in-use') msg = "Email already in use.";
-                else if (error.code === 'auth/invalid-email') msg = "Invalid email address.";
+                else if (error.code === 'auth/email-already-in-use') {
+                    msg = "Email already in use. Try signing in.";
+                    authToggleEmail.textContent = "Already have an account? Sign In";
+                    isSignUp = false;
+                    emailAuthBtn.textContent = "Sign In";
+                } else if (error.code === 'auth/invalid-email') msg = "Invalid email address.";
                 else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') msg = "Invalid email or password.";
                 errorMsg.textContent = msg;
+            }
+        };
+
+        // Send verification code
+        sendCodeBtn.onclick = async () => {
+            const phoneNumber = phoneInput.value.trim();
+            if (!phoneNumber) {
+                phoneError.textContent = "Please enter a valid phone number.";
+                return;
+            }
+
+            phoneError.textContent = "Sending code...";
+
+            try {
+                // Initialize reCAPTCHA if not already
+                if (!recaptchaVerifier) {
+                    recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+                        'size': 'invisible',
+                        'callback': () => {}
+                    });
+                }
+
+                confirmationResult = await signInWithPhoneNumber(auth, phoneNumber, recaptchaVerifier);
+                phoneError.textContent = "";
+                otpFields.style.display = 'block';
+                phoneAuthFields.style.display = 'none';
+                authTitle.textContent = "Enter Verification Code";
+                authSubtitle.textContent = `Code sent to ${phoneNumber}`;
+            } catch (error) {
+                console.error(error);
+                let msg = "Failed to send code.";
+                if (error.code === 'auth/invalid-phone-number') msg = "Invalid phone number format. Use international format (e.g. +1234567890).";
+                else if (error.code === 'auth/too-many-requests') msg = "Too many requests. Try again later.";
+                phoneError.textContent = msg;
+                if (recaptchaVerifier) recaptchaVerifier.clear();
+            }
+        };
+
+        // Verify OTP
+        verifyOtpBtn.onclick = async () => {
+            const code = otpInput.value.trim();
+            if (!code || code.length !== 6) {
+                otpError.textContent = "Please enter the 6-digit code.";
+                return;
+            }
+
+            otpError.textContent = "Verifying...";
+
+            try {
+                await confirmationResult.confirm(code);
+                // Success → onAuthStateChanged will handle
+            } catch (error) {
+                otpError.textContent = "Invalid or expired code.";
             }
         };
 
         // Google Sign In
         googleBtn.onclick = () => signInWithPopup(auth, googleProvider);
 
-        // Authentication state
+        // Auth state listener
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 authOverlay.classList.remove('active');
                 mainApp.classList.remove('blurred');
                 syncUser(user);
                 loadChats();
-                // Reset auth form
-                isSignUp = false;
-                authTitle.textContent = "Join Vynix";
-                authSubtitle.textContent = "Connect with your community instantly.";
-                emailAuthFields.style.display = 'none';
-                authToggle.textContent = "Sign up with Email";
-                emailInput.value = '';
-                passwordInput.value = '';
-                errorMsg.textContent = '';
+                resetAuthUI();
+                if (recaptchaVerifier) {
+                    recaptchaVerifier.clear();
+                    recaptchaVerifier = null;
+                }
             } else {
                 authOverlay.classList.add('active');
                 mainApp.classList.add('blurred');
                 listContainer.innerHTML = '';
+                resetAuthUI();
             }
         });
 
-        // Sync user to database
+        // Sync user
         async function syncUser(user) {
+            const displayName = user.displayName || user.phoneNumber || user.email?.split('@')[0] || 'User';
             const userRef = ref(db, 'users/' + user.uid);
             await set(userRef, {
                 uid: user.uid,
-                name: user.displayName || user.email.split('@')[0],
-                email: user.email,
+                name: displayName,
+                email: user.email || '',
+                phone: user.phoneNumber || '',
                 photo: user.photoURL,
                 lastSeen: serverTimestamp()
             }, { merge: true });
@@ -622,7 +739,6 @@
             }
         };
 
-        // Load chats
         function loadChats() {
             showShimmer();
             onValue(ref(db, 'chats'), (snapshot) => {
@@ -649,64 +765,56 @@
             });
         }
 
-        // Load all users
         function loadAllUsers() {
-            if (usersListener) {
-                off(ref(db, 'users'));
-            }
-
+            if (usersListener) off(ref(db, 'users'));
             usersList.innerHTML = '<div style="text-align:center; padding:20px; color:#71717a;">Loading users...</div>';
 
             usersListener = onValue(ref(db, 'users'), (snapshot) => {
                 const data = snapshot.val();
                 usersList.innerHTML = '';
-
                 if (!data || Object.keys(data).length === 0) {
                     usersList.innerHTML = '<div style="text-align:center; padding:40px; color:#71717a;">No users found.</div>';
                     return;
                 }
 
                 const sortedUsers = Object.entries(data).sort((a, b) => {
-                    const nameA = a[1].name || a[1].email || '';
-                    const nameB = b[1].name || b[1].email || '';
+                    const nameA = a[1].name || a[1].email || a[1].phone || '';
+                    const nameB = b[1].name || b[1].email || b[1].phone || '';
                     return nameA.localeCompare(nameB);
                 });
 
                 sortedUsers.forEach(([uid, user]) => {
                     const photoUrl = user.photo || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uid}`;
+                    const displayName = user.name || user.email || user.phone || 'Anonymous';
                     usersList.innerHTML += `
                         <div class="user-list-item" onclick="showProfile('${uid}')">
                             <img src="${photoUrl}" class="user-list-avatar" alt="">
                             <div>
-                                <div class="user-list-name">${user.name || user.email || 'Anonymous'}</div>
-                                <div class="user-list-email">${user.email || ''}</div>
+                                <div class="user-list-name">${displayName}</div>
+                                <div class="user-list-email">${user.email || user.phone || ''}</div>
                             </div>
                         </div>`;
                 });
             });
         }
 
-        // Show profile
         window.showProfile = function(uid) {
             const userRef = ref(db, 'users/' + uid);
             onValue(userRef, (snapshot) => {
                 const user = snapshot.val();
-                if (!user) {
-                    alert("User not found.");
-                    return;
-                }
+                if (!user) return alert("User not found.");
 
                 const photoUrl = user.photo || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uid}`;
                 profileAvatar.src = photoUrl;
-                profileName.textContent = user.name || user.email || 'Anonymous';
-                profileEmail.textContent = user.email || '';
+                profileName.textContent = user.name || user.email || user.phone || 'Anonymous';
+                profileEmail.textContent = user.email || user.phone || '';
 
                 if (uid === auth.currentUser?.uid) {
                     profileActionBtn.textContent = "Edit Profile";
                     profileActionBtn.onclick = () => alert("Edit profile coming soon!");
                 } else {
                     profileActionBtn.textContent = "Message";
-                    profileActionBtn.onclick = () => startChatWith(uid, user.name || user.email, photoUrl);
+                    profileActionBtn.onclick = () => startChatWith(uid, user.name || user.email || user.phone, photoUrl);
                 }
 
                 usersOverlay.classList.remove('active');
@@ -723,15 +831,11 @@
         };
 
         function startChatWith(uid, name, photo) {
-            if (uid === auth.currentUser?.uid) {
-                alert("You cannot message yourself.");
-                return;
-            }
+            if (uid === auth.currentUser?.uid) return alert("You cannot message yourself.");
             alert(`Start chat with ${name} (UID: ${uid})`);
             profileOverlay.classList.remove('active');
         }
 
-        // FAB
         fabButton.onclick = () => {
             if (!auth.currentUser) {
                 authOverlay.classList.add('active');
@@ -752,14 +856,12 @@
             }
         };
 
-        // Do not allow closing auth by tapping outside
         authOverlay.onclick = (e) => {
             if (e.target === authOverlay) {
-                // Prevent closing — user must authenticate
+                // Prevent closing
             }
         };
 
-        // Tab switching
         window.ui = {
             switchTab: (index, label) => {
                 document.getElementById('tabInd').style.transform = `translateX(${index * 100}%)`;
