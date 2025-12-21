@@ -153,6 +153,7 @@
             align-items: center;
             padding: 12px 0;
             border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
         }
         .user-list-item:last-child {
             border-bottom: none;
@@ -171,6 +172,93 @@
         .user-list-email {
             font-size: 13px;
             color: var(--text-dim);
+        }
+
+        /* Profile View Overlay */
+        .profile-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 1100;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .profile-overlay.active {
+            display: block;
+            opacity: 1;
+        }
+        .profile-sheet {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            max-height: 90vh;
+            background: #fff;
+            border-radius: 24px 24px 0 0;
+            overflow: hidden;
+            transform: translateY(100%);
+            transition: transform 0.4s cubic-bezier(0.17, 0.84, 0.44, 1);
+        }
+        .profile-overlay.active .profile-sheet {
+            transform: translateY(0);
+        }
+        .profile-header {
+            position: relative;
+            height: 220px;
+            background: var(--logo-gradient);
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            padding-bottom: 20px;
+        }
+        .profile-avatar {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 6px solid #fff;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .profile-body {
+            padding: 24px;
+            text-align: center;
+        }
+        .profile-name {
+            font-size: 24px;
+            font-weight: 700;
+            margin: 8px 0 4px;
+        }
+        .profile-email {
+            font-size: 15px;
+            color: var(--text-dim);
+            margin-bottom: 20px;
+        }
+        .profile-action-btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            background: var(--accent-purple);
+            color: #fff;
+            font-weight: 600;
+            border-radius: 16px;
+            text-align: center;
+            margin-top: 12px;
+            cursor: pointer;
+        }
+        .profile-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            width: 36px;
+            height: 36px;
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
         }
 
         /* Auth overlay */
@@ -238,6 +326,23 @@
         </div>
     </div>
 
+    <!-- Profile View Overlay -->
+    <div class="profile-overlay" id="profileOverlay">
+        <div class="profile-sheet">
+            <div class="profile-header">
+                <img id="profileAvatar" class="profile-avatar" src="" alt="">
+                <div class="profile-close" onclick="closeProfile()">
+                    <span class="material-symbols-rounded">close</span>
+                </div>
+            </div>
+            <div class="profile-body">
+                <div id="profileName" class="profile-name"></div>
+                <div id="profileEmail" class="profile-email"></div>
+                <div id="profileActionBtn" class="profile-action-btn"></div>
+            </div>
+        </div>
+    </div>
+
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -266,7 +371,13 @@
         const usersList = document.getElementById('usersList');
         const fabButton = document.getElementById('fabButton');
 
-        let usersListener = null; // To track and clean up the listener
+        const profileOverlay = document.getElementById('profileOverlay');
+        const profileAvatar = document.getElementById('profileAvatar');
+        const profileName = document.getElementById('profileName');
+        const profileEmail = document.getElementById('profileEmail');
+        const profileActionBtn = document.getElementById('profileActionBtn');
+
+        let usersListener = null;
 
         // Show shimmer placeholders for chats
         function showShimmer() {
@@ -312,9 +423,15 @@
             }, { merge: true });
         }
 
-        // Profile picture upload
+        // Profile picture upload (from logo click)
         const imageInput = document.getElementById('imageInput');
-        document.getElementById('profileTrigger').onclick = () => imageInput.click();
+        document.getElementById('profileTrigger').onclick = () => {
+            if (!auth.currentUser) {
+                alert("Please sign in first.");
+                return;
+            }
+            imageInput.click();
+        };
         imageInput.onchange = async (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -367,26 +484,23 @@
             });
         }
 
-        // Load all users (including current user)
+        // Load all users
         function loadAllUsers() {
-            // Clear any previous listener to prevent duplicates
             if (usersListener) {
                 off(ref(db, 'users'));
             }
 
-            // Show initial loading state
             usersList.innerHTML = '<div style="text-align:center; padding:20px; color:#71717a;">Loading users...</div>';
 
             usersListener = onValue(ref(db, 'users'), (snapshot) => {
                 const data = snapshot.val();
-                usersList.innerHTML = ''; // Clear loading message
+                usersList.innerHTML = '';
 
                 if (!data || Object.keys(data).length === 0) {
                     usersList.innerHTML = '<div style="text-align:center; padding:40px; color:#71717a;">No users found.</div>';
                     return;
                 }
 
-                // Sort users alphabetically by name (optional)
                 const sortedUsers = Object.entries(data).sort((a, b) => {
                     const nameA = a[1].name || '';
                     const nameB = b[1].name || '';
@@ -396,7 +510,7 @@
                 sortedUsers.forEach(([uid, user]) => {
                     const photoUrl = user.photo || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uid}`;
                     usersList.innerHTML += `
-                        <div class="user-list-item" onclick="startChatWith('${uid}', '${(user.name || 'User').replace(/'/g, "\\'")}', '${photoUrl}')">
+                        <div class="user-list-item" onclick="showProfile('${uid}')">
                             <img src="${photoUrl}" class="user-list-avatar" alt="">
                             <div>
                                 <div class="user-list-name">${user.name || 'Anonymous'}</div>
@@ -407,19 +521,62 @@
             });
         }
 
-        // Placeholder for starting a chat
+        // Show user profile in bottom sheet
+        window.showProfile = function(uid) {
+            const userRef = ref(db, 'users/' + uid);
+            onValue(userRef, (snapshot) => {
+                const user = snapshot.val();
+                if (!user) {
+                    alert("User not found.");
+                    return;
+                }
+
+                const photoUrl = user.photo || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uid}`;
+                profileAvatar.src = photoUrl;
+                profileName.textContent = user.name || 'Anonymous';
+                profileEmail.textContent = user.email || '';
+
+                // Action button
+                if (uid === auth.currentUser?.uid) {
+                    profileActionBtn.textContent = "Edit Profile";
+                    profileActionBtn.onclick = () => {
+                        alert("Edit profile functionality coming soon!");
+                    };
+                } else {
+                    profileActionBtn.textContent = "Message";
+                    profileActionBtn.onclick = () => {
+                        startChatWith(uid, user.name || 'User', photoUrl);
+                    };
+                }
+
+                usersOverlay.classList.remove('active');
+                profileOverlay.classList.add('active');
+            }, { onlyOnce: true });
+        };
+
+        window.closeProfile = function() {
+            profileOverlay.classList.remove('active');
+        };
+
+        // Close profile when tapping overlay
+        profileOverlay.onclick = (e) => {
+            if (e.target === profileOverlay) {
+                closeProfile();
+            }
+        };
+
+        // Start chat placeholder
         function startChatWith(uid, name, photo) {
-            // Prevent starting chat with yourself
             if (uid === auth.currentUser?.uid) {
-                alert("You cannot start a chat with yourself.");
+                alert("You cannot message yourself.");
                 return;
             }
             alert(`Start chat with ${name} (UID: ${uid})`);
-            // Future: create chat room or navigate
-            usersOverlay.classList.remove('active');
+            // Future: create chat or navigate
+            profileOverlay.classList.remove('active');
         }
 
-        // FAB click -> show users bottom sheet
+        // FAB click -> show users list
         fabButton.onclick = () => {
             const currentUser = auth.currentUser;
             if (!currentUser) {
@@ -430,11 +587,10 @@
             usersOverlay.classList.add('active');
         };
 
-        // Close users sheet when tapping overlay
+        // Close users sheet
         usersOverlay.onclick = (e) => {
             if (e.target === usersOverlay) {
                 usersOverlay.classList.remove('active');
-                // Clean up listener when closing
                 if (usersListener) {
                     off(ref(db, 'users'));
                     usersListener = null;
