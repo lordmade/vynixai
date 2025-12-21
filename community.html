@@ -173,7 +173,7 @@
             color: var(--text-dim);
         }
 
-        /* Auth overlay (existing) */
+        /* Auth overlay */
         .auth-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000; display: none; opacity: 0; transition: 0.3s; }
         .auth-overlay.active { display: block; opacity: 1; }
         .bottom-sheet { position: fixed; bottom: 0; left: 0; width: 100%; background: #fff; padding: 32px 24px; border-radius: 24px 24px 0 0; transform: translateY(100%); transition: transform 0.4s cubic-bezier(0.17, 0.84, 0.44, 1); text-align: center; }
@@ -241,7 +241,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-        import { getDatabase, ref, set, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+        import { getDatabase, ref, set, onValue, serverTimestamp, off } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -266,7 +266,9 @@
         const usersList = document.getElementById('usersList');
         const fabButton = document.getElementById('fabButton');
 
-        // Show shimmer placeholders
+        let usersListener = null; // To track and clean up the listener
+
+        // Show shimmer placeholders for chats
         function showShimmer() {
             let skeletonHTML = '';
             for (let i = 0; i < 8; i++) {
@@ -365,22 +367,36 @@
             });
         }
 
-        // Load and show all users in bottom sheet
-        async function loadAllUsers() {
+        // Load all users (including current user)
+        function loadAllUsers() {
+            // Clear any previous listener to prevent duplicates
+            if (usersListener) {
+                off(ref(db, 'users'));
+            }
+
+            // Show initial loading state
             usersList.innerHTML = '<div style="text-align:center; padding:20px; color:#71717a;">Loading users...</div>';
-            onValue(ref(db, 'users'), (snapshot) => {
+
+            usersListener = onValue(ref(db, 'users'), (snapshot) => {
                 const data = snapshot.val();
-                usersList.innerHTML = '';
+                usersList.innerHTML = ''; // Clear loading message
+
                 if (!data || Object.keys(data).length === 0) {
                     usersList.innerHTML = '<div style="text-align:center; padding:40px; color:#71717a;">No users found.</div>';
                     return;
                 }
-                Object.keys(data).forEach(uid => {
-                    const user = data[uid];
-                    if (uid === auth.currentUser?.uid) return; // Optional: hide current user
+
+                // Sort users alphabetically by name (optional)
+                const sortedUsers = Object.entries(data).sort((a, b) => {
+                    const nameA = a[1].name || '';
+                    const nameB = b[1].name || '';
+                    return nameA.localeCompare(nameB);
+                });
+
+                sortedUsers.forEach(([uid, user]) => {
                     const photoUrl = user.photo || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uid}`;
                     usersList.innerHTML += `
-                        <div class="user-list-item" onclick="startChatWith('${uid}', '${user.name || 'User'}', '${photoUrl}')">
+                        <div class="user-list-item" onclick="startChatWith('${uid}', '${(user.name || 'User').replace(/'/g, "\\'")}', '${photoUrl}')">
                             <img src="${photoUrl}" class="user-list-avatar" alt="">
                             <div>
                                 <div class="user-list-name">${user.name || 'Anonymous'}</div>
@@ -388,19 +404,25 @@
                             </div>
                         </div>`;
                 });
-            }, { onlyOnce: false });
+            });
         }
 
-        // Placeholder for starting a chat (you can expand this later)
+        // Placeholder for starting a chat
         function startChatWith(uid, name, photo) {
+            // Prevent starting chat with yourself
+            if (uid === auth.currentUser?.uid) {
+                alert("You cannot start a chat with yourself.");
+                return;
+            }
             alert(`Start chat with ${name} (UID: ${uid})`);
-            // In future: create a chat room or navigate to chat.html?id=combined_uid
+            // Future: create chat room or navigate
             usersOverlay.classList.remove('active');
         }
 
         // FAB click -> show users bottom sheet
         fabButton.onclick = () => {
-            if (!auth.currentUser) {
+            const currentUser = auth.currentUser;
+            if (!currentUser) {
                 alert("Please sign in first.");
                 return;
             }
@@ -412,6 +434,11 @@
         usersOverlay.onclick = (e) => {
             if (e.target === usersOverlay) {
                 usersOverlay.classList.remove('active');
+                // Clean up listener when closing
+                if (usersListener) {
+                    off(ref(db, 'users'));
+                    usersListener = null;
+                }
             }
         };
 
