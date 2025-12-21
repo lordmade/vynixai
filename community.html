@@ -17,6 +17,7 @@
             --text-dim: #71717a;
             --border-color: #f4f4f5;
             --shimmer-bg: #f0f0f0;
+            --error-color: #ef4444;
         }
         * {
             box-sizing: border-box;
@@ -292,7 +293,31 @@
             border-radius: 2px; 
             margin: 0 auto 20px; 
         }
-       
+        .auth-input {
+            width: 100%;
+            padding: 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            font-family: inherit;
+            font-size: 16px;
+            margin-bottom: 12px;
+        }
+        .auth-input:focus {
+            outline: none;
+            border-color: var(--accent-purple);
+        }
+        .auth-btn {
+            width: 100%;
+            padding: 14px;
+            background: var(--accent-purple);
+            color: #fff;
+            font-weight: 600;
+            border: none;
+            border-radius: 16px;
+            font-family: inherit;
+            cursor: pointer;
+            margin-top: 8px;
+        }
         .google-btn { 
             display: flex; 
             align-items: center; 
@@ -308,6 +333,18 @@
             margin-top: 20px; 
         }
         .google-btn img { width: 20px; margin-right: 12px; }
+        .auth-toggle {
+            margin-top: 20px;
+            color: var(--accent-purple);
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .error-msg {
+            color: var(--error-color);
+            font-size: 14px;
+            margin-top: 8px;
+            min-height: 20px;
+        }
 
         .fab { position: fixed; bottom: 24px; right: 20px; width: 60px; height: 60px; background: #000; color: #fff; border-radius: 20px; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(0,0,0,0.2); cursor: pointer; z-index: 9; }
         .loading-spinner { display: none; margin-top: 10px; font-size: 12px; color: var(--accent-purple); }
@@ -339,16 +376,27 @@
 
     <input type="file" id="imageInput" accept="image/*" style="display:none;">
 
-    <!-- Auth / Sign In Bottom Sheet -->
+    <!-- Auth / Sign In / Sign Up Bottom Sheet -->
     <div class="auth-overlay" id="authOverlay">
         <div class="auth-sheet">
             <div class="sheet-handle"></div>
-            <h2 style="margin:0;">Join Vynix</h2>
-            <p style="color:var(--text-dim); margin-bottom:24px;">Connect with your community instantly.</p>
-            <button class="google-btn" id="loginBtn">
+            <h2 id="authTitle" style="margin:0;">Join Vynix</h2>
+            <p id="authSubtitle" style="color:var(--text-dim); margin-bottom:24px;">Connect with your community instantly.</p>
+
+            <div id="emailAuthFields" style="display:none;">
+                <input type="email" id="emailInput" class="auth-input" placeholder="Email" autocomplete="email">
+                <input type="password" id="passwordInput" class="auth-input" placeholder="Password" autocomplete="current-password">
+                <div id="errorMsg" class="error-msg"></div>
+                <button id="emailAuthBtn" class="auth-btn">Sign In</button>
+            </div>
+
+            <button class="google-btn" id="googleBtn">
                 <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/0/google.svg" alt="Google">
-                Continue with Google
+                <span id="googleBtnText">Continue with Google</span>
             </button>
+
+            <div id="authToggle" class="auth-toggle">Sign up with Email</div>
+
             <div id="uploadStatus" class="loading-spinner">Uploading to Cloudinary...</div>
         </div>
     </div>
@@ -358,8 +406,7 @@
         <div class="users-sheet">
             <div class="sheet-handle"></div>
             <h2>All Users</h2>
-            <div id="usersList">
-            </div>
+            <div id="usersList"></div>
         </div>
     </div>
 
@@ -382,7 +429,14 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { 
+            getAuth, 
+            onAuthStateChanged, 
+            signInWithPopup, 
+            GoogleAuthProvider,
+            signInWithEmailAndPassword,
+            createUserWithEmailAndPassword
+        } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import { getDatabase, ref, set, onValue, serverTimestamp, off } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
         const firebaseConfig = {
@@ -399,7 +453,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getDatabase(app);
-        const provider = new GoogleAuthProvider();
+        const googleProvider = new GoogleAuthProvider();
 
         const authOverlay = document.getElementById('authOverlay');
         const mainApp = document.getElementById('main-app');
@@ -414,9 +468,22 @@
         const profileEmail = document.getElementById('profileEmail');
         const profileActionBtn = document.getElementById('profileActionBtn');
 
+        // Auth UI elements
+        const authTitle = document.getElementById('authTitle');
+        const authSubtitle = document.getElementById('authSubtitle');
+        const emailAuthFields = document.getElementById('emailAuthFields');
+        const emailInput = document.getElementById('emailInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const emailAuthBtn = document.getElementById('emailAuthBtn');
+        const googleBtn = document.getElementById('googleBtn');
+        const googleBtnText = document.getElementById('googleBtnText');
+        const authToggle = document.getElementById('authToggle');
+        const errorMsg = document.getElementById('errorMsg');
+
+        let isSignUp = false;
+
         let usersListener = null;
 
-        // Show shimmer placeholders for chats
         function showShimmer() {
             let skeletonHTML = '';
             for (let i = 0; i < 8; i++) {
@@ -433,31 +500,87 @@
             listContainer.innerHTML = skeletonHTML;
         }
 
-        // Authentication state listener
+        // Toggle between Sign In and Sign Up
+        authToggle.onclick = () => {
+            isSignUp = !isSignUp;
+            if (isSignUp) {
+                authTitle.textContent = "Create Account";
+                authSubtitle.textContent = "Join Vynix and start chatting!";
+                emailAuthBtn.textContent = "Sign Up";
+                authToggle.textContent = "Already have an account? Sign In";
+                emailAuthFields.style.display = 'block';
+            } else {
+                authTitle.textContent = "Welcome Back";
+                authSubtitle.textContent = "Sign in to continue to Vynix.";
+                emailAuthBtn.textContent = "Sign In";
+                authToggle.textContent = "Don't have an account? Sign Up";
+                emailAuthFields.style.display = 'block';
+            }
+            errorMsg.textContent = '';
+        };
+
+        // Email/Password authentication
+        emailAuthBtn.onclick = async () => {
+            const email = emailInput.value.trim();
+            const password = passwordInput.value;
+
+            if (!email || !password) {
+                errorMsg.textContent = "Please fill in all fields.";
+                return;
+            }
+
+            errorMsg.textContent = "Processing...";
+
+            try {
+                let userCredential;
+                if (isSignUp) {
+                    userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                } else {
+                    userCredential = await signInWithEmailAndPassword(auth, email, password);
+                }
+                // Success handled by onAuthStateChanged
+            } catch (error) {
+                let msg = "Authentication failed.";
+                if (error.code === 'auth/weak-password') msg = "Password should be at least 6 characters.";
+                else if (error.code === 'auth/email-already-in-use') msg = "Email already in use.";
+                else if (error.code === 'auth/invalid-email') msg = "Invalid email address.";
+                else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') msg = "Invalid email or password.";
+                errorMsg.textContent = msg;
+            }
+        };
+
+        // Google Sign In
+        googleBtn.onclick = () => signInWithPopup(auth, googleProvider);
+
+        // Authentication state
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                // User is signed in
                 authOverlay.classList.remove('active');
                 mainApp.classList.remove('blurred');
                 syncUser(user);
                 loadChats();
+                // Reset auth form
+                isSignUp = false;
+                authTitle.textContent = "Join Vynix";
+                authSubtitle.textContent = "Connect with your community instantly.";
+                emailAuthFields.style.display = 'none';
+                authToggle.textContent = "Sign up with Email";
+                emailInput.value = '';
+                passwordInput.value = '';
+                errorMsg.textContent = '';
             } else {
-                // User is NOT signed in
                 authOverlay.classList.add('active');
                 mainApp.classList.add('blurred');
-                // Clear any content
                 listContainer.innerHTML = '';
             }
         });
 
-        document.getElementById('loginBtn').onclick = () => signInWithPopup(auth, provider);
-
-        // Sync current user to database
+        // Sync user to database
         async function syncUser(user) {
             const userRef = ref(db, 'users/' + user.uid);
             await set(userRef, {
                 uid: user.uid,
-                name: user.displayName,
+                name: user.displayName || user.email.split('@')[0],
                 email: user.email,
                 photo: user.photoURL,
                 lastSeen: serverTimestamp()
@@ -468,7 +591,6 @@
         const imageInput = document.getElementById('imageInput');
         document.getElementById('profileTrigger').onclick = () => {
             if (!auth.currentUser) {
-                // If not logged in, show auth sheet
                 authOverlay.classList.add('active');
                 mainApp.classList.add('blurred');
                 return;
@@ -545,8 +667,8 @@
                 }
 
                 const sortedUsers = Object.entries(data).sort((a, b) => {
-                    const nameA = a[1].name || '';
-                    const nameB = b[1].name || '';
+                    const nameA = a[1].name || a[1].email || '';
+                    const nameB = b[1].name || b[1].email || '';
                     return nameA.localeCompare(nameB);
                 });
 
@@ -556,7 +678,7 @@
                         <div class="user-list-item" onclick="showProfile('${uid}')">
                             <img src="${photoUrl}" class="user-list-avatar" alt="">
                             <div>
-                                <div class="user-list-name">${user.name || 'Anonymous'}</div>
+                                <div class="user-list-name">${user.name || user.email || 'Anonymous'}</div>
                                 <div class="user-list-email">${user.email || ''}</div>
                             </div>
                         </div>`;
@@ -564,7 +686,7 @@
             });
         }
 
-        // Show user profile
+        // Show profile
         window.showProfile = function(uid) {
             const userRef = ref(db, 'users/' + uid);
             onValue(userRef, (snapshot) => {
@@ -576,19 +698,15 @@
 
                 const photoUrl = user.photo || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uid}`;
                 profileAvatar.src = photoUrl;
-                profileName.textContent = user.name || 'Anonymous';
+                profileName.textContent = user.name || user.email || 'Anonymous';
                 profileEmail.textContent = user.email || '';
 
                 if (uid === auth.currentUser?.uid) {
                     profileActionBtn.textContent = "Edit Profile";
-                    profileActionBtn.onclick = () => {
-                        alert("Edit profile functionality coming soon!");
-                    };
+                    profileActionBtn.onclick = () => alert("Edit profile coming soon!");
                 } else {
                     profileActionBtn.textContent = "Message";
-                    profileActionBtn.onclick = () => {
-                        startChatWith(uid, user.name || 'User', photoUrl);
-                    };
+                    profileActionBtn.onclick = () => startChatWith(uid, user.name || user.email, photoUrl);
                 }
 
                 usersOverlay.classList.remove('active');
@@ -601,9 +719,7 @@
         };
 
         profileOverlay.onclick = (e) => {
-            if (e.target === profileOverlay) {
-                closeProfile();
-            }
+            if (e.target === profileOverlay) closeProfile();
         };
 
         function startChatWith(uid, name, photo) {
@@ -615,7 +731,7 @@
             profileOverlay.classList.remove('active');
         }
 
-        // FAB click — require authentication
+        // FAB
         fabButton.onclick = () => {
             if (!auth.currentUser) {
                 authOverlay.classList.add('active');
@@ -626,7 +742,6 @@
             usersOverlay.classList.add('active');
         };
 
-        // Close users sheet
         usersOverlay.onclick = (e) => {
             if (e.target === usersOverlay) {
                 usersOverlay.classList.remove('active');
@@ -637,11 +752,10 @@
             }
         };
 
-        // Close auth sheet on background tap (optional — usually keep it open until login)
+        // Do not allow closing auth by tapping outside
         authOverlay.onclick = (e) => {
             if (e.target === authOverlay) {
-                // Do nothing — user must sign in to proceed
-                // Or you can allow dismiss: authOverlay.classList.remove('active'); mainApp.classList.remove('blurred');
+                // Prevent closing — user must authenticate
             }
         };
 
@@ -654,9 +768,7 @@
                 if (label !== 'chats') {
                     listContainer.innerHTML = `<div style="padding:40px; text-align:center; color:#71717a;">${label} coming soon!</div>`;
                 } else {
-                    if (auth.currentUser) {
-                        loadChats();
-                    }
+                    if (auth.currentUser) loadChats();
                 }
             }
         };
