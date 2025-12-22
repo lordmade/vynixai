@@ -199,6 +199,39 @@
 .post-content .url-link:hover{
   text-decoration: underline;
 }
+
+
+    .mention-dd{
+  position:absolute;
+  z-index:60;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--card-shadow);
+  max-height:200px;
+  overflow-y:auto;
+  min-width:180px;
+}
+.mention-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:8px 12px;
+  cursor:pointer;
+  transition:background var(--trans);
+}
+.mention-item:hover,
+.mention-item.selected{
+  background:var(--hover-accent);
+}
+.mention-item img{
+  width:32px;height:32px;border-radius:50%;object-fit:cover;
+}
+.mention-name{font-size:14px;font-weight:600;color:var(--text);}
+.mention-handle{font-size:13px;color:var(--text2);}
+
+    .post-content .mention-link{color:var(--accent-blue);font-weight:500;text-decoration:none;}
+.post-content .mention-link:hover{text-decoration:underline;}
   </style>
 </head>
 <body>
@@ -302,6 +335,9 @@
       <span class="material-icons-outlined text-5xl">close</span>
     </button>
   </div>
+
+  <!-- Mention autocomplete -->
+<div id="mention-dropdown" class="mention-dd hidden"></div>
 
   <!-- Navigation -->
   <nav id="navbar" class="fixed bottom-0 left-0 right-0 h-14 bg-white dark:bg-[#242526] border-t border-gray-200 dark:border-gray-700 z-40">
@@ -1164,6 +1200,9 @@ function linkify(str) {
   str = str.replace(/#(\w+)/g,
     '<a href="search.html?q=%23$1" class="hash-link">#$1</a>');
 
+  str = str.replace(/@(\w+)/g,
+    '<a href="profile.html?handle=$1" class="mention-link">@$1</a>');
+
   // 2. bare URLs: http/https/www...
   const urlRegex = /(https?:\/\/|www\.)([^\s<]+)/gi;
   str = str.replace(urlRegex, match => {
@@ -1171,6 +1210,120 @@ function linkify(str) {
     return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="url-link">${match}</a>`;
   });
   return str;
+}
+
+
+  /* ===== MENTION AUTOCOMPLETE ===== */
+const mentionDropdown = $('#mention-dropdown');
+let mentionQuery  = '';        // text after “@”
+let mentionStart  = -1;        // cursor index where “@” was typed
+let selectedIndex = 0;         // keyboard selection
+let allUsers      = [];        // cached user-list [{uid, name, handle, avatar}, …]
+
+/* 1.  fetch all users once (Realtime DB) */
+onValue(ref(db, 'users'), snap=>{
+  allUsers = [];
+  snap.forEach(c=>{
+    const p = c.val().profile;
+    if(!p) return;
+    allUsers.push({
+      uid:   c.key,
+      name:  p.displayName || 'User',
+      handle:p.handle      || c.key.slice(0,8),
+      avatar:p.avatar      || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${p.displayName||'User'}`
+    });
+  });
+});
+
+/* 2.  wire both textareas */
+enableMentions($('#post-text'));
+enableMentions($('#comment-input'));
+
+/* 3.  main enable function */
+function enableMentions(textarea){
+  textarea.addEventListener('input',  e=>onInput(e));
+  textarea.addEventListener('keydown',e=>onKey(e));
+  textarea.addEventListener('blur',   e=>{ /* hide on blur, but allow click */ setTimeout(()=>hideDD(),150); });
+}
+
+/* ---------- event handlers ---------- */
+function onInput(e){
+  const ta   = e.target;
+  const pos  = ta.selectionStart;
+  const text = ta.value;
+  const lastAt = text.lastIndexOf('@', pos-1);
+
+  /* if “@” found and no space between @ and cursor */
+  if(lastAt !== -1 && !text.slice(lastAt+1,pos).includes(' ')){
+    mentionStart = lastAt;
+    mentionQuery = text.slice(lastAt+1,pos).toLowerCase();
+    selectedIndex= 0;
+    renderDD(ta);
+  }else{
+    hideDD();
+  }
+}
+function onKey(e){
+  if(!mentionDropdown.classList.contains('hidden')){
+    const max = filtered().length;
+    if(e.key==='ArrowDown'){ selectedIndex=(selectedIndex+1)%max; renderDD(e.target); e.preventDefault();}
+    if(e.key==='ArrowUp')  { selectedIndex=(selectedIndex-1+max)%max; renderDD(e.target); e.preventDefault();}
+    if(e.key==='Enter' || e.key==='Tab'){
+      insertSelected(e.target); e.preventDefault();
+    }
+    if(e.key==='Escape') hideDD();
+  }
+}
+/* ---------- dropdown ---------- */
+function filtered(){
+  return allUsers.filter(u=>
+    u.handle.toLowerCase().startsWith(mentionQuery) ||
+    u.name.toLowerCase().includes(mentionQuery)
+  ).slice(0,5);
+}
+function renderDD(ta){
+  const list = filtered();
+  if(!list.length){ hideDD(); return; }
+  selectedIndex = Math.min(selectedIndex, list.length-1);
+  mentionDropdown.innerHTML = list.map((u,i)=>`
+    <div class="mention-item ${i===selectedIndex?'selected':''}" data-index="${i}" data-handle="${u.handle}">
+      <img src="${u.avatar}"/>
+      <div>
+        <div class="mention-name">${esc(u.name)}</div>
+        <div class="mention-handle">@${u.handle}</div>
+      </div>
+    </div>`).join('');
+  /* position under cursor */
+  const coords = getCaretCoordinates(ta, mentionStart);
+  const rect   = ta.getBoundingClientRect();
+  mentionDropdown.style.left = (rect.left + coords.left) + 'px';
+  mentionDropdown.style.top  = (rect.top  + coords.top  + 20) + 'px';
+  mentionDropdown.classList.remove('hidden');
+}
+function hideDD(){ mentionDropdown.classList.add('hidden'); }
+/* ---------- insert ---------- */
+function insertSelected(ta){
+  const u = filtered()[selectedIndex];
+  if(!u) return;
+  const before = ta.value.slice(0, mentionStart);
+  const after  = ta.value.slice(ta.selectionStart);
+  ta.value = before + '@' + u.handle + ' ' + after;
+  ta.selectionStart = ta.selectionEnd = mentionStart + u.handle.length + 2;
+  hideDD();
+  ta.focus();
+}
+/* ---------- lightweight caret coords (no deps) ---------- */
+function getCaretCoordinates(el, pos){
+  const div = document.createElement('div');
+  const style = getComputedStyle(el);
+  ['fontFamily','fontSize','fontWeight','letterSpacing','lineHeight','padding','border','width'].forEach(k=> div.style[k]=style[k]);
+  div.style.position='absolute'; div.style.visibility='hidden'; div.style.whiteSpace='pre-wrap';
+  div.textContent = el.value.substring(0,pos);
+  document.body.appendChild(div);
+  const span=document.createElement('span'); span.textContent='|'; div.appendChild(span);
+  const coords={top:span.offsetTop, left:span.offsetLeft};
+  document.body.removeChild(div);
+  return coords;
 }
 </script>
 </body>
