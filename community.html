@@ -232,14 +232,12 @@
         auth.onAuthStateChanged(async (user) => {
             if (user) {
                 currentUser = user;
-                document.getElementById('myPhoto').src = user.photoURL || "https://via.placeholder.com/45";
+                document.getElementById('myPhoto').src = user.photoURL;
                 await syncProfile(user);
-                await loadUnreadCounts();
+                await loadUnreadCounts(); // Load unread counts from Firebase
                 loadChats();
                 setupMessageListener();
-            } else { 
-                window.location.href = "login.html"; 
-            }
+            } else { window.location.href = "login.html"; }
         });
 
         async function syncProfile(user) {
@@ -247,16 +245,17 @@
             let data = snap.val();
             if (!data || !data.vynixId) {
                 const id = "vnx_" + Math.floor(1000 + Math.random() * 9000);
-                data = { vynixId: id, name: user.displayName || "User", photo: user.photoURL || "" };
+                data = { vynixId: id, name: user.displayName, photo: user.photoURL };
                 await db.ref(`users/${user.uid}/profile`).set(data);
                 await db.ref(`vynix_ids/${id}`).set(user.uid);
             }
             currentVynixId = data.vynixId;
             document.getElementById('myDisplayId').innerText = "@" + data.vynixId;
-            document.getElementById('editName').value = data.name || "";
+            document.getElementById('editName').value = data.name;
             document.getElementById('editVynixId').value = data.vynixId;
         }
 
+        // Load unread counts from Firebase
         async function loadUnreadCounts() {
             const unreadSnap = await db.ref(`users/${currentUser.uid}/unreadCounts`).once('value');
             if (unreadSnap.exists()) {
@@ -264,24 +263,23 @@
             }
         }
 
+        // Save unread counts to Firebase
         async function saveUnreadCounts() {
             await db.ref(`users/${currentUser.uid}/unreadCounts`).set(unreadCounts);
         }
 
         function decryptMessage(text, roomId) {
-            if (!text || !text.includes("U2FsdGVk")) return text;
+            if(!text || !text.includes("U2FsdGVk")) return text;
             try {
                 const bytes = CryptoJS.AES.decrypt(text, secretBase + roomId);
-                const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-                return decrypted || "Message";
-            } catch (e) {
-                return "Message";
-            }
+                return bytes.toString(CryptoJS.enc.Utf8) || "🔒 Encrypted";
+            } catch(e) { return "🔒 Encrypted"; }
         }
 
         function getChatActivity(lastTime) {
             if (!lastTime || lastTime === "New") return 0;
             
+            // Convert time to minutes ago
             const now = new Date();
             const [time, period] = lastTime.split(' ');
             const [hours, minutes] = time.split(':').map(Number);
@@ -294,19 +292,17 @@
             
             const diffMinutes = (now - messageTime) / (1000 * 60);
             
-            if (diffMinutes < 60) return 3;
-            if (diffMinutes < 1440) return 2;
-            return 1;
+            if (diffMinutes < 60) return 3; // Recent (within 1 hour)
+            if (diffMinutes < 1440) return 2; // Today (within 24 hours)
+            return 1; // Older
         }
 
-        async function loadChats() {
-            const chatsRef = db.ref(`users/${currentUser.uid}/chats`);
-            chatsRef.off(); // Remove previous listener to prevent duplicates
-            chatsRef.on('value', async (snap) => {
+        function loadChats() {
+            db.ref(`users/${currentUser.uid}/chats`).on('value', snap => {
                 const list = document.getElementById('chatList');
-                list.innerHTML = '<div style="text-align: center; margin-top: 100px; color: #999;">Loading chats...</div>';
+                list.innerHTML = '';
                 
-                if (!snap.exists() || snap.numChildren() === 0) {
+                if(!snap.exists()) {
                     list.innerHTML = `<div style="text-align:center; padding-top:100px; color:#999;">No chats yet.<br>Add a friend to begin.</div>`;
                     return;
                 }
@@ -314,34 +310,34 @@
                 const chats = [];
                 snap.forEach(child => {
                     const chat = child.val();
-                    const friendUid = child.key;
+                    chat.friendUid = child.key;
                     
-                    const roomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
+                    // Determine room ID for decryption
+                    const roomId = currentUser.uid < child.key ? currentUser.uid+"_"+child.key : child.key+"_"+currentUser.uid;
                     
-                    let decryptedMsg = "Message";
-                    if (chat.lastMsg) {
-                        decryptedMsg = decryptMessage(chat.lastMsg, roomId);
-                    }
+                    // Decrypt the actual last message instead of showing "Message"
+                    chat.decryptedMsg = decryptMessage(chat.lastMsg, roomId);
                     
-                    chats.push({
-                        friendUid: friendUid,
-                        name: chat.name || "User",
-                        photo: chat.photo || "",
-                        lastMsg: chat.lastMsg || "",
-                        lastTime: chat.lastTime || "",
-                        decryptedMsg: decryptedMsg,
-                        activity: getChatActivity(chat.lastTime),
-                        unreadCount: unreadCounts[friendUid] || 0
-                    });
+                    // Get activity level
+                    chat.activity = getChatActivity(chat.lastTime);
+                    
+                    // Get unread count
+                    chat.unreadCount = unreadCounts[child.key] || 0;
+                    
+                    chats.push(chat);
                 });
 
-                chats.sort((a, b) => b.activity - a.activity);
+                // Sort by activity (recent first), then by timestamp
+                chats.sort((a, b) => {
+                    if (a.activity !== b.activity) return b.activity - a.activity;
+                    return 0; // Keep original order for same activity level
+                });
 
+                // Separate recent/active chats
                 const recentChats = chats.filter(chat => chat.activity >= 2);
                 const olderChats = chats.filter(chat => chat.activity < 2);
 
-                list.innerHTML = '';
-
+                // Add section headers and chats
                 if (recentChats.length > 0) {
                     list.innerHTML += `<div class="section-header">Recent Activity</div>`;
                     recentChats.forEach(chat => {
@@ -368,22 +364,20 @@
             let indicator = '';
             if (hasUnread) {
                 indicator = `<div class="unread-count">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>`;
-            } else if (chat.activity === 3) {
+            } else if (chat.activity === 3) { // Very recent (within 1 hour)
                 indicator = '<div class="recent-indicator"></div>';
             }
 
             const displayText = chat.decryptedMsg.length > 30 ? 
                 chat.decryptedMsg.substring(0, 30) + '...' : chat.decryptedMsg;
 
-            const photoSrc = chat.photo && chat.photo.trim() !== "" ? chat.photo : "https://via.placeholder.com/55";
-
             return `
-                <div class="chat-item ${activityClass} \( {unreadClass}" data-friend=" \){chat.friendUid}">
-                    <img class="avatar" src="\( {photoSrc}" onclick="event.stopPropagation(); viewFullProfile(' \){chat.photo || ''}', '${chat.name}')">
-                    <div class="chat-info" onclick="openChat('\( {chat.friendUid}', ' \){chat.name.replace(/'/g, "\\'")}')">
+                <div class="chat-item ${activityClass} ${unreadClass}" data-friend="${chat.friendUid}">
+                    <img class="avatar" src="${chat.photo}" onclick="event.stopPropagation(); viewFullProfile('${chat.photo}', '${chat.name}')">
+                    <div class="chat-info" onclick="openChat('${chat.friendUid}', '${chat.name.replace(/'/g, "\\'")}')">
                         <div class="chat-row">
                             <span class="name">${chat.name}</span>
-                            <span class="time">${chat.lastTime || ''}</span>
+                            <span class="time">${chat.lastTime}</span>
                         </div>
                         <div class="msg">
                             <span class="material-symbols-rounded" style="font-size:14px; color:var(--accent-purple)">lock</span> 
@@ -396,31 +390,40 @@
         }
 
         async function openChat(friendUid, friendName) {
+            // Mark as read when opening chat
             if (unreadCounts[friendUid] > 0) {
                 unreadCounts[friendUid] = 0;
-                await saveUnreadCounts();
+                await saveUnreadCounts(); // Save to Firebase
             }
-            const photoParam = ""; // We pass photo from chats node, but chat.html now fetches it itself
-            window.location.href = `chat.html?friend=\( {friendUid}&name= \){encodeURIComponent(friendName)}`;
+            window.location.href = `chat.html?friend=${friendUid}&name=${encodeURIComponent(friendName)}`;
         }
 
+        // --- New Message Alert System ---
         function setupMessageListener() {
+            // Listen for new messages in real-time
             db.ref(`users/${currentUser.uid}/chats`).on('child_changed', async (snapshot) => {
                 const chatData = snapshot.val();
                 const friendId = snapshot.key;
                 
+                // Check if this is a new message (not just a time update)
                 if (chatData.lastMsg && chatData.lastTime !== lastMessageTimestamps[friendId]) {
+                    // Increment unread count
                     unreadCounts[friendId] = (unreadCounts[friendId] || 0) + 1;
-                    await saveUnreadCounts();
+                    await saveUnreadCounts(); // Save to Firebase
                     
+                    // Get friend's profile for notification
                     const friendProfile = await db.ref(`users/${friendId}/profile`).once('value');
-                    const friendData = friendProfile.val() || {};
+                    const friendData = friendProfile.val();
                     
-                    const roomId = currentUser.uid < friendId ? currentUser.uid + "_" + friendId : friendId + "_" + currentUser.uid;
+                    // Decrypt the actual message for notification
+                    const roomId = currentUser.uid < friendId ? currentUser.uid+"_"+friendId : friendId+"_"+currentUser.uid;
                     const decryptedMsg = decryptMessage(chatData.lastMsg, roomId);
                     
-                    showNewMessageAlert(chatData.name || friendData.name || 'Someone', decryptedMsg, friendId);
+                    showNewMessageAlert(chatData.name || friendData?.name || 'Someone', decryptedMsg, friendId);
                     lastMessageTimestamps[friendId] = chatData.lastTime;
+                    
+                    // Reload chats to update UI
+                    loadChats();
                 }
             });
         }
@@ -432,29 +435,34 @@
             const displayText = message.length > 25 ? message.substring(0, 25) + '...' : message;
             alertText.textContent = `${senderName}: ${displayText}`;
             
+            // Show alert with animation
             alert.classList.add('show');
             
+            // Vibrate if supported
             if ('vibrate' in navigator) {
                 navigator.vibrate([200, 100, 200]);
             }
             
+            // Auto-hide after 4 seconds
             setTimeout(() => {
                 alert.classList.remove('show');
             }, 4000);
             
+            // Click to dismiss and open chat
             alert.onclick = () => {
                 alert.classList.remove('show');
                 openChat(friendId, senderName);
             };
         }
 
+        // --- Profile Actions ---
         async function saveProfile() {
             const newName = document.getElementById('editName').value.trim();
             const newId = document.getElementById('editVynixId').value.trim().toLowerCase().replace('@','');
 
-            if (newId !== currentVynixId) {
+            if(newId !== currentVynixId) {
                 const check = await db.ref(`vynix_ids/${newId}`).once('value');
-                if (check.exists()) { showToast("ID already taken!"); return; }
+                if(check.exists()) { showToast("ID already taken!"); return; }
                 await db.ref(`vynix_ids/${currentVynixId}`).remove();
                 await db.ref(`vynix_ids/${newId}`).set(currentUser.uid);
             }
@@ -466,23 +474,22 @@
 
         async function addFriendLogic() {
             const tid = document.getElementById('targetId').value.trim().replace('@','');
-            if (!tid) return;
+            if(!tid) return;
             const idSnap = await db.ref(`vynix_ids/${tid}`).once('value');
-            if (idSnap.exists()) {
+            if(idSnap.exists()) {
                 const fUid = idSnap.val();
-                if (fUid === currentUser.uid) return showToast("That's you!");
+                if(fUid === currentUser.uid) return showToast("That's you!");
                 const fProfile = await db.ref(`users/${fUid}/profile`).once('value');
-                const p = fProfile.val() || { name: "User", photo: "" };
-                await db.ref(`users/\( {currentUser.uid}/chats/ \){fUid}`).set({
+                const p = fProfile.val();
+                await db.ref(`users/${currentUser.uid}/chats/${fUid}`).set({
                     name: p.name, photo: p.photo, lastMsg: "Start chatting...", lastTime: "New"
                 });
                 showToast("Added!");
                 closeAllSheets();
-            } else { 
-                showToast("User not found!"); 
-            }
+            } else { showToast("User not found!"); }
         }
 
+        // --- UI Helpers ---
         function openSettings() { toggleSheet('settingsSheet', true); }
         function openAddFriend() { toggleSheet('addFriendSheet', true); }
         function closeAllSheets() { 
@@ -494,9 +501,8 @@
             document.getElementById(id).classList.toggle('active', show);
         }
         function viewFullProfile(url, name) {
-            if (!url || url.trim() === "") return;
             const m = document.getElementById('profileViewer');
-            document.getElementById('modalImg').src = url.replace('s96-c', 's400-c') || url;
+            document.getElementById('modalImg').src = url.replace('s96-c', 's400-c');
             document.getElementById('modalName').innerText = name;
             m.style.display = 'flex';
         }
