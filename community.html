@@ -282,6 +282,7 @@
     .pill-btn:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(24,119,242,.4)}
     .pill-btn:disabled{opacity:.6}
     .pill-btn.secondary{background:var(--text2);color:var(--card)}
+    .pill-btn.danger{background:#f4212e}
     .profile-photo-preview{margin:20px 0}
     .profile-photo-preview img{width:120px;height:120px;border-radius:50%;object-fit:cover;border:4px solid var(--border)}
     .remove-photo-btn{color:#f4212e;font-size:14px;margin-top:8px;cursor:pointer}
@@ -451,13 +452,14 @@
           </label>
           <button class="pill-btn secondary remove-photo-btn hidden" id="remove-photo-btn">Remove Photo</button>
           <button class="pill-btn" id="profile-save-btn">Save Changes</button>
+          <button class="pill-btn danger" id="profile-logout-btn">Log Out</button>
         </div>
       </div>
     </div>
   </div>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInAnonymously, updateProfile, createUserWithEmailAndPassword, signInWithEmailAndPassword, EmailAuthProvider, linkWithCredential } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import { getAuth, onAuthStateChanged, signInAnonymously, updateProfile, createUserWithEmailAndPassword, signInWithEmailAndPassword, EmailAuthProvider, linkWithCredential, signOut } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, onChildAdded, onValue, get, endAt, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -488,9 +490,11 @@ onAuthStateChanged(auth, user => {
   if (user) {
     uid = user.uid;
     uname = user.displayName || 'User';
-    uavatar = user.photoURL || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${uname}`;
+    uavatar = user.photoURL || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(uname)}`;
     myAvatarEl.src = uavatar;
     isAnonymous = user.isAnonymous;
+    // Force update all post avatars
+    document.querySelectorAll(`.post-avatar[data-uid="${uid}"]`).forEach(img => img.src = uavatar);
     initFeed();
   } else {
     signInAnonymously(auth);
@@ -612,6 +616,7 @@ const profileEditName = $('#profile-edit-name');
 const profilePhotoInput = $('#profile-photo-input');
 const removePhotoBtn = $('#remove-photo-btn');
 const profileSaveBtn = $('#profile-save-btn');
+const profileLogoutBtn = $('#profile-logout-btn');
 let currentProfileUid = null;
 let pendingAvatarUrl = null; // for new photo before save
 function openProfileSheet(profileUid) {
@@ -619,13 +624,14 @@ function openProfileSheet(profileUid) {
   const isOwn = profileUid === uid;
   profileViewSection.classList.toggle('active', !isOwn);
   profileEditSection.classList.toggle('active', isOwn);
+  profileLogoutBtn.classList.toggle('hidden', isAnonymous);
   pendingAvatarUrl = null;
   removePhotoBtn.classList.add('hidden');
-  // Load profile data
+  // Load profile data from DB (fallback to auth if not present)
   onValue(ref(db, `users/${profileUid}/profile`), snap => {
     const p = snap.val() || {};
-    const name = p.displayName || 'User';
-    const avatar = p.avatar || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(name)}`;
+    const name = p.displayName || uname;
+    const avatar = p.avatar || uavatar;
     profileAvatarBig.src = avatar;
     profilePhotoPreviewImg.src = avatar;
     profileNameEl.textContent = name;
@@ -661,57 +667,57 @@ function uploadProfilePhoto(file) {
   fd.append('upload_preset', UPLOAD_PRESET);
   fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, {method: 'POST', body: fd})
     .then(r => r.json())
-    .then(res => {
+    .then(async res => {
       const newUrl = res.secure_url;
       pendingAvatarUrl = newUrl;
-      // Instantly update all visible avatars (myAvatar, big avatar, preview, and all post avatars)
+      // Instant update everywhere
       myAvatarEl.src = newUrl;
       profileAvatarBig.src = newUrl;
       profilePhotoPreviewImg.src = newUrl;
       document.querySelectorAll(`.post-avatar[data-uid="${uid}"]`).forEach(img => img.src = newUrl);
-      toast('Profile picture updated instantly!');
+      // Save to DB and Auth immediately for persistence
+      await updateProfile(auth.currentUser, { photoURL: newUrl });
+      await set(ref(db, `users/${uid}/profile/avatar`), newUrl);
+      toast('Profile picture updated!');
     })
     .catch(err => {
       toast('Upload failed');
       console.error(err);
     });
 }
-removePhotoBtn.onclick = () => {
-  const fallback = `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(profileEditName.value || 'User')}`;
+removePhotoBtn.onclick = async () => {
+  const fallback = `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(profileEditName.value || uname)}`;
   pendingAvatarUrl = fallback;
-  profilePhotoPreviewImg.src = fallback;
   myAvatarEl.src = fallback;
   profileAvatarBig.src = fallback;
+  profilePhotoPreviewImg.src = fallback;
   document.querySelectorAll(`.post-avatar[data-uid="${uid}"]`).forEach(img => img.src = fallback);
+  await updateProfile(auth.currentUser, { photoURL: fallback });
+  await set(ref(db, `users/${uid}/profile/avatar`), fallback);
   removePhotoBtn.classList.add('hidden');
-  toast('Photo removed instantly (saved on close)');
+  toast('Photo removed');
 };
-// Save profile changes (name only, photo already instant)
+// Save profile changes (name)
 profileSaveBtn.onclick = async () => {
   const newName = profileEditName.value.trim() || 'User';
-  const newAvatar = pendingAvatarUrl || profileAvatarBig.src;
   try {
-    await updateProfile(auth.currentUser, {
-      displayName: newName,
-      photoURL: newAvatar
-    });
-    await set(ref(db, `users/${uid}/profile`), {
-      displayName: newName,
-      avatar: newAvatar,
-      verified: false
-    });
+    await updateProfile(auth.currentUser, { displayName: newName });
+    await set(ref(db, `users/${uid}/profile/displayName`), newName);
     uname = newName;
-    uavatar = newAvatar;
-    // Update name in all post cards (simple refresh of visible ones)
-    document.querySelectorAll(`.post-card .user-name .name`).forEach(el => {
-      if (el.closest('.post-card').querySelector(`.post-avatar`).dataset.uid === uid) {
-        el.textContent = newName;
-      }
-    });
-    toast('Profile name saved!');
+    toast('Name updated!');
     closeProfileSheet();
   } catch (err) {
     toast('Error updating name: ' + err.message);
+  }
+};
+// Log out
+profileLogoutBtn.onclick = async () => {
+  try {
+    await signOut(auth);
+    toast('Logged out');
+    closeProfileSheet();
+  } catch (err) {
+    toast('Logout failed');
   }
 };
 /* ---------- helper: write profile fields that feed cards listen to ---------- */
