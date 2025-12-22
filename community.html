@@ -16,6 +16,8 @@
             --bg-color: #ffffff;
             --divider: #e5e7eb;
             --logo-gradient: linear-gradient(135deg, #000000 0%, var(--accent-purple) 50%, #10b981 100%);
+            --recent-badge: #10b981;
+            --unread-dot: #ef4444;
         }
 
         * { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; box-sizing: border-box; }
@@ -37,14 +39,65 @@
 
         /* --- Chat List --- */
         main { padding-top: 95px; padding-bottom: 100px; }
-        .chat-item { display: flex; align-items: center; padding: 16px 20px; cursor: pointer; border-bottom: 1px solid #f9f9f9; transition: background 0.2s; }
+        
+        .section-header {
+            padding: 20px 20px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .chat-item { 
+            display: flex; align-items: center; padding: 16px 20px; cursor: pointer; 
+            border-bottom: 1px solid #f9f9f9; transition: all 0.2s; 
+            position: relative;
+        }
+        
         .chat-item:active { background: #f9fafb; }
+        .chat-item.recent { background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%); }
+        .chat-item.unread { background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%); }
+        
         .avatar { width: 55px; height: 55px; border-radius: 50%; margin-right: 15px; object-fit: cover; flex-shrink: 0; }
+        
         .chat-info { flex: 1; overflow: hidden; }
         .chat-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
         .name { font-weight: 600; font-size: 16px; color: var(--text-primary); }
         .time { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
         .msg { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 4px; }
+        
+        .activity-indicator {
+            position: absolute;
+            top: 12px;
+            right: 20px;
+            width: 8px;
+            height: 8px;
+            background: var(--recent-badge);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .unread-dot {
+            position: absolute;
+            top: 12px;
+            right: 20px;
+            width: 8px;
+            height: 8px;
+            background: var(--unread-dot);
+            border-radius: 50%;
+            animation: bounce 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(1.2); }
+        }
+        
+        @keyframes bounce {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.3); }
+        }
 
         /* --- Modals & Sheets --- */
         .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: none; z-index: 1000; backdrop-filter: blur(4px); }
@@ -63,11 +116,45 @@
 
         .fab { position: fixed; bottom: 30px; right: 30px; width: 60px; height: 60px; border-radius: 22px; background: #000; color: #fff; border: none; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(0,0,0,0.2); z-index: 90; }
         #v-toast { position: fixed; top: 100px; left: 50%; transform: translateX(-50%); background: #111; color: #fff; padding: 12px 24px; border-radius: 50px; font-size: 13px; z-index: 3000; display: none; }
+
+        /* --- New Message Alert --- */
+        .new-message-alert {
+            position: fixed;
+            top: -80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, #000 0%, var(--accent-purple) 100%);
+            color: white;
+            padding: 16px 24px;
+            border-radius: 50px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            z-index: 4000;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: top 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .new-message-alert.show {
+            top: 20px;
+        }
+
+        .new-message-alert .material-symbols-rounded {
+            font-size: 20px;
+        }
     </style>
 </head>
 <body>
 
     <div id="v-toast"></div>
+
+    <!-- New Message Alert -->
+    <div id="newMessageAlert" class="new-message-alert">
+        <span class="material-symbols-rounded">chat_bubble</span>
+        <span id="alertText">New message</span>
+    </div>
 
     <div id="profileViewer" class="profile-viewer" onclick="this.style.display='none'">
         <img id="modalImg" src="">
@@ -137,6 +224,8 @@
 
         let currentUser = null;
         let currentVynixId = "";
+        let lastMessageTimestamps = {};
+        let unreadChats = new Set();
 
         auth.onAuthStateChanged(async (user) => {
             if (user) {
@@ -144,6 +233,7 @@
                 document.getElementById('myPhoto').src = user.photoURL;
                 await syncProfile(user);
                 loadChats();
+                setupMessageListener();
             } else { window.location.href = "login.html"; }
         });
 
@@ -162,40 +252,181 @@
             document.getElementById('editVynixId').value = data.vynixId;
         }
 
-        function decryptPreview(text, fUid) {
+        function decryptMessage(text, roomId) {
             if(!text || !text.includes("U2FsdGVk")) return text;
-            const roomId = currentUser.uid < fUid ? currentUser.uid+"_"+fUid : fUid+"_"+currentUser.uid;
             try {
-                const b = CryptoJS.AES.decrypt(text, secretBase + roomId);
-                return b.toString(CryptoJS.enc.Utf8) || "🔒 Encrypted";
+                const bytes = CryptoJS.AES.decrypt(text, secretBase + roomId);
+                return bytes.toString(CryptoJS.enc.Utf8) || "🔒 Encrypted";
             } catch(e) { return "🔒 Encrypted"; }
+        }
+
+        function getChatActivity(lastTime) {
+            if (!lastTime || lastTime === "New") return 0;
+            
+            // Convert time to minutes ago
+            const now = new Date();
+            const [time, period] = lastTime.split(' ');
+            const [hours, minutes] = time.split(':').map(Number);
+            
+            let messageTime = new Date();
+            if (period === 'PM' && hours !== 12) messageTime.setHours(hours + 12);
+            else if (period === 'AM' && hours === 12) messageTime.setHours(0);
+            else messageTime.setHours(hours);
+            messageTime.setMinutes(minutes);
+            
+            const diffMinutes = (now - messageTime) / (1000 * 60);
+            
+            if (diffMinutes < 60) return 3; // Recent (within 1 hour)
+            if (diffMinutes < 1440) return 2; // Today (within 24 hours)
+            return 1; // Older
         }
 
         function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', snap => {
                 const list = document.getElementById('chatList');
                 list.innerHTML = '';
+                
                 if(!snap.exists()) {
                     list.innerHTML = `<div style="text-align:center; padding-top:100px; color:#999;">No chats yet.<br>Add a friend to begin.</div>`;
                     return;
                 }
+
+                const chats = [];
                 snap.forEach(child => {
-                    const c = child.val();
-                    const pText = decryptPreview(c.lastMsg, child.key);
-                    list.innerHTML += `
-                        <div class="chat-item">
-                            <img class="avatar" src="${c.photo}" onclick="event.stopPropagation(); viewFullProfile('${c.photo}', '${c.name}')">
-                            <div class="chat-info" onclick="window.location.href='chat.html?friend=${child.key}&name=${encodeURIComponent(c.name)}'">
-                                <div class="chat-row">
-                                    <span class="name">${c.name}</span>
-                                    <span class="time">${c.lastTime}</span>
-                                </div>
-                                <div class="msg"><span class="material-symbols-rounded" style="font-size:14px; color:var(--accent-purple)">lock</span> ${pText}</div>
-                            </div>
-                        </div>
-                    `;
+                    const chat = child.val();
+                    chat.friendUid = child.key;
+                    
+                    // Determine room ID for decryption
+                    const roomId = currentUser.uid < child.key ? currentUser.uid+"_"+child.key : child.key+"_"+currentUser.uid;
+                    chat.decryptedMsg = decryptMessage(chat.lastMsg, roomId);
+                    
+                    // Get activity level
+                    chat.activity = getChatActivity(chat.lastTime);
+                    
+                    chats.push(chat);
                 });
+
+                // Sort by activity (recent first), then by timestamp
+                chats.sort((a, b) => {
+                    if (a.activity !== b.activity) return b.activity - a.activity;
+                    return 0; // Keep original order for same activity level
+                });
+
+                // Separate recent/active chats
+                const recentChats = chats.filter(chat => chat.activity >= 2);
+                const olderChats = chats.filter(chat => chat.activity < 2);
+
+                // Add section headers and chats
+                if (recentChats.length > 0) {
+                    list.innerHTML += `<div class="section-header">Recent Activity</div>`;
+                    recentChats.forEach(chat => {
+                        list.innerHTML += createChatItem(chat, true);
+                    });
+                }
+
+                if (olderChats.length > 0) {
+                    if (recentChats.length > 0) {
+                        list.innerHTML += `<div class="section-header">Earlier</div>`;
+                    }
+                    olderChats.forEach(chat => {
+                        list.innerHTML += createChatItem(chat, false);
+                    });
+                }
             });
+        }
+
+        function createChatItem(chat, isRecent) {
+            const isUnread = unreadChats.has(chat.friendUid);
+            const activityClass = isRecent ? 'recent' : '';
+            const unreadClass = isUnread ? 'unread' : '';
+            
+            let indicator = '';
+            if (isUnread) {
+                indicator = '<div class="unread-dot"></div>';
+            } else if (chat.activity === 3) { // Very recent (within 1 hour)
+                indicator = '<div class="activity-indicator"></div>';
+            }
+
+            const displayText = chat.decryptedMsg.length > 30 ? 
+                chat.decryptedMsg.substring(0, 30) + '...' : chat.decryptedMsg;
+
+            return `
+                <div class="chat-item ${activityClass} ${unreadClass}" data-friend="${chat.friendUid}">
+                    <img class="avatar" src="${chat.photo}" onclick="event.stopPropagation(); viewFullProfile('${chat.photo}', '${chat.name}')">
+                    <div class="chat-info" onclick="openChat('${chat.friendUid}', '${chat.name.replace(/'/g, "\\'")}')">
+                        <div class="chat-row">
+                            <span class="name">${chat.name}</span>
+                            <span class="time">${chat.lastTime}</span>
+                        </div>
+                        <div class="msg">
+                            <span class="material-symbols-rounded" style="font-size:14px; color:var(--accent-purple)">lock</span> 
+                            ${displayText}
+                        </div>
+                    </div>
+                    ${indicator}
+                </div>
+            `;
+        }
+
+        function openChat(friendUid, friendName) {
+            // Mark as read when opening chat
+            unreadChats.delete(friendUid);
+            window.location.href = `chat.html?friend=${friendUid}&name=${encodeURIComponent(friendName)}`;
+        }
+
+        // --- New Message Alert System ---
+        function setupMessageListener() {
+            db.ref(`users/${currentUser.uid}/chats`).on('child_changed', async (snapshot) => {
+                const chatData = snapshot.val();
+                const friendId = snapshot.key;
+                
+                // Check if this is a new message (not just a time update)
+                if (chatData.lastMsg && chatData.lastTime !== lastMessageTimestamps[friendId]) {
+                    // Mark as unread
+                    unreadChats.add(friendId);
+                    
+                    // Get friend's profile for notification
+                    const friendProfile = await db.ref(`users/${friendId}/profile`).once('value');
+                    const friendData = friendProfile.val();
+                    
+                    // Decrypt the message for notification
+                    const roomId = currentUser.uid < friendId ? currentUser.uid+"_"+friendId : friendId+"_"+currentUser.uid;
+                    const decryptedMsg = decryptMessage(chatData.lastMsg, roomId);
+                    
+                    showNewMessageAlert(chatData.name || friendData?.name || 'Someone', decryptedMsg, friendId);
+                    lastMessageTimestamps[friendId] = chatData.lastTime;
+                    
+                    // Reload chats to update UI
+                    loadChats();
+                }
+            });
+        }
+
+        function showNewMessageAlert(senderName, message, friendId) {
+            const alert = document.getElementById('newMessageAlert');
+            const alertText = document.getElementById('alertText');
+            
+            const displayText = message.length > 25 ? message.substring(0, 25) + '...' : message;
+            alertText.textContent = `${senderName}: ${displayText}`;
+            
+            // Show alert with animation
+            alert.classList.add('show');
+            
+            // Vibrate if supported
+            if ('vibrate' in navigator) {
+                navigator.vibrate([200, 100, 200]);
+            }
+            
+            // Auto-hide after 4 seconds
+            setTimeout(() => {
+                alert.classList.remove('show');
+            }, 4000);
+            
+            // Click to dismiss and open chat
+            alert.onclick = () => {
+                alert.classList.remove('show');
+                openChat(friendId, senderName);
+            };
         }
 
         // --- Profile Actions ---
