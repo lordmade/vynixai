@@ -17,7 +17,7 @@
             --divider: #e5e7eb;
             --logo-gradient: linear-gradient(135deg, #000000 0%, var(--accent-purple) 50%, #10b981 100%);
             --recent-badge: #10b981;
-            --unread-dot: #ef4444;
+            --unread-count: #ef4444;
         }
 
         * { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; box-sizing: border-box; }
@@ -67,7 +67,25 @@
         .time { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
         .msg { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 4px; }
         
-        .activity-indicator {
+        .unread-count {
+            background: var(--unread-count);
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            min-width: 20px;
+            height: 20px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 6px;
+            position: absolute;
+            top: 12px;
+            right: 20px;
+            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+        }
+        
+        .recent-indicator {
             position: absolute;
             top: 12px;
             right: 20px;
@@ -78,25 +96,9 @@
             animation: pulse 2s infinite;
         }
         
-        .unread-dot {
-            position: absolute;
-            top: 12px;
-            right: 20px;
-            width: 8px;
-            height: 8px;
-            background: var(--unread-dot);
-            border-radius: 50%;
-            animation: bounce 1s infinite;
-        }
-        
         @keyframes pulse {
             0%, 100% { opacity: 1; transform: scale(1); }
             50% { opacity: 0.7; transform: scale(1.2); }
-        }
-        
-        @keyframes bounce {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.3); }
         }
 
         /* --- Modals & Sheets --- */
@@ -225,7 +227,7 @@
         let currentUser = null;
         let currentVynixId = "";
         let lastMessageTimestamps = {};
-        let unreadChats = new Set();
+        let unreadCounts = {};
 
         auth.onAuthStateChanged(async (user) => {
             if (user) {
@@ -303,6 +305,9 @@
                     // Get activity level
                     chat.activity = getChatActivity(chat.lastTime);
                     
+                    // Get unread count
+                    chat.unreadCount = unreadCounts[child.key] || 0;
+                    
                     chats.push(chat);
                 });
 
@@ -336,15 +341,15 @@
         }
 
         function createChatItem(chat, isRecent) {
-            const isUnread = unreadChats.has(chat.friendUid);
+            const hasUnread = chat.unreadCount > 0;
             const activityClass = isRecent ? 'recent' : '';
-            const unreadClass = isUnread ? 'unread' : '';
+            const unreadClass = hasUnread ? 'unread' : '';
             
             let indicator = '';
-            if (isUnread) {
-                indicator = '<div class="unread-dot"></div>';
+            if (hasUnread) {
+                indicator = `<div class="unread-count">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>`;
             } else if (chat.activity === 3) { // Very recent (within 1 hour)
-                indicator = '<div class="activity-indicator"></div>';
+                indicator = '<div class="recent-indicator"></div>';
             }
 
             const displayText = chat.decryptedMsg.length > 30 ? 
@@ -370,20 +375,21 @@
 
         function openChat(friendUid, friendName) {
             // Mark as read when opening chat
-            unreadChats.delete(friendUid);
+            unreadCounts[friendUid] = 0;
             window.location.href = `chat.html?friend=${friendUid}&name=${encodeURIComponent(friendName)}`;
         }
 
         // --- New Message Alert System ---
         function setupMessageListener() {
+            // Listen for new messages in real-time
             db.ref(`users/${currentUser.uid}/chats`).on('child_changed', async (snapshot) => {
                 const chatData = snapshot.val();
                 const friendId = snapshot.key;
                 
                 // Check if this is a new message (not just a time update)
                 if (chatData.lastMsg && chatData.lastTime !== lastMessageTimestamps[friendId]) {
-                    // Mark as unread
-                    unreadChats.add(friendId);
+                    // Increment unread count
+                    unreadCounts[friendId] = (unreadCounts[friendId] || 0) + 1;
                     
                     // Get friend's profile for notification
                     const friendProfile = await db.ref(`users/${friendId}/profile`).once('value');
