@@ -61,12 +61,14 @@
       object-fit:cover;
       border:4px solid var(--card);
       margin-top:-60px;
+      cursor:pointer;
     }
     .cover-photo{
       width:100%;
       height:200px;
       object-fit:cover;
       border-radius:var(--radius) var(--radius) 0 0;
+      cursor:pointer;
     }
     .profile-name{
       font-size:24px;
@@ -170,9 +172,25 @@
       text-decoration:underline;
     }
     nav{position:fixed;bottom:0;left:0;right:0;height:56px;background:var(--card);border-top:1px solid var(--border);z-index:40}
-    .fab{position:fixed;bottom:72px;right:20px;width:48px;height:48px;background:var(--accent-blue);border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(24,119,242,.4);cursor:pointer;z-index:30}
     .custom-toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--accent-blue);color:#fff;padding:12px 24px;border-radius:20px;box-shadow:0 10px 15px -3px rgba(0,0,0,.3);font-weight:600;opacity:0;transition:all .4s cubic-bezier(.175,.885,.32,1.275);z-index:50;display:flex;align-items:center;gap:8px}
     .custom-toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+    /* Edit Modal */
+    #edit-modal-overlay{
+      position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .25s ease;
+    }
+    #edit-modal-overlay.show{opacity:1;pointer-events:auto}
+    .edit-modal-box{
+      background:var(--card);border-radius:12px;padding:24px;max-width:400px;width:90%;box-shadow:0 10px 25px rgba(0,0,0,.25);transform:scale(.95);transition:transform .25s ease;
+    }
+    #edit-modal-overlay.show .edit-modal-box{transform:scale(1)}
+    .edit-modal-title{font-weight:600;font-size:18px;margin-bottom:16px}
+    .edit-input{margin-bottom:16px}
+    .edit-input label{display:block;font-size:14px;color:var(--text2);margin-bottom:4px}
+    .edit-input input,.edit-input textarea{
+      width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:15px;
+    }
+    .edit-input textarea{resize:vertical;min-height:80px}
+    .edit-buttons{display:flex;gap:12px;justify-content:flex-end;margin-top:24px}
   </style>
 </head>
 <body>
@@ -207,9 +225,37 @@
     <button id="load-more-btn" class="bg-[#1877f2] text-white px-6 py-2 rounded-full font-semibold hidden">Load More</button>
   </div>
 
-  <!-- Floating Action Button -->
-  <div id="fab" class="fab">
-    <span class="material-icons">add</span>
+  <!-- Edit Profile Modal -->
+  <div id="edit-modal-overlay">
+    <div class="edit-modal-box">
+      <div class="edit-modal-title">Edit Profile</div>
+      <div class="edit-input">
+        <label>Display Name</label>
+        <input type="text" id="edit-name" maxlength="50">
+      </div>
+      <div class="edit-input">
+        <label>Handle (no spaces)</label>
+        <input type="text" id="edit-handle" maxlength="30" placeholder="e.g. john_doe">
+      </div>
+      <div class="edit-input">
+        <label>Bio</label>
+        <textarea id="edit-bio" maxlength="200" rows="3"></textarea>
+      </div>
+      <div class="edit-input">
+        <label>Avatar (URL)</label>
+        <input type="text" id="edit-avatar" placeholder="https://...">
+        <small class="text-gray-500">Paste a direct image link</small>
+      </div>
+      <div class="edit-input">
+        <label>Cover Photo (URL)</label>
+        <input type="text" id="edit-cover" placeholder="https://...">
+        <small class="text-gray-500">Paste a direct image link</small>
+      </div>
+      <div class="edit-buttons">
+        <button class="btn-secondary" id="edit-cancel">Cancel</button>
+        <button class="btn-primary" id="edit-save">Save</button>
+      </div>
+    </div>
   </div>
 
   <!-- Navigation -->
@@ -245,7 +291,7 @@
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getDatabase, ref, onValue, query, orderByChild, limitToLast, get, endAt, push, set, remove, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
+import { getDatabase, ref, onValue, query, orderByChild, limitToLast, get, set, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -264,9 +310,10 @@ const db = getDatabase(app);
 let currentUid = null;
 let myUid = null;
 let isAnonymous = true;
+let currentProfileData = {};
 
 const urlParams = new URLSearchParams(location.search);
-const profileUid = urlParams.get('uid') || null; // if ?uid=xxx, show that user, else own profile
+const profileUid = urlParams.get('uid') || null;
 
 const $ = s => document.querySelector(s);
 const feedEl = $('#feed');
@@ -295,28 +342,81 @@ async function loadProfile(uid) {
   const profileRef = ref(db, `users/${uid}/profile`);
   onValue(profileRef, snap => {
     const p = snap.val() || {};
+    currentProfileData = p;
+
     $('#profile-avatar').src = p.avatar || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(p.displayName || 'User')}`;
     $('#profile-name').textContent = p.displayName || 'User';
     $('#profile-handle').textContent = '@' + (p.handle || uid.slice(0,8));
     $('#profile-bio').textContent = p.bio || 'No bio yet.';
-
-    // Placeholder cover if none
     $('#cover-photo').src = p.cover || 'https://via.placeholder.com/680x200/1877f2/ffffff?text=Cover+Photo';
 
-    // Simple stats (we don't have real followers yet, so show 0 or mock)
     $('#stat-posts').textContent = '—';
     $('#stat-followers').textContent = '0';
     $('#stat-following').textContent = '0';
 
-    // Actions: only show Edit Profile if it's my profile
     const actions = $('#profile-actions');
     if (uid === myUid && !isAnonymous) {
       actions.innerHTML = `<button class="btn-primary" id="edit-profile-btn">Edit Profile</button>`;
-      $('#edit-profile-btn').onclick = () => toast('Edit profile coming soon!');
+      $('#edit-profile-btn').onclick = openEditModal;
+
+      // Make avatar and cover clickable for quick URL edit
+      $('#profile-avatar').onclick = () => {
+        const url = prompt('Enter new avatar URL:', p.avatar || '');
+        if (url) updateProfileField('avatar', url.trim());
+      };
+      $('#cover-photo').onclick = () => {
+        const url = prompt('Enter new cover photo URL:', p.cover || '');
+        if (url) updateProfileField('cover', url.trim());
+      };
     } else {
       actions.innerHTML = `<button class="btn-primary">Follow</button><button class="btn-secondary">Message</button>`;
     }
   });
+}
+
+function openEditModal() {
+  $('#edit-name').value = currentProfileData.displayName || '';
+  $('#edit-handle').value = currentProfileData.handle || '';
+  $('#edit-bio').value = currentProfileData.bio || '';
+  $('#edit-avatar').value = currentProfileData.avatar || '';
+  $('#edit-cover').value = currentProfileData.cover || '';
+  $('#edit-modal-overlay').classList.add('show');
+}
+
+$('#edit-cancel').onclick = () => $('#edit-modal-overlay').classList.remove('show');
+
+$('#edit-save').onclick = async () => {
+  const updates = {
+    displayName: $('#edit-name').value.trim() || 'User',
+    handle: $('#edit-handle').value.trim().replace(/\s/g, '').toLowerCase() || '',
+    bio: $('#edit-bio').value.trim(),
+    avatar: $('#edit-avatar').value.trim() || '',
+    cover: $('#edit-cover').value.trim() || ''
+  };
+
+  if (!updates.displayName) {
+    toast('Display name cannot be empty');
+    return;
+  }
+
+  try {
+    await set(ref(db, `users/${myUid}/profile`), updates);
+    toast('Profile updated!');
+    $('#edit-modal-overlay').classList.remove('show');
+  } catch (err) {
+    toast('Error saving profile');
+    console.error(err);
+  }
+};
+
+async function updateProfileField(field, value) {
+  if (!value) return;
+  try {
+    await set(ref(db, `users/${myUid}/profile/${field}`), value);
+    toast('Updated!');
+  } catch (err) {
+    toast('Error updating');
+  }
 }
 
 function showSkeletonLoaders(count = 5) {
@@ -339,7 +439,7 @@ function showSkeletonLoaders(count = 5) {
 async function initFeed(uid) {
   showSkeletonLoaders();
   const postsRef = ref(db, 'posts');
-  const q = query(postsRef, orderByChild('authorId'), limitToLast(POST_LIMIT)); // we'll filter client-side for simplicity
+  const q = query(postsRef, orderByChild('timestamp'), limitToLast(POST_LIMIT * 2));
   const snap = await get(q);
 
   feedEl.innerHTML = '';
@@ -369,14 +469,11 @@ async function initFeed(uid) {
 }
 
 loadMoreBtn.onclick = async () => {
-  // Similar logic as feed, but filtered by authorId
-  // For brevity, we'll just hide it after first load (you can extend it)
   toast('No more posts');
   loadMoreBtn.classList.add('hidden');
 };
 
 function renderPostCard(p) {
-  // Same renderPostCard logic as in the main feed (reused)
   const div = document.createElement('div');
   div.className = 'post-card';
   div.id = `post-${p.key}`;
@@ -426,12 +523,9 @@ function toast(msg) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 400); }, 3000);
 }
 
-// Navbar active highlight
+// Active nav highlight
 document.querySelector('nav a[href="profile.html"]').classList.add('text-[#1877f2]');
 document.querySelector('nav a[href="profile.html"] span.material-icons-outlined')?.classList.replace('material-icons-outlined', 'material-icons');
-
-// FAB scroll to top
-$('#fab').addEventListener('click', () => window.scrollTo({top:0, behavior:'smooth'}));
 </script>
 </body>
 </html>
