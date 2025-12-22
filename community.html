@@ -245,6 +245,23 @@
 .mention-handle{font-size:13px;color:var(--text2);}
     .post-content .mention-link{color:var(--accent-blue);font-weight:500;text-decoration:none;}
 .post-content .mention-link:hover{text-decoration:underline;}
+    /* ---------- AUTH SHEET ---------- */
+    #auth-sheet-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;opacity:0;pointer-events:none;transition:opacity .3s ease}
+    #auth-sheet-overlay.show{opacity:1;pointer-events:auto}
+    .auth-sheet{position:absolute;bottom:0;left:0;right:0;background:var(--card);border-top-left-radius:20px;border-top-right-radius:20px;max-height:90vh;display:flex;flex-direction:column;transform:translateY(100%);transition:transform .3s ease;overflow:hidden}
+    #auth-sheet-overlay.show .auth-sheet{transform:translateY(0)}
+    .auth-sheet-header{padding:16px;font-size:20px;font-weight:600;text-align:center;position:relative;border-bottom:1px solid var(--border)}
+    .auth-sheet-close{background:none;border:none;color:var(--text2);cursor:pointer;position:absolute;left:16px;top:16px}
+    .auth-sheet-body{flex:1;overflow-y:auto;padding:24px}
+    .auth-tab-btn{display:inline-block;padding:12px 24px;font-weight:600;color:var(--text2);border-bottom:3px solid transparent;transition:var(--trans);margin:0 16px}
+    .auth-tab-btn.active{color:var(--accent-blue);border-bottom:3px solid var(--accent-blue)}
+    .auth-form{margin-top:32px;display:none}
+    .auth-form.active{display:block}
+    .auth-input{width:100%;padding:14px 16px;margin-bottom:16px;border:1px solid var(--border);border-radius:12px;background:var(--bg);color:var(--text);font-size:16px}
+    .auth-btn{width:100%;background:var(--accent-blue);color:#fff;padding:14px;border:none;border-radius:12px;font-weight:600;font-size:16px;cursor:pointer;margin-top:12px}
+    .auth-btn:disabled{opacity:0.5;cursor:default}
+    .profile-preview{margin-top:16px;text-align:center}
+    .profile-preview img{width:80px;height:80px;border-radius:50%;object-fit:cover}
   </style>
 </head>
 <body>
@@ -356,9 +373,40 @@
       </a>
     </div>
   </nav>
+  <!-- Auth Bottom Sheet -->
+  <div id="auth-sheet-overlay">
+    <div class="auth-sheet">
+      <div class="auth-sheet-header">
+        <button class="auth-sheet-close material-icons-outlined" id="auth-sheet-close">close</button>
+        <span id="auth-sheet-title">Sign Up</span>
+      </div>
+      <div class="auth-sheet-body">
+        <div class="flex justify-center mb-4">
+          <button class="auth-tab-btn active" data-tab="signup">Sign Up</button>
+          <button class="auth-tab-btn" data-tab="signin">Sign In</button>
+        </div>
+        <form id="signup-form" class="auth-form active">
+          <input type="email" class="auth-input" id="signup-email" placeholder="Email" required>
+          <input type="password" class="auth-input" id="signup-password" placeholder="Password (min 6 chars)" required>
+          <input type="text" class="auth-input" id="signup-name" placeholder="Display Name" required>
+          <div class="profile-preview">
+            <img id="signup-avatar-preview" src="https://ui-avatars.com/api/?background=1877f2&color=fff&name=User">
+            <p class="text-sm text-gray-500 mt-2">Avatar generated from name</p>
+          </div>
+          <button type="submit" class="auth-btn" id="signup-btn">Create Account</button>
+        </form>
+        <form id="signin-form" class="auth-form">
+          <input type="email" class="auth-input" id="signin-email" placeholder="Email" required>
+          <input type="password" class="auth-input" id="signin-password" placeholder="Password" required>
+          <button type="submit" class="auth-btn" id="signin-btn">Sign In</button>
+        </form>
+        <p class="text-center text-sm text-gray-500 mt-8">By continuing, you agree to our Terms</p>
+      </div>
+    </div>
+  </div>
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInAnonymously, updateProfile } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import { getAuth, onAuthStateChanged, signInAnonymously, updateProfile, createUserWithEmailAndPassword, signInWithEmailAndPassword, EmailAuthProvider, linkWithCredential } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
 import { getDatabase, ref, push, set, remove, query, limitToLast, orderByChild, onChildAdded, onValue, get, endAt, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js';
 const firebaseConfig = {
   apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -384,30 +432,121 @@ if (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches)
   document.body.setAttribute('data-theme', 'dark');
 // Enhanced authentication with anonymous support
 onAuthStateChanged(auth, user => {
-  if (!user) {
-    // Sign in anonymously
-    signInAnonymously(auth).then(() => {
-      setupAnonymousUser();
-    }).catch(err => {
-      console.error('Anonymous auth failed:', err);
-      setupAnonymousUser();
-    });
-  } else {
+  if (user) {
     uid = user.uid;
-    uname = user.displayName || user.email?.split('@')[0] || 'User';
-    uavatar = user?.photoURL || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${uname}`;
+    uname = user.displayName || 'User';
+    uavatar = user.photoURL || `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${uname}`;
     myAvatarEl.src = uavatar;
-    isAnonymous = false;
+    isAnonymous = user.isAnonymous;
     initFeed();
+  } else {
+    // Should not happen as we always sign in anonymously
+    signInAnonymously(auth);
   }
 });
 function setupAnonymousUser() {
-  uid = "anonymous_" + Math.random().toString(36).slice(2);
+  // Called only if somehow not signed in
+  uid = auth.currentUser?.uid || "anonymous_" + Math.random().toString(36).slice(2);
   uname = "Guest";
   uavatar = `https://ui-avatars.com/api/?background=1877f2&color=fff&name=Guest`;
   myAvatarEl.src = uavatar;
   isAnonymous = true;
   initFeed();
+}
+// Auth sheet elements
+const authOverlay = $('#auth-sheet-overlay');
+const authClose = $('#auth-sheet-close');
+const authTitle = $('#auth-sheet-title');
+const tabBtns = document.querySelectorAll('.auth-tab-btn');
+const forms = document.querySelectorAll('.auth-form');
+const signupForm = $('#signup-form');
+const signinForm = $('#signin-form');
+const signupName = $('#signup-name');
+const signupAvatarPreview = $('#signup-avatar-preview');
+function openAuthSheet(mode = 'signup') {
+  tabBtns.forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === mode);
+  });
+  forms.forEach(f => f.classList.toggle('active', f.id === mode + '-form'));
+  authTitle.textContent = mode === 'signup' ? 'Sign Up' : 'Sign In';
+  authOverlay.classList.add('show');
+}
+function closeAuthSheet() {
+  authOverlay.classList.remove('show');
+}
+authClose.onclick = closeAuthSheet;
+authOverlay.onclick = e => { if (e.target === authOverlay) closeAuthSheet(); };
+tabBtns.forEach(btn => btn.onclick = () => openAuthSheet(btn.dataset.tab));
+// Preview avatar on name input
+signupName.oninput = () => {
+  const name = signupName.value.trim() || 'User';
+  signupAvatarPreview.src = `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(name)}`;
+};
+// Sign up handler (upgrade anonymous)
+signupForm.onsubmit = async e => {
+  e.preventDefault();
+  const email = $('#signup-email').value.trim();
+  const password = $('#signup-password').value;
+  const name = signupName.value.trim() || 'User';
+  if (!email || !password || password.length < 6) {
+    toast('Please fill valid email and password (min 6 chars)');
+    return;
+  }
+  const btn = $('#signup-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  try {
+    const credential = EmailAuthProvider.credential(email, password);
+    const userCred = await auth.currentUser.linkWithCredential(credential);
+    await updateProfile(userCred.user, {
+      displayName: name,
+      photoURL: `https://ui-avatars.com/api/?background=1877f2&color=fff&name=${encodeURIComponent(name)}`
+    });
+    await set(ref(db, `users/${uid}/profile`), {
+      displayName: name,
+      avatar: userCred.user.photoURL,
+      verified: false
+    });
+    toast('Account created and upgraded!');
+    closeAuthSheet();
+  } catch (err) {
+    if (err.code === 'auth/email-already-in-use') {
+      toast('Email already in use. Try signing in.');
+    } else {
+      toast('Error: ' + err.message);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create Account';
+  }
+};
+// Sign in handler
+signinForm.onsubmit = async e => {
+  e.preventDefault();
+  const email = $('#signin-email').value.trim();
+  const password = $('#signin-password').value;
+  if (!email || !password) return;
+  const btn = $('#signin-btn');
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  try {
+    await signInWithEmailAndPassword(auth, email, password);
+    toast('Signed in!');
+    closeAuthSheet();
+  } catch (err) {
+    toast('Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+};
+// Function to require auth
+function requireAuth() {
+  if (isAnonymous) {
+    openAuthSheet('signup');
+    return true;
+  }
+  return false;
 }
 /* ---------- helper: write profile fields that feed cards listen to ---------- */
 function updateUserProfile(updates) {
@@ -518,6 +657,7 @@ function toggleBtn() {
   postBtn.disabled = uploading || (!textEl.value.trim() && !mediaUrl);
 }
 fileInput.onchange = e => {
+  if (requireAuth()) return;
   const file = e.target.files[0];
   if (!file) return;
  
@@ -578,6 +718,7 @@ function uploadToCloudinary(file) {
     });
 }
 postBtn.onclick = async () => {
+  if (requireAuth()) return;
   const text = textEl.value.trim();
   if (!text && !mediaUrl) return;
  
@@ -709,9 +850,9 @@ function renderPostCard(p) {
     if (!action || !postId) return;
    
     e.stopPropagation();
-    if (action === 'reply') openComments(postId);
-    if (action === 'repost') doRepost(postId);
-    if (action === 'like') toggleLike(postId);
+    if (action === 'reply') { if (requireAuth()) return; openComments(postId); }
+    if (action === 'repost') { if (requireAuth()) return; doRepost(postId); }
+    if (action === 'like') { if (requireAuth()) return; toggleLike(postId); }
     if (action === 'share') navigator.share?.({title:'Post',url:location.href}).catch(()=>toast('Link copied'));
     if (action === 'delete') confirmDelete(postId);
   });
@@ -746,10 +887,7 @@ function listenCounters(postId) {
   onValue(ref(db, `reposts/${postId}`), s => $('#reposts-'+postId).textContent = s.size);
 }
 async function toggleLike(postId) {
-  if (isAnonymous) {
-    toast('Please sign in to like posts');
-    return;
-  }
+  if (requireAuth()) return;
  
   const likeRef = ref(db, `likes/${postId}/${uid}`);
   const snap = await get(likeRef);
@@ -770,10 +908,7 @@ async function toggleLike(postId) {
   }
 }
 async function doRepost(postId) {
-  if (isAnonymous) {
-    toast('Please sign in to repost');
-    return;
-  }
+  if (requireAuth()) return;
  
   const origSnap = await get(ref(db, `posts/${postId}`));
   const orig = origSnap.val();
@@ -807,10 +942,7 @@ const commentOverlay = $('#comment-sheet-overlay'),
       commentInput = $('#comment-input'),
       commentSendBtn = $('#comment-send-btn');
 function openComments(postId) {
-  if (isAnonymous) {
-    toast('Please sign in to comment');
-    return;
-  }
+  if (requireAuth()) return;
  
   currentPostId = postId;
   commentInput.value = '';
@@ -860,10 +992,7 @@ function closeComments() {
   currentPostId = null;
 }
 commentSendBtn.onclick = async () => {
-  if (isAnonymous) {
-    toast('Please sign in to comment');
-    return;
-  }
+  if (requireAuth()) return;
  
   const text = commentInput.value.trim();
   if (!text || !currentPostId) return;
@@ -905,7 +1034,7 @@ function listenCommentLikes(pid, cid) {
   });
 }
 async function toggleCommentLike(pid, cid) {
-  if (isAnonymous) return;
+  if (requireAuth()) return;
  
   const likeRef = ref(db, `comments/${pid}/${cid}/likes/${uid}`);
   const snap = await get(likeRef);
@@ -926,7 +1055,7 @@ commentList.addEventListener('click', e => {
   if (btn.classList.contains('comment-reply-btn')) openCommentReply(pid, cid);
 });
 function openCommentReply(postId, commentId) {
-  if (isAnonymous) return;
+  if (requireAuth()) return;
  
   openComments(postId);
   commentInput.dataset.parent = commentId;
@@ -936,10 +1065,7 @@ let deleteKeyStore = null;
 const alertOverlay = $('#custom-alert-overlay'), alertTitle = $('#custom-alert-title'),
       alertMessage = $('#custom-alert-message'), alertCancel = $('#custom-alert-cancel'), alertConfirm = $('#custom-alert-confirm');
 function confirmDelete(key) {
-  if (isAnonymous) {
-    toast('Please sign in to delete posts');
-    return;
-  }
+  if (requireAuth()) return;
  
   deleteKeyStore = key;
   alertTitle.textContent = 'Delete Post';
