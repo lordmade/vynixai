@@ -269,7 +269,7 @@
         }
 
         function decryptMessage(text, roomId) {
-            if (!text || !text.includes("U2FsdGVk")) return text; // Not encrypted
+            if (!text || !text.includes("U2FsdGVk")) return text;
             try {
                 const bytes = CryptoJS.AES.decrypt(text, secretBase + roomId);
                 const decrypted = bytes.toString(CryptoJS.enc.Utf8);
@@ -300,17 +300,19 @@
         }
 
         async function loadChats() {
-            db.ref(`users/${currentUser.uid}/chats`).on('value', async (snap) => {
+            const chatsRef = db.ref(`users/${currentUser.uid}/chats`);
+            chatsRef.off(); // Remove previous listener to prevent duplicates
+            chatsRef.on('value', async (snap) => {
                 const list = document.getElementById('chatList');
-                list.innerHTML = '';
+                list.innerHTML = '<div style="text-align: center; margin-top: 100px; color: #999;">Loading chats...</div>';
                 
-                if (!snap.exists()) {
+                if (!snap.exists() || snap.numChildren() === 0) {
                     list.innerHTML = `<div style="text-align:center; padding-top:100px; color:#999;">No chats yet.<br>Add a friend to begin.</div>`;
                     return;
                 }
 
                 const chats = [];
-                for (const child of snap.children) {
+                snap.forEach(child => {
                     const chat = child.val();
                     const friendUid = child.key;
                     
@@ -321,21 +323,24 @@
                         decryptedMsg = decryptMessage(chat.lastMsg, roomId);
                     }
                     
-                    chat.friendUid = friendUid;
-                    chat.decryptedMsg = decryptedMsg;
-                    chat.activity = getChatActivity(chat.lastTime);
-                    chat.unreadCount = unreadCounts[friendUid] || 0;
-                    
-                    chats.push(chat);
-                }
-
-                chats.sort((a, b) => {
-                    if (a.activity !== b.activity) return b.activity - a.activity;
-                    return 0;
+                    chats.push({
+                        friendUid: friendUid,
+                        name: chat.name || "User",
+                        photo: chat.photo || "",
+                        lastMsg: chat.lastMsg || "",
+                        lastTime: chat.lastTime || "",
+                        decryptedMsg: decryptedMsg,
+                        activity: getChatActivity(chat.lastTime),
+                        unreadCount: unreadCounts[friendUid] || 0
+                    });
                 });
+
+                chats.sort((a, b) => b.activity - a.activity);
 
                 const recentChats = chats.filter(chat => chat.activity >= 2);
                 const olderChats = chats.filter(chat => chat.activity < 2);
+
+                list.innerHTML = '';
 
                 if (recentChats.length > 0) {
                     list.innerHTML += `<div class="section-header">Recent Activity</div>`;
@@ -370,12 +375,14 @@
             const displayText = chat.decryptedMsg.length > 30 ? 
                 chat.decryptedMsg.substring(0, 30) + '...' : chat.decryptedMsg;
 
+            const photoSrc = chat.photo && chat.photo.trim() !== "" ? chat.photo : "https://via.placeholder.com/55";
+
             return `
                 <div class="chat-item ${activityClass} \( {unreadClass}" data-friend=" \){chat.friendUid}">
-                    <img class="avatar" src="\( {chat.photo || 'https://via.placeholder.com/55'}" onclick="event.stopPropagation(); viewFullProfile(' \){chat.photo || ''}', '${chat.name}')">
+                    <img class="avatar" src="\( {photoSrc}" onclick="event.stopPropagation(); viewFullProfile(' \){chat.photo || ''}', '${chat.name}')">
                     <div class="chat-info" onclick="openChat('\( {chat.friendUid}', ' \){chat.name.replace(/'/g, "\\'")}')">
                         <div class="chat-row">
-                            <span class="name">${chat.name || 'User'}</span>
+                            <span class="name">${chat.name}</span>
                             <span class="time">${chat.lastTime || ''}</span>
                         </div>
                         <div class="msg">
@@ -393,7 +400,8 @@
                 unreadCounts[friendUid] = 0;
                 await saveUnreadCounts();
             }
-            window.location.href = `chat.html?friend=\( {friendUid}&name= \){encodeURIComponent(friendName)}&photo=${encodeURIComponent('')}`;
+            const photoParam = ""; // We pass photo from chats node, but chat.html now fetches it itself
+            window.location.href = `chat.html?friend=\( {friendUid}&name= \){encodeURIComponent(friendName)}`;
         }
 
         function setupMessageListener() {
@@ -406,12 +414,12 @@
                     await saveUnreadCounts();
                     
                     const friendProfile = await db.ref(`users/${friendId}/profile`).once('value');
-                    const friendData = friendProfile.val();
+                    const friendData = friendProfile.val() || {};
                     
                     const roomId = currentUser.uid < friendId ? currentUser.uid + "_" + friendId : friendId + "_" + currentUser.uid;
                     const decryptedMsg = decryptMessage(chatData.lastMsg, roomId);
                     
-                    showNewMessageAlert(chatData.name || friendData?.name || 'Someone', decryptedMsg, friendId);
+                    showNewMessageAlert(chatData.name || friendData.name || 'Someone', decryptedMsg, friendId);
                     lastMessageTimestamps[friendId] = chatData.lastTime;
                 }
             });
@@ -486,7 +494,7 @@
             document.getElementById(id).classList.toggle('active', show);
         }
         function viewFullProfile(url, name) {
-            if (!url) return;
+            if (!url || url.trim() === "") return;
             const m = document.getElementById('profileViewer');
             document.getElementById('modalImg').src = url.replace('s96-c', 's400-c') || url;
             document.getElementById('modalName').innerText = name;
