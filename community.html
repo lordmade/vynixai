@@ -229,25 +229,26 @@
             50% { opacity: 0.7; transform: scale(1.2); }
         }
 
-        /* --- WhatsApp-style Status Indicators --- */
-        .message-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            margin-left: 4px;
-        }
-        
-        .status-icon {
-            font-size: 14px;
+        /* --- Loading State --- */
+        .loading-state {
+            text-align: center;
+            padding: 60px 20px;
             color: var(--text-secondary);
         }
         
-        .status-icon.delivered {
-            color: var(--accent-purple);
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid var(--accent-purple);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
         }
         
-        .status-icon.read {
-            color: var(--online-indicator);
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
 
         /* --- Modals & Sheets --- */
@@ -295,43 +296,6 @@
         .new-message-alert .material-symbols-rounded {
             font-size: 20px;
         }
-
-        /* --- Swipe Actions --- */
-        .chat-item {
-            touch-action: pan-y;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .swipe-actions {
-            position: absolute;
-            top: 0;
-            right: -120px;
-            height: 100%;
-            width: 120px;
-            display: flex;
-            align-items: center;
-            justify-content: space-around;
-            background: #ff4444;
-            color: white;
-            transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        
-        .swipe-actions.show {
-            right: 0;
-        }
-        
-        .swipe-btn {
-            background: none;
-            border: none;
-            color: white;
-            padding: 10px;
-            border-radius: 50%;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
     </style>
 </head>
 <body>
@@ -360,7 +324,10 @@
     </header>
 
     <main id="chatList">
-        <div style="text-align: center; margin-top: 100px; color: #999;">Loading your world...</div>
+        <div class="loading-state">
+            <div class="loading-spinner"></div>
+            <div>Loading your conversations...</div>
+        </div>
     </main>
 
     <button class="fab" onclick="openAddFriend()">
@@ -414,7 +381,6 @@
         let currentVynixId = "";
         let lastMessageTimestamps = {};
         let unreadCounts = {};
-        let swipeStates = new Map();
 
         auth.onAuthStateChanged(async (user) => {
             if (user) {
@@ -424,8 +390,9 @@
                 await loadUnreadCounts();
                 loadChats();
                 setupMessageListener();
-                setupSwipeGestures();
-            } else { window.location.href = "login.html"; }
+            } else { 
+                window.location.href = "login.html"; 
+            }
         });
 
         async function syncProfile(user) {
@@ -483,17 +450,19 @@
         }
 
         function loadChats() {
-            db.ref(`users/${currentUser.uid}/chats`).on('value', snap => {
+            db.ref(`users/${currentUser.uid}/chats`).on('value', async snapshot => {
                 const list = document.getElementById('chatList');
-                list.innerHTML = '';
                 
-                if(!snap.exists()) {
+                if(!snapshot.exists()) {
                     list.innerHTML = `<div style="text-align:center; padding-top:100px; color:#999;">No chats yet.<br>Add a friend to begin.</div>`;
                     return;
                 }
 
+                list.innerHTML = '';
                 const chats = [];
-                snap.forEach(async child => {
+
+                // First pass: collect all chat data
+                snapshot.forEach(child => {
                     const chat = child.val();
                     chat.friendUid = child.key;
                     
@@ -502,21 +471,26 @@
                     chat.activity = getChatActivity(chat.lastTime);
                     chat.unreadCount = unreadCounts[child.key] || 0;
                     
-                    // Get online status
-                    const friendStatus = await db.ref(`users/${child.key}/status`).once('value');
-                    chat.isOnline = friendStatus.val() === 'online';
-                    
                     chats.push(chat);
                 });
 
+                // Second pass: get online status for each chat
+                const statusPromises = chats.map(async chat => {
+                    const statusSnap = await db.ref(`users/${chat.friendUid}/status`).once('value');
+                    chat.isOnline = statusSnap.val() === 'online';
+                    return chat;
+                });
+
+                const chatsWithStatus = await Promise.all(statusPromises);
+
                 // Sort by activity (recent first)
-                chats.sort((a, b) => {
+                chatsWithStatus.sort((a, b) => {
                     if (a.activity !== b.activity) return b.activity - a.activity;
                     return (b.ts || 0) - (a.ts || 0);
                 });
 
-                const recentChats = chats.filter(chat => chat.activity >= 2);
-                const olderChats = chats.filter(chat => chat.activity < 2);
+                const recentChats = chatsWithStatus.filter(chat => chat.activity >= 2);
+                const olderChats = chatsWithStatus.filter(chat => chat.activity < 2);
 
                 if (recentChats.length > 0) {
                     list.innerHTML += `<div class="section-header">Recent Activity</div>`;
@@ -552,39 +526,25 @@
                 chat.decryptedMsg.substring(0, 35) + '...' : chat.decryptedMsg;
 
             const timeDisplay = formatWhatsAppTime(chat.lastTime);
-            const nameClass = hasUnread ? 'name unread' : 'name';
-            const msgClass = hasUnread ? 'msg unread' : 'msg';
-            const timeClass = hasUnread ? 'time unread' : 'time';
 
             return `
                 <div class="chat-item ${activityClass} ${unreadClass}" data-friend="${chat.friendUid}">
                     <div class="avatar-container">
                         <img class="avatar ${chat.isOnline ? 'online' : ''}" src="${chat.photo}" 
-                             onclick="event.stopPropagation(); viewFullProfile('${chat.photo}', '${chat.name}')">
+                             onerror="this.src='https://via.placeholder.com/55?text=${chat.name.charAt(0)}'">
                         <div class="online-indicator ${chat.isOnline ? 'active' : ''}"></div>
                     </div>
                     <div class="chat-info" onclick="openChat('${chat.friendUid}', '${chat.name.replace(/'/g, "\\'")}', '${chat.photo.replace(/'/g, "\\'")}')">
                         <div class="chat-header">
-                            <span class="${nameClass}">${chat.name}</span>
-                            <span class="${timeClass}">${timeDisplay}</span>
+                            <span class="name ${unreadClass}">${chat.name}</span>
+                            <span class="time ${unreadClass}">${timeDisplay}</span>
                         </div>
-                        <div class="${msgClass}">
+                        <div class="msg ${unreadClass}">
                             <span class="msg-icon material-symbols-rounded">lock</span>
                             ${displayText}
                         </div>
                     </div>
                     ${indicator}
-                    <div class="swipe-actions" id="swipe-${chat.friendUid}">
-                        <button class="swipe-btn" onclick="archiveChat('${chat.friendUid}')" title="Archive">
-                            <span class="material-symbols-rounded">archive</span>
-                        </button>
-                        <button class="swipe-btn" onclick="muteChat('${chat.friendUid}')" title="Mute">
-                            <span class="material-symbols-rounded">volume_off</span>
-                        </button>
-                        <button class="swipe-btn" onclick="deleteChat('${chat.friendUid}')" title="Delete">
-                            <span class="material-symbols-rounded">delete</span>
-                        </button>
-                    </div>
                 </div>
             `;
         }
@@ -611,71 +571,13 @@
             return lastTime;
         }
 
-        function setupSwipeGestures() {
-            let startX = 0;
-            let currentX = 0;
-            let currentItem = null;
-            let currentFriendId = null;
-
-            document.addEventListener('touchstart', (e) => {
-                const chatItem = e.target.closest('.chat-item');
-                if (chatItem) {
-                    currentItem = chatItem;
-                    currentFriendId = chatItem.dataset.friend;
-                    startX = e.touches[0].clientX;
-                    currentX = startX;
-                }
-            });
-
-            document.addEventListener('touchmove', (e) => {
-                if (currentItem) {
-                    currentX = e.touches[0].clientX;
-                    const diffX = startX - currentX;
-                    
-                    if (diffX > 50) {
-                        const swipeActions = document.getElementById(`swipe-${currentFriendId}`);
-                        if (swipeActions) {
-                            swipeActions.classList.add('show');
-                        }
-                    }
-                }
-            });
-
-            document.addEventListener('touchend', () => {
-                if (currentItem) {
-                    currentItem = null;
-                    currentFriendId = null;
-                }
-            });
-        }
-
         async function openChat(friendUid, friendName, friendPhoto) {
             if (unreadCounts[friendUid] > 0) {
                 unreadCounts[friendUid] = 0;
                 await saveUnreadCounts();
             }
             
-            // Pass both name and photo through URL parameters
             window.location.href = `chat.html?friend=${friendUid}&name=${encodeURIComponent(friendName)}&photo=${encodeURIComponent(friendPhoto || '')}`;
-        }
-
-        // WhatsApp-style functions
-        async function archiveChat(friendUid) {
-            showToast("Chat archived");
-            document.getElementById(`swipe-${friendUid}`).classList.remove('show');
-        }
-
-        async function muteChat(friendUid) {
-            showToast("Chat muted");
-            document.getElementById(`swipe-${friendUid}`).classList.remove('show');
-        }
-
-        async function deleteChat(friendUid) {
-            if (confirm("Delete this chat? This will remove the conversation from your list.")) {
-                await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).remove();
-                showToast("Chat deleted");
-            }
-            document.getElementById(`swipe-${friendUid}`).classList.remove('show');
         }
 
         // --- New Message Alert System ---
