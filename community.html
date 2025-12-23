@@ -219,7 +219,9 @@
         async function loadUnreadCounts() {
             const unreadSnap = await db.ref(`users/${currentUser.uid}/unreadCounts`).once('value');
             if (unreadSnap.exists()) {
-                unreadCounts = unreadSnap.val();
+                unreadCounts = unreadSnap.val() || {};
+            } else {
+                unreadCounts = {};
             }
         }
 
@@ -238,14 +240,16 @@
             try {
                 const bytes = CryptoJS.AES.decrypt(encryptedText, secretBase + roomId);
                 const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-                return decrypted || "🔒 Message";
+                return decrypted || "Message";
             } catch (e) {
-                return "🔒 Message";
+                console.error("Decryption error:", e);
+                return "Message";
             }
         }
 
         async function loadChats() {
-            db.ref(`users/${currentUser.uid}/chats`).on('value', async (snap) => {
+            const chatsRef = db.ref(`users/${currentUser.uid}/chats`);
+            chatsRef.on('value', async (snap) => {
                 const list = document.getElementById('chatList');
                 list.innerHTML = '';
               
@@ -255,25 +259,44 @@
                 }
 
                 const chats = [];
-                for (const child of snap.children) {
+                snap.forEach((child) => {
                     const friendUid = child.key;
-                    const chat = child.val();
+                    let chat = child.val();
+
+                    // Ensure name and photo are up to date
+                    if (!chat.name || !chat.photo) {
+                        db.ref(`users/${friendUid}/profile`).once('value').then((profileSnap) => {
+                            const profile = profileSnap.val();
+                            if (profile) {
+                                const updates = {};
+                                if (!chat.name) updates.name = profile.name || "User";
+                                if (!chat.photo) updates.photo = profile.photo || "";
+                                if (Object.keys(updates).length > 0) {
+                                    db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update(updates);
+                                }
+                            }
+                        });
+                    }
 
                     const roomId = getRoomId(friendUid);
                     const decryptedMsg = decryptMessage(chat.lastMsg, roomId);
 
-                    chat.friendUid = friendUid;
-                    chat.decryptedMsg = decryptedMsg;
-                    chat.unreadCount = unreadCounts[friendUid] || 0;
-
-                    chats.push(chat);
-                }
+                    chats.push({
+                        friendUid: friendUid,
+                        name: chat.name || "User",
+                        photo: chat.photo || "",
+                        lastMsg: chat.lastMsg || "Start chatting...",
+                        lastTime: chat.lastTime || "New",
+                        decryptedMsg: decryptedMsg,
+                        unreadCount: unreadCounts[friendUid] || 0
+                    });
+                });
 
                 // Sort by lastTime descending (most recent first)
                 chats.sort((a, b) => {
                     if (a.lastTime === "New") return -1;
                     if (b.lastTime === "New") return 1;
-                    return b.lastTime > a.lastTime ? 1 : -1;
+                    return b.lastTime.localeCompare(a.lastTime);
                 });
 
                 chats.forEach(chat => {
@@ -383,20 +406,31 @@
         }
 
         async function addFriendLogic() {
-            const tid = document.getElementById('targetId').value.trim().replace('@','');
-            if(!tid) return;
+            const tid = document.getElementById('targetId').value.trim().toLowerCase().replace('@','');
+            if(!tid) {
+                showToast("Enter a Vynix ID");
+                return;
+            }
             const idSnap = await db.ref(`vynix_ids/${tid}`).once('value');
             if(idSnap.exists()) {
                 const fUid = idSnap.val();
-                if(fUid === currentUser.uid) return showToast("That's you!");
+                if(fUid === currentUser.uid) {
+                    showToast("That's you!");
+                    return;
+                }
                 const fProfile = await db.ref(`users/${fUid}/profile`).once('value');
-                const p = fProfile.val();
+                const p = fProfile.val() || { name: "User", photo: "" };
                 await db.ref(`users/${currentUser.uid}/chats/${fUid}`).set({
-                    name: p.name || "User", photo: p.photo || "", lastMsg: "Start chatting...", lastTime: "New"
+                    name: p.name,
+                    photo: p.photo,
+                    lastMsg: "Start chatting...",
+                    lastTime: "New"
                 });
-                showToast("Added!");
+                showToast("Friend added!");
                 closeAllSheets();
-            } else { showToast("User not found!"); }
+            } else { 
+                showToast("User not found!"); 
+            }
         }
 
         function openSettings() { toggleSheet('settingsSheet', true); }
