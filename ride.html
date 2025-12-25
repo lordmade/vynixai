@@ -264,26 +264,70 @@
         });
         
         map.on('load', () => {
+            // Add Mapbox Traffic source and layers for real-time traffic visualization
+            map.addSource('mapbox-traffic', {
+                type: 'vector',
+                url: 'mapbox://mapbox.mapbox-traffic-v1'
+            });
+
+            map.addLayer({
+                id: 'traffic-low',
+                type: 'line',
+                source: 'mapbox-traffic',
+                'source-layer': 'traffic',
+                filter: ['==', 'congestion', 'low'],
+                paint: {
+                    'line-color': '#aab7b8',
+                    'line-width': 3
+                }
+            });
+
+            map.addLayer({
+                id: 'traffic-moderate',
+                type: 'line',
+                source: 'mapbox-traffic',
+                'source-layer': 'traffic',
+                filter: ['==', 'congestion', 'moderate'],
+                paint: {
+                    'line-color': '#f9a825',
+                    'line-width': 3
+                }
+            });
+
+            map.addLayer({
+                id: 'traffic-heavy',
+                type: 'line',
+                source: 'mapbox-traffic',
+                'source-layer': 'traffic',
+                filter: ['==', 'congestion', 'heavy'],
+                paint: {
+                    'line-color': '#ef5753',
+                    'line-width': 3
+                }
+            });
+
+            map.addLayer({
+                id: 'traffic-severe',
+                type: 'line',
+                source: 'mapbox-traffic',
+                'source-layer': 'traffic',
+                filter: ['==', 'congestion', 'severe'],
+                paint: {
+                    'line-color': '#b81d24',
+                    'line-width': 3
+                }
+            });
+
             // Static base route line (solid)
             map.addSource('route-base', {
                 type: 'geojson',
-                data: {
-                    type: 'Feature',
-                    properties: {},
-                    geometry: {
-                        type: 'LineString',
-                        coordinates: []
-                    }
-                }
+                data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
             });
             map.addLayer({
                 id: 'route-base',
                 type: 'line',
                 source: 'route-base',
-                layout: {
-                    'line-join': 'round',
-                    'line-cap': 'round'
-                },
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
                 paint: {
                     'line-color': '#a0e4c2',
                     'line-width': 8,
@@ -294,23 +338,13 @@
             // Animated dashed line on top
             map.addSource('route-dash', {
                 type: 'geojson',
-                data: {
-                    type: 'Feature',
-                    properties: {},
-                    geometry: {
-                        type: 'LineString',
-                        coordinates: []
-                    }
-                }
+                data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
             });
             map.addLayer({
                 id: 'route-dash',
                 type: 'line',
                 source: 'route-dash',
-                layout: {
-                    'line-join': 'round',
-                    'line-cap': 'round'
-                },
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
                 paint: {
                     'line-color': '#2fbb66',
                     'line-width': 6,
@@ -388,33 +422,61 @@
         document.getElementById('geocoder').appendChild(geocoder.onAdd(map));
         
         geocoder.on('result', (e) => {
+            // Clear any previous route and markers
             dropoffCoords = e.result.geometry.coordinates;
+            if (dMarker.getElement()) dMarker.remove();
             dMarker.setLngLat(dropoffCoords).addTo(map);
+
+            // Clear previous route
+            if (map.getSource('route-base')) {
+                map.getSource('route-base').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            }
+            if (map.getSource('route-dash')) {
+                map.getSource('route-dash').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            }
+
             getVynixRoute();
+        });
+
+        // Also handle clearing when input is cleared
+        geocoder.on('clear', () => {
+            dropoffCoords = null;
+            if (dMarker.getElement()) dMarker.remove();
+
+            // Hide sheet and clear route
+            document.getElementById('rideSheet').classList.remove('active');
+            if (map.getSource('route-base')) {
+                map.getSource('route-base').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            }
+            if (map.getSource('route-dash')) {
+                map.getSource('route-dash').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            }
         });
         
         async function getVynixRoute() {
-            const res = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/\( {pickupCoords[0]}, \){pickupCoords[1]};\( {dropoffCoords[0]}, \){dropoffCoords[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`);
+            if (!pickupCoords || !dropoffCoords) return;
+
+            const res = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving-traffic/\( {pickupCoords[0]}, \){pickupCoords[1]};\( {dropoffCoords[0]}, \){dropoffCoords[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`);
             const data = await res.json();
+            if (!data.routes || data.routes.length === 0) return;
+
             const route = data.routes[0];
             totalKm = (route.distance / 1000).toFixed(1);
             totalDuration = Math.round(route.duration / 60); // minutes
             
             const routeGeoJSON = route.geometry;
             
-            // Update both route sources
-            if (map.getSource('route-base')) {
-                map.getSource('route-base').setData(routeGeoJSON);
-            }
-            if (map.getSource('route-dash')) {
-                map.getSource('route-dash').setData(routeGeoJSON);
-            }
+            // Draw the route
+            map.getSource('route-base').setData(routeGeoJSON);
+            map.getSource('route-dash').setData(routeGeoJSON);
             
-            // Update Map View
-            const bounds = new mapboxgl.LngLatBounds().extend(pickupCoords).extend(dropoffCoords);
-            map.fitBounds(bounds, { padding: {top: 100, bottom: 350, left: 50, right: 50} });
-            
-            // Pricing & ETA Update
+            // Fit map to show both markers and route
+            const bounds = new mapboxgl.LngLatBounds();
+            bounds.extend(pickupCoords);
+            bounds.extend(dropoffCoords);
+            map.fitBounds(bounds, { padding: {top: 120, bottom: 350, left: 50, right: 50}, maxZoom: 16 });
+
+            // Update pricing and ETA
             const distText = `${totalKm} km • ${totalDuration} min`;
             document.getElementById('pr-lite').innerText = `R ${(totalKm * 7).toFixed(0)}`;
             document.getElementById('pr-prem').innerText = `R ${(totalKm * 10).toFixed(0)}`;
@@ -424,12 +486,13 @@
             document.getElementById('eta-prem').innerText = `~10 min away • ${distText}`;
             document.getElementById('eta-venus').innerText = `~9 min away • ${distText}`;
             
+            // Show ride selection sheet
             document.getElementById('rideSheet').classList.add('active');
         }
         
         // 5. SELECTION & BOOKING
         function selectRide(id, rate, name) {
-            if (name === 'Vynix Venus' && userProfile.gender !== 'Female') {
+            if (name === 'Vynix Venus' && userProfile && userProfile.gender !== 'Female') {
                 showToast("Vynix Venus is restricted to female passengers.");
                 return;
             }
@@ -463,7 +526,6 @@
             activeRideKey = ref.key;
             await ref.set(request);
             
-            // Watch for Status Change
             db.ref(`rideRequests/${activeRideKey}`).on('value', snap => {
                 const val = snap.val();
                 if (val && val.status === 'accepted') {
