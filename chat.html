@@ -186,6 +186,56 @@
             vertical-align: middle;
             margin-right: 4px;
         }
+
+        .reactions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+            justify-content: flex-end;
+        }
+
+        .incoming .reactions {
+            justify-content: flex-start;
+        }
+
+        .reaction-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 4px 10px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            min-width: 40px;
+            justify-content: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .outgoing .reaction-btn {
+            background: #333;
+            color: #fff;
+            border-color: #444;
+        }
+
+        .reaction-btn .count {
+            font-weight: 600;
+        }
+
+        .reaction-btn.self {
+            border-color: var(--accent);
+            background: rgba(217, 70, 239, 0.1);
+        }
+
+        .outgoing .reaction-btn.self {
+            background: rgba(217, 70, 239, 0.2);
+        }
+
+        .add-reaction {
+            font-size: 18px;
+            opacity: 0.6;
+        }
         .input-area {
             position: fixed;
             bottom: 0;
@@ -383,6 +433,29 @@
         #chatBox::-webkit-scrollbar-thumb:hover {
             background: #c026d3;
         }
+
+        .emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 10px;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .emoji-btn {
+            font-size: 28px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 8px;
+            transition: background 0.2s;
+        }
+
+        .emoji-btn:hover {
+            background: var(--bg);
+        }
     </style>
 </head>
 <body>
@@ -414,6 +487,22 @@
         <button class="sheet-btn delete-btn" id="deleteMsgAction">
             <span class="material-symbols-rounded">delete</span> Unsend Message
         </button>
+        <button class="sheet-btn" onclick="closeSheets()">Cancel</button>
+    </div>
+
+    <!-- Reaction picker sheet -->
+    <div class="bottom-sheet" id="reactionSheet">
+        <div class="emoji-grid">
+            <button class="emoji-btn" data-emoji="❤️">❤️</button>
+            <button class="emoji-btn" data-emoji="😂">😂</button>
+            <button class="emoji-btn" data-emoji="😮">😮</button>
+            <button class="emoji-btn" data-emoji="😢">😢</button>
+            <button class="emoji-btn" data-emoji="😡">😡</button>
+            <button class="emoji-btn" data-emoji="👍">👍</button>
+            <button class="emoji-btn" data-emoji="👎">👎</button>
+            <button class="emoji-btn" data-emoji="🎉">🎉</button>
+            <!-- Add more if desired -->
+        </div>
         <button class="sheet-btn" onclick="closeSheets()">Cancel</button>
     </div>
 
@@ -704,11 +793,14 @@
             window.addEventListener('beforeunload', updateLastSeen);
         }
 
+        let currentMsgId = null; // For reactions and unsend
+
         function loadMessages() {
             db.ref(`messages/${chatRoomId}`).orderByChild('ts').on('value', snapshot => {
                 const chatBox = document.getElementById('chatBox');
                 chatBox.innerHTML = '';
                 snapshot.forEach(child => {
+                    const msgId = child.key;
                     const msg = child.val();
                     const isMine = msg.sender === currentUser.uid;
                     const isDeleted = msg.deleted === true;
@@ -721,12 +813,31 @@
                     }
                     const bubble = document.createElement('div');
                     bubble.className = `bubble ${isMine ? 'outgoing' : 'incoming'} ${isDeleted ? 'deleted' : ''}`;
+                    bubble.dataset.msgId = msgId;
+
+                    let reactionsHTML = '';
+                    if (msg.reactions && !isDeleted) {
+                        reactionsHTML = '<div class="reactions">';
+                        Object.keys(msg.reactions).forEach(emoji => {
+                            const reac = msg.reactions[emoji];
+                            const count = Object.keys(reac).length;
+                            const self = reac[currentUser.uid] ? 'self' : '';
+                            reactionsHTML += `<button class="reaction-btn ${self}" onclick="toggleReaction('${msgId}', '${emoji}')">${emoji} <span class="count">${count}</span></button>`;
+                        });
+                        reactionsHTML += `<button class="reaction-btn add-reaction" onclick="showReactionPicker('${msgId}')">+</button></div>`;
+                    }
+
                     bubble.innerHTML = `
                         ${isDeleted ? '' : '<span class="material-symbols-rounded lock-icon">lock</span>'}${decText}
                         <span class="msg-time">${msg.time}</span>
+                        ${reactionsHTML}
                     `;
-                    if (isMine && !isDeleted) {
-                        bubble.onclick = () => showMsgOptions(child.key);
+                    if (!isDeleted) {
+                        bubble.onclick = (e) => {
+                            if (e.target.closest('.reaction-btn')) return;
+                            if (isMine) showMsgOptions(msgId);
+                            else showReactionPicker(msgId);
+                        };
                     }
                     chatBox.appendChild(bubble);
                 });
@@ -742,7 +853,7 @@
             const enc = CryptoJS.AES.encrypt(raw, secretBase + chatRoomId).toString();
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const newMsgRef = db.ref(`messages/${chatRoomId}`).push();
-            await newMsgRef.set({ sender: currentUser.uid, text: enc, time: time, ts: Date.now() });
+            await newMsgRef.set({ sender: currentUser.uid, text: enc, time: time, ts: Date.now(), reactions: {} });
            
             const update = { lastMsg: "🔒 Message", lastTime: time, ts: Date.now() };
             db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update(update);
@@ -769,12 +880,12 @@
             input.focus();
         }
 
-        // Message long-press options
+        // Message options for own messages
         function showMsgOptions(msgId) {
+            currentMsgId = msgId;
             document.getElementById('overlay').style.display = 'block';
             const sheet = document.getElementById('msgSheet');
             sheet.classList.add('active');
-            sheet.dataset.msgId = msgId;
 
             document.getElementById('deleteMsgAction').onclick = () => {
                 showCustomAlert(
@@ -783,6 +894,37 @@
                     () => unsendMessage(msgId)
                 );
             };
+        }
+
+        // Reaction picker
+        function showReactionPicker(msgId) {
+            currentMsgId = msgId;
+            document.getElementById('overlay').style.display = 'block';
+            const sheet = document.getElementById('reactionSheet');
+            sheet.classList.add('active');
+
+            // Attach click handlers to emoji buttons
+            document.querySelectorAll('#reactionSheet .emoji-btn').forEach(btn => {
+                btn.onclick = () => {
+                    const emoji = btn.dataset.emoji;
+                    toggleReaction(msgId, emoji);
+                    closeSheets();
+                };
+            });
+        }
+
+        async function toggleReaction(msgId, emoji) {
+            if (!msgId || !chatRoomId) return;
+
+            const reacRef = db.ref(`messages/${chatRoomId}/${msgId}/reactions/${emoji}/${currentUser.uid}`);
+            const snapshot = await reacRef.once('value');
+            if (snapshot.exists()) {
+                await reacRef.remove();
+                showToast("Reaction removed");
+            } else {
+                await reacRef.set(true);
+                showToast("Reaction added");
+            }
         }
 
         // Room options (top-right more_vert)
@@ -807,6 +949,7 @@
                 delete sheet.dataset.msgId;
             });
             document.getElementById('customAlert').classList.remove('active');
+            currentMsgId = null;
         }
 
         function showCustomAlert(title, message, confirmAction) {
