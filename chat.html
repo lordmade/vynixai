@@ -243,7 +243,7 @@
         .sheet-overlay {
             position: fixed;
             top: 0;
-            left: 0,
+            left: 0;
             width: 100%;
             height: 100%;
             background: rgba(0,0,0,0.5);
@@ -815,22 +815,56 @@
             document.getElementById('overlay').style.display = 'block';
             const sheet = document.getElementById('msgSheet');
             sheet.classList.add('active');
-            document.getElementById('deleteMsgAction').onclick = () => showCustomAlert(
-                'Unsend Message',
-                'Unsend this message for everyone? It will show as "Message deleted" for both users.',
-                () => unsendMessage(msgId)
-            );
+            
+            // Store message ID for deletion
+            sheet.dataset.msgId = msgId;
+            
+            // Add proper event listener for delete message action
+            setTimeout(() => {
+                const deleteBtn = document.getElementById('deleteMsgAction');
+                if (deleteBtn) {
+                    deleteBtn.onclick = () => showCustomAlert(
+                        'Unsend Message',
+                        'Unsend this message for everyone? It will show as "Message deleted" for both users.',
+                        () => unsendMessage(msgId)
+                    );
+                }
+            }, 100);
         }
 
         function showRoomOptions() {
             document.getElementById('overlay').style.display = 'block';
-            document.getElementById('roomSheet').classList.add('active');
+            const sheet = document.getElementById('roomSheet');
+            sheet.classList.add('active');
+            
+            // Add proper event listeners for room sheet buttons
+            setTimeout(() => {
+                const clearBtn = sheet.querySelector('.sheet-btn:not(.delete-btn)');
+                const removeBtn = sheet.querySelector('.delete-btn');
+                
+                if (clearBtn) {
+                    clearBtn.onclick = () => showCustomAlert('Clear Chat', 'Clear all messages in this chat? This cannot be undone.', clearChat);
+                }
+                if (removeBtn) {
+                    removeBtn.onclick = () => showCustomAlert('Remove Friend', 'Remove this friend from your list?', deleteConversation);
+                }
+            }, 100);
         }
 
         function closeSheets() {
-            document.getElementById('overlay').style.display = 'none';
-            document.querySelectorAll('.bottom-sheet').forEach(s => s.classList.remove('active'));
-            closeCustomAlert();
+            const overlay = document.getElementById('overlay');
+            const sheets = document.querySelectorAll('.bottom-sheet');
+            const alert = document.getElementById('customAlert');
+            
+            overlay.style.display = 'none';
+            sheets.forEach(sheet => {
+                sheet.classList.remove('active');
+                delete sheet.dataset.msgId; // Clean up stored message ID
+            });
+            
+            if (alert.classList.contains('active')) {
+                alert.classList.remove('active');
+            }
         }
 
         function showCustomAlert(title, message, confirmAction) {
@@ -850,12 +884,41 @@
         }
 
         async function unsendMessage(msgId) {
-            await db.ref(`messages/${chatRoomId}/${msgId}`).update({
-                text: '',
-                deleted: true
-            });
-            closeSheets();
-            showToast("Message unsent");
+            if (!msgId || !chatRoomId) {
+                showToast("Error: Invalid message");
+                closeSheets();
+                return;
+            }
+            
+            try {
+                const msgRef = db.ref(`messages/${chatRoomId}/${msgId}`);
+                const snapshot = await msgRef.once('value');
+                
+                if (!snapshot.exists()) {
+                    showToast("Message not found");
+                    closeSheets();
+                    return;
+                }
+                
+                const messageData = snapshot.val();
+                if (messageData.sender !== currentUser.uid) {
+                    showToast("You can only unsend your own messages");
+                    closeSheets();
+                    return;
+                }
+                
+                await msgRef.update({
+                    text: '',
+                    deleted: true
+                });
+                
+                closeSheets();
+                showToast("Message unsent");
+            } catch (error) {
+                console.error("Error unsending message:", error);
+                showToast("Failed to unsend message");
+                closeSheets();
+            }
         }
 
         async function clearChat() {
@@ -876,19 +939,25 @@
             setTimeout(() => t.style.display = 'none', 2500);
         }
 
+        // Enhanced click outside handler
+        document.addEventListener('click', function(e) {
+            const overlay = document.getElementById('overlay');
+            const activeSheet = document.querySelector('.bottom-sheet.active');
+            
+            if (!activeSheet) return;
+            
+            // Check if click is on overlay or outside sheet
+            const isOverlayClick = e.target === overlay;
+            const isOutsideSheet = !activeSheet.contains(e.target) && !e.target.closest('.bottom-sheet');
+            
+            if (isOverlayClick || isOutsideSheet) {
+                closeSheets();
+            }
+        });
+
         window.addEventListener('load', () => {
             document.getElementById('messageInput').focus();
         });
     </script>
-
-    <script>
-/* Close sheet when tapping anywhere outside it */
-document.addEventListener('click', e => {
-  const sheet = document.querySelector('.bottom-sheet.active');
-  if (!sheet) return;                       // no sheet open – nothing to do
-  if (sheet.contains(e.target)) return;     // tap was inside the sheet – ignore
-  closeSheets();                            // tap was outside – close
-});
-</script>
 </body>
 </html>
