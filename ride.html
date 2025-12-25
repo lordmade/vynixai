@@ -29,7 +29,7 @@
         }
         body { font-family: 'Inter', sans-serif; background: #f3f4f6; height: 100vh; overflow: hidden; }
         /* Re-enable selection for inputs */
-        input, textarea, .mapboxgl-ctrl-geocoder--input, .suggestion-item {
+        input, .mapboxgl-ctrl-geocoder--input {
             -webkit-user-select: text;
             user-select: text;
         }
@@ -74,35 +74,12 @@
             position: absolute; top: 20px; left: 0; right: 0;
             z-index: 10; padding: 0 20px; display: flex; flex-direction: column; align-items: center;
         }
-        /* Pill-shaped custom search bar */
-        .search-pill {
-            width: 100%; max-width: 500px; background: white; border-radius: 50px;
-            box-shadow: 0 4px 25px rgba(0,0,0,0.12); position: relative;
-            overflow: visible;
+        .search-container {
+            width: 100%; max-width: 500px; background: white; border-radius: 16px;
+            box-shadow: 0 4px 25px rgba(0,0,0,0.12); display: flex; align-items: center; padding: 4px 12px;
         }
-        .search-input-wrapper {
-            display: flex; align-items: center; padding: 12px 20px;
-        }
-        .search-input-wrapper span {
-            color: var(--bolt-green); margin-right: 12px;
-        }
-        #dropoffInput {
-            flex: 1; border: none; font-size: 16px; background: transparent;
-        }
-        .suggestions-dropdown {
-            position: absolute; top: 100%; left: 0; right: 0;
-            background: white; border-radius: 0 0 20px 20px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
-            max-height: 300px; overflow-y: auto; display: none;
-            z-index: 15;
-        }
-        .suggestion-item {
-            padding: 14px 20px; cursor: pointer; border-bottom: 1px solid #f0f0f0;
-        }
-        .suggestion-item:hover {
-            background: #f7fafc;
-        }
-        .suggestion-item:last-child { border-bottom: none; }
+        .mapboxgl-ctrl-geocoder { width: 100% !important; box-shadow: none !important; background: transparent !important; min-width: auto !important; }
+        .mapboxgl-ctrl-geocoder--input { padding-left: 40px; }
         .user-pill {
             align-self: flex-start; margin-top: 15px; background: white;
             padding: 8px 14px; border-radius: 30px; display: flex;
@@ -183,12 +160,9 @@
 
     <div id="toast"></div>
     <div class="top-nav">
-        <div class="search-pill" id="searchPill">
-            <div class="search-input-wrapper">
-                <span class="material-symbols-rounded">search</span>
-                <input type="text" id="dropoffInput" placeholder="Where to?" autocomplete="off">
-            </div>
-            <div class="suggestions-dropdown" id="suggestions"></div>
+        <div class="search-container">
+            <span class="material-symbols-rounded" style="color:var(--bolt-green); position:absolute; left:24px; z-index:11;">search</span>
+            <div id="geocoder"></div>
         </div>
         <div class="user-pill">
             <img id="uAvatar" src="https://ui-avatars.com/api/?name=Vynix+Lingua&background=2fbb66&color=fff">
@@ -364,66 +338,27 @@
             locateUserWithPermissionCheck();
         }
         
-        // 4. CUSTOM SEARCH WITH SUGGESTIONS
-        const dropoffInput = document.getElementById('dropoffInput');
-        const suggestionsBox = document.getElementById('suggestions');
-        
+        // 4. ORIGINAL MAPBOX GEOCODER SEARCH BAR
         const geocoder = new MapboxGeocoder({
             accessToken: mapboxgl.accessToken,
             mapboxgl: mapboxgl,
-            marker: false,
-            placeholder: 'Where to?',
-            collapsed: true  // Prevents internal UI from rendering
+            marker: false
         });
         
-        // Listen for the 'results' event (fires on every query with suggestions)
-        geocoder.on('results', (e) => {
-            suggestionsBox.innerHTML = '';
-            if (e.features.length === 0) {
-                suggestionsBox.style.display = 'none';
-                return;
-            }
-            e.features.forEach(feature => {
-                const item = document.createElement('div');
-                item.className = 'suggestion-item';
-                item.textContent = feature.place_name;
-                item.onclick = () => {
-                    dropoffInput.value = feature.place_name;
-                    suggestionsBox.style.display = 'none';
-                    dropoffCoords = feature.geometry.coordinates;
-                    dMarker.setLngLat(dropoffCoords).addTo(map);
-                    getVynixRoute();
-                };
-                suggestionsBox.appendChild(item);
-            });
-            suggestionsBox.style.display = 'block';
-        });
+        document.getElementById('geocoder').appendChild(geocoder.onAdd(map));
         
-        // Handle loading state (optional)
-        geocoder.on('loading', () => {
-            suggestionsBox.innerHTML = '<div class="suggestion-item">Searching...</div>';
-            suggestionsBox.style.display = 'block';
+        geocoder.on('result', (e) => {
+            dropoffCoords = e.result.geometry.coordinates;
+            dMarker.setLngLat(dropoffCoords).addTo(map);
+            getVynixRoute();
         });
         
         geocoder.on('clear', () => {
-            suggestionsBox.style.display = 'none';
-        });
-        
-        // Trigger search on input
-        dropoffInput.addEventListener('input', () => {
-            const query = dropoffInput.value.trim();
-            if (query.length < 2) {  // Mapbox minimum is usually 2-3 chars
-                suggestionsBox.style.display = 'none';
-                return;
-            }
-            geocoder.query(query);
-        });
-        
-        // Hide suggestions when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!document.getElementById('searchPill').contains(e.target)) {
-                suggestionsBox.style.display = 'none';
-            }
+            dropoffCoords = null;
+            dMarker.remove();
+            map.getSource('route-base').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] }});
+            map.getSource('route-dash').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] }});
+            document.getElementById('rideSheet').classList.remove('active');
         });
         
         // 5. ROUTING
@@ -453,7 +388,7 @@
             document.getElementById('pr-prem').innerText = `R ${(totalKm * 10).toFixed(0)}`;
             document.getElementById('pr-venus').innerText = `R ${(totalKm * 8).toFixed(0)}`;
             
-            // Update ETA / trip time (using same duration for all for simplicity)
+            // Update ETA / trip time
             const tripText = `${totalDuration} min trip`;
             document.getElementById('eta-lite').innerHTML = `~5 min away • ${tripText}`;
             document.getElementById('eta-prem').innerHTML = `~8 min away • ${tripText}`;
