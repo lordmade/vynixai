@@ -170,6 +170,14 @@
             padding: 18px; border-radius: 18px; font-weight: 700; font-size: 18px;
             margin-top: 20px;
         }
+        /* Yoco Card Frame */
+        #yoco-card-frame {
+            height: 60px;
+            margin: 20px 0;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            background: #f9fafb;
+        }
         #toast {
             position: fixed; top: 100px; left: 50%; transform: translateX(-50%);
             background: #111; color: #fff; padding: 12px 24px; border-radius: 30px;
@@ -278,6 +286,8 @@
             </div>
         </div>
 
+        <div id="yoco-card-frame"></div>
+
         <button class="confirm-btn" id="mainActionBtn" onclick="initiateBooking()">Confirm Vynix Lite</button>
     </div>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
@@ -286,6 +296,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-remote-config-compat.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.min.js"></script>
+    <script src="https://js.yoco.com/sdk/v1/yoco-sdk-web.js"></script>
     <script>
         // 1. CONFIG
         const firebaseConfig = {
@@ -302,22 +313,21 @@
         const auth = firebase.auth();
         const remoteConfig = firebase.remoteConfig();
         
-        // Set defaults and fetch remote config
         remoteConfig.defaultConfig = {
             yoco_public_key: ""
         };
-        remoteConfig.settings.minimumFetchIntervalMillis = 3600000; // 1 hour cache
+        remoteConfig.settings.minimumFetchIntervalMillis = 3600000;
         remoteConfig.fetchAndActivate()
-            .then(() => {
-                console.log("Remote Config fetched");
-            })
+            .then(() => console.log("Remote Config fetched"))
             .catch(err => console.error("Remote Config error:", err));
 
         mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
         let currentUser = null, userProfile = null;
         let pickupCoords = null, dropoffCoords = null, totalKm = 0;
         let selectedRate = 7, selectedName = 'Vynix Lite', selectedColor = 'var(--bolt-green)', activeRideKey = null;
-        let selectedPayment = 'card'; // default
+        let selectedPayment = 'card';
+        let yocoSDK = null;
+        let yocoInline = null;
         const driverMarkers = {};
         let assignedDriverMarker = null;
         let assignedDriverListener = null;
@@ -553,17 +563,52 @@
             document.getElementById('mainActionBtn').innerText = 'Confirm Vynix Lite';
             document.getElementById('mainActionBtn').style.background = 'var(--bolt-green)';
             
-            // Reset payment selection
             selectedPayment = 'card';
             document.querySelectorAll('.payment-option').forEach(o => o.classList.remove('selected'));
             document.getElementById('pay-card').classList.add('selected');
+
+            // Reset Yoco form visibility and destroy if exists
+            document.getElementById('yoco-card-frame').style.display = 'none';
+            if (yocoInline) {
+                yocoInline.destroy();
+                yocoInline = null;
+            }
         }
        
-        // Payment selection
         function selectPayment(method) {
             selectedPayment = method;
             document.querySelectorAll('.payment-option').forEach(o => o.classList.remove('selected'));
             document.getElementById(`pay-${method}`).classList.add('selected');
+
+            const cardFrame = document.getElementById('yoco-card-frame');
+            if (method === 'card') {
+                cardFrame.style.display = 'block';
+                initYocoForm();
+            } else {
+                cardFrame.style.display = 'none';
+                if (yocoInline) {
+                    yocoInline.destroy();
+                    yocoInline = null;
+                }
+            }
+        }
+
+        function initYocoForm() {
+            const yocoKey = remoteConfig.getString('yoco_public_key');
+            if (!yocoKey) {
+                showToast("Yoco payment not configured.");
+                return;
+            }
+            if (yocoInline) return; // Already initialized
+
+            yocoSDK = new window.YocoSDK({ publicKey: yocoKey });
+            const amountCents = Math.round(totalKm * selectedRate * 100);
+            yocoInline = yocoSDK.inline({
+                layout: 'field',
+                amountInCents: amountCents,
+                currency: 'ZAR'
+            });
+            yocoInline.mount('#yoco-card-frame');
         }
        
         // 5. SELECTION & BOOKING
@@ -580,32 +625,89 @@
             const btn = document.getElementById('mainActionBtn');
             btn.innerText = `Confirm ${name}`;
             btn.style.background = colorVar;
+
+            // Re-init Yoco form if card selected (amount may change)
+            if (selectedPayment === 'card') {
+                if (yocoInline) yocoInline.destroy();
+                yocoInline = null;
+                initYocoForm();
+            }
         }
        
         async function initiateBooking() {
             if (!pickupCoords || !dropoffCoords) return;
             
             const fare = (totalKm * selectedRate).toFixed(2);
-            const yocoKey = remoteConfig.getString('yoco_public_key');
-            
+
+            if (selectedPayment === 'card') {
+                const yocoKey = remoteConfig.getString('yoco_public_key');
+                if (!yocoKey) {
+                    showToast("Yoco payment not configured.");
+                    return;
+                }
+                if (!yocoInline) {
+                    showToast("Payment form not loaded.");
+                    return;
+                }
+
+                document.getElementById('mainActionBtn').disabled = true;
+                document.getElementById('mainActionBtn').innerText = "Processing...";
+
+                yocoInline.createToken().then(async result => {
+                    if (result.error) {
+                        showToast(result.error.message || "Payment failed.");
+                        document.getElementById('mainActionBtn').disabled = false;
+                        document.getElementById('mainActionBtn').innerText = `Confirm ${selectedName}`;
+                        return;
+                    }
+                    const token = result.id;
+
+                    // Now create ride request with token
+                    const request = {
+                        riderId: currentUser.uid,
+                        pickup: { lng: pickupCoords[0], lat: pickupCoords[1] },
+                        dropoff: { lng: dropoffCoords[0], lat: dropoffCoords[1] },
+                        type: selectedName,
+                        fare: fare,
+                        paymentMethod: 'card',
+                        paymentToken: token,
+                        status: 'pending',
+                        ts: Date.now()
+                    };
+                    const ref = db.ref('rideRequests').push();
+                    activeRideKey = ref.key;
+                    await ref.set(request);
+
+                    proceedToWaiting();
+                }).catch(err => {
+                    showToast("Payment error.");
+                    document.getElementById('mainActionBtn').disabled = false;
+                    document.getElementById('mainActionBtn').innerText = `Confirm ${selectedName}`;
+                });
+            } else {
+                // Cash payment
+                const request = {
+                    riderId: currentUser.uid,
+                    pickup: { lng: pickupCoords[0], lat: pickupCoords[1] },
+                    dropoff: { lng: dropoffCoords[0], lat: dropoffCoords[1] },
+                    type: selectedName,
+                    fare: fare,
+                    paymentMethod: 'cash',
+                    status: 'pending',
+                    ts: Date.now()
+                };
+                const ref = db.ref('rideRequests').push();
+                activeRideKey = ref.key;
+                await ref.set(request);
+
+                proceedToWaiting();
+            }
+        }
+
+        function proceedToWaiting() {
             document.getElementById('rideSheet').classList.remove('active');
             document.getElementById('waitingOverlay').style.display = 'flex';
-            
-            const request = {
-                riderId: currentUser.uid,
-                pickup: { lng: pickupCoords[0], lat: pickupCoords[1] },
-                dropoff: { lng: dropoffCoords[0], lat: dropoffCoords[1] },
-                type: selectedName,
-                fare: fare,
-                paymentMethod: selectedPayment,
-                yocoPublicKey: yocoKey || null, // include if available
-                status: 'pending',
-                ts: Date.now()
-            };
-            const ref = db.ref('rideRequests').push();
-            activeRideKey = ref.key;
-            await ref.set(request);
-           
+
             db.ref(`rideRequests/${activeRideKey}`).on('value', snap => {
                 const val = snap.val();
                 if (val && val.status === 'accepted') {
