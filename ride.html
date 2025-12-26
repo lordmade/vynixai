@@ -58,6 +58,19 @@
             70% { transform: scale(1); box-shadow: 0 0 0 30px rgba(47, 187, 102, 0); }
             100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(47, 187, 102, 0); }
         }
+        /* Pill-shaped Cancel Button */
+        #cancelRideBtn {
+            margin-top: 40px;
+            background: #fee2e2;
+            color: #dc2626;
+            border: none;
+            padding: 12px 28px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 15px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
         /* --- Map Markers --- */
         .driver-marker {
             background-image: url('https://cdn-icons-png.flaticon.com/512/3202/3202926.png');
@@ -175,7 +188,7 @@
         </div>
         <h2 id="waitTitle">Searching for Drivers</h2>
         <p id="waitSub" style="color:var(--text-sub); margin-top:10px; padding: 0 40px;">Please wait while we connect you to the nearest Vynix driver.</p>
-        <button onclick="cancelBooking()" style="margin-top:40px; background:none; border:none; color:var(--text-sub); font-weight:600; text-decoration:underline;">Cancel Ride</button>
+        <button id="cancelRideBtn" onclick="cancelBooking()">Cancel Ride</button>
     </div>
     <div id="toast"></div>
     <div id="locationModal">
@@ -256,6 +269,8 @@
         let pickupCoords = null, dropoffCoords = null, totalKm = 0;
         let selectedRate = 7, selectedName = 'Vynix Lite', selectedColor = 'var(--bolt-green)', activeRideKey = null;
         const driverMarkers = {};
+        let assignedDriverMarker = null;
+        let assignedDriverListener = null;
        
         // 2. MAP SETUP
         const map = new mapboxgl.Map({
@@ -417,6 +432,11 @@
             getVynixRoute();
         });
        
+        geocoder.on('clear', () => {
+            // When user clears the destination search
+            resetRideState();
+        });
+       
         async function getVynixRoute() {
             const res = await fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${pickupCoords[0]},${pickupCoords[1]};${dropoffCoords[0]},${dropoffCoords[1]}?geometries=geojson&access_token=${mapboxgl.accessToken}`);
             const data = await res.json();
@@ -447,6 +467,51 @@
             document.getElementById('dist-venus').innerText = `${totalKm} km • ~${Math.round(totalKm * 2)} min`;
             
             document.getElementById('rideSheet').classList.add('active');
+        }
+       
+        function resetRideState() {
+            // Clear destination
+            dropoffCoords = null;
+            totalKm = 0;
+            
+            // Remove destination marker
+            dMarker.remove();
+            
+            // Clear route lines
+            if (map.getSource('route-base')) {
+                map.getSource('route-base').setData({
+                    type: 'Feature',
+                    properties: {},
+                    geometry: { type: 'LineString', coordinates: [] }
+                });
+            }
+            if (map.getSource('route-dash')) {
+                map.getSource('route-dash').setData({
+                    type: 'Feature',
+                    properties: {},
+                    geometry: { type: 'LineString', coordinates: [] }
+                });
+            }
+            
+            // Close ride sheet
+            document.getElementById('rideSheet').classList.remove('active');
+            
+            // Reset prices and distances
+            document.getElementById('pr-lite').innerText = 'R 0';
+            document.getElementById('pr-prem').innerText = 'R 0';
+            document.getElementById('pr-venus').innerText = 'R 0';
+            document.getElementById('dist-lite').innerText = '';
+            document.getElementById('dist-prem').innerText = '';
+            document.getElementById('dist-venus').innerText = '';
+            
+            // Reset selection to Lite
+            document.querySelectorAll('.ride-option').forEach(o => o.classList.remove('selected'));
+            document.getElementById('opt-lite').classList.add('selected');
+            selectedRate = 7;
+            selectedName = 'Vynix Lite';
+            selectedColor = 'var(--bolt-green)';
+            document.getElementById('mainActionBtn').innerText = 'Confirm Vynix Lite';
+            document.getElementById('mainActionBtn').style.background = 'var(--bolt-green)';
         }
        
         // 5. SELECTION & BOOKING
@@ -486,9 +551,36 @@
             db.ref(`rideRequests/${activeRideKey}`).on('value', snap => {
                 const val = snap.val();
                 if (val && val.status === 'accepted') {
-                    document.getElementById('loaderIcon').style.background = '#3b82f6';
-                    document.getElementById('waitTitle').innerText = "Driver is Coming!";
-                    document.getElementById('waitSub').innerText = "A driver has accepted your request and is heading to your location.";
+                    document.getElementById('waitingOverlay').style.display = 'none';
+                    if (val.driverId) {
+                        trackAssignedDriver(val.driverId);
+                    }
+                    showToast("Driver accepted! Tracking location now.");
+                }
+            });
+        }
+       
+        function trackAssignedDriver(driverId) {
+            if (assignedDriverListener) {
+                assignedDriverListener.off();
+            }
+            assignedDriverListener = db.ref(`driversAvailable/${driverId}`).on('value', snap => {
+                const d = snap.val();
+                if (d) {
+                    const pos = [d.lng, d.lat];
+                    if (!assignedDriverMarker) {
+                        const el = document.createElement('div');
+                        el.className = 'driver-marker';
+                        assignedDriverMarker = new mapboxgl.Marker(el).setLngLat(pos).addTo(map);
+                    } else {
+                        assignedDriverMarker.setLngLat(pos);
+                    }
+                    // Optionally adjust map view to include driver, pickup, and dropoff
+                    const bounds = new mapboxgl.LngLatBounds()
+                        .extend(pos)
+                        .extend(pickupCoords)
+                        .extend(dropoffCoords);
+                    map.fitBounds(bounds, { padding: 100 });
                 }
             });
         }
@@ -496,9 +588,28 @@
         async function cancelBooking() {
             if (activeRideKey) {
                 await db.ref(`rideRequests/${activeRideKey}`).remove();
-                document.getElementById('waitingOverlay').style.display = 'none';
                 activeRideKey = null;
             }
+            
+            // Full reset of the ride state
+            document.getElementById('waitingOverlay').style.display = 'none';
+            document.getElementById('loaderIcon').style.background = 'var(--bolt-green)';
+            document.getElementById('waitTitle').innerText = "Searching for Drivers";
+            document.getElementById('waitSub').innerText = "Please wait while we connect you to the nearest Vynix driver.";
+            
+            if (assignedDriverMarker) {
+                assignedDriverMarker.remove();
+                assignedDriverMarker = null;
+            }
+            if (assignedDriverListener) {
+                assignedDriverListener.off();
+                assignedDriverListener = null;
+            }
+            
+            resetRideState();
+            
+            // Clear the geocoder input (destination address)
+            geocoder.clear();
         }
        
         function showToast(m) {
