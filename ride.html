@@ -148,10 +148,27 @@
         .ride-details p { font-size: 13px; color: var(--text-sub); margin-top: 4px; }
         .ride-details .distance { font-size: 12px; color: var(--bolt-green); font-weight: 600; margin-top: 6px; }
         .price { font-weight: 800; font-size: 18px; }
+        .payment-options {
+            display: flex; flex-direction: column; gap: 10px; margin-top: 20px;
+        }
+        .payment-option {
+            display: flex; align-items: center; padding: 14px;
+            border: 2px solid #f3f4f6; border-radius: 18px; cursor: pointer;
+            transition: all 0.2s;
+        }
+        .payment-option.selected {
+            border-color: var(--bolt-green); background: #f0fdf4;
+        }
+        .payment-option .material-symbols-rounded {
+            font-size: 32px; margin-right: 16px; color: var(--bolt-green);
+        }
+        .payment-details { flex: 1; }
+        .payment-details h5 { font-size: 15px; font-weight: 700; }
+        .payment-details p { font-size: 12px; color: var(--text-sub); }
         .confirm-btn {
             width: 100%; background: var(--bolt-green); color: white; border: none;
             padding: 18px; border-radius: 18px; font-weight: 700; font-size: 18px;
-            margin-top: 10px;
+            margin-top: 20px;
         }
         #toast {
             position: fixed; top: 100px; left: 50%; transform: translateX(-50%);
@@ -243,11 +260,30 @@
                 <div class="price" id="pr-venus">R 0</div>
             </div>
         </div>
+
+        <div class="payment-options">
+            <div class="payment-option selected" id="pay-card" onclick="selectPayment('card')">
+                <span class="material-symbols-rounded">credit_card</span>
+                <div class="payment-details">
+                    <h5>Card (Yoco)</h5>
+                    <p>Secure payment via Yoco</p>
+                </div>
+            </div>
+            <div class="payment-option" id="pay-cash" onclick="selectPayment('cash')">
+                <span class="material-symbols-rounded">payments</span>
+                <div class="payment-details">
+                    <h5>Cash</h5>
+                    <p>Pay driver in cash</p>
+                </div>
+            </div>
+        </div>
+
         <button class="confirm-btn" id="mainActionBtn" onclick="initiateBooking()">Confirm Vynix Lite</button>
     </div>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-remote-config-compat.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.min.js"></script>
     <script>
@@ -264,10 +300,24 @@
         firebase.initializeApp(firebaseConfig);
         const db = firebase.database();
         const auth = firebase.auth();
+        const remoteConfig = firebase.remoteConfig();
+        
+        // Set defaults and fetch remote config
+        remoteConfig.defaultConfig = {
+            yoco_public_key: ""
+        };
+        remoteConfig.settings.minimumFetchIntervalMillis = 3600000; // 1 hour cache
+        remoteConfig.fetchAndActivate()
+            .then(() => {
+                console.log("Remote Config fetched");
+            })
+            .catch(err => console.error("Remote Config error:", err));
+
         mapboxgl.accessToken = 'pk.eyJ1Ijoia2F0bGVnb3BoYXNoYSIsImEiOiJjbTlpOTdzbmYwMGNsMmpzYWJtZzN4d3pqIn0.Zt-aSMEoahrV3zkiVVHbOw';
         let currentUser = null, userProfile = null;
         let pickupCoords = null, dropoffCoords = null, totalKm = 0;
         let selectedRate = 7, selectedName = 'Vynix Lite', selectedColor = 'var(--bolt-green)', activeRideKey = null;
+        let selectedPayment = 'card'; // default
         const driverMarkers = {};
         let assignedDriverMarker = null;
         let assignedDriverListener = null;
@@ -360,7 +410,7 @@
                 currentUser = user;
                 loadProfile();
                 trackLiveDrivers();
-                requestLocation(); // Attempt to get location after auth
+                requestLocation();
             } else { window.location.href = "login.html"; }
         });
        
@@ -433,7 +483,6 @@
         });
        
         geocoder.on('clear', () => {
-            // When user clears the destination search
             resetRideState();
         });
        
@@ -445,7 +494,6 @@
            
             const routeGeoJSON = route.geometry;
            
-            // Update both route sources
             if (map.getSource('route-base')) {
                 map.getSource('route-base').setData(routeGeoJSON);
             }
@@ -453,11 +501,9 @@
                 map.getSource('route-dash').setData(routeGeoJSON);
             }
            
-            // Update Map View
             const bounds = new mapboxgl.LngLatBounds().extend(pickupCoords).extend(dropoffCoords);
             map.fitBounds(bounds, { padding: {top: 100, bottom: 350, left: 50, right: 50} });
            
-            // Pricing & Distance Update
             document.getElementById('pr-lite').innerText = `R ${(totalKm * 7).toFixed(0)}`;
             document.getElementById('pr-prem').innerText = `R ${(totalKm * 10).toFixed(0)}`;
             document.getElementById('pr-venus').innerText = `R ${(totalKm * 8).toFixed(0)}`;
@@ -470,14 +516,11 @@
         }
        
         function resetRideState() {
-            // Clear destination
             dropoffCoords = null;
             totalKm = 0;
             
-            // Remove destination marker
             dMarker.remove();
             
-            // Clear route lines
             if (map.getSource('route-base')) {
                 map.getSource('route-base').setData({
                     type: 'Feature',
@@ -493,10 +536,8 @@
                 });
             }
             
-            // Close ride sheet
             document.getElementById('rideSheet').classList.remove('active');
             
-            // Reset prices and distances
             document.getElementById('pr-lite').innerText = 'R 0';
             document.getElementById('pr-prem').innerText = 'R 0';
             document.getElementById('pr-venus').innerText = 'R 0';
@@ -504,7 +545,6 @@
             document.getElementById('dist-prem').innerText = '';
             document.getElementById('dist-venus').innerText = '';
             
-            // Reset selection to Lite
             document.querySelectorAll('.ride-option').forEach(o => o.classList.remove('selected'));
             document.getElementById('opt-lite').classList.add('selected');
             selectedRate = 7;
@@ -512,6 +552,18 @@
             selectedColor = 'var(--bolt-green)';
             document.getElementById('mainActionBtn').innerText = 'Confirm Vynix Lite';
             document.getElementById('mainActionBtn').style.background = 'var(--bolt-green)';
+            
+            // Reset payment selection
+            selectedPayment = 'card';
+            document.querySelectorAll('.payment-option').forEach(o => o.classList.remove('selected'));
+            document.getElementById('pay-card').classList.add('selected');
+        }
+       
+        // Payment selection
+        function selectPayment(method) {
+            selectedPayment = method;
+            document.querySelectorAll('.payment-option').forEach(o => o.classList.remove('selected'));
+            document.getElementById(`pay-${method}`).classList.add('selected');
         }
        
         // 5. SELECTION & BOOKING
@@ -532,14 +584,21 @@
        
         async function initiateBooking() {
             if (!pickupCoords || !dropoffCoords) return;
+            
+            const fare = (totalKm * selectedRate).toFixed(2);
+            const yocoKey = remoteConfig.getString('yoco_public_key');
+            
             document.getElementById('rideSheet').classList.remove('active');
             document.getElementById('waitingOverlay').style.display = 'flex';
+            
             const request = {
                 riderId: currentUser.uid,
                 pickup: { lng: pickupCoords[0], lat: pickupCoords[1] },
                 dropoff: { lng: dropoffCoords[0], lat: dropoffCoords[1] },
                 type: selectedName,
-                fare: (totalKm * selectedRate).toFixed(2),
+                fare: fare,
+                paymentMethod: selectedPayment,
+                yocoPublicKey: yocoKey || null, // include if available
                 status: 'pending',
                 ts: Date.now()
             };
@@ -547,7 +606,6 @@
             activeRideKey = ref.key;
             await ref.set(request);
            
-            // Watch for Status Change
             db.ref(`rideRequests/${activeRideKey}`).on('value', snap => {
                 const val = snap.val();
                 if (val && val.status === 'accepted') {
@@ -575,7 +633,6 @@
                     } else {
                         assignedDriverMarker.setLngLat(pos);
                     }
-                    // Optionally adjust map view to include driver, pickup, and dropoff
                     const bounds = new mapboxgl.LngLatBounds()
                         .extend(pos)
                         .extend(pickupCoords)
@@ -591,7 +648,6 @@
                 activeRideKey = null;
             }
             
-            // Full reset of the ride state
             document.getElementById('waitingOverlay').style.display = 'none';
             document.getElementById('loaderIcon').style.background = 'var(--bolt-green)';
             document.getElementById('waitTitle').innerText = "Searching for Drivers";
@@ -608,7 +664,6 @@
             
             resetRideState();
             
-            // Clear the geocoder input (destination address)
             geocoder.clear();
         }
        
