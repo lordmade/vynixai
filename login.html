@@ -6,7 +6,6 @@
     <title>Vynix Login</title>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded" rel="stylesheet">
- 
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -16,18 +15,18 @@
             --accent-green: #10b981;
             --logo-gradient: linear-gradient(135deg, #000000 0%, var(--accent-purple) 50%, var(--accent-green) 100%);
         }
-      
+     
         /* Prevent text selection and long-press context menu globally */
         * {
             -webkit-user-select: none; /* Chrome/Safari */
             -moz-user-select: none; /* Firefox */
             -ms-user-select: none; /* IE/Edge */
             user-select: none; /* Standard */
-          
+         
             -webkit-touch-callout: none; /* Disable long-press callout (iOS Safari) */
             -webkit-tap-highlight-color: transparent; /* Remove tap highlight */
         }
-      
+     
         body {
             font-family: 'Poppins', sans-serif;
             display: flex;
@@ -226,21 +225,21 @@
     <span class="material-symbols-rounded logo-icon">auto_awesome</span>
     <h2>Vynix</h2>
     <p>Sign in to start chatting</p>
-    <button class="google-btn" onclick="signInWithGoogle()">
+    <button class="google-btn" onclick="signInWithGoogle(false)">
         <img src="https://www.gstatic.com/images/branding/product/1x/gsa_512dp.png" alt="Google Logo">
         Continue with Google
     </button>
-    <button class="driver-btn" onclick="openDriverSheet()">
-        Become a Driver
+    <button class="driver-btn" onclick="signInWithGoogle(true)">
+        Become a Driver with Google
     </button>
     <div id="loader">Signing you in...</div>
 
-    <!-- Driver Signup Bottom Sheet -->
+    <!-- Driver Additional Details Bottom Sheet -->
     <div id="sheetOverlay" onclick="closeDriverSheet()"></div>
     <div id="driverSheet">
         <div class="sheet-header">
-            <h3>Become a Vynix Driver</h3>
-            <p>Fill in your details to join as a driver</p>
+            <h3>Complete Driver Profile</h3>
+            <p>Provide vehicle details to become a driver</p>
         </div>
         <div class="photo-upload">
             <img id="driverPhotoPreview" src="" alt="Driver Photo">
@@ -248,10 +247,6 @@
                 Upload Photo
                 <input type="file" id="driverPhotoInput" accept="image/*" style="display:none;">
             </label>
-        </div>
-        <div class="form-group">
-            <label>Full Name</label>
-            <input type="text" id="driverName" placeholder="John Doe">
         </div>
         <div class="form-group">
             <label>Phone Number</label>
@@ -265,8 +260,8 @@
             <label>License Plate</label>
             <input type="text" id="driverPlate" placeholder="ABC 123 GP">
         </div>
-        <button class="submit-driver" onclick="submitDriverApplication()">
-            Submit Application
+        <button class="submit-driver" onclick="submitDriverDetails()">
+            Complete Registration
         </button>
         <div id="sheetLoader">Submitting...</div>
     </div>
@@ -298,8 +293,9 @@
         const CLOUDINARY_UPLOAD_PRESET = "banter_box";
 
         let selectedPhotoFile = null;
+        let isDriverSignup = false;
 
-        // Photo preview and selection
+        // Photo preview
         document.getElementById('driverPhotoInput').addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) {
@@ -310,28 +306,56 @@
             }
         });
 
-        // Custom Alert Functions
+        // Custom Alert
         function showCustomAlert(title, message) {
             document.getElementById('alertTitle').innerText = title;
             document.getElementById('alertMessage').innerText = message;
             document.getElementById('customAlert').style.display = 'flex';
         }
-
         function closeCustomAlert() {
             document.getElementById('customAlert').style.display = 'none';
         }
 
-        function signInWithGoogle() {
+        function signInWithGoogle(driverMode = false) {
+            isDriverSignup = driverMode;
             const provider = new firebase.auth.GoogleAuthProvider();
             const loader = document.getElementById('loader');
             loader.style.display = "block";
+
             firebase.auth().signInWithPopup(provider)
-                .then((result) => {
-                    window.location.href = "community.html";
+                .then(async (result) => {
+                    const user = result.user;
+                    const uid = user.uid;
+
+                    // Check if profile exists
+                    const snap = await db.ref(`users/${uid}/profile`).once('value');
+                    const profile = snap.val();
+
+                    if (profile && profile.isDriver) {
+                        // Already a driver
+                        window.location.href = "community.html";
+                        return;
+                    }
+
+                    if (isDriverSignup) {
+                        // Show additional driver form
+                        document.getElementById('driverPhotoPreview').src = user.photoURL || "";
+                        document.getElementById('driverPhotoPreview').style.display = 'block';
+                        openDriverSheet();
+                    } else {
+                        // Regular rider signup
+                        await db.ref(`users/${uid}/profile`).set({
+                            name: user.displayName || "User",
+                            email: user.email,
+                            photoUrl: user.photoURL || "",
+                            role: 'rider'
+                        });
+                        window.location.href = "community.html";
+                    }
+                    loader.style.display = "none";
                 })
                 .catch((error) => {
                     loader.style.display = "none";
-                    console.error("Auth Error:", error);
                     showCustomAlert("Sign In Failed", error.message);
                 });
         }
@@ -344,11 +368,12 @@
         function closeDriverSheet() {
             document.getElementById('driverSheet').classList.remove('open');
             document.getElementById('sheetOverlay').classList.remove('open');
-            // Reset form
+            resetDriverForm();
+        }
+
+        function resetDriverForm() {
             selectedPhotoFile = null;
-            document.getElementById('driverPhotoPreview').style.display = 'none';
             document.getElementById('driverPhotoInput').value = '';
-            document.getElementById('driverName').value = '';
             document.getElementById('driverPhone').value = '';
             document.getElementById('driverVehicle').value = '';
             document.getElementById('driverPlate').value = '';
@@ -362,41 +387,47 @@
                 method: 'POST',
                 body: formData
             });
-            if (!response.ok) {
-                throw new Error('Photo upload failed');
-            }
+            if (!response.ok) throw new Error('Photo upload failed');
             const data = await response.json();
             return data.secure_url;
         }
 
-        async function submitDriverApplication() {
-            const name = document.getElementById('driverName').value.trim();
+        async function submitDriverDetails() {
             const phone = document.getElementById('driverPhone').value.trim();
             const vehicle = document.getElementById('driverVehicle').value.trim();
             const plate = document.getElementById('driverPlate').value.trim();
 
-            if (!name || !phone || !vehicle || !plate) {
-                showCustomAlert("Missing Fields", "Please fill in all text fields.");
+            if (!phone || !vehicle || !plate) {
+                showCustomAlert("Missing Fields", "Please fill in all fields.");
                 return;
             }
 
-            if (!selectedPhotoFile) {
-                showCustomAlert("Photo Required", "Please upload a profile photo.");
+            const user = firebase.auth().currentUser;
+            if (!user) {
+                showCustomAlert("Error", "User not signed in.");
                 return;
+            }
+
+            let photoUrl = user.photoURL;
+
+            if (selectedPhotoFile) {
+                try {
+                    photoUrl = await uploadPhotoToCloudinary(selectedPhotoFile);
+                } catch (err) {
+                    showCustomAlert("Upload Failed", "Failed to upload photo.");
+                    return;
+                }
             }
 
             const sheetLoader = document.getElementById('sheetLoader');
             sheetLoader.style.display = "block";
 
             try {
-                const photoUrl = await uploadPhotoToCloudinary(selectedPhotoFile);
-
-                const userCred = await firebase.auth().signInAnonymously();
-                const uid = userCred.user.uid;
-                const email = `driver_${uid}@vynix.internal`;
+                const uid = user.uid;
 
                 await db.ref(`users/${uid}/profile`).set({
-                    name: name,
+                    name: user.displayName || "Driver",
+                    email: user.email,
                     phone: phone,
                     photoUrl: photoUrl,
                     role: 'driver',
@@ -404,18 +435,18 @@
                 });
 
                 await db.ref(`drivers/${uid}`).set({
-                    name: name,
+                    name: user.displayName || "Driver",
+                    email: user.email,
                     phone: phone,
                     vehicle: vehicle,
                     plate: plate,
-                    email: email,
                     photoUrl: photoUrl,
                     status: 'pending',
                     ts: Date.now()
                 });
 
                 sheetLoader.style.display = "none";
-                showCustomAlert("Success!", "Driver application submitted successfully!");
+                showCustomAlert("Success!", "Driver profile completed!");
                 setTimeout(() => {
                     closeCustomAlert();
                     closeDriverSheet();
@@ -423,8 +454,7 @@
                 }, 2000);
             } catch (error) {
                 sheetLoader.style.display = "none";
-                console.error("Driver signup error:", error);
-                showCustomAlert("Submission Failed", error.message || "An error occurred. Please try again.");
+                showCustomAlert("Error", error.message || "Failed to save driver details.");
             }
         }
     </script>
