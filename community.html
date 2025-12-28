@@ -278,6 +278,7 @@
             border-radius: 20px;
             line-height: 1.4;
             word-wrap: break-word;
+            position: relative;
         }
         .message.sent {
             align-self: flex-end;
@@ -291,6 +292,39 @@
             color: #111;
             border-bottom-left-radius: 6px;
             box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        }
+        .message-time {
+            font-size: 10px;
+            opacity: 0.7;
+            margin-top: 4px;
+            text-align: right;
+        }
+        .message.sent .message-time {
+            color: #ddd;
+        }
+        .reactions {
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+            flex-wrap: wrap;
+        }
+        .reaction {
+            background: rgba(255,255,255,0.8);
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            min-width: 24px;
+            justify-content: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .message.sent .reaction {
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+        }
+        .reaction.mine {
+            border: 1px solid var(--accent-purple);
         }
         #chatInputArea {
             position: fixed;
@@ -316,6 +350,27 @@
             font-size: 26px;
             color: var(--accent-purple);
             cursor: pointer;
+        }
+        /* Reaction Picker */
+        .reaction-picker {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #fff;
+            border-radius: 30px;
+            padding: 8px 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            display: none;
+            flex-direction: row;
+            gap: 12px;
+            margin-bottom: 10px;
+            z-index: 10;
+        }
+        .reaction-option {
+            font-size: 28px;
+            cursor: pointer;
+            padding: 4px;
         }
     </style>
 </head>
@@ -450,6 +505,9 @@
         let currentFriendUid = null;
         let currentRoomId = null;
         let messagesListener = null;
+
+        // Available reactions (common across major apps)
+        const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
         // --- Offline Indicator ---
         function updateOnlineStatus() {
@@ -987,6 +1045,72 @@
                 messagesListener();
                 messagesListener = null;
             }
+            // Remove any open reaction pickers
+            document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+        }
+
+        function formatMessageTime(ts) {
+            const date = new Date(ts);
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            return `${hours}:${minutes}`;
+        }
+
+        function renderReactions(reactions = {}) {
+            if (Object.keys(reactions).length === 0) return '';
+            let html = '<div class="reactions">';
+            Object.keys(reactions).forEach(emoji => {
+                const count = reactions[emoji].count || 1;
+                const users = reactions[emoji].users || {};
+                const isMine = users[currentUser.uid] || false;
+                html += `<div class="reaction ${isMine ? 'mine' : ''}">${emoji} ${count > 1 ? count : ''}</div>`;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        function showReactionPicker(messageElement, messageKey) {
+            // Remove any existing picker
+            document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+
+            const picker = document.createElement('div');
+            picker.className = 'reaction-picker';
+            availableReactions.forEach(emoji => {
+                const opt = document.createElement('div');
+                opt.className = 'reaction-option';
+                opt.textContent = emoji;
+                opt.onclick = (e) => {
+                    e.stopPropagation();
+                    addReaction(messageKey, emoji);
+                    picker.remove();
+                };
+                picker.appendChild(opt);
+            });
+
+            messageElement.style.position = 'relative';
+            messageElement.appendChild(picker);
+            picker.style.display = 'flex';
+        }
+
+        async function addReaction(messageKey, emoji) {
+            const reactionRef = db.ref(`messages/${currentRoomId}/${messageKey}/reactions/${emoji}`);
+            const snap = await reactionRef.once('value');
+            const current = snap.val() || { count: 0, users: {} };
+            if (current.users[currentUser.uid]) {
+                // Remove reaction
+                delete current.users[currentUser.uid];
+                current.count--;
+                if (current.count <= 0) {
+                    await reactionRef.remove();
+                } else {
+                    await reactionRef.set({ count: current.count, users: current.users });
+                }
+            } else {
+                // Add reaction
+                current.users[currentUser.uid] = true;
+                current.count++;
+                await reactionRef.set({ count: current.count, users: current.users });
+            }
         }
 
         function loadMessages() {
@@ -1001,16 +1125,37 @@
                 }
                 const msgs = [];
                 snap.forEach(child => {
-                    msgs.push({key: child.key, ...child.val()});
+                    const val = child.val();
+                    val.key = child.key;
+                    msgs.push(val);
                 });
                 msgs.sort((a,b) => a.ts - b.ts);
                 msgs.forEach(m => {
                     const decrypted = decrypt(m.text, currentRoomId);
                     const isSent = m.sender === currentUser.uid;
-                    list.innerHTML += `
-                        <div class="message ${isSent ? 'sent' : 'received'}">
-                            ${decrypted}
-                        </div>`;
+                    const timeStr = formatMessageTime(m.ts);
+                    const reactionsHtml = renderReactions(m.reactions);
+                    const msgEl = document.createElement('div');
+                    msgEl.className = `message ${isSent ? 'sent' : 'received'}`;
+                    msgEl.innerHTML = `
+                        ${decrypted}
+                        <div class="message-time">${timeStr}</div>
+                        ${reactionsHtml}
+                    `;
+                    // Long press to react
+                    msgEl.oncontextmenu = (e) => {
+                        e.preventDefault();
+                        showReactionPicker(msgEl, m.key);
+                    };
+                    // Click on existing reactions to toggle own reaction
+                    msgEl.querySelectorAll('.reaction').forEach(reac => {
+                        reac.onclick = (e) => {
+                            e.stopPropagation();
+                            const emoji = reac.textContent.trim().split(' ')[0];
+                            addReaction(m.key, emoji);
+                        };
+                    });
+                    list.appendChild(msgEl);
                 });
                 list.scrollTop = list.scrollHeight;
             });
@@ -1025,7 +1170,8 @@
             msgRef.set({
                 text: encrypted,
                 sender: currentUser.uid,
-                ts: Date.now()
+                ts: Date.now(),
+                reactions: {}
             }).then(() => {
                 // Update last message in both users' chat lists
                 const updates = {};
@@ -1238,6 +1384,11 @@
             if (document.hidden) {
                 console.log('App minimized');
             }
+        });
+
+        // Close reaction picker when clicking elsewhere
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
         });
     </script>
     <script>
