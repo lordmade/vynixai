@@ -67,18 +67,23 @@
         .status-card:active { transform: scale(0.95); }
         .status-card img, .status-card video { width: 100%; height: 100%; object-fit: cover; }
         .status-info { position: absolute; bottom: 0; width: 100%; padding: 15px; background: linear-gradient(transparent, rgba(0,0,0,0.8)); color: #fff; font-size: 13px; }
-        .status-delete {
-            position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.6); color: #fff;
-            width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center;
-            justify-content: center; font-size: 20px; z-index: 5; cursor: pointer;
-        }
         #storyViewer { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 5000; display: none; }
         .story-header { position: absolute; top: 30px; left: 15px; display: flex; align-items: center; z-index: 20; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
         .story-progress { position: absolute; top: 15px; left: 10px; right: 10px; display: flex; gap: 5px; z-index: 10; }
         .progress-segment { height: 3px; background: rgba(255,255,255,0.3); flex: 1; border-radius: 5px; overflow: hidden; }
         .progress-fill { height: 100%; background: #fff; width: 0%; transition: width linear; }
-        #storyMedia { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+        #storyMedia { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; position: relative; }
         #storyMedia img, #storyMedia video { max-width: 100%; max-height: 100%; object-fit: contain; }
+        .story-sound-btn {
+            position: absolute; bottom: 80px; right: 20px; background: rgba(0,0,0,0.6); color: #fff;
+            width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center;
+            justify-content: center; font-size: 28px; z-index: 30; cursor: pointer;
+        }
+        .story-delete {
+            position: absolute; top: 80px; right: 20px; background: rgba(0,0,0,0.6); color: #fff;
+            width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center;
+            justify-content: center; font-size: 28px; z-index: 30; cursor: pointer;
+        }
         .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); display: none; z-index: 2500; backdrop-filter: blur(8px); }
         .bottom-sheet { position: fixed; bottom: -100%; left: 0; width: 100%; background: #fff; border-radius: 35px 35px 0 0; padding: 35px 25px; transition: 0.4s cubic-bezier(0.4, 0, 0.2, 1); z-index: 2600; }
         .bottom-sheet.active { bottom: 0; }
@@ -453,10 +458,14 @@
     </main>
     <input type="file" id="fileUpload" hidden accept="image/*,video/*" onchange="validateAndUpload(this.files[0])">
     <input type="file" id="profilePicUpload" hidden accept="image/*" onchange="uploadProfilePicture(this.files[0])">
-    <div id="storyViewer" onclick="handleStoryTap(event)">
+    <div id="storyViewer">
         <div class="story-progress" id="storyProgressBars"></div>
         <div class="story-header" id="storyHeaderInfo"></div>
         <div id="storyMedia"></div>
+        <div id="storySoundBtn" class="story-sound-btn" onclick="toggleStorySound(event)">
+            <span class="material-symbols-rounded" id="soundIcon">volume_off</span>
+        </div>
+        <div id="storyDeleteBtn" class="story-delete" style="display:none;" onclick="deleteCurrentStory()">delete</div>
     </div>
     <div class="pill-nav">
         <div class="nav-item active" id="navChats" onclick="switchTab('chats')">
@@ -554,7 +563,9 @@
         let onlineListener = null;
         let messageToDelete = null;
         let hasShownReactionTutorial = false;
-        let currentStoryVideo = null; // Track current playing video
+        let currentStoryVideo = null;
+        let currentStoryKey = null;
+        let storyMuted = true;
         const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
         function updateOnlineStatus() {
@@ -708,7 +719,7 @@
             const list = document.getElementById('chatList');
             list.innerHTML = "";
             list.innerHTML += `
-                <div class="chat-card" onclick="window.location.href='ride.html'">
+                <div class="chat-card">
                     <div class="avatar-box">
                         <div class="avatar" style="background:#000; display:flex; align-items:center; justify-content:center; color:#fff; font-size:28px;">
                             <span class="material-symbols-rounded">directions_car</span>
@@ -753,7 +764,6 @@
                         <div class="status-card" onclick="openStoriesCached('${uid}')">
                             ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
                             <div class="status-info"><b>${last.name}</b></div>
-                            ${uid === currentUser.uid ? '<div class="status-delete" onclick="deleteMyMoment(event, \'' + last.key + '\')">delete</div>' : ''}
                         </div>`;
                 }
             });
@@ -767,11 +777,21 @@
             showStory();
         }
 
-        async function deleteMyMoment(e, key) {
-            e.stopPropagation();
+        async function deleteCurrentStory() {
+            if (!currentStoryKey) return;
             if (confirm('Delete this moment?')) {
-                await db.ref(`moments/${currentUser.uid}/${key}`).remove();
+                await db.ref(`moments/${currentUser.uid}/${currentStoryKey}`).remove();
                 toast('Moment deleted');
+                closeStoryViewer();
+            }
+        }
+
+        function toggleStorySound(e) {
+            e.stopPropagation();
+            if (currentStoryVideo) {
+                currentStoryVideo.muted = !currentStoryVideo.muted;
+                storyMuted = currentStoryVideo.muted;
+                document.getElementById('soundIcon').textContent = storyMuted ? 'volume_off' : 'volume_up';
             }
         }
 
@@ -874,16 +894,16 @@
                     if(video.duration > 61) {
                         toast("Video too long! (Max 60 seconds)");
                     } else {
-                        performUpload(file);
+                        performUpload(file, video.duration);
                     }
                 };
                 video.src = URL.createObjectURL(file);
             } else {
-                performUpload(file);
+                performUpload(file, 0);
             }
         }
 
-        async function performUpload(file) {
+        async function performUpload(file, duration = 0) {
             toast("Posting Moment...");
             const form = new FormData();
             form.append('file', file);
@@ -899,7 +919,8 @@
                         ts: Date.now(),
                         name: currentUser.displayName || "User",
                         photo: currentUser.photoURL,
-                        key: pushRef.key
+                        key: pushRef.key,
+                        duration: duration > 0 ? Math.min(duration, 60) : 0
                     });
                     toast("Moment is live!");
                 }
@@ -928,7 +949,6 @@
                             <div class="status-card" onclick="openStories('${userNode.key}')">
                                 ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
                                 <div class="status-info"><b>${last.name}</b></div>
-                                ${userNode.key === currentUser.uid ? '<div class="status-delete" onclick="deleteMyMoment(event, \'' + last.key + '\')">delete</div>' : ''}
                             </div>`;
                     }
                 });
@@ -962,28 +982,44 @@
             if(storyIndex >= storyQueue.length) return closeStoryViewer();
             if(storyIndex < 0) storyIndex = 0;
             const story = storyQueue[storyIndex];
+            currentStoryKey = story.key;
             const media = document.getElementById('storyMedia');
             const progress = document.getElementById('storyProgressBars');
             const header = document.getElementById('storyHeaderInfo');
+            const soundBtn = document.getElementById('storySoundBtn');
+            const deleteBtn = document.getElementById('storyDeleteBtn');
+
             header.innerHTML = `<img src="${story.photo}" style="width:32px; height:32px; border-radius:50%; margin-right:10px; border:1px solid #fff;"> <b>${story.name}</b>`;
+
             if (story.type === 'video') {
-                media.innerHTML = `<video src="${story.url}" autoplay muted playsinline id="currentStoryVideo"></video>`;
+                media.innerHTML = `<video src="${story.url}" autoplay playsinline id="currentStoryVideo"></video>`;
                 currentStoryVideo = document.getElementById('currentStoryVideo');
+                currentStoryVideo.muted = storyMuted;
+                soundBtn.style.display = 'flex';
+                document.getElementById('soundIcon').textContent = storyMuted ? 'volume_off' : 'volume_up';
             } else {
                 media.innerHTML = `<img src="${story.url}">`;
+                soundBtn.style.display = 'none';
             }
+
+            if (story.name === (currentUser.displayName || "User")) {
+                deleteBtn.style.display = 'flex';
+            } else {
+                deleteBtn.style.display = 'none';
+            }
+
             progress.innerHTML = storyQueue.map((_, i) => `
                 <div class="progress-segment">
                     <div class="progress-fill" style="width: ${i < storyIndex ? '100%' : '0%'}"></div>
                 </div>`).join('');
             setTimeout(() => {
                 const bar = progress.querySelectorAll('.progress-fill')[storyIndex];
-                const duration = story.type === 'video' ? 60000 : 5000;
+                const duration = story.type === 'video' ? (story.duration || 60) * 1000 : 5000;
                 bar.style.transition = `width ${duration}ms linear`;
                 bar.style.width = '100%';
             }, 50);
 
-            const duration = story.type === 'video' ? 60000 : 5000;
+            const duration = story.type === 'video' ? (story.duration || 60) * 1000 : 5000;
             storyTimer = setTimeout(() => { storyIndex++; showStory(); }, duration);
         }
 
@@ -1004,6 +1040,9 @@
                 currentStoryVideo = null;
             }
             document.getElementById('storyViewer').style.display = 'none';
+            document.getElementById('storySoundBtn').style.display = 'none';
+            document.getElementById('storyDeleteBtn').style.display = 'none';
+            currentStoryKey = null;
         }
 
         function loadChats() {
@@ -1011,7 +1050,7 @@
                 const list = document.getElementById('chatList');
                 list.innerHTML = "";
                 list.innerHTML += `
-                    <div class="chat-card" onclick="window.location.href='ride.html'">
+                    <div class="chat-card">
                         <div class="avatar-box">
                             <div class="avatar" style="background:#000; display:flex; align-items:center; justify-content:center; color:#fff; font-size:28px;">
                                 <span class="material-symbols-rounded">directions_car</span>
