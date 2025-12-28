@@ -437,97 +437,11 @@
             background: #f3e8ff;
             border-radius: 15px;
         }
-        /* In-App Message Notification */
-        #inAppNotification {
-            position: fixed;
-            top: -100px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 90%;
-            max-width: 400px;
-            background: #fff;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            display: flex;
-            align-items: center;
-            padding: 14px 18px;
-            z-index: 9000;
-            transition: top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            backdrop-filter: blur(10px);
-            border: 1px solid #eee;
-        }
-        #inAppNotification.active {
-            top: 90px;
-        }
-        #inAppNotification .notif-avatar {
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            object-fit: cover;
-            margin-right: 14px;
-            flex-shrink: 0;
-        }
-        #inAppNotification .notif-content {
-            flex: 1;
-            overflow: hidden;
-        }
-        #inAppNotification .notif-name {
-            font-weight: 700;
-            font-size: 14px;
-            color: var(--text-primary);
-        }
-        #inAppNotification .notif-msg {
-            font-size: 13px;
-            color: var(--text-secondary);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        /* Typing Indicator */
-        #typingIndicator {
-            align-self: flex-start;
-            max-width: 75%;
-            padding: 12px 16px;
-            background: #fff;
-            color: #111;
-            border-radius: 20px;
-            border-bottom-left-radius: 6px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-            font-size: 15px;
-            color: var(--text-secondary);
-            font-style: italic;
-            display: none;
-        }
-        .typing-dots {
-            display: inline-flex;
-            gap: 4px;
-        }
-        .typing-dot {
-            width: 8px;
-            height: 8px;
-            background: var(--text-secondary);
-            border-radius: 50%;
-            animation: typingBounce 1.4s infinite ease-in-out;
-        }
-        .typing-dot:nth-child(1) { animation-delay: 0s; }
-        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
-        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes typingBounce {
-            0%, 80%, 100% { transform: translateY(0); }
-            40% { transform: translateY(-6px); }
-        }
     </style>
 </head>
 <body>
     <div id="toast"></div>
     <div id="offlineIndicator">Offline • Using cached data</div>
-    <div id="inAppNotification">
-        <img class="notif-avatar" id="notifAvatar" src="">
-        <div class="notif-content">
-            <div class="notif-name" id="notifName"></div>
-            <div class="notif-msg" id="notifMsg"></div>
-        </div>
-    </div>
     <header>
         <div onclick="openSheet('settingsSheet')">
             <img id="myAvatar" class="user-profile shimmer" src="">
@@ -611,17 +525,9 @@
                 <div id="chatStatusInfo">Loading...</div>
             </div>
         </div>
-        <div id="messageList">
-            <div id="typingIndicator">
-                <span class="typing-dots">
-                    <span class="typing-dot"></span>
-                    <span class="typing-dot"></span>
-                    <span class="typing-dot"></span>
-                </span>
-            </div>
-        </div>
+        <div id="messageList"></div>
         <div id="chatInputArea">
-            <input type="text" id="messageInput" placeholder="Type a message..." oninput="handleTyping()" onkeypress="handleEnter(event)">
+            <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleEnter(event)">
             <span class="material-symbols-rounded" id="sendBtn" onclick="sendMessage()">send</span>
         </div>
     </div>
@@ -656,8 +562,9 @@
         const db = firebase.database();
         let currentUser = null;
         let myVId = "";
-        let myProfile = { name: "", photo: "" };
-        let friendProfileListeners = {};
+        let myProfile = { name: "", photo: "" }; // Local cache of current user's profile
+        let friendProfileListeners = {}; // To manage individual listeners for friends
+        let currentFriendListener = null; // For the open chat header
         let storyQueue = [];
         let storyIndex = 0;
         let storyTimer;
@@ -669,71 +576,13 @@
         let messagesListener = null;
         let lastSeenListener = null;
         let onlineListener = null;
-        let typingListener = null;
-        let typingTimeout = null;
         let messageToDelete = null;
         let hasShownReactionTutorial = false;
         let currentStoryVideo = null;
         let currentStoryKey = null;
         let storyMuted = true;
         let isTransitioning = false;
-        let notifTimeout = null;
         const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
-
-        function showInAppNotification(name, photo, msg, friendUid) {
-            const notif = document.getElementById('inAppNotification');
-            document.getElementById('notifName').textContent = name;
-            document.getElementById('notifAvatar').src = photo;
-            document.getElementById('notifMsg').textContent = msg.length > 60 ? msg.substring(0, 57) + '...' : msg;
-            notif.onclick = () => {
-                openFullChat(friendUid, name, photo);
-                hideInAppNotification();
-            };
-            notif.classList.add('active');
-
-            if (notifTimeout) clearTimeout(notifTimeout);
-            notifTimeout = setTimeout(hideInAppNotification, 300000);
-        }
-
-        function hideInAppNotification() {
-            document.getElementById('inAppNotification').classList.remove('active');
-            if (notifTimeout) {
-                clearTimeout(notifTimeout);
-                notifTimeout = null;
-            }
-        }
-
-        function handleTyping() {
-            if (!currentRoomId || !currentFriendUid) return;
-
-            // Set typing status
-            db.ref(`typing/${currentRoomId}/${currentUser.uid}`).set(true);
-
-            // Clear previous timeout
-            if (typingTimeout) clearTimeout(typingTimeout);
-
-            // Remove typing status after 2 seconds of inactivity
-            typingTimeout = setTimeout(() => {
-                db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
-            }, 2000);
-        }
-
-        function listenToTyping() {
-            if (!currentRoomId || !currentFriendUid) return;
-
-            if (typingListener) typingListener();
-
-            typingListener = db.ref(`typing/${currentRoomId}/${currentFriendUid}`).on('value', snap => {
-                const isTyping = snap.val() === true;
-                const indicator = document.getElementById('typingIndicator');
-                if (isTyping) {
-                    indicator.style.display = 'block';
-                    document.getElementById('messageList').scrollTop = document.getElementById('messageList').scrollHeight;
-                } else {
-                    indicator.style.display = 'none';
-                }
-            });
-        }
 
         // Listen to own profile changes in real-time
         function listenToMyProfile() {
@@ -743,12 +592,14 @@
                 myProfile.photo = data.photo || "";
                 myVId = data.vynixId || myVId;
 
+                // Update UI elements instantly
                 document.getElementById('myAvatar').src = myProfile.photo;
                 document.getElementById('settingsAvatar').src = myProfile.photo;
                 document.getElementById('editDisplayName').value = myProfile.name;
                 document.getElementById('myAvatar').classList.remove('shimmer');
                 document.getElementById('settingsAvatar').classList.remove('shimmer');
 
+                // Update moments that are currently visible (if any)
                 updateVisibleMomentsOwnerInfo();
 
                 localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
@@ -765,12 +616,14 @@
             }
         }
 
+        // Setup listener for a specific friend's profile
         function setupFriendProfileListener(friendUid) {
-            if (friendProfileListeners[friendUid]) return;
+            if (friendProfileListeners[friendUid]) return; // Already listening
 
             const listener = db.ref(`users/${friendUid}/profile`).on('value', snap => {
                 const data = snap.val() || { name: "User", photo: "" };
 
+                // Update chat list if visible
                 const chatCard = document.querySelector(`.chat-card .avatar-box[onclick*="showProfileDetail('${friendUid}'"]`)?.parentElement;
                 if (chatCard) {
                     const avatarImg = chatCard.querySelector('.avatar');
@@ -779,20 +632,37 @@
                     if (nameSpan) nameSpan.textContent = data.name;
                 }
 
+                // Update open chat header if this is the current friend
                 if (currentFriendUid === friendUid) {
                     document.getElementById('chatFriendAvatar').src = data.photo;
                     document.getElementById('chatFriendName').textContent = data.name;
                 }
 
+                // Update visible story if viewing this friend's story
                 if (document.getElementById('storyViewer').style.display === 'block') {
                     const headerName = document.getElementById('storyHeaderInfo').querySelector('b');
                     if (headerName && headerName.textContent === data.name) {
                         document.getElementById('storyHeaderInfo').innerHTML = `<img src="${data.photo}" style="width:32px; height:32px; border-radius:50%; margin-right:10px; border:1px solid #fff;"> <b>${data.name}</b>`;
                     }
                 }
+
+                // Update moments grid
+                document.querySelectorAll('.status-card .status-info b').forEach(el => {
+                    if (el.textContent === data.name) {
+                        el.parentElement.parentElement.querySelector('img, video').src = data.photo; // Approximate, but works if single
+                    }
+                });
             });
 
             friendProfileListeners[friendUid] = listener;
+        }
+
+        // Remove listener when no longer needed (optional cleanup)
+        function removeFriendProfileListener(friendUid) {
+            if (friendProfileListeners[friendUid]) {
+                db.ref(`users/${friendUid}/profile`).off('value', friendProfileListeners[friendUid]);
+                delete friendProfileListeners[friendUid];
+            }
         }
 
         function generateVynixId() {
@@ -936,8 +806,10 @@
             const cachedMomentsStr = localStorage.getItem('vynix_moments');
             if (cachedMomentsStr) { cachedMoments = JSON.parse(cachedMomentsStr); renderMomentsFromCache(); }
 
+            // Start real-time listener for own profile
             listenToMyProfile();
 
+            // Generate Vynix ID if missing
             const snap = await db.ref(`users/${currentUser.uid}/profile`).once('value');
             const data = snap.val() || {};
             if (!data.vynixId) {
@@ -1124,6 +996,7 @@
                             lastMsg: "Connected via Vynix ID",
                             ts: Date.now()
                         });
+                        // Start listening to this new friend's profile updates
                         setupFriendProfileListener(targetUid);
                         toast("Success! Friend added.");
                         closeAll();
@@ -1206,6 +1079,7 @@
                                 ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
                                 <div class="status-info"><b>${last.name}</b></div>
                             </div>`;
+                        // Start listening to this user's profile if they have moments
                         setupFriendProfileListener(uid);
                     }
                 });
@@ -1321,6 +1195,7 @@
                     const data = child.val();
                     cachedChats[child.key] = data;
                     chatsArray.push({key: child.key, data: data});
+                    // Start real-time listener for this friend's profile
                     setupFriendProfileListener(child.key);
                 });
                 localStorage.setItem('vynix_chats', JSON.stringify(cachedChats));
@@ -1383,9 +1258,7 @@
             document.querySelector('.pill-nav').style.display = 'none';
             loadMessages();
             updateChatStatus();
-            listenToTyping();
-            setupFriendProfileListener(friendUid);
-            hideInAppNotification();
+            setupFriendProfileListener(friendUid); // Ensure listener for header
             setTimeout(() => { isTransitioning = false; }, 100);
             if (!hasShownReactionTutorial && document.querySelectorAll('#messageList .message').length > 0) {
                 document.getElementById('reactionTutorial').style.display = 'flex';
@@ -1409,9 +1282,6 @@
             if (messagesListener) { messagesListener(); messagesListener = null; }
             if (onlineListener) { onlineListener(); onlineListener = null; }
             if (lastSeenListener) { lastSeenListener(); lastSeenListener = null; }
-            if (typingListener) { typingListener(); typingListener = null; }
-            if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
-            db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
             document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
             setTimeout(() => { isTransitioning = false; }, 100);
         }
@@ -1436,12 +1306,8 @@
             messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(50).on('value', snap => {
                 const list = document.getElementById('messageList');
                 list.innerHTML = '';
-                const typingEl = document.getElementById('typingIndicator');
-                list.appendChild(typingEl); // Ensure typing indicator is always last child
-
                 if (!snap.exists()) {
                     list.innerHTML = '<div style="text-align:center; color:#999; padding:40px;">Start the conversation!</div>';
-                    list.appendChild(typingEl);
                     return;
                 }
                 const msgs = [];
@@ -1454,15 +1320,6 @@
                 msgs.forEach(m => {
                     const decrypted = decrypt(m.text, currentRoomId);
                     const isSent = m.sender === currentUser.uid;
-                    const senderUid = m.sender;
-
-                    if (!isSent && currentFriendUid !== senderUid) {
-                        const chatData = cachedChats[senderUid];
-                        if (chatData) {
-                            showInAppNotification(chatData.name, chatData.photo, decrypted, senderUid);
-                        }
-                    }
-
                     const timeStr = formatMessageTime(m.ts);
                     const reactionsHtml = renderReactions(m.reactions);
                     const msgEl = document.createElement('div');
@@ -1489,7 +1346,7 @@
                             addReaction(m.key, emoji);
                         };
                     });
-                    list.insertBefore(msgEl, typingEl);
+                    list.appendChild(msgEl);
                 });
                 list.scrollTop = list.scrollHeight;
                 if (!hasShownReactionTutorial && msgs.length > 0) {
@@ -1624,8 +1481,6 @@
                 updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
                 db.ref().update(updates);
                 input.value = '';
-                // Clear typing status immediately after send
-                db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
             }).catch(err => {
                 toast("Failed to send (check internet)");
             });
