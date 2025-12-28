@@ -566,6 +566,7 @@
         let currentStoryVideo = null;
         let currentStoryKey = null;
         let storyMuted = true;
+        let isTransitioning = false;
         const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
         function updateOnlineStatus() {
@@ -1120,6 +1121,7 @@
         }
 
         function openFullChat(friendUid, friendName, friendPhoto) {
+            isTransitioning = true;
             markAsRead(friendUid);
             currentFriendUid = friendUid;
             currentRoomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
@@ -1131,6 +1133,7 @@
             document.querySelector('.pill-nav').style.display = 'none';
             loadMessages();
             updateChatStatus();
+            setTimeout(() => { isTransitioning = false; }, 100);
 
             if (!hasShownReactionTutorial && document.querySelectorAll('#messageList .message').length > 0) {
                 document.getElementById('reactionTutorial').style.display = 'flex';
@@ -1143,6 +1146,7 @@
         }
 
         function closeFullChat() {
+            isTransitioning = true;
             document.getElementById('fullChatView').style.display = 'none';
             document.getElementById('chatsTab').style.display = 'block';
             document.querySelector('.pill-nav').style.display = 'flex';
@@ -1155,6 +1159,7 @@
             if (onlineListener) { onlineListener(); onlineListener = null; }
             if (lastSeenListener) { lastSeenListener(); lastSeenListener = null; }
             document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+            setTimeout(() => { isTransitioning = false; }, 100);
         }
 
         function showDeleteModal(messageKey) {
@@ -1236,68 +1241,73 @@
             });
         }
 
-       function exitApp() {
-    // Only exit when explicitly on chat tab
-    if (window.navigator && window.navigator.app && window.navigator.app.exitApp) {
-        window.navigator.app.exitApp();
-    } else if (window.cordova && window.cordova.plugins && window.cordova.plugins.exit) {
-        window.cordova.plugins.exit();
-    } else {
-        // For web apps, try to close window or go to home
-        window.close();
-        
-    }
-}
+        function exitApp() {
+            // Remove all external redirects - just try to close/minimize the app
+            if (window.navigator && window.navigator.app && window.navigator.app.exitApp) {
+                window.navigator.app.exitApp();
+            } else if (window.cordova && window.cordova.plugins && window.cordova.plugins.exit) {
+                window.cordova.plugins.exit();
+            } else {
+                // For web apps, just try to close the window without redirecting
+                try {
+                    window.close();
+                } catch (e) {
+                    // If we can't close, just do nothing - stay on current page
+                    console.log('Could not close window');
+                }
+            }
+        }
+
         function handleBackButton() {
-    // First: If we're in a chat, close it and return to chat list
-    if (document.getElementById('fullChatView').style.display === 'flex') {
-        closeFullChat();
-        return;
-    }
-    
-    // Second: If we're on status tab, switch back to chats tab
-    if (document.getElementById('statusTab').style.display === 'block') {
-        switchTab('chats');
-        return;
-    }
-    
-    // Third: If any modals/sheets are open, close them
-    if (document.getElementById('overlay').style.display === 'block') {
-        closeAll();
-        return;
-    }
-    
-    // Fourth: Only exit if we're on the main chat tab
-    if (document.getElementById('chatsTab').style.display === 'block') {
-        exitApp();
-        return;
-    }
-    
-    // Fallback: If we get here, something went wrong - just go to chat tab
-    switchTab('chats');
-}
+            // Prevent back button during transitions
+            if (isTransitioning) return;
+            
+            // First: If we're in a chat, close it and return to chat list
+            if (document.getElementById('fullChatView').style.display === 'flex') {
+                closeFullChat();
+                return;
+            }
+            
+            // Second: If we're on status tab, switch back to chats tab
+            if (document.getElementById('statusTab').style.display === 'block') {
+                switchTab('chats');
+                return;
+            }
+            
+            // Third: If any modals/sheets are open, close them
+            if (document.getElementById('overlay').style.display === 'block') {
+                closeAll();
+                return;
+            }
+            
+            // Fourth: Only exit if we're on the main chat tab
+            if (document.getElementById('chatsTab').style.display === 'block') {
+                exitApp();
+                return;
+            }
+            
+            // Fallback: Go to chat tab
+            switchTab('chats');
+        }
 
-       document.addEventListener('deviceready', function() {
-    document.addEventListener('backbutton', function(e) {
-        e.preventDefault();
-        handleBackButton();
-    }, false);
-}, false);
+        document.addEventListener('deviceready', function() {
+            document.addEventListener('backbutton', function(e) {
+                e.preventDefault();
+                handleBackButton();
+            }, false);
+        }, false);
 
-// For web apps without cordova
-if (!window.cordova) {
-    window.addEventListener('popstate', function(e) {
-        e.preventDefault();
-        handleBackButton();
-    });
-    
-    // Prevent default back behavior
-    history.pushState(null, null, location.href);
-    window.onpopstate = function (event) {
-        event.preventDefault();
-        handleBackButton();
-    };
-}
+        if (!window.cordova) {
+            // Override back button behavior completely
+            window.history.pushState(null, null, window.location.href);
+            
+            window.addEventListener('popstate', function(e) {
+                e.preventDefault();
+                handleBackButton();
+                // Re-push state to prevent actual navigation
+                window.history.pushState(null, null, window.location.href);
+            });
+        }
 
         function formatMessageTime(ts) {
             const date = new Date(ts);
@@ -1338,16 +1348,6 @@ if (!window.cordova) {
             messageElement.appendChild(picker);
             picker.style.display = 'flex';
         }
-
-        function minimizeApp() {
-    // Try to minimize the app to background instead of closing
-    if (window.cordova && window.cordova.plugins && window.cordova.plugins.backgroundMode) {
-        window.cordova.plugins.backgroundMode.moveToBackground();
-    } else if (document.hidden !== undefined) {
-        // For web, just blur the window
-        window.blur();
-    }
-}
 
         async function addReaction(messageKey, emoji) {
             const reactionRef = db.ref(`messages/${currentRoomId}/${messageKey}/reactions/${emoji}`);
