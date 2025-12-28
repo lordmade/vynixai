@@ -562,6 +562,7 @@
         const db = firebase.database();
         let currentUser = null;
         let myVId = "";
+        let myProfile = { name: "", photo: "" }; // Local cache of current user's profile
         let storyQueue = [];
         let storyIndex = 0;
         let storyTimer;
@@ -581,6 +582,38 @@
         let isTransitioning = false;
         const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
+        // Listen to own profile changes in real-time
+        function listenToMyProfile() {
+            db.ref(`users/${currentUser.uid}/profile`).on('value', snap => {
+                const data = snap.val() || {};
+                myProfile.name = data.name || "";
+                myProfile.photo = data.photo || "";
+                myVId = data.vynixId || myVId;
+
+                // Update UI elements instantly
+                document.getElementById('myAvatar').src = myProfile.photo;
+                document.getElementById('settingsAvatar').src = myProfile.photo;
+                document.getElementById('editDisplayName').value = myProfile.name;
+                document.getElementById('myAvatar').classList.remove('shimmer');
+                document.getElementById('settingsAvatar').classList.remove('shimmer');
+
+                // Update moments that are currently visible (if any)
+                updateVisibleMomentsOwnerInfo();
+
+                localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
+                updateMyIdDisplay();
+            });
+        }
+
+        function updateVisibleMomentsOwnerInfo() {
+            if (document.getElementById('storyViewer').style.display === 'block') {
+                const header = document.getElementById('storyHeaderInfo');
+                if (header.querySelector('b').textContent === (currentUser.displayName || "User")) {
+                    header.innerHTML = `<img src="${myProfile.photo}" style="width:32px; height:32px; border-radius:50%; margin-right:10px; border:1px solid #fff;"> <b>${myProfile.name}</b>`;
+                }
+            }
+        }
+
         function generateVynixId() {
             const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
             let suffix = '';
@@ -589,7 +622,6 @@
             }
             return 'vnx_' + suffix;
         }
-
         async function generateAndAssignVynixId() {
             let attempts = 0;
             const maxAttempts = 20;
@@ -604,7 +636,6 @@
             toast('Failed to generate unique ID. Try again later.');
             return null;
         }
-
         function updateOnlineStatus() {
             isOnline = navigator.onLine;
             document.getElementById('offlineIndicator').style.display = isOnline ? 'none' : 'block';
@@ -709,10 +740,12 @@
             const cachedProfile = localStorage.getItem('vynix_profile');
             if (cachedProfile) {
                 const data = JSON.parse(cachedProfile);
+                myProfile.name = data.name || "";
+                myProfile.photo = data.photo || "";
                 myVId = data.vynixId || "";
-                document.getElementById('myAvatar').src = data.photo;
-                document.getElementById('settingsAvatar').src = data.photo;
-                document.getElementById('editDisplayName').value = data.name;
+                document.getElementById('myAvatar').src = myProfile.photo;
+                document.getElementById('settingsAvatar').src = myProfile.photo;
+                document.getElementById('editDisplayName').value = myProfile.name;
                 document.getElementById('myAvatar').classList.remove('shimmer');
                 document.getElementById('settingsAvatar').classList.remove('shimmer');
                 updateMyIdDisplay();
@@ -721,32 +754,24 @@
             if (cachedChatsStr) { cachedChats = JSON.parse(cachedChatsStr); renderChatsFromCache(); }
             const cachedMomentsStr = localStorage.getItem('vynix_moments');
             if (cachedMomentsStr) { cachedMoments = JSON.parse(cachedMomentsStr); renderMomentsFromCache(); }
-            try {
-                const snap = await db.ref(`users/${currentUser.uid}/profile`).once('value');
-                const data = snap.val() || {};
-                if (data.vynixId) {
-                    myVId = data.vynixId;
-                } else {
-                    toast('Generating your unique Vynix ID...');
-                    const newId = await generateAndAssignVynixId();
-                    if (newId) {
-                        myVId = newId;
-                        await db.ref(`users/${currentUser.uid}/profile`).update({ vynixId: myVId });
-                        await db.ref(`vynix_ids/${myVId}`).set(currentUser.uid);
-                        toast(`Your Vynix ID is @${myVId}`);
-                    }
+
+            // Start real-time listener for own profile
+            listenToMyProfile();
+
+            // Generate Vynix ID if missing
+            const snap = await db.ref(`users/${currentUser.uid}/profile`).once('value');
+            const data = snap.val() || {};
+            if (!data.vynixId) {
+                toast('Generating your unique Vynix ID...');
+                const newId = await generateAndAssignVynixId();
+                if (newId) {
+                    myVId = newId;
+                    await db.ref(`users/${currentUser.uid}/profile`).update({ vynixId: myVId });
+                    await db.ref(`vynix_ids/${myVId}`).set(currentUser.uid);
+                    toast(`Your Vynix ID is @${myVId}`);
                 }
-                document.getElementById('myAvatar').src = data.photo || '';
-                document.getElementById('settingsAvatar').src = data.photo || '';
-                document.getElementById('editDisplayName').value = data.name || '';
-                document.getElementById('myAvatar').classList.remove('shimmer');
-                document.getElementById('settingsAvatar').classList.remove('shimmer');
-                localStorage.setItem('vynix_profile', JSON.stringify({name: data.name || '', photo: data.photo || '', vynixId: myVId}));
-                updateMyIdDisplay();
-            } catch (e) {
-                console.log('Offline: using cached profile');
-                updateMyIdDisplay();
             }
+
             hasShownReactionTutorial = localStorage.getItem('reaction_tutorial_shown') === 'true';
             await pushManager.init();
             await checkNotificationStatus();
@@ -857,9 +882,15 @@
                 });
                 const data = await res.json();
                 if (data.secure_url) {
-                    document.getElementById('myAvatar').src = data.secure_url;
-                    document.getElementById('settingsAvatar').src = data.secure_url;
-                    toast("Profile picture uploaded! Save changes to apply.");
+                    // Immediately update local UI and cache
+                    myProfile.photo = data.secure_url;
+                    document.getElementById('myAvatar').src = myProfile.photo;
+                    document.getElementById('settingsAvatar').src = myProfile.photo;
+                    localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
+
+                    // Update Firebase (will trigger real-time listener for confirmation)
+                    await db.ref(`users/${currentUser.uid}/profile`).update({ photo: data.secure_url });
+                    toast("Profile picture updated instantly!");
                 } else {
                     toast("Upload failed");
                 }
@@ -870,25 +901,26 @@
         }
         async function updateProfile() {
             const newName = document.getElementById('editDisplayName').value.trim();
-            const newPhoto = document.getElementById('settingsAvatar').src;
             if (!newName) {
                 toast("Display name cannot be empty");
                 return;
             }
+            // Immediately update local cache and UI
+            myProfile.name = newName;
+            localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: myProfile.photo, vynixId: myVId}));
+            updateVisibleMomentsOwnerInfo();
+            toast("Profile updated instantly!");
+
             try {
                 await db.ref(`users/${currentUser.uid}/profile`).update({
                     name: newName,
-                    photo: newPhoto,
-                    vynixId: myVId  // preserve
+                    photo: myProfile.photo,
+                    vynixId: myVId
                 });
-                localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: newPhoto, vynixId: myVId}));
-                toast("Profile updated!");
-                closeAll();
             } catch (e) {
-                toast("No internet - changes saved locally");
-                localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: newPhoto, vynixId: myVId}));
-                closeAll();
+                toast("No internet - changes saved locally, will sync when online");
             }
+            closeAll();
         }
         async function addFriendLogic() {
             const btn = document.getElementById('addSubmitBtn');
@@ -911,8 +943,8 @@
                     } else {
                         const targetProfile = (await db.ref(`users/${targetUid}/profile`).once('value')).val();
                         await db.ref(`users/${currentUser.uid}/chats/${targetUid}`).set({
-                            name: targetProfile.name,
-                            photo: targetProfile.photo,
+                            name: targetProfile.name || "User",
+                            photo: targetProfile.photo || "",
                             lastMsg: "Connected via Vynix ID",
                             ts: Date.now()
                         });
@@ -960,8 +992,8 @@
                         url: data.secure_url,
                         type: data.resource_type,
                         ts: Date.now(),
-                        name: currentUser.displayName || "User",
-                        photo: currentUser.photoURL,
+                        name: myProfile.name || "User",
+                        photo: myProfile.photo,
                         key: pushRef.key,
                         duration: duration > 0 ? Math.min(duration, 60) : 0
                     });
@@ -982,6 +1014,11 @@
                     userNode.forEach(m => {
                         const val = m.val();
                         val.key = m.key;
+                        // Use current cached name/photo for owner if it's me
+                        if (userNode.key === currentUser.uid) {
+                            val.name = myProfile.name || val.name || "User";
+                            val.photo = myProfile.photo || val.photo || "";
+                        }
                         if(now - val.ts < 86400000) items.push(val);
                     });
                     if(items.length) {
@@ -1006,6 +1043,10 @@
                 snap.forEach(s => {
                     const val = s.val();
                     val.key = s.key;
+                    if (uid === currentUser.uid) {
+                        val.name = myProfile.name || val.name || "User";
+                        val.photo = myProfile.photo || val.photo || "";
+                    }
                     if(Date.now() - val.ts < 86400000) storyQueue.push(val);
                 });
                 storyIndex = 0;
@@ -1039,7 +1080,7 @@
                 media.innerHTML = `<img src="${story.url}">`;
                 soundBtn.style.display = 'none';
             }
-            if (story.name === (currentUser.displayName || "User")) {
+            if (storyQueue[storyIndex].name === myProfile.name) {
                 deleteBtn.style.display = 'flex';
             } else {
                 deleteBtn.style.display = 'none';
@@ -1432,9 +1473,9 @@
             try {
                 const snap = await db.ref(`users/${uid}/profile`).once('value');
                 const data = snap.val();
-                document.getElementById('detailName').innerText = data.name;
-                document.getElementById('detailId').innerText = "@" + data.vynixId;
-                document.getElementById('detailImg').src = data.photo.replace('s96-c','s400-c');
+                document.getElementById('detailName').innerText = data.name || "User";
+                document.getElementById('detailId').innerText = "@" + (data.vynixId || "unknown");
+                document.getElementById('detailImg').src = data.photo || "";
             } catch (err) {
                 toast("Offline - profile details unavailable");
             }
