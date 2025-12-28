@@ -563,6 +563,8 @@
         let currentUser = null;
         let myVId = "";
         let myProfile = { name: "", photo: "" }; // Local cache of current user's profile
+        let friendProfileListeners = {}; // To manage individual listeners for friends
+        let currentFriendListener = null; // For the open chat header
         let storyQueue = [];
         let storyIndex = 0;
         let storyTimer;
@@ -608,9 +610,58 @@
         function updateVisibleMomentsOwnerInfo() {
             if (document.getElementById('storyViewer').style.display === 'block') {
                 const header = document.getElementById('storyHeaderInfo');
-                if (header.querySelector('b').textContent === (currentUser.displayName || "User")) {
+                if (header.querySelector('b').textContent === myProfile.name) {
                     header.innerHTML = `<img src="${myProfile.photo}" style="width:32px; height:32px; border-radius:50%; margin-right:10px; border:1px solid #fff;"> <b>${myProfile.name}</b>`;
                 }
+            }
+        }
+
+        // Setup listener for a specific friend's profile
+        function setupFriendProfileListener(friendUid) {
+            if (friendProfileListeners[friendUid]) return; // Already listening
+
+            const listener = db.ref(`users/${friendUid}/profile`).on('value', snap => {
+                const data = snap.val() || { name: "User", photo: "" };
+
+                // Update chat list if visible
+                const chatCard = document.querySelector(`.chat-card .avatar-box[onclick*="showProfileDetail('${friendUid}'"]`)?.parentElement;
+                if (chatCard) {
+                    const avatarImg = chatCard.querySelector('.avatar');
+                    const nameSpan = chatCard.querySelector('.chat-name');
+                    if (avatarImg) avatarImg.src = data.photo;
+                    if (nameSpan) nameSpan.textContent = data.name;
+                }
+
+                // Update open chat header if this is the current friend
+                if (currentFriendUid === friendUid) {
+                    document.getElementById('chatFriendAvatar').src = data.photo;
+                    document.getElementById('chatFriendName').textContent = data.name;
+                }
+
+                // Update visible story if viewing this friend's story
+                if (document.getElementById('storyViewer').style.display === 'block') {
+                    const headerName = document.getElementById('storyHeaderInfo').querySelector('b');
+                    if (headerName && headerName.textContent === data.name) {
+                        document.getElementById('storyHeaderInfo').innerHTML = `<img src="${data.photo}" style="width:32px; height:32px; border-radius:50%; margin-right:10px; border:1px solid #fff;"> <b>${data.name}</b>`;
+                    }
+                }
+
+                // Update moments grid
+                document.querySelectorAll('.status-card .status-info b').forEach(el => {
+                    if (el.textContent === data.name) {
+                        el.parentElement.parentElement.querySelector('img, video').src = data.photo; // Approximate, but works if single
+                    }
+                });
+            });
+
+            friendProfileListeners[friendUid] = listener;
+        }
+
+        // Remove listener when no longer needed (optional cleanup)
+        function removeFriendProfileListener(friendUid) {
+            if (friendProfileListeners[friendUid]) {
+                db.ref(`users/${friendUid}/profile`).off('value', friendProfileListeners[friendUid]);
+                delete friendProfileListeners[friendUid];
             }
         }
 
@@ -882,13 +933,11 @@
                 });
                 const data = await res.json();
                 if (data.secure_url) {
-                    // Immediately update local UI and cache
                     myProfile.photo = data.secure_url;
                     document.getElementById('myAvatar').src = myProfile.photo;
                     document.getElementById('settingsAvatar').src = myProfile.photo;
                     localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
 
-                    // Update Firebase (will trigger real-time listener for confirmation)
                     await db.ref(`users/${currentUser.uid}/profile`).update({ photo: data.secure_url });
                     toast("Profile picture updated instantly!");
                 } else {
@@ -905,7 +954,6 @@
                 toast("Display name cannot be empty");
                 return;
             }
-            // Immediately update local cache and UI
             myProfile.name = newName;
             localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: myProfile.photo, vynixId: myVId}));
             updateVisibleMomentsOwnerInfo();
@@ -948,6 +996,8 @@
                             lastMsg: "Connected via Vynix ID",
                             ts: Date.now()
                         });
+                        // Start listening to this new friend's profile updates
+                        setupFriendProfileListener(targetUid);
                         toast("Success! Friend added.");
                         closeAll();
                         document.getElementById('friendVynixId').value = "";
@@ -1011,24 +1061,26 @@
                 const now = Date.now();
                 snap.forEach(userNode => {
                     let items = [];
+                    const uid = userNode.key;
                     userNode.forEach(m => {
                         const val = m.val();
                         val.key = m.key;
-                        // Use current cached name/photo for owner if it's me
-                        if (userNode.key === currentUser.uid) {
+                        if (uid === currentUser.uid) {
                             val.name = myProfile.name || val.name || "User";
                             val.photo = myProfile.photo || val.photo || "";
                         }
                         if(now - val.ts < 86400000) items.push(val);
                     });
                     if(items.length) {
-                        cachedMoments[userNode.key] = items;
+                        cachedMoments[uid] = items;
                         const last = items[items.length-1];
                         grid.innerHTML += `
-                            <div class="status-card" onclick="openStories('${userNode.key}')">
+                            <div class="status-card" onclick="openStories('${uid}')">
                                 ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
                                 <div class="status-info"><b>${last.name}</b></div>
                             </div>`;
+                        // Start listening to this user's profile if they have moments
+                        setupFriendProfileListener(uid);
                     }
                 });
                 localStorage.setItem('vynix_moments', JSON.stringify(cachedMoments));
@@ -1038,6 +1090,7 @@
             });
         }
         function openStories(uid) {
+            setupFriendProfileListener(uid);
             db.ref(`moments/${uid}`).once('value', snap => {
                 storyQueue = [];
                 snap.forEach(s => {
@@ -1080,7 +1133,7 @@
                 media.innerHTML = `<img src="${story.url}">`;
                 soundBtn.style.display = 'none';
             }
-            if (storyQueue[storyIndex].name === myProfile.name) {
+            if (story.name === myProfile.name) {
                 deleteBtn.style.display = 'flex';
             } else {
                 deleteBtn.style.display = 'none';
@@ -1142,6 +1195,8 @@
                     const data = child.val();
                     cachedChats[child.key] = data;
                     chatsArray.push({key: child.key, data: data});
+                    // Start real-time listener for this friend's profile
+                    setupFriendProfileListener(child.key);
                 });
                 localStorage.setItem('vynix_chats', JSON.stringify(cachedChats));
                 chatsArray.sort((a, b) => (b.data.ts || 0) - (a.data.ts || 0));
@@ -1203,6 +1258,7 @@
             document.querySelector('.pill-nav').style.display = 'none';
             loadMessages();
             updateChatStatus();
+            setupFriendProfileListener(friendUid); // Ensure listener for header
             setTimeout(() => { isTransitioning = false; }, 100);
             if (!hasShownReactionTutorial && document.querySelectorAll('#messageList .message').length > 0) {
                 document.getElementById('reactionTutorial').style.display = 'flex';
@@ -1470,6 +1526,7 @@
         }
         async function showProfileDetail(uid, e) {
             e.stopPropagation();
+            setupFriendProfileListener(uid);
             try {
                 const snap = await db.ref(`users/${uid}/profile`).once('value');
                 const data = snap.val();
