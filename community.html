@@ -67,6 +67,11 @@
         .status-card:active { transform: scale(0.95); }
         .status-card img, .status-card video { width: 100%; height: 100%; object-fit: cover; }
         .status-info { position: absolute; bottom: 0; width: 100%; padding: 15px; background: linear-gradient(transparent, rgba(0,0,0,0.8)); color: #fff; font-size: 13px; }
+        .status-delete {
+            position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.6); color: #fff;
+            width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center;
+            justify-content: center; font-size: 20px; z-index: 5; cursor: pointer;
+        }
         #storyViewer { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 5000; display: none; }
         .story-header { position: absolute; top: 30px; left: 15px; display: flex; align-items: center; z-index: 20; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
         .story-progress { position: absolute; top: 15px; left: 10px; right: 10px; display: flex; gap: 5px; z-index: 10; }
@@ -549,6 +554,7 @@
         let onlineListener = null;
         let messageToDelete = null;
         let hasShownReactionTutorial = false;
+        let currentStoryVideo = null; // Track current playing video
         const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
         function updateOnlineStatus() {
@@ -747,6 +753,7 @@
                         <div class="status-card" onclick="openStoriesCached('${uid}')">
                             ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
                             <div class="status-info"><b>${last.name}</b></div>
+                            ${uid === currentUser.uid ? '<div class="status-delete" onclick="deleteMyMoment(event, \'' + last.key + '\')">delete</div>' : ''}
                         </div>`;
                 }
             });
@@ -758,6 +765,14 @@
             storyIndex = 0;
             document.getElementById('storyViewer').style.display = 'block';
             showStory();
+        }
+
+        async function deleteMyMoment(e, key) {
+            e.stopPropagation();
+            if (confirm('Delete this moment?')) {
+                await db.ref(`moments/${currentUser.uid}/${key}`).remove();
+                toast('Moment deleted');
+            }
         }
 
         async function uploadProfilePicture(file) {
@@ -877,12 +892,14 @@
                 const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method:'POST', body:form });
                 const data = await res.json();
                 if(data.secure_url) {
-                    await db.ref(`moments/${currentUser.uid}`).push({
+                    const pushRef = await db.ref(`moments/${currentUser.uid}`).push();
+                    await pushRef.set({
                         url: data.secure_url,
                         type: data.resource_type,
                         ts: Date.now(),
                         name: currentUser.displayName || "User",
-                        photo: currentUser.photoURL
+                        photo: currentUser.photoURL,
+                        key: pushRef.key
                     });
                     toast("Moment is live!");
                 }
@@ -901,6 +918,7 @@
                     let items = [];
                     userNode.forEach(m => {
                         const val = m.val();
+                        val.key = m.key;
                         if(now - val.ts < 86400000) items.push(val);
                     });
                     if(items.length) {
@@ -910,6 +928,7 @@
                             <div class="status-card" onclick="openStories('${userNode.key}')">
                                 ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
                                 <div class="status-info"><b>${last.name}</b></div>
+                                ${userNode.key === currentUser.uid ? '<div class="status-delete" onclick="deleteMyMoment(event, \'' + last.key + '\')">delete</div>' : ''}
                             </div>`;
                     }
                 });
@@ -925,6 +944,7 @@
                 storyQueue = [];
                 snap.forEach(s => {
                     const val = s.val();
+                    val.key = s.key;
                     if(Date.now() - val.ts < 86400000) storyQueue.push(val);
                 });
                 storyIndex = 0;
@@ -935,6 +955,10 @@
 
         function showStory() {
             clearTimeout(storyTimer);
+            if (currentStoryVideo) {
+                currentStoryVideo.pause();
+                currentStoryVideo = null;
+            }
             if(storyIndex >= storyQueue.length) return closeStoryViewer();
             if(storyIndex < 0) storyIndex = 0;
             const story = storyQueue[storyIndex];
@@ -942,26 +966,25 @@
             const progress = document.getElementById('storyProgressBars');
             const header = document.getElementById('storyHeaderInfo');
             header.innerHTML = `<img src="${story.photo}" style="width:32px; height:32px; border-radius:50%; margin-right:10px; border:1px solid #fff;"> <b>${story.name}</b>`;
-            media.innerHTML = story.type === 'video' ? 
-                `<video src="${story.url}" autoplay loop muted playsinline></video>` : 
-                `<img src="${story.url}">`;
+            if (story.type === 'video') {
+                media.innerHTML = `<video src="${story.url}" autoplay muted playsinline id="currentStoryVideo"></video>`;
+                currentStoryVideo = document.getElementById('currentStoryVideo');
+            } else {
+                media.innerHTML = `<img src="${story.url}">`;
+            }
             progress.innerHTML = storyQueue.map((_, i) => `
                 <div class="progress-segment">
                     <div class="progress-fill" style="width: ${i < storyIndex ? '100%' : '0%'}"></div>
                 </div>`).join('');
             setTimeout(() => {
                 const bar = progress.querySelectorAll('.progress-fill')[storyIndex];
-                bar.style.transition = 'width 5s linear';
+                const duration = story.type === 'video' ? 60000 : 5000;
+                bar.style.transition = `width ${duration}ms linear`;
                 bar.style.width = '100%';
             }, 50);
 
-            // For videos: stay on screen for 60 seconds (or until manual tap)
-            // For images: stay 5 seconds
-            if (story.type === 'video') {
-                storyTimer = setTimeout(() => { storyIndex++; showStory(); }, 60000);
-            } else {
-                storyTimer = setTimeout(() => { storyIndex++; showStory(); }, 5000);
-            }
+            const duration = story.type === 'video' ? 60000 : 5000;
+            storyTimer = setTimeout(() => { storyIndex++; showStory(); }, duration);
         }
 
         function handleStoryTap(e) {
@@ -976,6 +999,10 @@
 
         function closeStoryViewer() {
             clearTimeout(storyTimer);
+            if (currentStoryVideo) {
+                currentStoryVideo.pause();
+                currentStoryVideo = null;
+            }
             document.getElementById('storyViewer').style.display = 'none';
         }
 
@@ -1190,7 +1217,6 @@
                 switchTab('chats');
                 return;
             }
-            // No confirmation — directly exit when on main chats tab
             exitApp();
         }
 
