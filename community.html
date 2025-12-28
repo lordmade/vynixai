@@ -893,57 +893,135 @@
                 document.getElementById('soundIcon').textContent = storyMuted ? 'volume_off' : 'volume_up';
             }
         }
-        async function uploadProfilePicture(file) {
-            if (!file || !file.type.startsWith('image/')) {
-                toast("Please select an image file");
-                return;
-            }
-            toast("Uploading profile picture...");
-            const form = new FormData();
-            form.append('file', file);
-            form.append('upload_preset', UPLOAD_PRESET);
+       async function uploadProfilePicture(file) {
+    if (!file || !file.type.startsWith('image/')) {
+        toast("Please select an image file");
+        return;
+    }
+    toast("Uploading profile picture...");
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', UPLOAD_PRESET);
+    try {
+        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, {
+            method: 'POST',
+            body: form
+        });
+        const data = await res.json();
+        if (data.secure_url) {
+            // Store old photo for comparison
+            const oldPhoto = myProfile.photo;
+            
+            // Update local storage
+            myProfile.photo = data.secure_url;
+            document.getElementById('myAvatar').src = myProfile.photo;
+            document.getElementById('settingsAvatar').src = myProfile.photo;
+            localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
+            
+            toast("Profile picture updated instantly!");
+            
+            // Update Firebase with comprehensive propagation
             try {
-                const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, {
-                    method: 'POST',
-                    body: form
+                // Update your main profile
+                await db.ref(`users/${currentUser.uid}/profile`).update({ photo: data.secure_url });
+                
+                // Update all your moments with new photo
+                const momentsSnapshot = await db.ref(`moments/${currentUser.uid}`).once('value');
+                const updates = {};
+                
+                momentsSnapshot.forEach(moment => {
+                    updates[`moments/${currentUser.uid}/${moment.key}/photo`] = data.secure_url;
                 });
-                const data = await res.json();
-                if (data.secure_url) {
-                    myProfile.photo = data.secure_url;
-                    document.getElementById('myAvatar').src = myProfile.photo;
-                    document.getElementById('settingsAvatar').src = myProfile.photo;
-                    localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
-                    await db.ref(`users/${currentUser.uid}/profile`).update({ photo: data.secure_url });
-                    toast("Profile picture updated instantly!");
-                } else {
-                    toast("Upload failed");
+                
+                // Update all chats where you appear as a friend
+                const chatsSnapshot = await db.ref(`users`).once('value');
+                chatsSnapshot.forEach(user => {
+                    if (user.key !== currentUser.uid) {
+                        const userChats = user.child('chats');
+                        userChats.forEach(chat => {
+                            if (chat.key === currentUser.uid) {
+                                updates[`users/${user.key}/chats/${currentUser.uid}/photo`] = data.secure_url;
+                            }
+                        });
+                    }
+                });
+                
+                // Apply all updates atomically
+                if (Object.keys(updates).length > 0) {
+                    await db.ref().update(updates);
                 }
-            } catch (e) {
-                toast("Upload error (check internet)");
-                console.error(e);
-            }
-        }
-        async function updateProfile() {
-            const newName = document.getElementById('editDisplayName').value.trim();
-            if (!newName) {
-                toast("Display name cannot be empty");
-                return;
-            }
-            myProfile.name = newName;
-            localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: myProfile.photo, vynixId: myVId}));
-            updateVisibleMomentsOwnerInfo();
-            toast("Profile updated instantly!");
-            try {
-                await db.ref(`users/${currentUser.uid}/profile`).update({
-                    name: newName,
-                    photo: myProfile.photo,
-                    vynixId: myVId
-                });
+                
             } catch (e) {
                 toast("No internet - changes saved locally, will sync when online");
             }
-            closeAll();
+            
+        } else {
+            toast("Upload failed");
         }
+    } catch (e) {
+        toast("Upload error (check internet)");
+        console.error(e);
+    }
+}
+        async function updateProfile() {
+    const newName = document.getElementById('editDisplayName').value.trim();
+    if (!newName) {
+        toast("Display name cannot be empty");
+        return;
+    }
+    
+    // Store old values for comparison
+    const oldName = myProfile.name;
+    const oldPhoto = myProfile.photo;
+    
+    // Update local storage first
+    myProfile.name = newName;
+    localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: myProfile.photo, vynixId: myVId}));
+    
+    toast("Profile updated instantly!");
+    
+    try {
+        // Update your main profile
+        await db.ref(`users/${currentUser.uid}/profile`).update({
+            name: newName,
+            photo: myProfile.photo,
+            vynixId: myVId
+        });
+        
+        // Update all your moments with new name/photo
+        const momentsSnapshot = await db.ref(`moments/${currentUser.uid}`).once('value');
+        const updates = {};
+        
+        momentsSnapshot.forEach(moment => {
+            updates[`moments/${currentUser.uid}/${moment.key}/name`] = newName;
+            updates[`moments/${currentUser.uid}/${moment.key}/photo`] = myProfile.photo;
+        });
+        
+        // Update all chats where you appear as a friend
+        const chatsSnapshot = await db.ref(`users`).once('value');
+        chatsSnapshot.forEach(user => {
+            if (user.key !== currentUser.uid) {
+                const userChats = user.child('chats');
+                userChats.forEach(chat => {
+                    if (chat.key === currentUser.uid) {
+                        updates[`users/${user.key}/chats/${currentUser.uid}/name`] = newName;
+                        updates[`users/${user.key}/chats/${currentUser.uid}/photo`] = myProfile.photo;
+                    }
+                });
+            }
+        });
+        
+        // Apply all updates atomically
+        if (Object.keys(updates).length > 0) {
+            await db.ref().update(updates);
+        }
+        
+    } catch (e) {
+        toast("No internet - changes saved locally, will sync when online");
+    }
+    
+    closeAll();
+}
         async function addFriendLogic() {
             const btn = document.getElementById('addSubmitBtn');
             const rawId = document.getElementById('friendVynixId').value.trim().toLowerCase();
