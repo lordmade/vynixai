@@ -580,6 +580,31 @@
         let storyMuted = true;
         let isTransitioning = false;
         const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+        function generateVynixId() {
+            const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let suffix = '';
+            for (let i = 0; i < 6; i++) {
+                suffix += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return 'vnx_' + suffix;
+        }
+
+        async function generateAndAssignVynixId() {
+            let attempts = 0;
+            const maxAttempts = 20;
+            while (attempts < maxAttempts) {
+                const candidate = generateVynixId();
+                const snap = await db.ref(`vynix_ids/${candidate}`).once('value');
+                if (!snap.exists()) {
+                    return candidate;
+                }
+                attempts++;
+            }
+            toast('Failed to generate unique ID. Try again later.');
+            return null;
+        }
+
         function updateOnlineStatus() {
             isOnline = navigator.onLine;
             document.getElementById('offlineIndicator').style.display = isOnline ? 'none' : 'block';
@@ -698,18 +723,30 @@
             if (cachedMomentsStr) { cachedMoments = JSON.parse(cachedMomentsStr); renderMomentsFromCache(); }
             try {
                 const snap = await db.ref(`users/${currentUser.uid}/profile`).once('value');
-                const data = snap.val();
-                if (data) {
-                    myVId = data.vynixId || "";
-                    document.getElementById('myAvatar').src = data.photo;
-                    document.getElementById('settingsAvatar').src = data.photo;
-                    document.getElementById('editDisplayName').value = data.name;
-                    document.getElementById('myAvatar').classList.remove('shimmer');
-                    document.getElementById('settingsAvatar').classList.remove('shimmer');
-                    localStorage.setItem('vynix_profile', JSON.stringify(data));
-                    updateMyIdDisplay();
+                const data = snap.val() || {};
+                if (data.vynixId) {
+                    myVId = data.vynixId;
+                } else {
+                    toast('Generating your unique Vynix ID...');
+                    const newId = await generateAndAssignVynixId();
+                    if (newId) {
+                        myVId = newId;
+                        await db.ref(`users/${currentUser.uid}/profile`).update({ vynixId: myVId });
+                        await db.ref(`vynix_ids/${myVId}`).set(currentUser.uid);
+                        toast(`Your Vynix ID is @${myVId}`);
+                    }
                 }
-            } catch (e) { console.log('Offline: using cached profile'); }
+                document.getElementById('myAvatar').src = data.photo || '';
+                document.getElementById('settingsAvatar').src = data.photo || '';
+                document.getElementById('editDisplayName').value = data.name || '';
+                document.getElementById('myAvatar').classList.remove('shimmer');
+                document.getElementById('settingsAvatar').classList.remove('shimmer');
+                localStorage.setItem('vynix_profile', JSON.stringify({name: data.name || '', photo: data.photo || '', vynixId: myVId}));
+                updateMyIdDisplay();
+            } catch (e) {
+                console.log('Offline: using cached profile');
+                updateMyIdDisplay();
+            }
             hasShownReactionTutorial = localStorage.getItem('reaction_tutorial_shown') === 'true';
             await pushManager.init();
             await checkNotificationStatus();
@@ -841,7 +878,8 @@
             try {
                 await db.ref(`users/${currentUser.uid}/profile`).update({
                     name: newName,
-                    photo: newPhoto
+                    photo: newPhoto,
+                    vynixId: myVId  // preserve
                 });
                 localStorage.setItem('vynix_profile', JSON.stringify({name: newName, photo: newPhoto, vynixId: myVId}));
                 toast("Profile updated!");
