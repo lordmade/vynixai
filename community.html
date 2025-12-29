@@ -651,18 +651,20 @@
         const actionBtn = document.getElementById('actionBtn');
         const recordingOverlay = document.getElementById('recordingOverlay');
 
-       function updateActionBtn() {
+      function updateActionBtn() {
     const hasText = messageInput.value.trim() !== '';
     if (hasText) {
         actionBtn.innerHTML = 'send';
         actionBtn.style.cursor = 'pointer';
+        // Remove any recording-related classes
+        actionBtn.classList.remove('recording');
     } else {
         actionBtn.innerHTML = 'mic';
         actionBtn.style.cursor = 'grab';
     }
 }
 
-       let pressTimer;
+     let pressTimer;
 let touchStartX = 0;
 
 // For desktop - mouse events
@@ -706,14 +708,14 @@ actionBtn.addEventListener('touchmove', (e) => {
     if (diff > 100) cancelVoiceRecording();
 });
 
-// Add click handler for text messages
+// CRITICAL: Add click handler for text messages
 actionBtn.addEventListener('click', (e) => {
     if (messageInput.value.trim() !== '') {
         e.preventDefault();
+        e.stopPropagation();
         sendMessage();
     }
 });
-
         async function startVoiceRecording() {
             try {
                 const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
@@ -1876,29 +1878,40 @@ actionBtn.addEventListener('click', (e) => {
         }
 
         function sendMessage() {
-            const text = messageInput.value.trim();
-            if (!text || !currentRoomId) return;
-            const encrypted = CryptoJS.AES.encrypt(text, secretBase + currentRoomId).toString();
-            const msgRef = db.ref(`messages/${currentRoomId}`).push();
-            msgRef.set({
-                text: encrypted,
-                sender: currentUser.uid,
-                ts: Date.now(),
-                reactions: {}
-            }).then(() => {
-                const updates = {};
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
-                db.ref().update(updates);
-                messageInput.value = '';
-                updateActionBtn();
-            }).catch(err => {
-                toast("Failed to send (check internet)");
-            });
+    const text = messageInput.value.trim();
+    if (!text || !currentRoomId) return;
+    
+    const encrypted = CryptoJS.AES.encrypt(text, secretBase + currentRoomId).toString();
+    const msgRef = db.ref(`messages/${currentRoomId}`).push();
+    
+    msgRef.set({
+        text: encrypted,
+        sender: currentUser.uid,
+        ts: Date.now(),
+        reactions: {}
+    }).then(() => {
+        const updates = {};
+        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+        
+        return db.ref().update(updates);
+    }).then(() => {
+        // Clear input and update button
+        messageInput.value = '';
+        updateActionBtn();
+        
+        // Clear typing status
+        if (currentRoomId) {
+            db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
         }
+    }).catch(err => {
+        toast("Failed to send (check internet)");
+        console.error(err);
+    });
+}
 
         function handleEnter(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
