@@ -277,6 +277,7 @@
             align-items: center;
             gap: 12px;
             max-width: 300px;
+            position: relative;
         }
         .voice-message.sent {
             background: #000;
@@ -292,18 +293,33 @@
             justify-content: center;
             font-size: 20px;
             cursor: pointer;
+            flex-shrink: 0;
         }
         .voice-waveform {
             flex: 1;
             height: 36px;
-            background: linear-gradient(90deg, #bbb 50%, transparent 50%);
-            background-size: 8px 100%;
+            background: #ddd;
             border-radius: 18px;
+            overflow: hidden;
+            position: relative;
+        }
+        .voice-waveform::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent 50%, rgba(255,255,255,0.4) 50%);
+            background-size: 20px 100%;
             animation: waveform 1.5s linear infinite;
+        }
+        .voice-waveform.playing::after {
+            animation-play-state: running;
+        }
+        .voice-waveform.paused::after {
+            animation-play-state: paused;
         }
         @keyframes waveform {
             0% { background-position: 0 0; }
-            100% { background-position: 8px 0; }
+            100% { background-position: 20px 0; }
         }
         .voice-duration {
             font-size: 12px;
@@ -312,6 +328,11 @@
             text-align: right;
         }
         .message.sent .voice-duration { color: #aaa; }
+        .deleted-message {
+            font-style: italic;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
         .recording-overlay {
             position: fixed;
             bottom: 90px;
@@ -457,8 +478,8 @@
 
     <div class="bottom-sheet" id="deleteMessageModal">
         <h3>Delete Message?</h3>
-        <p style="color:var(--text-secondary); font-size:14px;">This action cannot be undone.</p>
-        <button class="btn-primary btn-danger" onclick="confirmDeleteMessage()">Delete</button>
+        <p style="color:var(--text-secondary); font-size:14px;">This will delete the message for everyone.</p>
+        <button class="btn-primary btn-danger" onclick="confirmDeleteMessage()">Delete for Everyone</button>
         <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeDeleteModal()">Cancel</button>
     </div>
     <div class="bottom-sheet" id="unfriendModal">
@@ -528,6 +549,7 @@
         let recordingTimer = null;
         let currentVoiceBlob = null;
         let isRecording = false;
+        let currentPlayingAudio = null; // To ensure only one voice note plays at a time
 
         const messageInput = document.getElementById('messageInput');
         const actionBtn = document.getElementById('actionBtn');
@@ -540,7 +562,7 @@
                 actionBtn.onclick = sendMessage;
             } else {
                 actionBtn.innerHTML = 'mic';
-                actionBtn.onclick = null; // handled by hold events
+                actionBtn.onclick = null;
             }
         }
 
@@ -577,7 +599,7 @@
                 mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
                 mediaRecorder.onstop = () => {
                     currentVoiceBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                    stream.getTracks().forEach(track => track.stop());
+                    stream.getTracks().forEach(track => track.stop()); // Release mic immediately
                 };
 
                 mediaRecorder.start();
@@ -678,12 +700,28 @@
 
         function toggleAudioPlay(btn) {
             const audio = btn.nextElementSibling;
+            const waveform = audio.nextElementSibling.nextElementSibling;
+
+            // Pause currently playing audio
+            if (currentPlayingAudio && currentPlayingAudio !== audio) {
+                currentPlayingAudio.pause();
+                currentPlayingAudio.previousElementSibling.querySelector('span').textContent = 'play_arrow';
+                currentPlayingAudio.nextElementSibling.nextElementSibling.classList.remove('playing');
+                currentPlayingAudio.nextElementSibling.nextElementSibling.classList.add('paused');
+            }
+
             if (audio.paused) {
                 audio.play();
                 btn.querySelector('span').textContent = 'pause';
+                waveform.classList.add('playing');
+                waveform.classList.remove('paused');
+                currentPlayingAudio = audio;
             } else {
                 audio.pause();
                 btn.querySelector('span').textContent = 'play_arrow';
+                waveform.classList.remove('playing');
+                waveform.classList.add('paused');
+                currentPlayingAudio = null;
             }
         }
 
@@ -810,7 +848,7 @@
         function generateVynixId() {
             const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
             let suffix = '';
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i = 6; i++) {
                 suffix += chars.charAt(Math.floor(Math.random() * chars.length));
             }
             return 'vnx_' + suffix;
@@ -1540,9 +1578,9 @@
 
         async function confirmDeleteMessage() {
             if (!messageToDelete || !currentRoomId) return;
-            await db.ref(`messages/${currentRoomId}/${messageToDelete}`).remove();
+            await db.ref(`messages/${currentRoomId}/${messageToDelete}`).update({ deleted: true });
             closeDeleteModal();
-            toast('Message deleted');
+            toast('Message deleted for everyone');
         }
 
         function loadMessages() {
@@ -1566,7 +1604,9 @@
                     const timeStr = formatMessageTime(m.ts);
                     let content = '';
 
-                    if (m.type === 'voice') {
+                    if (m.deleted) {
+                        content = `<div class="deleted-message">This message was deleted</div>`;
+                    } else if (m.type === 'voice') {
                         const url = decrypt(m.url, currentRoomId);
                         content = `
                             <div class="voice-message ${isSent ? 'sent' : ''}">
@@ -1574,7 +1614,7 @@
                                     <span class="material-symbols-rounded">play_arrow</span>
                                 </div>
                                 <audio src="${url}"></audio>
-                                <div class="voice-waveform"></div>
+                                <div class="voice-waveform paused"></div>
                                 <div class="voice-duration">${formatVoiceDuration(m.duration || 0)}</div>
                             </div>
                         `;
@@ -1589,9 +1629,10 @@
 
                     const msgEl = document.createElement('div');
                     msgEl.className = `message ${isSent ? 'sent' : 'received'}`;
+                    msgEl.dataset.key = m.key;
                     msgEl.innerHTML = content;
 
-                    if (isSent && m.type !== 'voice') {
+                    if (isSent && !m.deleted) {
                         msgEl.onclick = (e) => { e.stopPropagation(); showDeleteModal(m.key); };
                     }
                     msgEl.oncontextmenu = (e) => { e.preventDefault(); showReactionPicker(msgEl, m.key); };
