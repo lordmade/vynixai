@@ -251,17 +251,19 @@
             border-radius: 30px; font-family: inherit; font-size: 15px;
             background: #fff;
         }
-        #voiceBtn {
+        #actionBtn {
             font-size: 28px; color: var(--accent-purple); cursor: pointer;
             padding: 8px; border-radius: 50%;
             transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        #voiceBtn.recording {
+        #actionBtn.recording {
             background: #ff3b30;
             color: #fff;
             animation: pulse 1.5s infinite;
         }
-        #sendBtn { font-size: 26px; color: var(--accent-purple); cursor: pointer; }
         @keyframes pulse {
             0% { transform: scale(1); }
             50% { transform: scale(1.2); }
@@ -326,21 +328,7 @@
             box-shadow: 0 8px 30px rgba(0,0,0,0.5);
         }
         .recording-timer { font-size: 18px; font-weight: 600; }
-        .recording-controls button {
-            background: rgba(255,255,255,0.15);
-            border: none;
-            color: #fff;
-            width: 48px;
-            height: 48px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 26px;
-            cursor: pointer;
-        }
-        .recording-controls .cancel { background: rgba(255,59,48,0.8); }
-        .recording-controls .send { background: var(--accent-purple); }
+        .recording-label { font-size: 14px; }
     </style>
 </head>
 <body>
@@ -455,20 +443,16 @@
             </div>
         </div>
         <div id="chatInputArea">
-            <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleEnter(event)" oninput="updateTypingStatus()">
-            <span class="material-symbols-rounded" id="voiceBtn">mic</span>
-            <span class="material-symbols-rounded" id="sendBtn" onclick="sendMessage()">send</span>
+            <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleEnter(event)" oninput="updateTypingStatus()" onfocus="updateActionBtn()" onblur="updateActionBtn()">
+            <span class="material-symbols-rounded" id="actionBtn">mic</span>
         </div>
     </div>
 
     <!-- Voice Recording Overlay -->
     <div id="recordingOverlay" class="recording-overlay">
+        <span class="material-symbols-rounded" style="font-size:36px; color:#ff3b30;">radio_button_checked</span>
         <div class="recording-timer">00:00</div>
-        <div class="voice-waveform"></div>
-        <div class="recording-controls">
-            <button class="cancel" onclick="cancelVoiceRecording()">close</button>
-            <button class="send" onclick="stopAndSendVoice()">send</button>
-        </div>
+        <div class="recording-label">Slide left to cancel</div>
     </div>
 
     <div class="bottom-sheet" id="deleteMessageModal">
@@ -543,19 +527,48 @@
         let recordingStartTime = 0;
         let recordingTimer = null;
         let currentVoiceBlob = null;
+        let isRecording = false;
 
-        const voiceBtn = document.getElementById('voiceBtn');
+        const messageInput = document.getElementById('messageInput');
+        const actionBtn = document.getElementById('actionBtn');
         const recordingOverlay = document.getElementById('recordingOverlay');
 
-        // Hold to record (mouse & touch)
-        voiceBtn.addEventListener('mousedown', startVoiceRecording);
-        voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startVoiceRecording(); });
-        voiceBtn.addEventListener('mouseup', stopVoiceRecording);
-        voiceBtn.addEventListener('mouseleave', cancelVoiceRecording);
-        voiceBtn.addEventListener('touchend', stopVoiceRecording);
-        voiceBtn.addEventListener('touchcancel', cancelVoiceRecording);
+        // Update button icon based on input state
+        function updateActionBtn() {
+            if (document.activeElement === messageInput && messageInput.value.trim() !== '') {
+                actionBtn.innerHTML = 'send';
+                actionBtn.onclick = sendMessage;
+            } else {
+                actionBtn.innerHTML = 'mic';
+                actionBtn.onclick = null; // handled by hold events
+            }
+        }
+
+        // Hold to record voice (mouse & touch)
+        actionBtn.addEventListener('mousedown', startVoiceRecording);
+        actionBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startVoiceRecording(); });
+
+        actionBtn.addEventListener('mouseup', stopAndAutoSendVoice);
+        actionBtn.addEventListener('mouseleave', stopAndAutoSendVoice);
+        actionBtn.addEventListener('touchend', stopAndAutoSendVoice);
+        actionBtn.addEventListener('touchcancel', cancelVoiceRecording);
+
+        // Swipe left to cancel on mobile
+        let touchStartX = 0;
+        actionBtn.addEventListener('touchstart', (e) => {
+            if (isRecording) touchStartX = e.touches[0].clientX;
+        });
+        actionBtn.addEventListener('touchmove', (e) => {
+            if (!isRecording) return;
+            const diff = touchStartX - e.touches[0].clientX;
+            if (diff > 100) {
+                cancelVoiceRecording();
+            }
+        });
 
         async function startVoiceRecording() {
+            if (document.activeElement === messageInput && messageInput.value.trim() !== '') return;
+
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream);
@@ -568,8 +581,9 @@
                 };
 
                 mediaRecorder.start();
+                isRecording = true;
                 recordingStartTime = Date.now();
-                voiceBtn.classList.add('recording');
+                actionBtn.classList.add('recording');
                 recordingOverlay.style.display = 'flex';
 
                 recordingTimer = setInterval(() => {
@@ -580,38 +594,39 @@
                 }, 200);
 
             } catch (err) {
-                toast("Microphone access denied or unavailable");
+                toast("Microphone access denied");
                 console.error(err);
             }
         }
 
-        function stopVoiceRecording() {
+        function stopRecording() {
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
             }
             clearInterval(recordingTimer);
-            voiceBtn.classList.remove('recording');
+            isRecording = false;
+            actionBtn.classList.remove('recording');
             recordingOverlay.style.display = 'none';
+            updateActionBtn();
         }
 
         function cancelVoiceRecording() {
-            stopVoiceRecording();
+            stopRecording();
             audioChunks = [];
             currentVoiceBlob = null;
             toast("Recording cancelled");
         }
 
-        async function stopAndSendVoice() {
-            stopVoiceRecording();
+        async function stopAndAutoSendVoice() {
+            stopRecording();
 
-            if (!currentVoiceBlob || currentVoiceBlob.size < 1000) {
-                toast("Recording too short");
+            if (!currentVoiceBlob || currentVoiceBlob.size === 0) {
                 currentVoiceBlob = null;
                 return;
             }
 
-            const duration = Math.round((Date.now() - recordingStartTime) / 1000);
-            toast("Uploading voice message...");
+            const duration = Math.max(1, Math.round((Date.now() - recordingStartTime) / 1000));
+            toast("Sending voice message...");
 
             const formData = new FormData();
             formData.append('file', currentVoiceBlob, 'voice.webm');
@@ -659,6 +674,17 @@
             const m = Math.floor(seconds / 60);
             const s = seconds % 60;
             return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        function toggleAudioPlay(btn) {
+            const audio = btn.nextElementSibling;
+            if (audio.paused) {
+                audio.play();
+                btn.querySelector('span').textContent = 'pause';
+            } else {
+                audio.pause();
+                btn.querySelector('span').textContent = 'play_arrow';
+            }
         }
 
         function listenToMyProfile() {
@@ -1544,10 +1570,10 @@
                         const url = decrypt(m.url, currentRoomId);
                         content = `
                             <div class="voice-message ${isSent ? 'sent' : ''}">
-                                <div class="voice-play-btn" onclick="this.nextElementSibling.play(); this.innerHTML='<span class=\\\"material-symbols-rounded\\\">pause</span>'">
+                                <div class="voice-play-btn" onclick="toggleAudioPlay(this)">
                                     <span class="material-symbols-rounded">play_arrow</span>
                                 </div>
-                                <audio src="${url}" onplay="this.previousElementSibling.innerHTML='<span class=\\\"material-symbols-rounded\\\">pause</span>'" onpause="this.previousElementSibling.innerHTML='<span class=\\\"material-symbols-rounded\\\">play_arrow</span>'"></audio>
+                                <audio src="${url}"></audio>
                                 <div class="voice-waveform"></div>
                                 <div class="voice-duration">${formatVoiceDuration(m.duration || 0)}</div>
                             </div>
@@ -1654,6 +1680,7 @@
                 updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
                 db.ref().update(updates);
                 input.value = '';
+                updateActionBtn();
             }).catch(err => {
                 toast("Failed to send (check internet)");
             });
@@ -1884,6 +1911,9 @@
             });
             history.pushState(null, null, location.href);
         }
+
+        // Initialize action button state
+        updateActionBtn();
     </script>
     <script>
         if ('serviceWorker' in navigator) {
