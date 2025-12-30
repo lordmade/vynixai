@@ -157,10 +157,26 @@
             cursor: pointer;
             box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         }
-        .driver-marker {
+        .online-driver-marker {
+            width: 40px;
+            height: 40px;
             background-image: url('https://cdn-icons-png.flaticon.com/512/3202/3202926.png');
-            background-size: cover; width: 32px; height: 32px;
-            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            background-size: contain;
+            background-repeat: no-repeat;
+            position: relative;
+        }
+        .online-driver-marker::after {
+            content: '';
+            position: absolute;
+            top: -4px; left: -4px; right: -4px; bottom: -4px;
+            border: 4px solid #2fbb66;
+            border-radius: 50%;
+            animation: ping 2s infinite;
+        }
+        @keyframes ping {
+            0% { transform: scale(1); opacity: 1; }
+            75% { transform: scale(1.4); opacity: 0; }
+            100% { transform: scale(1); opacity: 0; }
         }
         .pickup-dot {
             width: 18px; height: 18px; background: #3b82f6;
@@ -279,7 +295,6 @@
             margin-top: 12px;
             text-align: center;
         }
-        /* Progress bar */
         .progress-container {
             width: 100%;
             height: 6px;
@@ -314,7 +329,38 @@
         .share-btn .material-symbols-rounded, .message-btn .material-symbols-rounded {
             font-size: 24px;
         }
-        /* Chat Overlay */
+        /* History Overlay */
+        #historyOverlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: white; z-index: 50; display: none; flex-direction: column;
+        }
+        .history-header {
+            padding: 20px; background: var(--bolt-green); color: white;
+            display: flex; align-items: center; gap: 12px;
+        }
+        .history-header span { cursor: pointer; font-size: 28px; margin-left: auto; }
+        #historyList {
+            flex: 1; padding: 20px; overflow-y: auto;
+        }
+        .history-item {
+            background: #f9fafb; border-radius: 16px; padding: 16px; margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .history-item h4 {
+            font-size: 16px; font-weight: 700; margin-bottom: 8px;
+        }
+        .history-item p {
+            font-size: 14px; color: var(--text-sub); margin: 4px 0;
+        }
+        .history-item .fare {
+            font-size: 18px; font-weight: 800; margin-top: 12px;
+        }
+        .history-item .status {
+            font-size: 14px; font-weight: 600; margin-top: 8px;
+            color: #16a34a;
+        }
+        .history-item .status.completed { color: #16a34a; }
+        .history-item .status.cancelled { color: #dc2626; }
         #chatOverlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: white; z-index: 50; display: none; flex-direction: column;
@@ -516,6 +562,18 @@
         </div>
     </div>
 
+    <!-- Ride History Overlay -->
+    <div id="historyOverlay">
+        <div class="history-header">
+            <span class="material-symbols-rounded" onclick="closeHistory()">arrow_back</span>
+            <h3>Ride History</h3>
+        </div>
+        <div id="historyList">
+            <!-- History items will be injected here -->
+            <p style="text-align:center; color:var(--text-sub); padding:40px 20px;">No rides yet. Book your first ride!</p>
+        </div>
+    </div>
+
     <!-- Chat Overlay -->
     <div id="chatOverlay">
         <div class="chat-header">
@@ -561,14 +619,15 @@
         let assignedDriverId = null;
         let driverName = '';
         let currentRideStatus = 'pending';
-        let fullRouteLine = null; // Will store the full route geometry
-        const driverMarkers = {};
+        let fullRouteLine = null;
+        const onlineDriverMarkers = {};
         let assignedDriverMarker = null;
         let assignedDriverListener = null;
         let rideRequestListener = null;
         let etaInterval = null;
         let lastEtaMinutes = null;
         let chatListener = null;
+        let historyListener = null;
 
         function toggleDrawer() {
             const drawer = document.getElementById('sideDrawer');
@@ -579,18 +638,80 @@
    
         function handleDrawerClick(action) {
             toggleDrawer();
-            switch(action) {
-                case 'profile': showToast("Opening Profile..."); break;
-                case 'history': showToast("Opening Ride History..."); break;
-                case 'promotions': showToast("Opening Promotions..."); break;
-                case 'help': showToast("Opening Help & Support..."); break;
-                case 'driverapp': window.location.href = "drivers.html"; break;
-                case 'settings': showToast("Opening Settings..."); break;
-                case 'logout':
-                    auth.signOut().then(() => { window.location.href = "login.html"; }).catch((error) => { showToast("Logout failed: " + error.message); });
-                    break;
-                default: showToast("Feature coming soon!");
+            if (action === 'history') {
+                openHistory();
+            } else if (action === 'profile') {
+                showToast("Opening Profile...");
+            } else if (action === 'promotions') {
+                showToast("Opening Promotions...");
+            } else if (action === 'help') {
+                showToast("Opening Help & Support...");
+            } else if (action === 'driverapp') {
+                window.location.href = "drivers.html";
+            } else if (action === 'settings') {
+                showToast("Opening Settings...");
+            } else if (action === 'logout') {
+                auth.signOut().then(() => { window.location.href = "login.html"; }).catch((error) => { showToast("Logout failed: " + error.message); });
+            } else {
+                showToast("Feature coming soon!");
             }
+        }
+
+        function openHistory() {
+            document.getElementById('historyOverlay').style.display = 'flex';
+            loadRideHistory();
+        }
+
+        function closeHistory() {
+            document.getElementById('historyOverlay').style.display = 'none';
+            if (historyListener) {
+                historyListener.off();
+                historyListener = null;
+            }
+        }
+
+        function loadRideHistory() {
+            const list = document.getElementById('historyList');
+            list.innerHTML = '<p style="text-align:center; color:var(--text-sub); padding:40px 20px;">Loading...</p>';
+
+            const historyRef = db.ref('rideRequests')
+                .orderByChild('riderId')
+                .equalTo(currentUser.uid);
+
+            historyListener = historyRef.on('value', snap => {
+                const rides = snap.val();
+                list.innerHTML = '';
+                if (!rides || Object.keys(rides).length === 0) {
+                    list.innerHTML = '<p style="text-align:center; color:var(--text-sub); padding:40px 20px;">No rides yet. Book your first ride!</p>';
+                    return;
+                }
+
+                const rideArray = Object.entries(rides).reverse(); // newest first
+
+                rideArray.forEach(([key, ride]) => {
+                    const item = document.createElement('div');
+                    item.className = 'history-item';
+
+                    const date = new Date(ride.ts).toLocaleDateString('en-ZA', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+                    const time = new Date(ride.ts).toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' });
+
+                    let statusText = 'Completed';
+                    let statusClass = 'completed';
+                    if (ride.status === 'cancelled') {
+                        statusText = 'Cancelled';
+                        statusClass = 'cancelled';
+                    }
+
+                    item.innerHTML = `
+                        <h4>${ride.type || 'Ride'}</h4>
+                        <p>${date} at ${time}</p>
+                        <p>Fare: R ${ride.fare || '0.00'}</p>
+                        <div class="fare">R ${ride.fare || '0.00'}</div>
+                        <div class="status ${statusClass}">${statusText}</div>
+                    `;
+                    list.appendChild(item);
+                });
+            });
         }
    
         const map = new mapboxgl.Map({
@@ -601,7 +722,6 @@
         });
    
         map.on('load', () => {
-            // Full static route (gray background)
             map.addSource('route-full', {
                 type: 'geojson',
                 data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
@@ -614,7 +734,6 @@
                 paint: { 'line-color': '#a0a0a0', 'line-width': 8, 'line-opacity': 0.4 }
             });
 
-            // Progress route (black, on top)
             map.addSource('route-progress', {
                 type: 'geojson',
                 data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
@@ -627,7 +746,6 @@
                 paint: { 'line-color': '#000000', 'line-width': 8 }
             });
 
-            // Animated dashed line (on top of progress)
             map.addSource('route-dash', {
                 type: 'geojson',
                 data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
@@ -664,7 +782,7 @@
             if (user) {
                 currentUser = user;
                 loadProfile();
-                trackLiveDrivers();
+                trackOnlineDrivers();
                 requestLocation();
             } else { window.location.href = "login.html"; }
         });
@@ -677,17 +795,38 @@
             document.getElementById('drawerName').innerText = name;
         }
    
-        function trackLiveDrivers() {
+        function trackOnlineDrivers() {
             db.ref('driversAvailable').on('value', snap => {
                 const drivers = snap.val();
-                if (!drivers) return;
-                Object.keys(drivers).forEach(id => {
+                if (!drivers) {
+                    Object.keys(onlineDriverMarkers).forEach(id => {
+                        onlineDriverMarkers[id].remove();
+                        delete onlineDriverMarkers[id];
+                    });
+                    return;
+                }
+
+                const currentIds = Object.keys(drivers);
+
+                Object.keys(onlineDriverMarkers).forEach(id => {
+                    if (!currentIds.includes(id) && id !== assignedDriverId) {
+                        onlineDriverMarkers[id].remove();
+                        delete onlineDriverMarkers[id];
+                    }
+                });
+
+                currentIds.forEach(id => {
                     const d = drivers[id];
-                    if (driverMarkers[id]) {
-                        driverMarkers[id].setLngLat([d.lng, d.lat]);
+                    if (id === assignedDriverId) return;
+
+                    if (onlineDriverMarkers[id]) {
+                        onlineDriverMarkers[id].setLngLat([d.lng, d.lat]);
                     } else {
-                        const el = document.createElement('div'); el.className = 'driver-marker';
-                        driverMarkers[id] = new mapboxgl.Marker(el).setLngLat([d.lng, d.lat]).addTo(map);
+                        const el = document.createElement('div');
+                        el.className = 'online-driver-marker';
+                        onlineDriverMarkers[id] = new mapboxgl.Marker(el)
+                            .setLngLat([d.lng, d.lat])
+                            .addTo(map);
                     }
                 });
             });
@@ -943,15 +1082,17 @@
                         assignedDriverMarker.setLngLat(driverPos);
                     }
 
-                    // Calculate progress along the full route
+                    if (onlineDriverMarkers[driverId]) {
+                        onlineDriverMarkers[driverId].remove();
+                        delete onlineDriverMarkers[driverId];
+                    }
+
                     const progressLine = turf.lineSliceAlong(fullRouteLine, 0, turf.length(fullRouteLine) * calculateProgressPercentage(driverPos));
                     map.getSource('route-progress').setData(progressLine);
 
-                    // Update bottom sheet progress bar
                     const percent = calculateProgressPercentage(driverPos) * 100;
                     document.getElementById('routeProgress').style.width = percent + '%';
 
-                    // Adjust map view
                     let bounds = new mapboxgl.LngLatBounds().extend(driverPos);
                     if (currentRideStatus === 'accepted' || currentRideStatus === 'arrived') {
                         bounds.extend(pickupCoords);
@@ -970,7 +1111,7 @@
             const nearest = turf.nearestPointOnLine(fullRouteLine, driverPoint);
             const distanceAlong = nearest.properties.location;
             const totalLength = turf.length(fullRouteLine);
-            return Math.min(distanceAlong / totalLength, 1); // Clamp to 1
+            return Math.min(distanceAlong / totalLength, 1);
         }
 
         async function updateEta() {
@@ -1082,7 +1223,7 @@
    
         async function cancelBooking() {
             if (activeRideKey) {
-                await db.ref(`rideRequests/${activeRideKey}`).remove();
+                await db.ref(`rideRequests/${activeRideKey}`).update({ status: 'cancelled' });
                 activeRideKey = null;
                 assignedDriverId = null;
             }
