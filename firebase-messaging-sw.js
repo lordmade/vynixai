@@ -19,7 +19,7 @@ onBackgroundMessage(messaging, (payload) => {
   const notificationTitle = payload.notification?.title || 'New Message';
   const notificationOptions = {
     body: payload.notification?.body || 'You have a new message',
-    icon: '/icon-192x192.png'
+    icon: 'https://i.postimg.cc/W3Msxg6q/Gemini-Generated-Image-1oaeg71oaeg71oae.png'
   };
   self.registration.showNotification(notificationTitle, notificationOptions);
 });
