@@ -92,6 +92,10 @@
             background: linear-gradient(transparent, rgba(0,0,0,0.8));
             color: #fff; font-size: 13px;
         }
+        .status-views {
+            position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.6);
+            color: #fff; padding: 4px 10px; border-radius: 20px; font-size: 12px; cursor: pointer;
+        }
         .status-online-indicator {
             position: absolute;
             top: 10px;
@@ -443,6 +447,19 @@
             background: rgba(0,0,0,0.85); color: #fff; padding: 14px 28px; border-radius: 40px;
             display: none; align-items: center; gap: 16px; z-index: 5000;
         }
+        .viewer-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .viewer-item:last-child { border-bottom: none; }
+        .viewer-avatar {
+            width: 40px; height: 40px; border-radius: 50%; object-fit: cover; margin-right: 12px;
+        }
+        .viewer-info { flex: 1; }
+        .viewer-name { font-weight: 500; }
+        .viewer-time { font-size: 12px; color: var(--text-secondary); }
     </style>
 </head>
 <body>
@@ -605,6 +622,11 @@
         <button class="btn-primary btn-danger" onclick="executeUnfriend()">Remove Friend</button>
         <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeUnfriendModal()">Cancel</button>
     </div>
+    <!-- Views Bottom Sheet -->
+    <div class="bottom-sheet" id="viewsSheet">
+        <h2 style="margin:0 0 20px 0;">Views</h2>
+        <div id="viewsList"></div>
+    </div>
     <div id="reactionTutorial" class="reaction-tutorial">
         <span>💡 Tip:</span> Long press any message to react with an emoji!
     </div>
@@ -617,7 +639,7 @@
         const UPLOAD_PRESET = "banter_box";
         const secretBase = "Vynix_E2EE_Core_";
         const VAPID_PUBLIC_KEY = 'BDRGi03P4GgR-aTn-qKAYKg98Yx7jpOJhIQYRF9So6ROHdHuEfNWUOBngEhQp4CPw1ZhdiivZbqJy-CrP8PoIy0';
-   
+  
         const firebaseConfig = {
             apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
             authDomain: "fire-b-a8878.firebaseapp.com",
@@ -627,7 +649,7 @@
             messagingSenderId: "658673187627",
             appId: "1:658673187627:web:6e4c29af661785f0afa36e"
         };
-   
+  
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.database();
@@ -653,6 +675,8 @@
         let hasShownReactionTutorial = false;
         let currentStoryVideo = null;
         let currentStoryKey = null;
+        let currentStoryUid = null;
+        let currentStoryTs = null;
         let storyMuted = true;
         let isTransitioning = false;
         let typingTimeout = null;
@@ -680,62 +704,68 @@
         const messageInput = document.getElementById('messageInput');
         const actionBtn = document.getElementById('actionBtn');
         const recordingOverlay = document.getElementById('recordingOverlay');
-      function updateActionBtn() {
-    const hasText = messageInput.value.trim() !== '';
-    if (hasText) {
-        actionBtn.innerHTML = 'send';
-        actionBtn.style.cursor = 'pointer';
-        // Remove any recording-related classes
-        actionBtn.classList.remove('recording');
-    } else {
-        actionBtn.innerHTML = 'mic';
-        actionBtn.style.cursor = 'grab';
-    }
-}
-     let pressTimer;
-let touchStartX = 0;
-// For desktop - mouse events
-actionBtn.addEventListener('mousedown', (e) => {
-    if (messageInput.value.trim() !== '') return; // Don't start recording if there's text
-    pressTimer = setTimeout(() => startVoiceRecording(), 400);
-});
-actionBtn.addEventListener('mouseup', () => {
-    clearTimeout(pressTimer);
-    if (isRecording) stopAndAutoSendVoice();
-});
-actionBtn.addEventListener('mouseleave', () => {
-    clearTimeout(pressTimer);
-    if (isRecording) cancelVoiceRecording();
-});
-// For mobile - touch events
-actionBtn.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    if (messageInput.value.trim() !== '') return; // Don't start recording if there's text
-    pressTimer = setTimeout(() => startVoiceRecording(), 400);
-    if (isRecording) touchStartX = e.touches[0].clientX;
-});
-actionBtn.addEventListener('touchend', (e) => {
-    e.preventDefault();
-    clearTimeout(pressTimer);
-    if (isRecording) stopAndAutoSendVoice();
-});
-actionBtn.addEventListener('touchcancel', () => {
-    clearTimeout(pressTimer);
-    if (isRecording) cancelVoiceRecording();
-});
-actionBtn.addEventListener('touchmove', (e) => {
-    if (!isRecording) return;
-    const diff = touchStartX - e.touches[0].clientX;
-    if (diff > 100) cancelVoiceRecording();
-});
-// CRITICAL: Add click handler for text messages
-actionBtn.addEventListener('click', (e) => {
-    if (messageInput.value.trim() !== '') {
-        e.preventDefault();
-        e.stopPropagation();
-        sendMessage();
-    }
-});
+
+        // Views variables
+        let currentViewedStoryKey = null;
+        let currentViewedStoryUid = null;
+        let currentViewedStoryTs = null;
+
+        function updateActionBtn() {
+            const hasText = messageInput.value.trim() !== '';
+            if (hasText) {
+                actionBtn.innerHTML = 'send';
+                actionBtn.style.cursor = 'pointer';
+                actionBtn.classList.remove('recording');
+            } else {
+                actionBtn.innerHTML = 'mic';
+                actionBtn.style.cursor = 'grab';
+            }
+        }
+        let pressTimer;
+        let touchStartX = 0;
+        // For desktop - mouse events
+        actionBtn.addEventListener('mousedown', (e) => {
+            if (messageInput.value.trim() !== '') return;
+            pressTimer = setTimeout(() => startVoiceRecording(), 400);
+        });
+        actionBtn.addEventListener('mouseup', () => {
+            clearTimeout(pressTimer);
+            if (isRecording) stopAndAutoSendVoice();
+        });
+        actionBtn.addEventListener('mouseleave', () => {
+            clearTimeout(pressTimer);
+            if (isRecording) cancelVoiceRecording();
+        });
+        // For mobile - touch events
+        actionBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (messageInput.value.trim() !== '') return;
+            pressTimer = setTimeout(() => startVoiceRecording(), 400);
+            if (isRecording) touchStartX = e.touches[0].clientX;
+        });
+        actionBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            clearTimeout(pressTimer);
+            if (isRecording) stopAndAutoSendVoice();
+        });
+        actionBtn.addEventListener('touchcancel', () => {
+            clearTimeout(pressTimer);
+            if (isRecording) cancelVoiceRecording();
+        });
+        actionBtn.addEventListener('touchmove', (e) => {
+            if (!isRecording) return;
+            const diff = touchStartX - e.touches[0].clientX;
+            if (diff > 100) cancelVoiceRecording();
+        });
+        // Click for sending text
+        actionBtn.addEventListener('click', (e) => {
+            if (messageInput.value.trim() !== '') {
+                e.preventDefault();
+                e.stopPropagation();
+                sendMessage();
+            }
+        });
+
         async function startVoiceRecording() {
             try {
                 const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
@@ -764,7 +794,6 @@ actionBtn.addEventListener('click', (e) => {
                 recordingStartTime = Date.now();
                 actionBtn.classList.add('recording');
                 recordingOverlay.style.display = 'flex';
-                // Real-time waveform visualization
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const source = audioContext.createMediaStreamSource(stream);
                 analyser = audioContext.createAnalyser();
@@ -901,13 +930,13 @@ actionBtn.addEventListener('click', (e) => {
                 myProfile.name = data.name || "";
                 myProfile.photo = data.photo || "";
                 myVId = data.vynixId || myVId;
-           
+          
                 document.getElementById('myAvatar').src = myProfile.photo;
                 document.getElementById('settingsAvatar').src = myProfile.photo;
                 document.getElementById('editDisplayName').value = myProfile.name;
                 document.getElementById('myAvatar').classList.remove('shimmer');
                 document.getElementById('settingsAvatar').classList.remove('shimmer');
-           
+          
                 updateVisibleMomentsOwnerInfo();
                 localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
                 updateMyIdDisplay();
@@ -923,10 +952,10 @@ actionBtn.addEventListener('click', (e) => {
         }
         function setupFriendProfileListener(friendUid) {
             if (friendProfileListeners[friendUid]) return;
-       
+      
             const listener = db.ref(`users/${friendUid}/profile`).on('value', snap => {
                 const data = snap.val() || { name: "User", photo: "" };
-           
+          
                 const chatCards = document.querySelectorAll('#chatList .chat-card');
                 chatCards.forEach(card => {
                     const avatarBox = card.querySelector('.avatar-box');
@@ -937,17 +966,17 @@ actionBtn.addEventListener('click', (e) => {
                         if (nameSpan) nameSpan.textContent = data.name;
                     }
                 });
-           
+          
                 if (currentFriendUid === friendUid) {
                     document.getElementById('chatFriendAvatar').src = data.photo || '';
                     document.getElementById('chatFriendName').textContent = data.name;
                 }
-           
+          
                 if (profileDetailFriendUid === friendUid) {
                     document.getElementById('detailName').textContent = data.name;
                     document.getElementById('detailImg').src = data.photo || '';
                 }
-           
+          
                 if (document.getElementById('storyViewer').style.display === 'block') {
                     const headerName = document.getElementById('storyHeaderInfo').querySelector('b');
                     if (headerName && storyQueue.length > 0 && storyQueue[storyIndex]) {
@@ -958,15 +987,15 @@ actionBtn.addEventListener('click', (e) => {
                     }
                 }
             });
-       
+      
             friendProfileListeners[friendUid] = listener;
         }
         function setupOnlineStatusListener(friendUid) {
             if (onlineStatusListeners[friendUid]) return;
-       
+      
             const listener = db.ref(`users/${friendUid}/online`).on('value', snap => {
                 const isOnline = snap.val() === true;
-           
+          
                 const chatCards = document.querySelectorAll('#chatList .chat-card');
                 chatCards.forEach(card => {
                     const avatarBox = card.querySelector('.avatar-box');
@@ -983,7 +1012,7 @@ actionBtn.addEventListener('click', (e) => {
                         }
                     }
                 });
-           
+          
                 const statusCards = document.querySelectorAll('.status-card');
                 statusCards.forEach(card => {
                     if (card.dataset.friendUid === friendUid) {
@@ -999,7 +1028,7 @@ actionBtn.addEventListener('click', (e) => {
                         }
                     }
                 });
-           
+          
                 if (currentFriendUid === friendUid) {
                     const headerOnline = document.getElementById('chatHeaderOnline');
                     headerOnline.style.display = isOnline ? 'block' : 'none';
@@ -1009,7 +1038,7 @@ actionBtn.addEventListener('click', (e) => {
                     updateProfileDetailStatus(friendUid);
                 }
             });
-       
+      
             onlineStatusListeners[friendUid] = listener;
         }
         function updateChatStatusText(isOnline = null) {
@@ -1160,7 +1189,7 @@ actionBtn.addEventListener('click', (e) => {
                 myProfile.name = data.name || "";
                 myProfile.photo = data.photo || "";
                 myVId = data.vynixId || "";
-           
+          
                 document.getElementById('myAvatar').src = myProfile.photo;
                 document.getElementById('settingsAvatar').src = myProfile.photo;
                 document.getElementById('editDisplayName').value = myProfile.name;
@@ -1447,65 +1476,24 @@ actionBtn.addEventListener('click', (e) => {
                 toast("No internet - try again when online");
             }
         }
-        function loadMoments() {
-            db.ref('moments').on('value', snap => {
-                const grid = document.getElementById('statusGrid');
-                grid.innerHTML = "";
-                cachedMoments = {};
-                const now = Date.now();
-                snap.forEach(userNode => {
-                    let items = [];
-                    const uid = userNode.key;
-                    userNode.forEach(m => {
-                        const val = m.val();
-                        val.key = m.key;
-                        val.uid = uid;
-                        if (uid === currentUser.uid) {
-                            val.name = myProfile.name || val.name || "User";
-                            val.photo = myProfile.photo || val.photo || "";
-                        }
-                        if(now - val.ts < 86400000) items.push(val);
-                    });
-                    if(items.length) {
-                        cachedMoments[uid] = items;
-                        const last = items[items.length-1];
-                        grid.innerHTML += `
-                            <div class="status-card" data-friend-uid="${uid}" onclick="openStories('${uid}')">
-                                ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
-                                <div class="status-info"><b>${last.name}</b></div>
-                            </div>`;
-                        setupFriendProfileListener(uid);
-                        setupOnlineStatusListener(uid);
-                    }
-                });
-                localStorage.setItem('vynix_moments', JSON.stringify(cachedMoments));
-            }, (error) => {
-                console.log('Moments offline, using cache');
-                renderMomentsFromCache();
-            });
+        function formatViewTime(viewTs, storyTs) {
+            const viewDate = new Date(viewTs);
+            const storyDate = new Date(storyTs);
+            if (viewDate.toDateString() === storyDate.toDateString()) {
+                return viewDate.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+            } else {
+                return viewDate.toLocaleDateString([], {month: 'short', day: 'numeric'});
+            }
         }
-        function openStories(uid) {
-            setupFriendProfileListener(uid);
-            setupOnlineStatusListener(uid);
-            db.ref(`moments/${uid}`).once('value', snap => {
-                storyQueue = [];
-                const now = Date.now();
-                snap.forEach(s => {
-                    const val = s.val();
-                    val.key = s.key;
-                    val.uid = uid;
-                    if (uid === currentUser.uid) {
-                        val.name = myProfile.name || val.name || "User";
-                        val.photo = myProfile.photo || val.photo || "";
-                    }
-                    if(now - val.ts < 86400000) storyQueue.push(val);
-                });
-                storyIndex = 0;
-                document.getElementById('storyViewer').style.display = 'block';
-                showStory();
-            });
+        async function markStoryAsViewed(storyUid, storyKey) {
+            if (storyUid === currentUser.uid || !currentUser) return;
+            const viewRef = db.ref(`moments/${storyUid}/${storyKey}/views/${currentUser.uid}`);
+            const snap = await viewRef.once('value');
+            if (!snap.exists()) {
+                await viewRef.set(firebase.database.ServerValue.TIMESTAMP);
+            }
         }
-        function showStory() {
+        async function showStory() {
             clearTimeout(storyTimer);
             if (currentStoryVideo) {
                 currentStoryVideo.pause();
@@ -1515,6 +1503,11 @@ actionBtn.addEventListener('click', (e) => {
             if(storyIndex < 0) storyIndex = 0;
             const story = storyQueue[storyIndex];
             currentStoryKey = story.key;
+            currentStoryUid = story.uid;
+            currentStoryTs = story.ts;
+
+            markStoryAsViewed(story.uid, story.key);
+
             const media = document.getElementById('storyMedia');
             const progress = document.getElementById('storyProgressBars');
             const header = document.getElementById('storyHeaderInfo');
@@ -1544,6 +1537,142 @@ actionBtn.addEventListener('click', (e) => {
             }, 50);
             const duration = story.type === 'video' ? (story.duration || 60) * 1000 : 5000;
             storyTimer = setTimeout(() => { storyIndex++; showStory(); }, duration);
+
+            if (story.uid === currentUser.uid) {
+                const viewsRef = db.ref(`moments/${story.uid}/${story.key}/views`);
+                viewsRef.on('value', snap => {
+                    const views = snap.val() || {};
+                    const count = Object.keys(views).length;
+                    let viewsBadge = media.querySelector('.status-views');
+                    if (!viewsBadge) {
+                        viewsBadge = document.createElement('div');
+                        viewsBadge.className = 'status-views';
+                        viewsBadge.onclick = (e) => {
+                            e.stopPropagation();
+                            showViewsList(story.uid, story.key, story.ts);
+                        };
+                        media.appendChild(viewsBadge);
+                    }
+                    viewsBadge.innerHTML = `<span class="material-symbols-rounded" style="font-size:18px;vertical-align:middle;">visibility</span> ${count}`;
+                    viewsBadge.style.display = count > 0 ? 'block' : 'none';
+                });
+            } else {
+                let viewsBadge = media.querySelector('.status-views');
+                if (viewsBadge) viewsBadge.remove();
+            }
+        }
+        async function showViewsList(storyUid, storyKey, storyTs) {
+            currentViewedStoryUid = storyUid;
+            currentViewedStoryKey = storyKey;
+            currentViewedStoryTs = storyTs;
+            const viewsRef = db.ref(`moments/${storyUid}/${storyKey}/views`);
+            const snap = await viewsRef.once('value');
+            const views = snap.val() || {};
+            const viewerEntries = Object.entries(views);
+            viewerEntries.sort((a, b) => b[1] - a[1]);
+
+            const list = document.getElementById('viewsList');
+            list.innerHTML = viewerEntries.length === 0 ? '<p style="text-align:center;color:#999;">No views yet</p>' : '';
+
+            for (const [uid, viewTs] of viewerEntries) {
+                const profileSnap = await db.ref(`users/${uid}/profile`).once('value');
+                const profile = profileSnap.val() || { name: "User", photo: "" };
+                const viewTime = formatViewTime(viewTs, storyTs);
+                const item = document.createElement('div');
+                item.className = 'viewer-item';
+                item.innerHTML = `
+                    <img class="viewer-avatar" src="${profile.photo || ''}">
+                    <div class="viewer-info">
+                        <div class="viewer-name">${profile.name}</div>
+                        <div class="viewer-time">Viewed at ${viewTime}</div>
+                    </div>
+                `;
+                list.appendChild(item);
+            }
+
+            document.getElementById('overlay').style.display = 'block';
+            document.getElementById('viewsSheet').classList.add('active');
+        }
+        function closeViewsSheet() {
+            document.getElementById('viewsSheet').classList.remove('active');
+            document.getElementById('overlay').style.display = 'none';
+            document.getElementById('viewsList').innerHTML = '';
+        }
+        function closeAll() {
+            document.querySelectorAll('.bottom-sheet').forEach(s => s.classList.remove('active'));
+            document.getElementById('overlay').style.display = 'none';
+            closeViewsSheet();
+        }
+        function loadMoments() {
+            db.ref('moments').on('value', snap => {
+                const grid = document.getElementById('statusGrid');
+                grid.innerHTML = "";
+                cachedMoments = {};
+                const now = Date.now();
+                snap.forEach(userNode => {
+                    let items = [];
+                    const uid = userNode.key;
+                    userNode.forEach(m => {
+                        const val = m.val();
+                        val.key = m.key;
+                        val.uid = uid;
+                        if (uid === currentUser.uid) {
+                            val.name = myProfile.name || val.name || "User";
+                            val.photo = myProfile.photo || val.photo || "";
+                        }
+                        if(now - val.ts < 86400000) items.push(val);
+                    });
+                    if(items.length) {
+                        cachedMoments[uid] = items;
+                        const last = items[items.length-1];
+                        const isOwn = uid === currentUser.uid;
+                        grid.innerHTML += `
+                            <div class="status-card" data-friend-uid="${uid}" onclick="openStories('${uid}')">
+                                ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
+                                <div class="status-info"><b>${last.name}</b></div>
+                                ${isOwn ? `<div class="status-views" onclick="event.stopPropagation(); showViewsList('${uid}', '${last.key}', '${last.ts}')"><span class="material-symbols-rounded" style="font-size:18px;vertical-align:middle;">visibility</span> 0</div>` : ''}
+                            </div>`;
+                        setupFriendProfileListener(uid);
+                        setupOnlineStatusListener(uid);
+
+                        if (isOwn) {
+                            db.ref(`moments/${uid}/${last.key}/views`).on('value', vsnap => {
+                                const count = Object.keys(vsnap.val() || {}).length;
+                                const badge = grid.querySelector(`.status-card[data-friend-uid="${uid}"] .status-views`);
+                                if (badge) {
+                                    badge.innerHTML = `<span class="material-symbols-rounded" style="font-size:18px;vertical-align:middle;">visibility</span> ${count}`;
+                                    badge.style.display = count > 0 ? 'block' : 'none';
+                                }
+                            });
+                        }
+                    }
+                });
+                localStorage.setItem('vynix_moments', JSON.stringify(cachedMoments));
+            }, (error) => {
+                console.log('Moments offline, using cache');
+                renderMomentsFromCache();
+            });
+        }
+        function openStories(uid) {
+            setupFriendProfileListener(uid);
+            setupOnlineStatusListener(uid);
+            db.ref(`moments/${uid}`).once('value', snap => {
+                storyQueue = [];
+                const now = Date.now();
+                snap.forEach(s => {
+                    const val = s.val();
+                    val.key = s.key;
+                    val.uid = uid;
+                    if (uid === currentUser.uid) {
+                        val.name = myProfile.name || val.name || "User";
+                        val.photo = myProfile.photo || val.photo || "";
+                    }
+                    if(now - val.ts < 86400000) storyQueue.push(val);
+                });
+                storyIndex = 0;
+                document.getElementById('storyViewer').style.display = 'block';
+                showStory();
+            });
         }
         function handleStoryTap(e) {
             if (e.target.closest('.story-sound-btn') || e.target.closest('.story-delete')) return;
@@ -1565,6 +1694,8 @@ actionBtn.addEventListener('click', (e) => {
             document.getElementById('storySoundBtn').style.display = 'none';
             document.getElementById('storyDeleteBtn').style.display = 'none';
             currentStoryKey = null;
+            currentStoryUid = null;
+            currentStoryTs = null;
         }
         function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
@@ -1841,40 +1972,38 @@ actionBtn.addEventListener('click', (e) => {
             }
         }
         function sendMessage() {
-    const text = messageInput.value.trim();
-    if (!text || !currentRoomId) return;
-  
-    const encrypted = CryptoJS.AES.encrypt(text, secretBase + currentRoomId).toString();
-    const msgRef = db.ref(`messages/${currentRoomId}`).push();
-  
-    msgRef.set({
-        text: encrypted,
-        sender: currentUser.uid,
-        ts: Date.now(),
-        reactions: {}
-    }).then(() => {
-        const updates = {};
-        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
-        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
-        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
-      
-        return db.ref().update(updates);
-    }).then(() => {
-        // Clear input and update button
-        messageInput.value = '';
-        updateActionBtn();
-      
-        // Clear typing status
-        if (currentRoomId) {
-            db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
+            const text = messageInput.value.trim();
+            if (!text || !currentRoomId) return;
+         
+            const encrypted = CryptoJS.AES.encrypt(text, secretBase + currentRoomId).toString();
+            const msgRef = db.ref(`messages/${currentRoomId}`).push();
+         
+            msgRef.set({
+                text: encrypted,
+                sender: currentUser.uid,
+                ts: Date.now(),
+                reactions: {}
+            }).then(() => {
+                const updates = {};
+                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+             
+                return db.ref().update(updates);
+            }).then(() => {
+                messageInput.value = '';
+                updateActionBtn();
+             
+                if (currentRoomId) {
+                    db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
+                }
+            }).catch(err => {
+                toast("Failed to send (check internet)");
+                console.error(err);
+            });
         }
-    }).catch(err => {
-        toast("Failed to send (check internet)");
-        console.error(err);
-    });
-}
         function handleEnter(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -2036,10 +2165,6 @@ actionBtn.addEventListener('click', (e) => {
             if (id === 'settingsSheet') {
                 updateMyIdDisplay();
             }
-        }
-        function closeAll() {
-            document.querySelectorAll('.bottom-sheet').forEach(s=>s.classList.remove('active'));
-            document.getElementById('overlay').style.display='none';
         }
         function toast(m) {
             const t=document.getElementById('toast');
