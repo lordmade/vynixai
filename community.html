@@ -438,12 +438,16 @@
             border-radius: 2px;
             transition: height 0.1s ease;
         }
+        #callControls {
+            position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.85); color: #fff; padding: 14px 28px; border-radius: 40px;
+            display: none; align-items: center; gap: 16px; z-index: 5000;
+        }
     </style>
 </head>
 <body>
     <div id="toast"></div>
     <div id="offlineIndicator">Offline • Using cached data</div>
- 
     <header>
         <div onclick="openSheet('settingsSheet')">
             <img id="myAvatar" class="user-profile shimmer" src="">
@@ -541,7 +545,8 @@
                 <div id="chatStatusInfo">Loading...</div>
             </div>
             <div class="chat-header-right">
-                <span class="material-symbols-rounded chat-header-icon" onclick="clearChatHistory()">delete_sweep</span>
+                <span class="material-symbols-rounded chat-header-icon" onclick="startVoiceCall()">call</span>
+                <span class="material-symbols-rounded chat-header-icon" onclick="confirmClearChat()">delete_sweep</span>
             </div>
         </div>
         <div id="messageList">
@@ -556,6 +561,11 @@
             <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="handleEnter(event)" oninput="updateActionBtn()">
             <span class="material-symbols-rounded" id="actionBtn">mic</span>
         </div>
+        <div id="callControls">
+            <span class="material-symbols-rounded" style="font-size:36px; color:var(--online-green);">phone_in_talk</span>
+            <div id="callTimer">00:00</div>
+            <span class="material-symbols-rounded" style="font-size:36px; color:#ff3b30; cursor:pointer;" onclick="endCall()">call_end</span>
+        </div>
     </div>
     <!-- Voice Recording Overlay -->
     <div id="recordingOverlay" class="recording-overlay">
@@ -564,8 +574,7 @@
         <div id="recordingWaveform"></div>
         <div class="recording-label">Slide left to cancel</div>
     </div>
-
-    <!-- Custom Delete Alert -->
+    <!-- Custom Alerts -->
     <div class="custom-alert" id="deleteMessageAlert">
         <div class="custom-alert-box">
             <div class="custom-alert-title">Delete Message?</div>
@@ -574,7 +583,22 @@
             <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeCustomAlert('deleteMessageAlert')">Cancel</button>
         </div>
     </div>
-
+    <div class="custom-alert" id="clearChatAlert">
+        <div class="custom-alert-box">
+            <div class="custom-alert-title">Clear Chat?</div>
+            <div class="custom-alert-message">This will delete all messages in this conversation for everyone.</div>
+            <button class="btn-primary btn-danger" onclick="executeClearChat()">Clear Chat</button>
+            <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeCustomAlert('clearChatAlert')">Cancel</button>
+        </div>
+    </div>
+    <div class="custom-alert" id="incomingCallAlert">
+        <div class="custom-alert-box">
+            <div class="custom-alert-title">Incoming Voice Call</div>
+            <div class="custom-alert-message">From <span id="callerName"></span></div>
+            <button class="btn-primary" style="background:var(--online-green);" onclick="acceptCall()">Accept</button>
+            <button class="btn-primary btn-danger" style="margin-top:12px;" onclick="rejectCall()">Reject</button>
+        </div>
+    </div>
     <div class="bottom-sheet" id="unfriendModal">
         <h3>Remove Friend?</h3>
         <p style="color:var(--text-secondary); font-size:14px;">This will delete all messages and remove <strong id="unfriendName"></strong> from your contacts.</p>
@@ -593,7 +617,7 @@
         const UPLOAD_PRESET = "banter_box";
         const secretBase = "Vynix_E2EE_Core_";
         const VAPID_PUBLIC_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuFGkrN1V6Bh5ay3mW3K3arMGo';
-     
+    
         const firebaseConfig = {
             apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
             authDomain: "fire-b-a8878.firebaseapp.com",
@@ -603,7 +627,7 @@
             messagingSenderId: "658673187627",
             appId: "1:658673187627:web:6e4c29af661785f0afa36e"
         };
-     
+    
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
         const db = firebase.database();
@@ -646,11 +670,16 @@
         let analyser = null;
         let dataArray = null;
         let waveformInterval = null;
-
+        // Voice Call Variables
+        let localStream = null;
+        let remoteStream = null;
+        let peerConnection = null;
+        let callTimerInterval = null;
+        let isCaller = false;
+        let incomingCallListener = null;
         const messageInput = document.getElementById('messageInput');
         const actionBtn = document.getElementById('actionBtn');
         const recordingOverlay = document.getElementById('recordingOverlay');
-
       function updateActionBtn() {
     const hasText = messageInput.value.trim() !== '';
     if (hasText) {
@@ -663,26 +692,21 @@
         actionBtn.style.cursor = 'grab';
     }
 }
-
      let pressTimer;
 let touchStartX = 0;
-
 // For desktop - mouse events
 actionBtn.addEventListener('mousedown', (e) => {
     if (messageInput.value.trim() !== '') return; // Don't start recording if there's text
     pressTimer = setTimeout(() => startVoiceRecording(), 400);
 });
-
 actionBtn.addEventListener('mouseup', () => {
     clearTimeout(pressTimer);
     if (isRecording) stopAndAutoSendVoice();
 });
-
 actionBtn.addEventListener('mouseleave', () => {
     clearTimeout(pressTimer);
     if (isRecording) cancelVoiceRecording();
 });
-
 // For mobile - touch events
 actionBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
@@ -690,24 +714,20 @@ actionBtn.addEventListener('touchstart', (e) => {
     pressTimer = setTimeout(() => startVoiceRecording(), 400);
     if (isRecording) touchStartX = e.touches[0].clientX;
 });
-
 actionBtn.addEventListener('touchend', (e) => {
     e.preventDefault();
     clearTimeout(pressTimer);
     if (isRecording) stopAndAutoSendVoice();
 });
-
 actionBtn.addEventListener('touchcancel', () => {
     clearTimeout(pressTimer);
     if (isRecording) cancelVoiceRecording();
 });
-
 actionBtn.addEventListener('touchmove', (e) => {
     if (!isRecording) return;
     const diff = touchStartX - e.touches[0].clientX;
     if (diff > 100) cancelVoiceRecording();
 });
-
 // CRITICAL: Add click handler for text messages
 actionBtn.addEventListener('click', (e) => {
     if (messageInput.value.trim() !== '') {
@@ -720,7 +740,6 @@ actionBtn.addEventListener('click', (e) => {
             try {
                 const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
                                       MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-
                 const stream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         echoCancellation: true,
@@ -728,12 +747,10 @@ actionBtn.addEventListener('click', (e) => {
                         autoGainControl: false
                     }
                 });
-
                 const options = {
                     mimeType: preferredMime,
                     audioBitsPerSecond: 128000
                 };
-
                 mediaRecorder = new MediaRecorder(stream, options);
                 audioChunks = [];
                 mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
@@ -747,7 +764,6 @@ actionBtn.addEventListener('click', (e) => {
                 recordingStartTime = Date.now();
                 actionBtn.classList.add('recording');
                 recordingOverlay.style.display = 'flex';
-
                 // Real-time waveform visualization
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const source = audioContext.createMediaStreamSource(stream);
@@ -756,7 +772,6 @@ actionBtn.addEventListener('click', (e) => {
                 source.connect(analyser);
                 dataArray = new Uint8Array(analyser.frequencyBinCount);
                 waveformInterval = setInterval(updateWaveform, 50);
-
                 recordingTimer = setInterval(() => {
                     const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
                     const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -768,7 +783,6 @@ actionBtn.addEventListener('click', (e) => {
                 console.error(err);
             }
         }
-
         function updateWaveform() {
             if (!analyser) return;
             analyser.getByteFrequencyData(dataArray);
@@ -782,7 +796,6 @@ actionBtn.addEventListener('click', (e) => {
                 waveform.appendChild(bar);
             }
         }
-
         function stopWaveformVisualization() {
             if (waveformInterval) clearInterval(waveformInterval);
             waveformInterval = null;
@@ -795,7 +808,6 @@ actionBtn.addEventListener('click', (e) => {
             const waveform = document.getElementById('recordingWaveform');
             if (waveform) waveform.innerHTML = '';
         }
-
         function stopRecording() {
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.stop();
@@ -807,14 +819,12 @@ actionBtn.addEventListener('click', (e) => {
             updateActionBtn();
             stopWaveformVisualization();
         }
-
         function cancelVoiceRecording() {
             stopRecording();
             audioChunks = [];
             currentVoiceBlob = null;
             toast("Recording cancelled");
         }
-
         async function stopAndAutoSendVoice() {
             stopRecording();
             if (!currentVoiceBlob || currentVoiceBlob.size === 0) return;
@@ -857,13 +867,11 @@ actionBtn.addEventListener('click', (e) => {
                 audioChunks = [];
             }
         }
-
         function formatVoiceDuration(seconds) {
             const m = Math.floor(seconds / 60);
             const s = seconds % 60;
             return `${m}:${s.toString().padStart(2, '0')}`;
         }
-
         function toggleAudioPlay(btn) {
             const audio = btn.nextElementSibling;
             const waveform = audio.nextElementSibling.nextElementSibling;
@@ -887,26 +895,24 @@ actionBtn.addEventListener('click', (e) => {
                 currentPlayingAudio = null;
             }
         }
-
         function listenToMyProfile() {
             db.ref(`users/${currentUser.uid}/profile`).on('value', snap => {
                 const data = snap.val() || {};
                 myProfile.name = data.name || "";
                 myProfile.photo = data.photo || "";
                 myVId = data.vynixId || myVId;
-             
+            
                 document.getElementById('myAvatar').src = myProfile.photo;
                 document.getElementById('settingsAvatar').src = myProfile.photo;
                 document.getElementById('editDisplayName').value = myProfile.name;
                 document.getElementById('myAvatar').classList.remove('shimmer');
                 document.getElementById('settingsAvatar').classList.remove('shimmer');
-             
+            
                 updateVisibleMomentsOwnerInfo();
                 localStorage.setItem('vynix_profile', JSON.stringify({name: myProfile.name, photo: myProfile.photo, vynixId: myVId}));
                 updateMyIdDisplay();
             });
         }
-
         function updateVisibleMomentsOwnerInfo() {
             if (document.getElementById('storyViewer').style.display === 'block') {
                 const header = document.getElementById('storyHeaderInfo');
@@ -915,13 +921,12 @@ actionBtn.addEventListener('click', (e) => {
                 }
             }
         }
-
         function setupFriendProfileListener(friendUid) {
             if (friendProfileListeners[friendUid]) return;
-         
+        
             const listener = db.ref(`users/${friendUid}/profile`).on('value', snap => {
                 const data = snap.val() || { name: "User", photo: "" };
-             
+            
                 const chatCards = document.querySelectorAll('#chatList .chat-card');
                 chatCards.forEach(card => {
                     const avatarBox = card.querySelector('.avatar-box');
@@ -932,17 +937,17 @@ actionBtn.addEventListener('click', (e) => {
                         if (nameSpan) nameSpan.textContent = data.name;
                     }
                 });
-             
+            
                 if (currentFriendUid === friendUid) {
                     document.getElementById('chatFriendAvatar').src = data.photo || '';
                     document.getElementById('chatFriendName').textContent = data.name;
                 }
-             
+            
                 if (profileDetailFriendUid === friendUid) {
                     document.getElementById('detailName').textContent = data.name;
                     document.getElementById('detailImg').src = data.photo || '';
                 }
-             
+            
                 if (document.getElementById('storyViewer').style.display === 'block') {
                     const headerName = document.getElementById('storyHeaderInfo').querySelector('b');
                     if (headerName && storyQueue.length > 0 && storyQueue[storyIndex]) {
@@ -953,16 +958,15 @@ actionBtn.addEventListener('click', (e) => {
                     }
                 }
             });
-         
+        
             friendProfileListeners[friendUid] = listener;
         }
-
         function setupOnlineStatusListener(friendUid) {
             if (onlineStatusListeners[friendUid]) return;
-         
+        
             const listener = db.ref(`users/${friendUid}/online`).on('value', snap => {
                 const isOnline = snap.val() === true;
-             
+            
                 const chatCards = document.querySelectorAll('#chatList .chat-card');
                 chatCards.forEach(card => {
                     const avatarBox = card.querySelector('.avatar-box');
@@ -979,7 +983,7 @@ actionBtn.addEventListener('click', (e) => {
                         }
                     }
                 });
-             
+            
                 const statusCards = document.querySelectorAll('.status-card');
                 statusCards.forEach(card => {
                     if (card.dataset.friendUid === friendUid) {
@@ -995,7 +999,7 @@ actionBtn.addEventListener('click', (e) => {
                         }
                     }
                 });
-             
+            
                 if (currentFriendUid === friendUid) {
                     const headerOnline = document.getElementById('chatHeaderOnline');
                     headerOnline.style.display = isOnline ? 'block' : 'none';
@@ -1005,10 +1009,9 @@ actionBtn.addEventListener('click', (e) => {
                     updateProfileDetailStatus(friendUid);
                 }
             });
-         
+        
             onlineStatusListeners[friendUid] = listener;
         }
-
         function updateChatStatusText(isOnline = null) {
             const statusEl = document.getElementById('chatStatusInfo');
             if (isOnline === true) {
@@ -1026,7 +1029,6 @@ actionBtn.addEventListener('click', (e) => {
                 });
             }
         }
-
         function generateVynixId() {
             const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
             let suffix = '';
@@ -1035,7 +1037,6 @@ actionBtn.addEventListener('click', (e) => {
             }
             return 'vnx_' + suffix;
         }
-
         async function generateAndAssignVynixId() {
             let attempts = 0;
             const maxAttempts = 20;
@@ -1050,15 +1051,12 @@ actionBtn.addEventListener('click', (e) => {
             toast('Failed to generate unique ID. Try again later.');
             return null;
         }
-
         function updateOnlineStatus() {
             isOnline = navigator.onLine;
             document.getElementById('offlineIndicator').style.display = isOnline ? 'none' : 'block';
         }
-
         window.addEventListener('online', updateOnlineStatus);
         window.addEventListener('offline', updateOnlineStatus);
-
         class PushNotificationManager {
             constructor() {
                 this.isSupported = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
@@ -1147,7 +1145,6 @@ actionBtn.addEventListener('click', (e) => {
             }
         }
         const pushManager = new PushNotificationManager();
-
         auth.onAuthStateChanged(user => {
             if (user) {
                 currentUser = user;
@@ -1156,7 +1153,6 @@ actionBtn.addEventListener('click', (e) => {
                 window.location.href = "login.html";
             }
         });
-
         async function initApp() {
             const cachedProfile = localStorage.getItem('vynix_profile');
             if (cachedProfile) {
@@ -1164,7 +1160,7 @@ actionBtn.addEventListener('click', (e) => {
                 myProfile.name = data.name || "";
                 myProfile.photo = data.photo || "";
                 myVId = data.vynixId || "";
-             
+            
                 document.getElementById('myAvatar').src = myProfile.photo;
                 document.getElementById('settingsAvatar').src = myProfile.photo;
                 document.getElementById('editDisplayName').value = myProfile.name;
@@ -1216,8 +1212,27 @@ actionBtn.addEventListener('click', (e) => {
             myPresenceRef.onDisconnect().set(false);
             db.ref(`users/${currentUser.uid}/lastSeen`).set(firebase.database.ServerValue.TIMESTAMP);
             db.ref(`users/${currentUser.uid}/lastSeen`).onDisconnect().set(firebase.database.ServerValue.TIMESTAMP);
+            setupIncomingCallListener();
         }
-
+        function setupIncomingCallListener() {
+            incomingCallListener = db.ref(`incomingCalls/${currentUser.uid}`).on('value', async snap => {
+                const callData = snap.val();
+                if (callData) {
+                    const profileSnap = await db.ref(`users/${callData.caller}/profile`).once('value');
+                    const profile = profileSnap.val() || { name: "User", photo: "" };
+                    document.getElementById('callerName').textContent = profile.name;
+                    document.getElementById('incomingCallAlert').classList.add('active');
+                    if (currentFriendUid !== callData.caller) {
+                        openFullChat(callData.caller, profile.name, profile.photo);
+                    }
+                    setTimeout(() => {
+                        if (document.getElementById('incomingCallAlert').classList.contains('active')) {
+                            rejectCall();
+                        }
+                    }, 60000);
+                }
+            });
+        }
         function updateMyIdDisplay() {
             const el = document.getElementById('myVynixIdDisplay');
             if (myVId) {
@@ -1226,7 +1241,6 @@ actionBtn.addEventListener('click', (e) => {
                 el.innerHTML = `<strong>Vynix ID not available</strong><br><small>Check internet or restart app to load your ID</small>`;
             }
         }
-
         function renderChatsFromCache() {
             const list = document.getElementById('chatList');
             list.innerHTML = "";
@@ -1263,7 +1277,6 @@ actionBtn.addEventListener('click', (e) => {
                     </div>`;
             });
         }
-
         function renderMomentsFromCache() {
             const grid = document.getElementById('statusGrid');
             grid.innerHTML = "";
@@ -1280,7 +1293,6 @@ actionBtn.addEventListener('click', (e) => {
                 }
             });
         }
-
         function openStoriesCached(uid) {
             const now = Date.now();
             storyQueue = cachedMoments[uid]?.filter(m => now - m.ts < 86400000).map(m => ({...m, uid})) || [];
@@ -1288,14 +1300,12 @@ actionBtn.addEventListener('click', (e) => {
             document.getElementById('storyViewer').style.display = 'block';
             showStory();
         }
-
         async function deleteCurrentStory() {
             if (!currentStoryKey || !confirm('Delete this moment?')) return;
             await db.ref(`moments/${currentUser.uid}/${currentStoryKey}`).remove();
             toast('Moment deleted');
             closeStoryViewer();
         }
-
         function toggleStorySound(e) {
             e.stopPropagation();
             if (currentStoryVideo) {
@@ -1304,7 +1314,6 @@ actionBtn.addEventListener('click', (e) => {
                 document.getElementById('soundIcon').textContent = storyMuted ? 'volume_off' : 'volume_up';
             }
         }
-
         async function uploadProfilePicture(file) {
             if (!file || !file.type.startsWith('image/')) {
                 toast("Please select an image file");
@@ -1335,7 +1344,6 @@ actionBtn.addEventListener('click', (e) => {
                 console.error(e);
             }
         }
-
         async function updateProfile() {
             const newName = document.getElementById('editDisplayName').value.trim();
             if (!newName) {
@@ -1357,7 +1365,6 @@ actionBtn.addEventListener('click', (e) => {
             }
             closeAll();
         }
-
         async function addFriendLogic() {
             const btn = document.getElementById('addSubmitBtn');
             const rawId = document.getElementById('friendVynixId').value.trim().toLowerCase();
@@ -1397,7 +1404,6 @@ actionBtn.addEventListener('click', (e) => {
                 btn.innerText = "Search & Add";
             }
         }
-
         async function validateAndUpload(file) {
             if(!file) return;
             if(file.type.startsWith('video/')) {
@@ -1416,7 +1422,6 @@ actionBtn.addEventListener('click', (e) => {
                 performUpload(file, 0);
             }
         }
-
         async function performUpload(file, duration = 0) {
             toast("Posting Moment...");
             const form = new FormData();
@@ -1442,7 +1447,6 @@ actionBtn.addEventListener('click', (e) => {
                 toast("No internet - try again when online");
             }
         }
-
         function loadMoments() {
             db.ref('moments').on('value', snap => {
                 const grid = document.getElementById('statusGrid');
@@ -1480,7 +1484,6 @@ actionBtn.addEventListener('click', (e) => {
                 renderMomentsFromCache();
             });
         }
-
         function openStories(uid) {
             setupFriendProfileListener(uid);
             setupOnlineStatusListener(uid);
@@ -1502,7 +1505,6 @@ actionBtn.addEventListener('click', (e) => {
                 showStory();
             });
         }
-
         function showStory() {
             clearTimeout(storyTimer);
             if (currentStoryVideo) {
@@ -1543,7 +1545,6 @@ actionBtn.addEventListener('click', (e) => {
             const duration = story.type === 'video' ? (story.duration || 60) * 1000 : 5000;
             storyTimer = setTimeout(() => { storyIndex++; showStory(); }, duration);
         }
-
         function handleStoryTap(e) {
             if (e.target.closest('.story-sound-btn') || e.target.closest('.story-delete')) return;
             const screenWidth = window.innerWidth;
@@ -1554,7 +1555,6 @@ actionBtn.addEventListener('click', (e) => {
             }
             showStory();
         }
-
         function closeStoryViewer() {
             clearTimeout(storyTimer);
             if (currentStoryVideo) {
@@ -1566,7 +1566,6 @@ actionBtn.addEventListener('click', (e) => {
             document.getElementById('storyDeleteBtn').style.display = 'none';
             currentStoryKey = null;
         }
-
         function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
                 const list = document.getElementById('chatList');
@@ -1622,7 +1621,6 @@ actionBtn.addEventListener('click', (e) => {
                 renderChatsFromCache();
             });
         }
-
         async function openFullChat(friendUid, fallbackName = "User", fallbackPhoto = "") {
             isTransitioning = true;
             markAsRead(friendUid);
@@ -1651,22 +1649,18 @@ actionBtn.addEventListener('click', (e) => {
                 }, 5000);
             }
         }
-
         function updateChatStatus() {
             if (!currentFriendUid) return;
             if (onlineListener) { onlineListener.off(); onlineListener = null; }
             if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
-
             const statusEl = document.getElementById('chatStatusInfo');
             statusEl.textContent = 'Loading...';
-
             onlineListener = db.ref(`users/${currentFriendUid}/online`).on('value', snap => {
                 const isOnline = snap.val() === true;
                 document.getElementById('chatHeaderOnline').style.display = isOnline ? 'block' : 'none';
                 updateChatStatusText(isOnline);
             });
         }
-
         function updateProfileDetailStatus(friendUid) {
             const statusEl = document.getElementById('detailStatus');
             db.ref(`users/${friendUid}/online`).once('value').then(snap => {
@@ -1685,7 +1679,6 @@ actionBtn.addEventListener('click', (e) => {
                 }
             });
         }
-
         function updateTypingStatus() {
             if (!currentRoomId || !currentFriendUid) return;
             const input = document.getElementById('messageInput');
@@ -1700,7 +1693,6 @@ actionBtn.addEventListener('click', (e) => {
                 db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
             }
         }
-
         function listenForTyping() {
             if (!currentRoomId || !currentFriendUid) return;
             if (typingListener) typingListener.off();
@@ -1709,39 +1701,16 @@ actionBtn.addEventListener('click', (e) => {
                 document.getElementById('typingIndicator').style.display = isTyping ? 'flex' : 'none';
             });
         }
-
-        function closeFullChat() {
-            isTransitioning = true;
-            document.getElementById('fullChatView').style.display = 'none';
-            document.getElementById('chatsTab').style.display = 'block';
-            document.querySelector('.pill-nav').style.display = 'flex';
-            currentFriendUid = null;
-            currentRoomId = null;
-            document.getElementById('messageList').innerHTML = '';
-            document.getElementById('chatStatusInfo').textContent = 'Loading...';
-            document.getElementById('reactionTutorial').style.display = 'none';
-            document.getElementById('typingIndicator').style.display = 'none';
-            if (messagesListener) { messagesListener.off(); messagesListener = null; }
-            if (onlineListener) { onlineListener.off(); onlineListener = null; }
-            if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
-            if (typingListener) { typingListener.off(); typingListener = null; }
-            db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
-            document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
-            setTimeout(() => { isTransitioning = false; }, 100);
-        }
-
         function closeCustomAlert(id) {
             document.getElementById(id).classList.remove('active');
             messageToDelete = null;
         }
-
         async function confirmDeleteMessage() {
             if (!messageToDelete || !currentRoomId) return;
             await db.ref(`messages/${currentRoomId}/${messageToDelete}`).update({ deleted: true });
             closeCustomAlert('deleteMessageAlert');
             toast('Message deleted for everyone');
         }
-
         function loadMessages() {
             document.getElementById('messageList').innerHTML = '<div style="text-align:center; color:#999; padding:20px;">Loading messages...</div>';
             messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(50).on('value', snap => {
@@ -1791,7 +1760,6 @@ actionBtn.addEventListener('click', (e) => {
                     msgEl.className = `message ${isSent ? 'sent' : 'received'}`;
                     msgEl.dataset.key = m.key;
                     msgEl.innerHTML = content;
-
                     if (isSent && !m.deleted) {
                         const deleteIcon = document.createElement('div');
                         deleteIcon.className = 'message-delete-icon material-symbols-rounded';
@@ -1803,7 +1771,6 @@ actionBtn.addEventListener('click', (e) => {
                         };
                         msgEl.appendChild(deleteIcon);
                     }
-
                     msgEl.oncontextmenu = (e) => {
                         e.preventDefault();
                         showReactionPicker(msgEl, m.key);
@@ -1813,7 +1780,6 @@ actionBtn.addEventListener('click', (e) => {
                 list.scrollTop = list.scrollHeight;
             });
         }
-
         function renderReactions(reactions = {}) {
             if (Object.keys(reactions).length === 0) return '';
             let html = '<div class="reactions">';
@@ -1826,7 +1792,6 @@ actionBtn.addEventListener('click', (e) => {
             html += '</div>';
             return html;
         }
-
         function showReactionPicker(messageElement, messageKey) {
             document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
             const picker = document.createElement('div');
@@ -1857,7 +1822,6 @@ actionBtn.addEventListener('click', (e) => {
             messageElement.style.position = 'relative';
             messageElement.appendChild(picker);
         }
-
         async function addReaction(messageKey, emoji) {
             const reactionRef = db.ref(`messages/${currentRoomId}/${messageKey}/reactions/${emoji}`);
             const snap = await reactionRef.once('value');
@@ -1876,14 +1840,13 @@ actionBtn.addEventListener('click', (e) => {
                 await reactionRef.set({ count: current.count, users: current.users });
             }
         }
-
         function sendMessage() {
     const text = messageInput.value.trim();
     if (!text || !currentRoomId) return;
-    
+   
     const encrypted = CryptoJS.AES.encrypt(text, secretBase + currentRoomId).toString();
     const msgRef = db.ref(`messages/${currentRoomId}`).push();
-    
+   
     msgRef.set({
         text: encrypted,
         sender: currentUser.uid,
@@ -1896,13 +1859,13 @@ actionBtn.addEventListener('click', (e) => {
         updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
         updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
         updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
-        
+       
         return db.ref().update(updates);
     }).then(() => {
         // Clear input and update button
         messageInput.value = '';
         updateActionBtn();
-        
+       
         // Clear typing status
         if (currentRoomId) {
             db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
@@ -1912,21 +1875,18 @@ actionBtn.addEventListener('click', (e) => {
         console.error(err);
     });
 }
-
         function handleEnter(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
             }
         }
-
         function switchTab(tab) {
             document.getElementById('chatsTab').style.display = tab === 'chats' ? 'block' : 'none';
             document.getElementById('statusTab').style.display = tab === 'status' ? 'block' : 'none';
             document.getElementById('navChats').classList.toggle('active', tab === 'chats');
             document.getElementById('navStatus').classList.toggle('active', tab === 'status');
         }
-
         function formatTimeAgo(timestamp) {
             if (!timestamp) return '';
             const now = Date.now();
@@ -1938,14 +1898,12 @@ actionBtn.addEventListener('click', (e) => {
             const date = new Date(timestamp);
             return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
         }
-
         function formatMessageTime(ts) {
             const date = new Date(ts);
             const hours = date.getHours().toString().padStart(2, '0');
             const minutes = date.getMinutes().toString().padStart(2, '0');
             return `${hours}:${minutes}`;
         }
-
         function searchFriends() {
             const searchTerm = document.getElementById('friendSearch').value.toLowerCase();
             const clearBtn = document.getElementById('clearSearch');
@@ -1957,12 +1915,10 @@ actionBtn.addEventListener('click', (e) => {
                 card.style.display = (friendName.includes(searchTerm) || lastMsg.includes(searchTerm)) ? 'flex' : 'none';
             });
         }
-
         function clearSearch() {
             document.getElementById('friendSearch').value = '';
             searchFriends();
         }
-
         async function showProfileDetail(uid, e) {
             if (e) e.stopPropagation();
             profileDetailFriendUid = uid;
@@ -1980,27 +1936,22 @@ actionBtn.addEventListener('click', (e) => {
             }
             document.getElementById('profileDetail').style.display = 'flex';
         }
-
         function showProfileDetailFromChat() {
             showProfileDetail(currentFriendUid);
         }
-
         function messageFromProfile() {
             document.getElementById('profileDetail').style.display = 'none';
             openFullChat(profileDetailFriendUid, document.getElementById('detailName').textContent, document.getElementById('detailImg').src);
         }
-
         function confirmUnfriend() {
             document.getElementById('unfriendName').textContent = document.getElementById('detailName').textContent;
             document.getElementById('unfriendModal').classList.add('active');
             document.getElementById('overlay').style.display = 'block';
         }
-
         function closeUnfriendModal() {
             document.getElementById('unfriendModal').classList.remove('active');
             document.getElementById('overlay').style.display = 'none';
         }
-
         async function executeUnfriend() {
             const uid = profileDetailFriendUid;
             if (!uid) return;
@@ -2021,17 +1972,19 @@ actionBtn.addEventListener('click', (e) => {
             delete friendProfileListeners[uid];
             delete onlineStatusListeners[uid];
         }
-
-        async function clearChatHistory() {
-            if (!currentRoomId || !confirm('Clear all messages in this chat?')) return;
+        function confirmClearChat() {
+            document.getElementById('clearChatAlert').classList.add('active');
+        }
+        async function executeClearChat() {
+            if (!currentRoomId) return;
             try {
                 await db.ref(`messages/${currentRoomId}`).remove();
                 toast('Chat history cleared');
             } catch (e) {
                 toast('Failed to clear chat');
             }
+            closeCustomAlert('clearChatAlert');
         }
-
         async function toggleNotifications() {
             const toggle = document.getElementById('notificationToggle');
             const enabled = toggle.classList.contains('active');
@@ -2050,7 +2003,6 @@ actionBtn.addEventListener('click', (e) => {
                 toast('Notifications disabled');
             }
         }
-
         async function checkNotificationStatus() {
             if (pushManager.isSupported && Notification.permission === 'granted') {
                 const subscription = await pushManager.getExistingSubscription();
@@ -2059,7 +2011,6 @@ actionBtn.addEventListener('click', (e) => {
                 }
             }
         }
-
         async function markAsRead(friendUid) {
             try {
                 if (currentUser && friendUid) {
@@ -2071,7 +2022,6 @@ actionBtn.addEventListener('click', (e) => {
                 console.log("Error marking as read:", error);
             }
         }
-
         function decrypt(t, r) {
             if (!t || !t.startsWith('U2FsdGVkX')) return t || "Message";
             try {
@@ -2080,7 +2030,6 @@ actionBtn.addEventListener('click', (e) => {
                 return "🔒 Message";
             }
         }
-
         function openSheet(id) {
             document.getElementById('overlay').style.display='block';
             document.getElementById(id).classList.add('active');
@@ -2088,25 +2037,21 @@ actionBtn.addEventListener('click', (e) => {
                 updateMyIdDisplay();
             }
         }
-
         function closeAll() {
             document.querySelectorAll('.bottom-sheet').forEach(s=>s.classList.remove('active'));
             document.getElementById('overlay').style.display='none';
         }
-
         function toast(m) {
             const t=document.getElementById('toast');
             t.innerText=m;
             t.style.display='block';
             setTimeout(()=>t.style.display='none',2800);
         }
-
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.message')) {
                 document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
             }
         });
-
         function exitApp() {
             if (window.navigator && window.navigator.app && window.navigator.app.exitApp) {
                 window.navigator.app.exitApp();
@@ -2114,7 +2059,6 @@ actionBtn.addEventListener('click', (e) => {
                 try { window.close(); } catch (e) {}
             }
         }
-
         function handleBackButton() {
             if (isTransitioning) return;
             if (document.getElementById('fullChatView').style.display === 'flex') {
@@ -2129,7 +2073,6 @@ actionBtn.addEventListener('click', (e) => {
                 switchTab('chats');
             }
         }
-
         if (window.cordova) {
             document.addEventListener('deviceready', () => {
                 document.addEventListener('backbutton', (e) => {
@@ -2145,8 +2088,156 @@ actionBtn.addEventListener('click', (e) => {
             });
             history.pushState(null, null, location.href);
         }
-
         updateActionBtn();
+        function startVoiceCall() {
+            if (!currentRoomId) return;
+            toast("Starting call...");
+            isCaller = true;
+            db.ref(`incomingCalls/${currentFriendUid}`).set({
+                caller: currentUser.uid,
+                roomId: currentRoomId,
+                ts: Date.now()
+            });
+            navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+                .then(stream => {
+                    localStream = stream;
+                    createPeerConnection();
+                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+                    peerConnection.createOffer()
+                        .then(offer => {
+                            peerConnection.setLocalDescription(offer);
+                            db.ref(`calls/${currentRoomId}/offer`).set(offer);
+                        });
+                    listenForAnswer();
+                    listenForICE();
+                    document.getElementById('callTimer').textContent = 'Ringing...';
+                    document.getElementById('callControls').style.display = 'flex';
+                }).catch(err => {
+                    toast("Microphone access denied");
+                    console.error(err);
+                    endCall();
+                });
+        }
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    db.ref(`calls/${currentRoomId}/iceCandidates`).push(event.candidate.toJSON());
+                }
+            };
+            peerConnection.ontrack = (event) => {
+                remoteStream = event.streams[0];
+                const audio = new Audio();
+                audio.srcObject = remoteStream;
+                audio.play();
+            };
+            peerConnection.oniceconnectionstatechange = () => {
+                if (peerConnection.iceConnectionState === 'disconnected') {
+                    endCall();
+                }
+            };
+        }
+        function listenForAnswer() {
+            db.ref(`calls/${currentRoomId}/answer`).on('value', snap => {
+                const answer = snap.val();
+                if (answer && !peerConnection.currentRemoteDescription) {
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    startCallTimer();
+                    document.getElementById('callTimer').textContent = '00:00';
+                }
+            });
+        }
+        function listenForICE() {
+            db.ref(`calls/${currentRoomId}/iceCandidates`).on('child_added', snap => {
+                const candidate = snap.val();
+                if (candidate) {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                }
+            });
+        }
+        function acceptCall() {
+            closeCustomAlert('incomingCallAlert');
+            toast("Accepting call...");
+            isCaller = false;
+            navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+                .then(stream => {
+                    localStream = stream;
+                    createPeerConnection();
+                    localStream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+                    db.ref(`calls/${currentRoomId}/offer`).once('value').then(offerSnap => {
+                        const offer = offerSnap.val();
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                        peerConnection.createAnswer()
+                            .then(answer => {
+                                peerConnection.setLocalDescription(answer);
+                                db.ref(`calls/${currentRoomId}/answer`).set(answer);
+                            });
+                    });
+                    listenForICE();
+                    startCallTimer();
+                    document.getElementById('callControls').style.display = 'flex';
+                    db.ref(`incomingCalls/${currentUser.uid}`).remove();
+                }).catch(err => {
+                    toast("Microphone access denied");
+                    rejectCall();
+                });
+        }
+        function rejectCall() {
+            closeCustomAlert('incomingCallAlert');
+            db.ref(`incomingCalls/${currentUser.uid}`).remove();
+            toast("Call rejected");
+        }
+        function endCall() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            clearInterval(callTimerInterval);
+            document.getElementById('callControls').style.display = 'none';
+            db.ref(`calls/${currentRoomId}`).remove();
+            db.ref(`incomingCalls/${currentFriendUid}`).remove();
+            db.ref(`incomingCalls/${currentUser.uid}`).remove();
+            toast("Call ended");
+            isCaller = false;
+            localStream = null;
+            remoteStream = null;
+            peerConnection = null;
+        }
+        function startCallTimer() {
+            let seconds = 0;
+            callTimerInterval = setInterval(() => {
+                seconds++;
+                const mins = String(Math.floor(seconds / 60)).padStart(2, '0');
+                const secs = String(seconds % 60).padStart(2, '0');
+                document.getElementById('callTimer').textContent = `${mins}:${secs}`;
+            }, 1000);
+        }
+        function closeFullChat() {
+            isTransitioning = true;
+            if (document.getElementById('callControls').style.display === 'flex') {
+                endCall();
+            }
+            document.getElementById('fullChatView').style.display = 'none';
+            document.getElementById('chatsTab').style.display = 'block';
+            document.querySelector('.pill-nav').style.display = 'flex';
+            currentFriendUid = null;
+            currentRoomId = null;
+            document.getElementById('messageList').innerHTML = '';
+            document.getElementById('chatStatusInfo').textContent = 'Loading...';
+            document.getElementById('reactionTutorial').style.display = 'none';
+            document.getElementById('typingIndicator').style.display = 'none';
+            if (messagesListener) { messagesListener.off(); messagesListener = null; }
+            if (onlineListener) { onlineListener.off(); onlineListener = null; }
+            if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
+            if (typingListener) { typingListener.off(); typingListener = null; }
+            db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
+            document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+            setTimeout(() => { isTransitioning = false; }, 100);
+        }
     </script>
     <script>
         if ('serviceWorker' in navigator) {
