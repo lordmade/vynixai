@@ -272,6 +272,29 @@
             color: var(--bolt-green);
             margin-top: 8px;
         }
+        #rideStatus {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--bolt-green);
+            margin-top: 12px;
+            text-align: center;
+        }
+        /* Progress bar */
+        .progress-container {
+            width: 100%;
+            height: 6px;
+            background: #e5e7eb;
+            border-radius: 3px;
+            margin-top: 16px;
+            overflow: hidden;
+        }
+        #routeProgress {
+            height: 100%;
+            width: 0%;
+            background: var(--bolt-green);
+            border-radius: 3px;
+            transition: width 0.6s ease;
+        }
         .share-btn, .message-btn {
             width: 100%;
             background: #f3f4f6;
@@ -478,6 +501,10 @@
                     <div id="driverEta">ETA: Calculating...</div>
                 </div>
             </div>
+            <div id="rideStatus">Driver is on the way</div>
+            <div class="progress-container">
+                <div id="routeProgress"></div>
+            </div>
             <button class="message-btn" onclick="openChat()">
                 <span class="material-symbols-rounded">chat</span>
                 Message Driver
@@ -512,6 +539,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.min.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
     <script>
         const firebaseConfig = {
             apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -532,6 +560,8 @@
         let selectedRate = 7, selectedName = 'Vynix Lite', selectedColor = 'var(--bolt-green)', activeRideKey = null;
         let assignedDriverId = null;
         let driverName = '';
+        let currentRideStatus = 'pending';
+        let fullRouteLine = null; // Will store the full route geometry
         const driverMarkers = {};
         let assignedDriverMarker = null;
         let assignedDriverListener = null;
@@ -571,16 +601,37 @@
         });
    
         map.on('load', () => {
-            map.addSource('route-base', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
-            map.addLayer({
-                id: 'route-base',
-                type: 'line',
-                source: 'route-base',
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#666666', 'line-width': 8, 'line-opacity': 0.5 }
+            // Full static route (gray background)
+            map.addSource('route-full', {
+                type: 'geojson',
+                data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
             });
-       
-            map.addSource('route-dash', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } } });
+            map.addLayer({
+                id: 'route-full',
+                type: 'line',
+                source: 'route-full',
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
+                paint: { 'line-color': '#a0a0a0', 'line-width': 8, 'line-opacity': 0.4 }
+            });
+
+            // Progress route (black, on top)
+            map.addSource('route-progress', {
+                type: 'geojson',
+                data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
+            });
+            map.addLayer({
+                id: 'route-progress',
+                type: 'line',
+                source: 'route-progress',
+                layout: { 'line-join': 'round', 'line-cap': 'round' },
+                paint: { 'line-color': '#000000', 'line-width': 8 }
+            });
+
+            // Animated dashed line (on top of progress)
+            map.addSource('route-dash', {
+                type: 'geojson',
+                data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } }
+            });
             map.addLayer({
                 id: 'route-dash',
                 type: 'line',
@@ -706,10 +757,11 @@
             totalKm = (route.distance / 1000).toFixed(1);
             totalDuration = Math.round(route.duration / 60);
 
-            const routeGeoJSON = route.geometry;
-       
-            map.getSource('route-base').setData(routeGeoJSON);
-            map.getSource('route-dash').setData(routeGeoJSON);
+            fullRouteLine = route.geometry;
+
+            map.getSource('route-full').setData(fullRouteLine);
+            map.getSource('route-progress').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            map.getSource('route-dash').setData(fullRouteLine);
        
             const bounds = new mapboxgl.LngLatBounds().extend(pickupCoords).extend(dropoffCoords);
             map.fitBounds(bounds, { padding: {top: 100, bottom: 350, left: 50, right: 50} });
@@ -731,9 +783,11 @@
             dropoffCoords = null;
             totalKm = 0;
             totalDuration = 0;
+            fullRouteLine = null;
             dMarker.remove();
         
-            map.getSource('route-base').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            map.getSource('route-full').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            map.getSource('route-progress').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
             map.getSource('route-dash').setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
         
             document.getElementById('rideSheet').classList.remove('active');
@@ -758,6 +812,7 @@
             document.getElementById('driverAcceptedView').style.display = 'none';
             document.querySelector('.ride-list').style.display = 'flex';
             document.getElementById('mainActionBtn').style.display = 'block';
+            document.getElementById('routeProgress').style.width = '0%';
         }
    
         function selectRide(id, rate, name, colorVar) {
@@ -793,18 +848,23 @@
         }
      
         function proceedToWaiting() {
-            // Keep the bottom sheet visible (ride selection) while waiting
             document.getElementById('waitingOverlay').style.display = 'flex';
 
             rideRequestListener = db.ref(`rideRequests/${activeRideKey}`).on('value', async snap => {
                 const val = snap.val();
-                if (val && val.status === 'accepted' && val.driverId) {
+                if (!val) return;
+
+                const newStatus = val.status;
+                if (newStatus !== currentRideStatus) {
+                    currentRideStatus = newStatus;
+                    updateRideStatusDisplay(newStatus);
+                }
+
+                if (newStatus === 'accepted' && val.driverId && assignedDriverId !== val.driverId) {
                     assignedDriverId = val.driverId;
 
-                    // Hide waiting overlay immediately
                     document.getElementById('waitingOverlay').style.display = 'none';
 
-                    // Fetch and show driver details instantly
                     const driverSnap = await db.ref(`users/${assignedDriverId}/profile`).once('value');
                     const driverProfile = driverSnap.val() || {};
                     driverName = driverProfile.name || "Driver";
@@ -818,7 +878,6 @@
                     document.getElementById('driverPhoto').src = driverProfile.photo || "https://ui-avatars.com/api/?name=" + encodeURIComponent(driverName) + "&background=000000&color=fff";
                     document.getElementById('chatDriverPhoto').src = document.getElementById('driverPhoto').src;
 
-                    // Switch to driver view and open bottom sheet instantly
                     document.querySelector('.ride-list').style.display = 'none';
                     document.getElementById('mainActionBtn').style.display = 'none';
                     document.getElementById('driverAcceptedView').style.display = 'block';
@@ -828,29 +887,90 @@
                     startEtaUpdates();
                     showToast("Driver accepted! On the way.");
                 }
+
+                if (newStatus === 'arrived') {
+                    updateRideStatusDisplay('arrived');
+                    showToast("Driver has arrived at pickup location!");
+                }
+
+                if (newStatus === 'started') {
+                    updateRideStatusDisplay('started');
+                    showToast("Ride started! Enjoy your trip.");
+                }
+
+                if (newStatus === 'completed') {
+                    updateRideStatusDisplay('completed');
+                    showToast("Ride completed! Thank you for riding with Vynix.");
+                    setTimeout(() => {
+                        cancelBooking();
+                    }, 5000);
+                }
             });
+        }
+
+        function updateRideStatusDisplay(status) {
+            const statusEl = document.getElementById('rideStatus');
+            switch(status) {
+                case 'accepted':
+                    statusEl.innerText = 'Driver is on the way';
+                    break;
+                case 'arrived':
+                    statusEl.innerText = 'Driver has arrived';
+                    break;
+                case 'started':
+                    statusEl.innerText = 'Ride in progress';
+                    break;
+                case 'completed':
+                    statusEl.innerText = 'Ride completed!';
+                    break;
+                default:
+                    statusEl.innerText = 'Driver is on the way';
+            }
         }
    
         function trackAssignedDriver(driverId) {
             if (assignedDriverListener) assignedDriverListener.off();
             assignedDriverListener = db.ref(`driversAvailable/${driverId}`).on('value', snap => {
                 const d = snap.val();
-                if (d) {
-                    const pos = [d.lng, d.lat];
+                if (d && fullRouteLine) {
+                    const driverPos = [d.lng, d.lat];
+
                     if (!assignedDriverMarker) {
                         const el = document.createElement('div');
                         el.className = 'driver-marker';
-                        assignedDriverMarker = new mapboxgl.Marker(el).setLngLat(pos).addTo(map);
+                        assignedDriverMarker = new mapboxgl.Marker(el).setLngLat(driverPos).addTo(map);
                     } else {
-                        assignedDriverMarker.setLngLat(pos);
+                        assignedDriverMarker.setLngLat(driverPos);
                     }
-                    const bounds = new mapboxgl.LngLatBounds()
-                        .extend(pos)
-                        .extend(pickupCoords)
-                        .extend(dropoffCoords || pickupCoords);
+
+                    // Calculate progress along the full route
+                    const progressLine = turf.lineSliceAlong(fullRouteLine, 0, turf.length(fullRouteLine) * calculateProgressPercentage(driverPos));
+                    map.getSource('route-progress').setData(progressLine);
+
+                    // Update bottom sheet progress bar
+                    const percent = calculateProgressPercentage(driverPos) * 100;
+                    document.getElementById('routeProgress').style.width = percent + '%';
+
+                    // Adjust map view
+                    let bounds = new mapboxgl.LngLatBounds().extend(driverPos);
+                    if (currentRideStatus === 'accepted' || currentRideStatus === 'arrived') {
+                        bounds.extend(pickupCoords);
+                    } else if (currentRideStatus === 'started') {
+                        bounds.extend(dropoffCoords);
+                    }
                     map.fitBounds(bounds, { padding: 100 });
                 }
             });
+        }
+
+        function calculateProgressPercentage(driverPos) {
+            if (!fullRouteLine) return 0;
+
+            const driverPoint = turf.point(driverPos);
+            const nearest = turf.nearestPointOnLine(fullRouteLine, driverPoint);
+            const distanceAlong = nearest.properties.location;
+            const totalLength = turf.length(fullRouteLine);
+            return Math.min(distanceAlong / totalLength, 1); // Clamp to 1
         }
 
         async function updateEta() {
@@ -859,9 +979,14 @@
             const driver = driverSnap.val();
             if (!driver) return;
 
+            let destination = pickupCoords;
+            if (currentRideStatus === 'started' && dropoffCoords) {
+                destination = dropoffCoords;
+            }
+
             const driverCoords = `${driver.lng},${driver.lat}`;
-            const pickupStr = pickupCoords.join(',');
-            const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${driverCoords};${pickupStr}?geometries=geojson&access_token=${mapboxgl.accessToken}`;
+            const destStr = destination.join(',');
+            const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${driverCoords};${destStr}?geometries=geojson&access_token=${mapboxgl.accessToken}`;
 
             try {
                 const res = await fetch(url);
