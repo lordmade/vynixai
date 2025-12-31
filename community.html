@@ -108,14 +108,6 @@
             font-size: 20px;
             pointer-events: none;
         }
-        .group-indicator {
-            position: absolute;
-            top: 8px;
-            left: 50px;
-            color: var(--accent-blue);
-            font-size: 20px;
-            pointer-events: none;
-        }
         .status-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
         .status-card {
             position: relative; height: 280px; border-radius: 30px; overflow: hidden;
@@ -929,11 +921,11 @@
             <img id="myAvatar" class="user-profile shimmer" src="">
         </div>
         <div class="app-title">Vynix</div>
-        <span class="material-symbols-rounded" style="color:var(--accent-blue); font-size:28px;" onclick="openSheet('createGroupSheet')">group_add</span>
+        <span class="material-symbols-rounded" style="color:var(--accent-blue); font-size:28px;" onclick="openSheet('addFriendSheet')">add_circle</span>
     </header>
     <main id="chatsTab">
         <div class="search-container">
-            <input type="text" class="search-input" id="friendSearch" placeholder="Search friends & groups..." onkeyup="searchFriends()">
+            <input type="text" class="search-input" id="friendSearch" placeholder="Search friends..." onkeyup="searchFriends()">
             <span class="material-symbols-rounded search-icon">search</span>
             <span class="material-symbols-rounded clear-search" id="clearSearch" onclick="clearSearch()">close</span>
         </div>
@@ -976,12 +968,6 @@
         <p style="color:var(--text-secondary); font-size:13px; margin-bottom:20px;">Enter their unique Vynix ID to start chatting.</p>
         <input type="text" id="friendVynixId" class="v-input" placeholder="e.g. vnx_789">
         <button class="btn-primary" id="addSubmitBtn" onclick="addFriendLogic()" style="background:var(--accent-blue);">Search & Add</button>
-    </div>
-    <div class="bottom-sheet" id="createGroupSheet">
-        <h2>Create Group</h2>
-        <input type="text" id="groupNameInput" class="v-input" placeholder="Group name">
-        <div style="margin:15px 0; max-height:300px; overflow-y:auto;" id="groupMemberList"></div>
-        <button class="btn-primary" onclick="createGroup()" style="background:var(--accent-blue);">Create Group</button>
     </div>
     <div class="bottom-sheet" id="settingsSheet">
         <h2>Settings</h2>
@@ -1156,7 +1142,6 @@
         let cachedMoments = {};
         let isOnline = navigator.onLine;
         let currentFriendUid = null;
-        let currentGroupId = null; // For groups
         let currentRoomId = null;
         let messagesListener = null;
         let lastSeenListener = null;
@@ -1204,7 +1189,6 @@ let lastKnownStatus = 'Last seen recently';
         const actionBtn = document.getElementById('actionBtn');
         const recordingOverlay = document.getElementById('recordingOverlay');
         let sharedKeys = JSON.parse(localStorage.getItem('sharedKeys')) || {};
-        let groupKeys = JSON.parse(localStorage.getItem('groupKeys') || '{}'); // groupId -> AES key
        
         // Favorite toggle function
         async function toggleFavorite(friendUid, chatCard) {
@@ -1225,16 +1209,15 @@ let lastKnownStatus = 'Last seen recently';
         }
         // Filter chat list based on current subtab
         function filterChatList() {
-            const cards = document.querySelectorAll('#chatList .chat-card[data-id]');
+            const cards = document.querySelectorAll('#chatList .chat-card[data-friend-uid]');
             cards.forEach(card => {
-                const isGroup = card.dataset.isGroup === 'true';
                 const uid = card.dataset.friendUid;
                 if (currentChatSubtab === 'all') {
                     card.style.display = 'flex';
                 } else if (currentChatSubtab === 'favorites') {
-                    card.style.display = !isGroup && favorites[uid] ? 'flex' : 'none';
+                    card.style.display = favorites[uid] ? 'flex' : 'none';
                 } else if (currentChatSubtab === 'groups') {
-                    card.style.display = isGroup ? 'flex' : 'none';
+                    card.style.display = 'none'; // Placeholder – no groups yet
                 }
             });
         }
@@ -1441,7 +1424,7 @@ let lastKnownStatus = 'Last seen recently';
                 });
                 const data = await res.json();
                 if (data.secure_url) {
-                    const key = currentGroupId ? groupKeys[currentGroupId] : sharedKeys[currentFriendUid];
+                    const key = sharedKeys[currentFriendUid];
                     const encryptedUrl = CryptoJS.AES.encrypt(data.secure_url, key).toString();
                     const msgRef = db.ref(`messages/${currentRoomId}`).push();
                     await msgRef.set({
@@ -1452,7 +1435,13 @@ let lastKnownStatus = 'Last seen recently';
                         ts: Date.now(),
                         reactions: {}
                     });
-                    await updateLastMessageAndUnread(encryptedUrl);
+                    const updates = {};
+                    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encryptedUrl;
+                    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encryptedUrl;
+                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+                    await db.ref().update(updates);
                     toast("Voice message sent");
                 }
             } catch (err) {
@@ -1807,7 +1796,7 @@ let lastKnownStatus = 'Last seen recently';
                 }
                 toast(`${notificationTitle}: ${notificationOptions.body}`);
             });
-            loadChatsAndGroups();
+            loadChats();
             loadMoments();
             const myPresenceRef = db.ref(`users/${currentUser.uid}/online`);
             myPresenceRef.set(true);
@@ -1871,25 +1860,22 @@ let lastKnownStatus = 'Last seen recently';
                 </div>`;
             Object.keys(cachedChats).sort((a,b) => (cachedChats[b].ts || 0) - (cachedChats[a].ts || 0)).forEach(key => {
                 const c = cachedChats[key];
-                const isGroup = c.isGroup;
-                const dMsg = c.lastMsg ? "[Encrypted Message]" : (isGroup ? "Group created" : "You are now connected 🔒");
+                const dMsg = c.lastMsg ? "[Encrypted Message]" : "You are now connected 🔒";
                 const timeAgo = formatTimeAgo(c.ts);
                 const unreadCount = c.unreadCount || 0;
-                const isFav = !isGroup && favorites[key] ? '<span class="material-symbols-rounded favorite-indicator">star</span>' : '';
-                const groupInd = isGroup ? '<span class="material-symbols-rounded group-indicator">group</span>' : '';
+                const isFav = favorites[key] ? '<span class="material-symbols-rounded favorite-indicator">star</span>' : '';
                 list.innerHTML += `
-                    <div class="chat-card" data-id="${key}" data-is-group="${isGroup}" ${isGroup ? '' : `data-friend-uid="${key}"`}>
-                        <div class="avatar-box" ${isGroup ? '' : `data-friend-uid="${key}" onclick="showProfileDetail('${key}', event)"`}>
-                            <img class="avatar" src="${c.photo || ''}">
+                    <div class="chat-card" data-friend-uid="${key}">
+                        <div class="avatar-box" data-friend-uid="${key}" onclick="showProfileDetail('${key}', event)">
+                            <img class="avatar" src="">
                         </div>
-                        <div class="chat-info" onclick="openChat('${key}', '${c.name || 'User'}', '${c.photo || ''}', ${isGroup})">
-                            <span class="chat-name">${c.name || 'User'}</span>
+                        <div class="chat-info" onclick="openFullChat('${key}', 'User', '')">
+                            <span class="chat-name">User</span>
                             <span class="chat-msg">${dMsg}</span>
                         </div>
                         ${timeAgo ? `<span class="chat-time">${timeAgo}</span>` : ''}
                         ${unreadCount > 0 ? `<span class="unread-badge">${unreadCount > 99 ? '99+' : unreadCount}</span>` : ''}
                         ${isFav}
-                        ${groupInd}
                     </div>`;
             });
             filterChatList();
@@ -2020,74 +2006,6 @@ let lastKnownStatus = 'Last seen recently';
                 btn.disabled = false;
                 btn.innerText = "Search & Add";
             }
-        }
-        // Group creation
-        async function openCreateGroup() {
-            const list = document.getElementById('groupMemberList');
-            list.innerHTML = '<p style="color:var(--text-secondary);">Select friends to add to group</p>';
-            const chatsSnap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
-            chatsSnap.forEach(child => {
-                const uid = child.key;
-                if (uid.length === 28) { // crude check for user UID, not group
-                    const div = document.createElement('div');
-                    div.style.padding = '12px';
-                    div.style.display = 'flex';
-                    div.style.alignItems = 'center';
-                    div.style.gap = '12px';
-                    div.style.borderBottom = '1px solid #eee';
-                    div.innerHTML = `
-                        <input type="checkbox" id="group_${uid}" value="${uid}">
-                        <label for="group_${uid}" style="flex:1; cursor:pointer;">
-                            <img src="" class="avatar" style="width:40px;height:40px;vertical-align:middle;margin-right:10px;">
-                            <span>Loading...</span>
-                        </label>
-                    `;
-                    list.appendChild(div);
-                    db.ref(`users/${uid}/profile`).once('value').then(snap => {
-                        const p = snap.val() || {name: 'User', photo: ''};
-                        div.querySelector('img').src = p.photo;
-                        div.querySelector('span').textContent = p.name;
-                    });
-                }
-            });
-            openSheet('createGroupSheet');
-        }
-        async function createGroup() {
-            const name = document.getElementById('groupNameInput').value.trim();
-            if (!name) {
-                toast("Enter a group name");
-                return;
-            }
-            const checkboxes = document.querySelectorAll('#groupMemberList input[type=checkbox]:checked');
-            if (checkboxes.length < 2) {
-                toast("Select at least 2 friends");
-                return;
-            }
-            const members = [currentUser.uid];
-            checkboxes.forEach(cb => members.push(cb.value));
-            const groupId = db.ref('groups').push().key;
-            const aesKey = CryptoJS.lib.WordArray.random(32).toString(); // 256-bit key
-            groupKeys[groupId] = aesKey;
-            localStorage.setItem('groupKeys', JSON.stringify(groupKeys));
-            const updates = {};
-            updates[`groups/${groupId}/name`] = name;
-            updates[`groups/${groupId}/creator`] = currentUser.uid;
-            updates[`groups/${groupId}/created`] = Date.now();
-            updates[`groups/${groupId}/key`] = aesKey; // stored encrypted? No, but only members know
-            members.forEach(uid => {
-                updates[`users/${uid}/chats/${groupId}`] = {
-                    name: name,
-                    photo: '', // can set group photo later
-                    isGroup: true,
-                    lastMsg: "Group created",
-                    ts: Date.now(),
-                    unreadCount: 0
-                };
-                updates[`groups/${groupId}/members/${uid}`] = true;
-            });
-            await db.ref().update(updates);
-            toast("Group created!");
-            closeAll();
         }
         async function validateAndUpload(file) {
             if(!file) return;
@@ -2340,7 +2258,7 @@ let lastKnownStatus = 'Last seen recently';
             currentStoryUid = null;
             currentStoryTs = null;
         }
-        async function loadChatsAndGroups() {
+        async function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
                 const list = document.getElementById('chatList');
                 list.innerHTML = "";
@@ -2361,55 +2279,41 @@ let lastKnownStatus = 'Last seen recently';
                 const chatsArray = [];
                 snap.forEach(child => {
                     const data = child.val();
-                    data.id = child.key;
                     cachedChats[child.key] = data;
-                    chatsArray.push(data);
-                    if (!data.isGroup) {
-                        setupFriendProfileListener(child.key);
-                        setupOnlineStatusListener(child.key);
-                    }
+                    chatsArray.push({key: child.key, data: data});
+                    setupFriendProfileListener(child.key);
+                    setupOnlineStatusListener(child.key);
                 });
                 localStorage.setItem('vynix_chats', JSON.stringify(cachedChats));
-                chatsArray.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+                chatsArray.sort((a, b) => (b.data.ts || 0) - (a.data.ts || 0));
                 for (const chat of chatsArray) {
-                    const id = chat.id;
-                    const isGroup = chat.isGroup || false;
-                    let name = "User";
-                    let photo = "";
-                    if (isGroup) {
-                        name = chat.name || "Group";
-                    } else {
-                        const profileSnap = await db.ref(`users/${id}/profile`).once('value');
-                        const profile = profileSnap.val() || { name: "User", photo: "" };
-                        name = profile.name;
-                        photo = profile.photo;
-                    }
+                    const friendUid = chat.key;
+                    const chatData = chat.data;
+                    const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
+                    const profile = profileSnap.val() || { name: "User", photo: "", publicKey: "" };
                     let dMsg = "You are now connected 🔒";
-                    if (chat.lastMsg) {
-                        const key = isGroup ? groupKeys[id] : sharedKeys[id];
-                        dMsg = key ? decrypt(chat.lastMsg, key) : "[Encrypted]";
+                    if (chatData.lastMsg) {
+                        dMsg = decrypt(chatData.lastMsg, friendUid);
                     }
-                    const timeAgo = formatTimeAgo(chat.ts);
-                    const unreadCount = chat.unreadCount || 0;
-                    const isFav = !isGroup && favorites[id] ? '<span class="material-symbols-rounded favorite-indicator">star</span>' : '';
-                    const groupInd = isGroup ? '<span class="material-symbols-rounded group-indicator">group</span>' : '';
+                    const timeAgo = formatTimeAgo(chatData.ts);
+                    const unreadCount = chatData.unreadCount || 0;
+                    const isFav = favorites[friendUid] ? '<span class="material-symbols-rounded favorite-indicator">star</span>' : '';
                     list.innerHTML += `
-                        <div class="chat-card" data-id="${id}" data-is-group="${isGroup}" ${!isGroup ? `data-friend-uid="${id}"` : ''}>
-                            <div class="avatar-box" ${!isGroup ? `data-friend-uid="${id}" onclick="showProfileDetail('${id}', event)"` : ''}>
-                                <img class="avatar" src="${photo}">
+                        <div class="chat-card" data-friend-uid="${friendUid}">
+                            <div class="avatar-box" data-friend-uid="${friendUid}" onclick="showProfileDetail('${friendUid}', event)">
+                                <img class="avatar" src="${profile.photo || ''}">
                             </div>
-                            <div class="chat-info" onclick="openChat('${id}', '${name}', '${photo}', ${isGroup})">
-                                <span class="chat-name">${name}</span>
+                            <div class="chat-info" onclick="openFullChat('${friendUid}', '${profile.name}', '${profile.photo || ''}')">
+                                <span class="chat-name">${profile.name}</span>
                                 <span class="chat-msg">${dMsg}</span>
                             </div>
                             ${timeAgo ? `<span class="chat-time">${timeAgo}</span>` : ''}
                             ${unreadCount > 0 ? `<span class="unread-badge">${unreadCount > 99 ? '99+' : unreadCount}</span>` : ''}
                             ${isFav}
-                            ${groupInd}
                         </div>`;
                 }
-                // Swipe for favorite (only individual chats)
-                document.querySelectorAll('#chatList .chat-card:not([data-is-group="true"])').forEach(card => {
+                // Add swipe gesture for favorite
+                document.querySelectorAll('#chatList .chat-card[data-friend-uid]').forEach(card => {
                     let startX = 0;
                     card.addEventListener('touchstart', e => {
                         startX = e.touches[0].clientX;
@@ -2417,7 +2321,7 @@ let lastKnownStatus = 'Last seen recently';
                     card.addEventListener('touchend', e => {
                         const endX = e.changedTouches[0].clientX;
                         const diff = startX - endX;
-                        if (diff > 80) {
+                        if (diff > 80) { // swipe left
                             const uid = card.dataset.friendUid;
                             toggleFavorite(uid, card);
                         }
@@ -2429,89 +2333,86 @@ let lastKnownStatus = 'Last seen recently';
                 renderChatsFromCache();
             });
         }
-        async function openChat(id, name, photo, isGroup = false) {
-            markAsRead(id);
-            if (isGroup) {
-                currentGroupId = id;
-                currentFriendUid = null;
-            } else {
-                currentFriendUid = id;
-                currentGroupId = null;
-            }
-            currentRoomId = id; // for groups, roomId = groupId
-            document.getElementById('chatFriendName').textContent = name;
-            document.getElementById('chatFriendAvatar').src = photo || '';
+        async function openFullChat(friendUid, fallbackName = "User", fallbackPhoto = "") {
+            isTransitioning = true;
+            markAsRead(friendUid);
+            currentFriendUid = friendUid;
+            currentRoomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
+            const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
+            const profile = profileSnap.val() || { name: fallbackName, photo: fallbackPhoto, publicKey: "" };
+            document.getElementById('chatFriendName').textContent = profile.name;
+            document.getElementById('chatFriendAvatar').src = profile.photo || '';
             document.getElementById('fullChatView').style.display = 'flex';
             document.getElementById('chatsTab').style.display = 'none';
             document.getElementById('statusTab').style.display = 'none';
             document.querySelector('.pill-nav').style.display = 'none';
-            loadMessages();
-            if (!isGroup) {
-                updateChatStatus();
-                listenForTyping();
-                setupFriendProfileListener(id);
-                setupOnlineStatusListener(id);
+            if (!profile.publicKey) {
+                toast('Chat not end-to-end encrypted - friend needs to update app');
+                sharedKeys[currentFriendUid] = currentRoomId;
             } else {
-                document.getElementById('chatHeaderOnline').style.display = 'none';
-                document.getElementById('chatStatusInfo').textContent = '';
-            }
-            setTimeout(() => { isTransitioning = false; }, 100);
-        }
-        async function updateLastMessageAndUnread(encrypted) {
-            const updates = {};
-            if (currentGroupId) {
-                // Update for all members
-                const membersSnap = await db.ref(`groups/${currentGroupId}/members`).once('value');
-                membersSnap.forEach(mem => {
-                    const uid = mem.key;
-                    updates[`users/${uid}/chats/${currentGroupId}/lastMsg`] = encrypted;
-                    updates[`users/${uid}/chats/${currentGroupId}/ts`] = Date.now();
-                    if (uid !== currentUser.uid) {
-                        updates[`users/${uid}/chats/${currentGroupId}/unreadCount`] = firebase.database.ServerValue.increment(1);
+                if (!sharedKeys[currentFriendUid]) {
+                    try {
+                        const friendPublicJwk = JSON.parse(profile.publicKey);
+                        const secret = await deriveSharedSecret(friendPublicJwk);
+                        const keyHex = Array.from(secret).map(b => b.toString(16).padStart(2, '0')).join('');
+                        sharedKeys[currentFriendUid] = keyHex;
+                        localStorage.setItem('sharedKeys', JSON.stringify(sharedKeys));
+                    } catch (e) {
+                        toast('Failed to establish secure channel');
+                        console.error(e);
+                        sharedKeys[currentFriendUid] = currentRoomId;
                     }
-                });
-            } else {
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+                }
             }
-            await db.ref().update(updates);
+            loadMessages();
+            updateChatStatus();
+            listenForTyping();
+            setupFriendProfileListener(friendUid);
+            setupOnlineStatusListener(friendUid);
+            setTimeout(() => { isTransitioning = false; }, 100);
+            if (!hasShownReactionTutorial && document.querySelectorAll('#messageList .message').length > 0) {
+                document.getElementById('reactionTutorial').style.display = 'flex';
+                setTimeout(() => {
+                    document.getElementById('reactionTutorial').style.display = 'none';
+                    localStorage.setItem('reaction_tutorial_shown', 'true');
+                    hasShownReactionTutorial = true;
+                }, 5000);
+            }
         }
-        function updateChatStatus() {
-            if (!currentFriendUid) return;
-            if (onlineListener) { onlineListener.off(); onlineListener = null; }
-            if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
+       function updateChatStatus() {
+    if (!currentFriendUid) return;
+    if (onlineListener) { onlineListener.off(); onlineListener = null; }
+    if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
   
-            const statusEl = document.getElementById('chatStatusInfo');
-            statusEl.textContent = lastKnownStatus;
+    const statusEl = document.getElementById('chatStatusInfo');
+    // Preserve last known status instead of showing "Loading..."
+    statusEl.textContent = lastKnownStatus;
   
-            onlineListener = db.ref(`users/${currentFriendUid}/online`).on('value', snap => {
-                const isOnline = snap.val() === true;
-                document.getElementById('chatHeaderOnline').style.display = isOnline ? 'block' : 'none';
+    onlineListener = db.ref(`users/${currentFriendUid}/online`).on('value', snap => {
+        const isOnline = snap.val() === true;
+        document.getElementById('chatHeaderOnline').style.display = isOnline ? 'block' : 'none';
       
-                if (isOnline) {
-                    lastKnownStatus = '<span style="color:var(--online-green);">●</span> Online';
-                    statusEl.innerHTML = lastKnownStatus;
+        if (isOnline) {
+            lastKnownStatus = '<span style="color:var(--online-green);">●</span> Online';
+            statusEl.innerHTML = lastKnownStatus;
+        } else {
+            lastKnownStatus = 'Last seen recently';
+            statusEl.textContent = lastKnownStatus;
+          
+            if (lastSeenListener) lastSeenListener.off();
+            lastSeenListener = db.ref(`users/${currentFriendUid}/lastSeen`).on('value', lsSnap => {
+                const ts = lsSnap.val();
+                if (ts) {
+                    lastKnownStatus = 'Last seen ' + formatTimeAgo(ts);
+                    statusEl.textContent = lastKnownStatus;
                 } else {
                     lastKnownStatus = 'Last seen recently';
                     statusEl.textContent = lastKnownStatus;
-          
-                    if (lastSeenListener) lastSeenListener.off();
-                    lastSeenListener = db.ref(`users/${currentFriendUid}/lastSeen`).on('value', lsSnap => {
-                        const ts = lsSnap.val();
-                        if (ts) {
-                            lastKnownStatus = 'Last seen ' + formatTimeAgo(ts);
-                            statusEl.textContent = lastKnownStatus;
-                        } else {
-                            lastKnownStatus = 'Last seen recently';
-                            statusEl.textContent = lastKnownStatus;
-                        }
-                    });
                 }
             });
         }
+    });
+}
         function updateProfileDetailStatus(friendUid) {
             const statusEl = document.getElementById('detailStatus');
             db.ref(`users/${friendUid}/online`).once('value').then(snap => {
@@ -2531,7 +2432,7 @@ let lastKnownStatus = 'Last seen recently';
             });
         }
         function updateTypingStatus() {
-            if (!currentRoomId || currentGroupId) return; // no typing for groups
+            if (!currentRoomId || !currentFriendUid) return;
             const input = document.getElementById('messageInput');
             const text = input.value.trim();
             clearTimeout(typingTimeout);
@@ -2545,7 +2446,7 @@ let lastKnownStatus = 'Last seen recently';
             }
         }
         function listenForTyping() {
-            if (!currentRoomId || currentGroupId) return;
+            if (!currentRoomId || !currentFriendUid) return;
             if (typingListener) typingListener.off();
             typingListener = db.ref(`typing/${currentRoomId}/${currentFriendUid}`).on('value', snap => {
                 const isTyping = snap.val() === true;
@@ -2583,11 +2484,10 @@ let lastKnownStatus = 'Last seen recently';
                     const timeStr = formatMessageTime(m.ts);
                     let content = '';
                     let reactionsHtml = renderReactions(m.reactions || {});
-                    const key = currentGroupId ? groupKeys[currentGroupId] : sharedKeys[currentFriendUid || m.sender];
                     if (m.deleted) {
                         content = `<div class="deleted-message">This message was deleted</div>`;
                     } else if (m.type === 'voice') {
-                        const url = key ? decrypt(m.url, key) : "[Encrypted voice]";
+                        const url = decrypt(m.url, currentFriendUid);
                         content = `
                             <div class="voice-message ${isSent ? 'sent' : ''}">
                                 <div class="voice-play-btn" onclick="toggleAudioPlay(this)">
@@ -2601,7 +2501,7 @@ let lastKnownStatus = 'Last seen recently';
                             ${reactionsHtml}
                         `;
                     } else {
-                        const decrypted = key ? decrypt(m.text || '', key) : "[Encrypted]";
+                        const decrypted = decrypt(m.text || '', currentFriendUid);
                         content = `
                             ${decrypted}
                             <div class="message-time">${timeStr}</div>
@@ -2721,7 +2621,7 @@ let lastKnownStatus = 'Last seen recently';
             const text = messageInput.value.trim();
             if (!text || !currentRoomId) return;
    
-            const key = currentGroupId ? groupKeys[currentGroupId] : sharedKeys[currentFriendUid];
+            const key = sharedKeys[currentFriendUid];
             const encrypted = CryptoJS.AES.encrypt(text, key).toString();
             const msgRef = db.ref(`messages/${currentRoomId}`).push();
    
@@ -2730,12 +2630,20 @@ let lastKnownStatus = 'Last seen recently';
                 sender: currentUser.uid,
                 ts: Date.now(),
                 reactions: {}
-            }).then(async () => {
-                await updateLastMessageAndUnread(encrypted);
+            }).then(() => {
+                const updates = {};
+                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+       
+                return db.ref().update(updates);
+            }).then(() => {
                 messageInput.value = '';
                 updateActionBtn();
        
-                if (currentRoomId && !currentGroupId) {
+                if (currentRoomId) {
                     db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
                 }
             }).catch(err => {
@@ -2888,7 +2796,7 @@ function closeAll() {
             }
             document.getElementById('profileDetail').style.display = 'none';
             closeUnfriendModal();
-            loadChatsAndGroups();
+            loadChats();
             if (currentFriendUid === uid) closeFullChat();
             if (friendProfileListeners[uid]) db.ref(`users/${uid}/profile`).off('value', friendProfileListeners[uid]);
             if (onlineStatusListeners[uid]) db.ref(`users/${uid}/online`).off('value', onlineStatusListeners[uid]);
@@ -2934,10 +2842,10 @@ function closeAll() {
                 }
             }
         }
-        async function markAsRead(id) {
+        async function markAsRead(friendUid) {
             try {
-                if (currentUser) {
-                    await db.ref(`users/${currentUser.uid}/chats/${id}`).update({
+                if (currentUser && friendUid) {
+                    await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update({
                         unreadCount: 0
                     });
                 }
@@ -2945,15 +2853,17 @@ function closeAll() {
                 console.log("Error marking as read:", error);
             }
         }
-        function decrypt(ciphertext, key) {
-            if (!ciphertext || !key) return "[Message]";
+        function decrypt(ciphertext, friendUid) {
+            if (!ciphertext) return "[Message]";
             try {
+                const key = sharedKeys[friendUid];
+                if (!key) return "🔒 Encrypted (re-open chat to fix)";
                 const bytes = CryptoJS.AES.decrypt(ciphertext, key);
                 const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-                return decrypted || "[Message]";
+                return decrypted || "🔒 Message";
             } catch(e) {
                 console.error("Decryption error:", e);
-                return "[Message]";
+                return "🔒 Message";
             }
         }
         function openSheet(id) {
@@ -2961,9 +2871,6 @@ function closeAll() {
             document.getElementById(id).classList.add('active');
             if (id === 'settingsSheet') {
                 updateMyIdDisplay();
-            }
-            if (id === 'createGroupSheet') {
-                openCreateGroup();
             }
         }
         function toast(m) {
@@ -3025,10 +2932,7 @@ function closeAll() {
             document.getElementById('profileDetail').style.display = 'none';
         }
         function startVoiceCall() {
-            if (!currentRoomId || currentGroupId) {
-                toast("Voice calls only in 1:1 chats");
-                return;
-            }
+            if (!currentRoomId) return;
             toast("Starting call...");
             isCaller = true;
             db.ref(`incomingCalls/${currentFriendUid}`).set({
@@ -3163,10 +3067,14 @@ function closeAll() {
     document.getElementById('chatsTab').style.display = 'block';
     document.querySelector('.pill-nav').style.display = 'flex';
   
+    // Don't reset the status when closing chat
+    // Keep lastKnownStatus as is
+  
     currentFriendUid = null;
-    currentGroupId = null;
     currentRoomId = null;
     document.getElementById('messageList').innerHTML = '';
+    // Remove the line that was setting it to 'Loading...'
+    // document.getElementById('chatStatusInfo').textContent = 'Loading...';
   
     document.getElementById('reactionTutorial').style.display = 'none';
     document.getElementById('typingIndicator').style.display = 'none';
