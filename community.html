@@ -889,6 +889,59 @@
         #fabCreateGroup:active {
             transform: scale(0.9);
         }
+
+        .msg-notification {
+  position: fixed;
+  top: -80px;                 /* hidden above viewport */
+  left: 50%;
+  transform: translateX(-50%);
+  width: 92%;
+  max-width: 400px;
+  background: var(--glass-white);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.15);
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 12px;
+  z-index: 6000;
+  transition: top .35s cubic-bezier(.4,0,.2,1);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(0,0,0,.05);
+}
+.msg-notification.show {
+  top: 12px;                  /* slides into view */
+}
+.notif-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.notif-text {
+  flex: 1;
+  overflow: hidden;
+}
+.notif-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.notif-msg {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.notif-close {
+  font-size: 20px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
     </style>
 </head>
 <body>
@@ -924,6 +977,16 @@
         </div>
     </div>
     <div id="toast"></div>
+
+    <!-- New message notification -->
+<div id="msgNotification" class="msg-notification">
+  <img id="notifAvatar" class="notif-avatar" src="" alt="">
+  <div class="notif-text">
+    <div id="notifName" class="notif-name"></div>
+    <div id="notifMsg"  class="notif-msg"></div>
+  </div>
+  <span class="material-symbols-rounded notif-close" onclick="dismissMsgNotif()">close</span>
+</div>
     <div id="offlineIndicator">Offline • Using cached data</div>
     <header>
         <div onclick="openSheet('settingsSheet')">
@@ -1190,10 +1253,11 @@
         let currentViewedStoryKey = null;
         let currentViewedStoryUid = null;
         let currentViewedStoryTs = null;
+        let msgNotifTimeout = null;
         let lastKnownStatus = 'Last seen recently';
         let currentChatSubtab = 'all';
         let cachedGroups = {};
-let currentGroupId = null;
+        let currentGroupId = null;
         let favorites = JSON.parse(localStorage.getItem('vynix_favorites') || '{}');
         const messageInput = document.getElementById('messageInput');
         const actionBtn = document.getElementById('actionBtn');
@@ -1807,6 +1871,23 @@ let currentGroupId = null;
                 toast(`${notificationTitle}: ${notificationOptions.body}`);
             });
             loadChats();
+            // Global listener for new messages (notifications)
+db.ref('messages').on('child_added', outerSnap => {
+  const roomId = outerSnap.key;
+  if (roomId === currentRoomId) return; // skip current chat
+
+  outerSnap.ref.limitToLast(1).on('child_added', innerSnap => {
+    const msg = innerSnap.val();
+    if (!msg || msg.sender === currentUser.uid) return; // skip own messages
+
+    const friendUid = roomId.replace(currentUser.uid, '').replace('_', '');
+    db.ref(`users/${friendUid}/profile`).once('value', profSnap => {
+      const prof = profSnap.val() || { name: 'User', photo: '' };
+      cachedChats[friendUid] = { ...cachedChats[friendUid], photo: prof.photo }; // cache photo
+      showMsgNotif(friendUid, prof.name, msg.text || '[Media]');
+    });
+  });
+});
             loadMoments();
             loadGroups();
             const myPresenceRef = db.ref(`users/${currentUser.uid}/online`);
@@ -3181,6 +3262,37 @@ function openGroupChat(groupId) {
     // Redirect to groups.html with the group ID as a parameter
     window.location.href = `groups.html?group=${groupId}`;
 }
+
+        function showMsgNotif(senderUid, senderName, rawText) {
+  // ignore if we’re already inside that chat
+  if (currentFriendUid === senderUid) return;
+
+  const notifEl   = document.getElementById('msgNotification');
+  const avatarEl  = document.getElementById('notifAvatar');
+  const nameEl    = document.getElementById('notifName');
+  const msgEl     = document.getElementById('notifMsg');
+
+  avatarEl.src = cachedChats[senderUid]?.photo || '';
+  nameEl.textContent = senderName;
+  msgEl.textContent  = decrypt(rawText, senderUid);
+
+  notifEl.classList.add('show');
+
+  clearTimeout(msgNotifTimeout);
+  msgNotifTimeout = setTimeout(() => dismissMsgNotif(), 4000);
+}
+
+function dismissMsgNotif() {
+  const el = document.getElementById('msgNotification');
+  el.classList.remove('show');
+}
+        const notif = document.getElementById('msgNotification');
+let startY = 0;
+notif.addEventListener('touchstart', e => startY = e.touches[0].clientY);
+notif.addEventListener('touchend', e => {
+  const endY = e.changedTouches[0].clientY;
+  if (startY - endY > 60) dismissMsgNotif();
+});
     </script>
     <script>
         if ('serviceWorker' in navigator) {
