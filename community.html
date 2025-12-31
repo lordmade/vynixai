@@ -1192,6 +1192,8 @@
         let currentViewedStoryTs = null;
         let lastKnownStatus = 'Last seen recently';
         let currentChatSubtab = 'all';
+        let cachedGroups = {};
+let currentGroupId = null;
         let favorites = JSON.parse(localStorage.getItem('vynix_favorites') || '{}');
         const messageInput = document.getElementById('messageInput');
         const actionBtn = document.getElementById('actionBtn');
@@ -1213,19 +1215,23 @@
                 filterChatList();
             }
         }
-        function filterChatList() {
-            const cards = document.querySelectorAll('#chatList .chat-card[data-friend-uid]');
-            cards.forEach(card => {
-                const uid = card.dataset.friendUid;
-                if (currentChatSubtab === 'all') {
-                    card.style.display = 'flex';
-                } else if (currentChatSubtab === 'favorites') {
-                    card.style.display = favorites[uid] ? 'flex' : 'none';
-                } else if (currentChatSubtab === 'groups') {
-                    card.style.display = 'none';
-                }
-            });
+       function filterChatList() {
+    const cards = document.querySelectorAll('#chatList .chat-card');
+    cards.forEach(card => {
+        if (card.classList.contains('group-card')) {
+            card.style.display = currentChatSubtab === 'groups' ? 'flex' : 'none';
+        } else if (card.dataset.friendUid) {
+            const uid = card.dataset.friendUid;
+            if (currentChatSubtab === 'all') {
+                card.style.display = 'flex';
+            } else if (currentChatSubtab === 'favorites') {
+                card.style.display = favorites[uid] ? 'flex' : 'none';
+            } else if (currentChatSubtab === 'groups') {
+                card.style.display = 'none';
+            }
         }
+    });
+}
         function switchChatSubtab(tab) {
             currentChatSubtab = tab;
             document.querySelectorAll('.chat-subtab').forEach(t => t.classList.remove('active'));
@@ -1241,8 +1247,9 @@
             }
         }
         function createNewGroup() {
-            toast("Create Group feature coming soon!");
-        }
+    window.location.href = 'create-group.html';
+}
+
         async function generateKeyPair() {
             const keyPair = await window.crypto.subtle.generateKey(
                 {
@@ -1801,6 +1808,7 @@
             });
             loadChats();
             loadMoments();
+            loadGroups();
             const myPresenceRef = db.ref(`users/${currentUser.uid}/online`);
             myPresenceRef.set(true);
             myPresenceRef.onDisconnect().set(false);
@@ -3038,6 +3046,79 @@
             setTimeout(() => { isTransitioning = false; }, 100);
         }
         updateActionBtn();
+
+
+
+        async function loadGroups() {
+    db.ref(`users/${currentUser.uid}/groups`).on('value', async snap => {
+        const groups = [];
+        cachedGroups = {};
+        
+        for (const groupId of snap.val() ? Object.keys(snap.val()) : []) {
+            const groupSnap = await db.ref(`groups/${groupId}`).once('value');
+            const groupData = groupSnap.val();
+            if (groupData) {
+                cachedGroups[groupId] = groupData;
+                groups.push({
+                    id: groupId,
+                    ...groupData
+                });
+            }
+        }
+        
+        displayGroups(groups);
+        localStorage.setItem('vynix_groups', JSON.stringify(cachedGroups));
+    }, (error) => {
+        console.log('Groups offline, using cache');
+        const cached = localStorage.getItem('vynix_groups');
+        if (cached) {
+            cachedGroups = JSON.parse(cached);
+            displayGroups(Object.values(cachedGroups));
+        }
+    });
+}
+
+function displayGroups(groups) {
+    const list = document.getElementById('chatList');
+    const groupCards = list.querySelectorAll('.group-card');
+    groupCards.forEach(card => card.remove());
+    
+    groups.forEach(group => {
+        const lastMsg = group.lastMessage?.text || 'No messages yet';
+        const timeAgo = formatTimeAgo(group.lastMessage?.timestamp || group.createdAt);
+        const unreadCount = group.unreadCount || 0;
+        
+        const groupCard = document.createElement('div');
+        groupCard.className = 'chat-card group-card';
+        groupCard.dataset.groupId = group.id;
+        groupCard.onclick = () => openGroupChat(group.id);
+        
+        groupCard.innerHTML = `
+            <div class="avatar-box">
+                <img class="avatar" src="${group.photo || 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTgiIGhlaWdodD0iNTgiIHZpZXdCb3g9IjAgMCA1OCA1OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjkiIGN5PSIyOSIgcj0iMjkiIGZpbGw9IiNmMGYwZjAiLz4KPHN2ZyB4PSIxOSIgeT0iMTUiIHdpZHRoPSIyMCIgaGVpZ2h0PSIyOCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNHYyaDE2di0yYzAtMi42Ni01LjMzLTQtOC00eiIgZmlsbD0iIzk5OSIvPgo8L3N2Zz4KPC9zdmc+'}" alt="${group.name}">
+            </div>
+            <div class="chat-info">
+                <span class="chat-name">${group.name}</span>
+                <span class="chat-msg">${lastMsg}</span>
+            </div>
+            ${timeAgo ? `<span class="chat-time">${timeAgo}</span>` : ''}
+            ${unreadCount > 0 ? `<span class="unread-badge">${unreadCount > 99 ? '99+' : unreadCount}</span>` : ''}
+        `;
+        
+        // Insert after the ride card but before friend cards
+        const rideCard = list.querySelector('.chat-card');
+        if (rideCard) {
+            rideCard.parentNode.insertBefore(groupCard, rideCard.nextSibling);
+        } else {
+            list.appendChild(groupCard);
+        }
+    });
+}
+
+function openGroupChat(groupId) {
+    // This will be implemented when you want to add group chat functionality
+    toast('Group chat coming soon!');
+}
     </script>
     <script>
         if ('serviceWorker' in navigator) {
