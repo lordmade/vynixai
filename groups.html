@@ -139,19 +139,6 @@
         .message-time { font-size: 12px; opacity: 0.7; margin-top: 4px; text-align: right; }
         .message.sent .message-time { color: rgba(255,255,255,0.8); }
 
-        /* Read Receipts */
-        .read-receipts {
-            font-size: 11px;
-            opacity: 0.8;
-            margin-top: 2px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .read-receipts .material-symbols-rounded {
-            font-size: 14px;
-        }
-
         /* Typing Indicator */
         .typing-indicator {
             align-self: flex-start;
@@ -625,35 +612,14 @@
 
                     const msgEl = document.createElement('div');
                     msgEl.className = `message ${isSent ? 'sent' : 'received'}`;
-                    msgEl.dataset.msgKey = m.key;
-
-                    let readReceiptsHtml = '';
-                    if (isSent && m.readBy) {
-                        const readCount = Object.keys(m.readBy).length;
-                        const totalMembers = Object.keys(currentGroupData.participants || {}).length;
-                        const allRead = readCount === totalMembers - 1; // exclude sender
-                        readReceiptsHtml = `
-                            <div class="read-receipts">
-                                <span class="material-symbols-rounded">${allRead ? 'done_all' : 'done'}</span>
-                                ${readCount}
-                            </div>
-                        `;
-                    }
-
                     msgEl.innerHTML = `
                         <div style="font-size:12px; color:${isSent ? 'rgba(255,255,255,0.8)' : 'var(--text-secondary)'}; margin-bottom:4px;">
                             ${m.senderName || 'Unknown'}
                         </div>
                         ${m.text}
                         <div class="message-time">${timeStr}</div>
-                        ${readReceiptsHtml}
                     `;
                     list.appendChild(msgEl);
-
-                    // Mark as read if not sender
-                    if (!isSent) {
-                        markMessageAsRead(m.key);
-                    }
                 });
 
                 // Re-append typing indicator at the bottom
@@ -663,9 +629,49 @@
             });
         }
 
-        async function markMessageAsRead(msgKey) {
-            if (!currentGroupId || !msgKey) return;
-            await db.ref(`groupMessages/${currentGroupId}/${msgKey}/readBy/${currentUser.uid}`).set(firebase.database.ServerValue.TIMESTAMP);
+        function updateTypingStatus() {
+            if (!currentGroupId) return;
+
+            const input = document.getElementById('groupMessageInput');
+            const text = input.value.trim();
+
+            clearTimeout(typingTimeout);
+
+            if (text) {
+                db.ref(`groupTyping/${currentGroupId}/${currentUser.uid}`).set(true);
+                typingTimeout = setTimeout(() => {
+                    db.ref(`groupTyping/${currentGroupId}/${currentUser.uid}`).remove();
+                }, 2000);
+            } else {
+                db.ref(`groupTyping/${currentGroupId}/${currentUser.uid}`).remove();
+            }
+        }
+
+        function listenForTyping() {
+            if (!currentGroupId) return;
+
+            if (typingListener) typingListener.off();
+
+            typingListener = db.ref(`groupTyping/${currentGroupId}`).on('value', snap => {
+                const typingUsers = snap.val() || {};
+                delete typingUsers[currentUser.uid]; // exclude self
+
+                const typingIndicator = document.getElementById('groupTypingIndicator');
+                const list = document.getElementById('groupMessageList');
+
+                if (Object.keys(typingUsers).length > 0) {
+                    const names = Object.keys(typingUsers).map(uid => membersData[uid]?.name || 'Someone').join(', ');
+                    typingIndicator.textContent = `${names} ${Object.keys(typingUsers).length > 1 ? 'are' : 'is'} typing`;
+                    typingIndicator.style.display = 'flex';
+
+                    // Ensure it's at the bottom
+                    if (typingIndicator.parentNode !== list) {
+                        list.appendChild(typingIndicator);
+                    }
+                } else {
+                    typingIndicator.style.display = 'none';
+                }
+            });
         }
 
         async function sendGroupMessage() {
@@ -687,10 +693,7 @@
                 sender: currentUser.uid,
                 senderName: myProfile.name,
                 senderPhoto: myProfile.photo,
-                ts: firebase.database.ServerValue.TIMESTAMP,
-                readBy: {
-                    [currentUser.uid]: firebase.database.ServerValue.TIMESTAMP
-                }
+                ts: firebase.database.ServerValue.TIMESTAMP
             });
 
             const updates = {};
