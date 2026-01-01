@@ -2612,18 +2612,28 @@ document.getElementById('detailImg').addEventListener('click', function(e) {
             });
             loadChats();
             // Global listener for new messages (notifications)
+// Global listener for new messages (notifications)
 db.ref('messages').on('child_added', outerSnap => {
   const roomId = outerSnap.key;
   if (roomId === currentRoomId) return; // skip current chat
-  outerSnap.ref.limitToLast(1).on('child_added', innerSnap => {
+
+  outerSnap.ref.limitToLast(1).on('child_added', async innerSnap => {
     const msg = innerSnap.val();
     if (!msg || msg.sender === currentUser.uid) return; // skip own messages
+
     const friendUid = roomId.replace(currentUser.uid, '').replace('_', '');
-    db.ref(`users/${friendUid}/profile`).once('value', profSnap => {
-      const prof = profSnap.val() || { name: 'User', photo: '' };
-      cachedChats[friendUid] = { ...cachedChats[friendUid], photo: prof.photo }; // cache photo
-      showMsgNotif(friendUid, prof.name, msg.text || '[Media]');
-    });
+    const profSnap = await db.ref(`users/${friendUid}/profile`).once('value');
+    const prof = profSnap.val() || { name: 'User', photo: '' };
+
+    // build letter-avatar fallback
+    const letterAvatar = generateLetterAvatar(prof.name || 'User');
+    const senderPhoto = prof.photo || letterAvatar;
+
+    // cache it for re-use
+    cachedChats[friendUid] = { ...cachedChats[friendUid], photo: senderPhoto };
+
+    // show notification with correct avatar
+    showMsgNotif(friendUid, prof.name, msg.text || '[Media]', senderPhoto);
   });
 });
             loadMoments();
@@ -4053,20 +4063,18 @@ async function showProfileDetail(uid, e) {
     function openGroupChat(groupId) {
         window.location.href = `groups.html?group=${groupId}`;
     }
-            function showMsgNotif(senderUid, senderName, rawText) {
-      // ignore if we’re already inside that chat
-      if (currentFriendUid === senderUid) return;
-      const notifEl = document.getElementById('msgNotification');
-      const avatarEl = document.getElementById('notifAvatar');
-      const nameEl = document.getElementById('notifName');
-      const msgEl = document.getElementById('notifMsg');
-      avatarEl.src = cachedChats[senderUid]?.photo || '';
-      nameEl.textContent = senderName;
-      msgEl.textContent = decrypt(rawText, senderUid);
-      notifEl.classList.add('show');
-      clearTimeout(msgNotifTimeout);
-      msgNotifTimeout = setTimeout(() => dismissMsgNotif(), 4000);
-    }
+           function showMsgNotif(senderUid, senderName, rawText, senderPhoto) {
+  if (senderUid === currentFriendUid) return; // already in chat
+
+  const notifEl = document.getElementById('msgNotification');
+  document.getElementById('notifAvatar').src = senderPhoto;
+  document.getElementById('notifName').textContent = senderName;
+  document.getElementById('notifMsg').textContent = decrypt(rawText, senderUid);
+  notifEl.classList.add('show');
+
+  clearTimeout(msgNotifTimeout);
+  msgNotifTimeout = setTimeout(() => dismissMsgNotif(), 4000);
+}
     function dismissMsgNotif() {
       const el = document.getElementById('msgNotification');
       el.classList.remove('show');
