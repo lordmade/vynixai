@@ -1269,6 +1269,36 @@
 .signal-profile-avatar-section:active {
     transform: scale(0.95);
 }
+
+        .friend-checkbox {
+    display: flex;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+    cursor: pointer;
+}
+
+.friend-checkbox:last-child {
+    border-bottom: none;
+}
+
+.friend-checkbox input[type="checkbox"] {
+    margin-right: 12px;
+    width: 18px;
+    height: 18px;
+}
+
+.friend-checkbox img {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    margin-right: 10px;
+}
+
+.friend-checkbox span {
+    font-size: 14px;
+    color: var(--text-primary);
+}
     </style>
 </head>
 <body>
@@ -1817,6 +1847,28 @@
         <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeCustomAlert('fontSizeAlert')">Cancel</button>
     </div>
 </div>
+    <div class="bottom-sheet" id="createGroupSheet">
+    <h2 style="margin-top:0">Create New Group</h2>
+    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:20px;">Create a group to chat with multiple friends.</p>
+    
+    <div class="profile-upload-section" style="margin-bottom: 20px;">
+        <img id="groupPhotoPreview" class="profile-pic-upload" src="" onclick="document.getElementById('groupPhotoUpload').click()" style="width: 80px; height: 80px;">
+        <div class="profile-upload-hint">Tap to add group photo</div>
+    </div>
+    <input type="file" id="groupPhotoUpload" hidden accept="image/*" onchange="previewGroupPhoto(this.files[0])">
+    
+    <input type="text" id="groupNameInput" class="v-input" placeholder="Group name" maxlength="25">
+    
+    <div style="margin-bottom: 20px;">
+        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: var(--text-secondary);">Select Members</h4>
+        <div id="friendsList" style="max-height: 200px; overflow-y: auto; border: 1px solid rgba(0,0,0,0.1); border-radius: 12px; padding: 10px;">
+            <!-- Friends will be populated here -->
+        </div>
+    </div>
+    
+    <button class="btn-primary" id="createGroupBtn" onclick="createGroupLogic()" style="background:var(--accent-blue);">Create Group</button>
+    <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeCreateGroupSheet()">Cancel</button>
+</div>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -1944,8 +1996,12 @@
                 fab.classList.remove('active');
             }
         }
-        function createNewGroup() {
-    window.location.href = 'create-group.html';
+        // Update the existing createNewGroup function
+function createNewGroup() {
+    // Load friends first, then open the sheet
+    loadFriendsForGroup();
+    document.getElementById('overlay').style.display = 'block';
+    document.getElementById('createGroupSheet').classList.add('active');
 }
         async function generateKeyPair() {
             const keyPair = await window.crypto.subtle.generateKey(
@@ -4066,6 +4122,156 @@ async function showProfileDetail(uid, e) {
       const endY = e.changedTouches[0].clientY;
       if (startY - endY > 60) dismissMsgNotif();
     });
+
+        // Add these functions to your script
+
+async function loadFriendsForGroup() {
+    const friendsList = document.getElementById('friendsList');
+    friendsList.innerHTML = '<div style="text-align:center; padding:20px;">Loading friends...</div>';
+    
+    try {
+        const snap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
+        const friends = [];
+        
+        for (const friendUid of Object.keys(snap.val() || {})) {
+            const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
+            const profile = profileSnap.val() || { name: "User", photo: "" };
+            friends.push({
+                uid: friendUid,
+                name: profile.name,
+                photo: profile.photo
+            });
+        }
+        
+        friendsList.innerHTML = '';
+        friends.forEach(friend => {
+            const letterAvatar = generateLetterAvatar(friend.name);
+            const friendItem = document.createElement('div');
+            friendItem.className = 'friend-checkbox';
+            friendItem.innerHTML = `
+                <input type="checkbox" id="friend-${friend.uid}" value="${friend.uid}">
+                <img src="${friend.photo || letterAvatar}" onerror="this.src='${letterAvatar}'" alt="${friend.name}">
+                <span>${friend.name}</span>
+            `;
+            friendsList.appendChild(friendItem);
+        });
+        
+        if (friends.length === 0) {
+            friendsList.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-secondary);">No friends to add yet</div>';
+        }
+    } catch (error) {
+        friendsList.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-secondary);">Error loading friends</div>';
+    }
+}
+
+function previewGroupPhoto(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('groupPhotoPreview').src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+async function createGroupLogic() {
+    const groupName = document.getElementById('groupNameInput').value.trim();
+    if (!groupName) {
+        toast("Please enter a group name");
+        return;
+    }
+    
+    const selectedFriends = [];
+    document.querySelectorAll('#friendsList input[type="checkbox"]:checked').forEach(checkbox => {
+        selectedFriends.push(checkbox.value);
+    });
+    
+    if (selectedFriends.length === 0) {
+        toast("Please select at least one member");
+        return;
+    }
+    
+    const createBtn = document.getElementById('createGroupBtn');
+    createBtn.disabled = true;
+    createBtn.innerText = "Creating...";
+    
+    try {
+        // Create group
+        const groupRef = db.ref('groups').push();
+        const groupId = groupRef.key;
+        
+        const groupData = {
+            name: groupName,
+            createdAt: Date.now(),
+            createdBy: currentUser.uid,
+            members: {
+                [currentUser.uid]: {
+                    role: 'admin',
+                    joinedAt: Date.now()
+                }
+            },
+            lastMessage: null
+        };
+        
+        // Add selected friends as members
+        selectedFriends.forEach(friendUid => {
+            groupData.members[friendUid] = {
+                role: 'member',
+                joinedAt: Date.now()
+            };
+        });
+        
+        // Upload group photo if selected
+        const photoFile = document.getElementById('groupPhotoUpload').files[0];
+        if (photoFile) {
+            const formData = new FormData();
+            formData.append('file', photoFile);
+            formData.append('upload_preset', UPLOAD_PRESET);
+            
+            const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            groupData.photo = data.secure_url;
+        }
+        
+        await groupRef.set(groupData);
+        
+        // Add group to each member's groups list
+        const updates = {};
+        updates[`users/${currentUser.uid}/groups/${groupId}`] = true;
+        selectedFriends.forEach(friendUid => {
+            updates[`users/${friendUid}/groups/${groupId}`] = true;
+        });
+        
+        await db.ref().update(updates);
+        
+        toast("Group created successfully!");
+        closeCreateGroupSheet();
+        
+        // Open the group chat
+        setTimeout(() => {
+            openGroupChat(groupId);
+        }, 500);
+        
+    } catch (error) {
+        toast("Failed to create group");
+        console.error(error);
+    } finally {
+        createBtn.disabled = false;
+        createBtn.innerText = "Create Group";
+    }
+}
+
+function closeCreateGroupSheet() {
+    document.getElementById('createGroupSheet').classList.remove('active');
+    document.getElementById('overlay').style.display = 'none';
+    // Reset form
+    document.getElementById('groupNameInput').value = '';
+    document.getElementById('groupPhotoPreview').src = '';
+    document.getElementById('groupPhotoUpload').value = '';
+}
         </script>
         <script>
             if ('serviceWorker' in navigator) {
