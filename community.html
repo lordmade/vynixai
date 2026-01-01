@@ -3590,11 +3590,13 @@ if (notificationAudio) {
             });
         }
         function handleEnter(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (currentGroupId || currentFriendUid) {
+            sendMessage();
         }
+    }
+}
         function switchTab(tab) {
             document.getElementById('chatsTab').style.display = tab === 'chats' ? 'block' : 'none';
             document.getElementById('statusTab').style.display = tab === 'status' ? 'block' : 'none';
@@ -3794,19 +3796,27 @@ async function showProfileDetail(uid, e) {
                     console.log("Error marking as read:", error);
                 }
             }
-            function decrypt(ciphertext, friendUid) {
-                if (!ciphertext) return "[Message]";
-                try {
-                    const key = sharedKeys[friendUid];
-                    if (!key) return "🔒 Encrypted (re-open chat to fix)";
-                    const bytes = CryptoJS.AES.decrypt(ciphertext, key);
-                    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-                    return decrypted || "🔒 Message";
-                } catch(e) {
-                    console.error("Decryption error:", e);
-                    return "🔒 Message";
-                }
-            }
+            function decrypt(ciphertext, context) {
+    if (!ciphertext) return "[Message]";
+    try {
+        let key;
+        if (currentGroupId) {
+            // For groups, use group-specific key
+            key = `group_${currentGroupId}`;
+        } else {
+            // For private chats, use shared key
+            key = sharedKeys[context];
+            if (!key) return "🔒 Encrypted (re-open chat to fix)";
+        }
+        
+        const bytes = CryptoJS.AES.decrypt(ciphertext, key);
+        const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+        return decrypted || "🔒 Message";
+    } catch(e) {
+        console.error("Decryption error:", e);
+        return "🔒 Message";
+    }
+}
             function openSheet(id) {
                 document.getElementById('overlay').style.display='block';
                 document.getElementById(id).classList.add('active');
@@ -4086,9 +4096,9 @@ async function showProfileDetail(uid, e) {
         });
     }
     function openGroupChat(groupId) {
-        // Redirect to groups.html with the group ID as a parameter
-        window.location.href = `groups.html?group=${groupId}`;
-    }
+    // Open group chat directly instead of redirecting
+    openFullGroupChat(groupId);
+}
     function openGroupChat(groupId) {
         window.location.href = `groups.html?group=${groupId}`;
     }
@@ -4271,6 +4281,295 @@ function closeCreateGroupSheet() {
     document.getElementById('groupNameInput').value = '';
     document.getElementById('groupPhotoPreview').src = '';
     document.getElementById('groupPhotoUpload').value = '';
+}
+
+
+        // Global variable for current group
+let currentGroupId = null;
+
+async function openFullGroupChat(groupId) {
+    isTransitioning = true;
+    currentGroupId = groupId;
+    
+    // Get group data
+    const groupSnap = await db.ref(`groups/${groupId}`).once('value');
+    const groupData = groupSnap.val();
+    
+    if (!groupData) {
+        toast("Group not found");
+        return;
+    }
+    
+    // Set up group chat header
+    document.getElementById('chatFriendName').textContent = groupData.name;
+    document.getElementById('chatFriendAvatar').src = groupData.photo || generateLetterAvatar(groupData.name);
+    
+    // Add group indicator to header
+    const statusEl = document.getElementById('chatStatusInfo');
+    statusEl.innerHTML = `<span style="color:var(--text-secondary); font-size:13px;">${Object.keys(groupData.members || {}).length} members</span>`;
+    
+    // Hide online indicator for groups
+    document.getElementById('chatHeaderOnline').style.display = 'none';
+    
+    // Update header actions for group
+    const headerRight = document.querySelector('.chat-header-right');
+    headerRight.innerHTML = `
+        <span class="material-symbols-rounded chat-header-icon" onclick="showGroupInfo()">info</span>
+        <span class="material-symbols-rounded chat-header-icon" onclick="showGroupMembers()">group</span>
+        <span class="material-symbols-rounded chat-header-icon" onclick="confirmClearGroupChat()">delete_sweep</span>
+    `;
+    
+    // Show chat view
+    document.getElementById('fullChatView').style.display = 'flex';
+    document.getElementById('chatsTab').style.display = 'none';
+    document.getElementById('statusTab').style.display = 'none';
+    document.getElementById('settingsTab').style.display = 'none';
+    document.querySelector('.pill-nav').style.display = 'none';
+    
+    // Load group messages
+    loadGroupMessages(groupId);
+    
+    setTimeout(() => { isTransitioning = false; }, 100);
+}
+
+function loadGroupMessages(groupId) {
+    const list = document.getElementById('messageList');
+    list.innerHTML = '<div style="text-align:center; color:#999; padding:20px;">Loading messages...</div>';
+    
+    messagesListener = db.ref(`groupMessages/${groupId}`).limitToLast(50).on('value', async snap => {
+        list.innerHTML = '';
+        if (!snap.exists()) {
+            list.innerHTML = '<div style="text-align:center; color:#999; padding:40px;">Start the group conversation!</div>';
+            return;
+        }
+        
+        const msgs = [];
+        snap.forEach(child => {
+            const val = child.val();
+            val.key = child.key;
+            msgs.push(val);
+        });
+        
+        msgs.sort((a,b) => a.ts - b.ts);
+        
+        for (const m of msgs) {
+            const isSent = m.sender === currentUser.uid;
+            const timeStr = formatMessageTime(m.ts);
+            const senderProfile = await getMemberProfile(m.sender);
+            
+            let content = '';
+            let reactionsHtml = renderReactions(m.reactions || {});
+            
+            if (m.deleted) {
+                content = `<div class="deleted-message">This message was deleted</div>`;
+            } else if (m.type === 'voice') {
+                content = `
+                    <div class="voice-message ${isSent ? 'sent' : ''}">
+                        <div class="voice-play-btn" onclick="toggleAudioPlay(this)">
+                            <span class="material-symbols-rounded">play_arrow</span>
+                        </div>
+                        <audio src="${m.url}"></audio>
+                        <div class="voice-waveform paused"></div>
+                        <div class="voice-duration">${formatVoiceDuration(m.duration || 0)}</div>
+                    </div>
+                    <div class="message-time">${timeStr}</div>
+                    ${reactionsHtml}
+                `;
+            } else {
+                const decrypted = decrypt(m.text || '', groupId);
+                content = `
+                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:4px;">${senderProfile.name}</div>
+                    ${decrypted}
+                    <div class="message-time">${timeStr}</div>
+                    ${reactionsHtml}
+                `;
+            }
+            
+            const msgEl = document.createElement('div');
+            msgEl.className = `message ${isSent ? 'sent' : 'received'}`;
+            msgEl.dataset.key = m.key;
+            msgEl.innerHTML = content;
+            
+            if (isSent && !m.deleted) {
+                const deleteIcon = document.createElement('div');
+                deleteIcon.className = 'message-delete-icon material-symbols-rounded';
+                deleteIcon.textContent = 'delete';
+                deleteIcon.onclick = (e) => {
+                    e.stopPropagation();
+                    messageToDelete = m.key;
+                    document.getElementById('deleteMessageAlert').classList.add('active');
+                };
+                msgEl.appendChild(deleteIcon);
+            }
+            
+            msgEl.oncontextmenu = (e) => {
+                e.preventDefault();
+                showReactionPicker(msgEl, m.key);
+            };
+            
+            list.appendChild(msgEl);
+        }
+        
+        list.scrollTop = list.scrollHeight;
+    });
+}
+
+async function getMemberProfile(memberUid) {
+    const cached = localStorage.getItem(`group_member_${memberUid}`);
+    if (cached) {
+        return JSON.parse(cached);
+    }
+    
+    const snap = await db.ref(`users/${memberUid}/profile`).once('value');
+    const profile = snap.val() || { name: "User", photo: "" };
+    
+    // Cache for 5 minutes
+    localStorage.setItem(`group_member_${memberUid}`, JSON.stringify(profile));
+    setTimeout(() => localStorage.removeItem(`group_member_${memberUid}`), 300000);
+    
+    return profile;
+}
+
+// Update the closeFullChat function to handle groups
+function closeFullChat() {
+    isTransitioning = true;
+    
+    if (document.getElementById('callControls').style.display === 'flex') {
+        endCall();
+    }
+    
+    // Reset header for regular chats
+    const headerRight = document.querySelector('.chat-header-right');
+    headerRight.innerHTML = `
+        <span class="material-symbols-rounded chat-header-icon" onclick="startVoiceCall()">call</span>
+        <span class="material-symbols-rounded chat-header-icon" onclick="confirmClearChat()">delete_sweep</span>
+    `;
+    
+    document.getElementById('fullChatView').style.display = 'none';
+    document.getElementById('chatsTab').style.display = 'block';
+    document.querySelector('.pill-nav').style.display = 'flex';
+    
+    currentGroupId = null;
+    currentFriendUid = null;
+    currentRoomId = null;
+    
+    document.getElementById('messageList').innerHTML = '';
+    document.getElementById('typingIndicator').style.display = 'none';
+    
+    if (messagesListener) { 
+        messagesListener.off(); 
+        messagesListener = null; 
+    }
+    if (onlineListener) { 
+        onlineListener.off(); 
+        onlineListener = null; 
+    }
+    if (lastSeenListener) { 
+        lastSeenListener.off(); 
+        lastSeenListener = null; 
+    }
+    if (typingListener) { 
+        typingListener.off(); 
+        typingListener = null; 
+    }
+    
+    document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+    
+    setTimeout(() => { isTransitioning = false; }, 100);
+    switchTab('chats');
+}
+
+// Group-specific message sending
+async function sendGroupMessage() {
+    const text = messageInput.value.trim();
+    if (!text || !currentGroupId) return;
+    
+    // For groups, use a simpler encryption key
+    const encrypted = CryptoJS.AES.encrypt(text, `group_${currentGroupId}`).toString();
+    
+    const msgRef = db.ref(`groupMessages/${currentGroupId}`).push();
+    await msgRef.set({
+        text: encrypted,
+        sender: currentUser.uid,
+        ts: Date.now(),
+        reactions: {}
+    });
+    
+    // Update group last message
+    await db.ref(`groups/${currentGroupId}`).update({
+        lastMessage: {
+            text: encrypted,
+            sender: currentUser.uid,
+            timestamp: Date.now()
+        }
+    });
+    
+    messageInput.value = '';
+    updateActionBtn();
+}
+
+// Update the existing sendMessage function to handle both private and group chats
+function sendMessage() {
+    if (currentGroupId) {
+        sendGroupMessage();
+    } else if (currentFriendUid) {
+        // Existing private message logic
+        const text = messageInput.value.trim();
+        if (!text || !currentRoomId) return;
+        const key = sharedKeys[currentFriendUid];
+        const encrypted = CryptoJS.AES.encrypt(text, key).toString();
+        const msgRef = db.ref(`messages/${currentRoomId}`).push();
+        msgRef.set({
+            text: encrypted,
+            sender: currentUser.uid,
+            ts: Date.now(),
+            reactions: {}
+        }).then(() => {
+            const updates = {};
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+            return db.ref().update(updates);
+        }).then(() => {
+            messageInput.value = '';
+            updateActionBtn();
+        }).catch(err => {
+            toast("Failed to send (check internet)");
+            console.error(err);
+        });
+    }
+}
+
+// Add group info functions
+function showGroupInfo() {
+    toast("Group info coming soon!");
+}
+
+function showGroupMembers() {
+    toast("Group members coming soon!");
+}
+
+function confirmClearGroupChat() {
+    document.getElementById('clearChatAlert').classList.add('active');
+}
+
+// Update the executeClearChat function to handle groups
+async function executeClearChat() {
+    if (!currentRoomId && !currentGroupId) return;
+    
+    try {
+        if (currentGroupId) {
+            await db.ref(`groupMessages/${currentGroupId}`).remove();
+        } else if (currentRoomId) {
+            await db.ref(`messages/${currentRoomId}`).remove();
+        }
+        toast('Chat history cleared');
+    } catch (e) {
+        toast('Failed to clear chat');
+    }
+    closeCustomAlert('clearChatAlert');
 }
         </script>
         <script>
