@@ -490,7 +490,29 @@
         let typingTimeout = null;
         let typingListener = null;
         let lastReadTimestamps = {}; // uid -> last read timestamp for this group
+        let groupKey = null; // Shared group encryption key (string)
         const DEFAULT_AVATAR = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMjAiIGZpbGw9IiNmMGYwZjAiLz4KPHN2ZyB4PSI5IiB5PSI4IiB3aWR0aD0iMjIiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSI+CjxwYXRoIGQ9Ik0xMiAxMmMyLjIxIDAgNC0xLjc5IDQtNHMtMS43OS00LTQtNC00IDEuNzktNCA0IDEuNzkgNCA0IDR6bTAgMmMtMi42NyAwLTggMS4zNC04IDR2MmgxNnYtMmMwLTIuNjYtNS4zMy00LTgtNHoiIGZpbGw9IiM5OTkiLz4KPC9zdmc+PC9zdmc+';
+
+        function encrypt(text, key) {
+            if (!key) return text; // fallback if no key
+            try {
+                return CryptoJS.AES.encrypt(text, key).toString();
+            } catch (e) {
+                console.error("Encryption error:", e);
+                return text;
+            }
+        }
+
+        function decrypt(ciphertext, key) {
+            if (!key || !ciphertext.includes('U2FsdGVkX1')) return ciphertext;
+            try {
+                const bytes = CryptoJS.AES.decrypt(ciphertext, key);
+                return bytes.toString(CryptoJS.enc.Utf8) || "[Decryption failed]";
+            } catch (e) {
+                console.error("Decryption error:", e);
+                return "[Encrypted message]";
+            }
+        }
 
         function applySavedTheme() {
             const savedTheme = localStorage.getItem('vynix_theme') || 'auto';
@@ -502,7 +524,6 @@
             }
             document.documentElement.style.setProperty('--accent-blue', savedAccent);
         }
-
         auth.onAuthStateChanged(user => {
             if (user) {
                 currentUser = user;
@@ -512,12 +533,11 @@
                 window.location.href = "login.html";
             }
         });
-
         async function initGroupChat() {
             const urlParams = new URLSearchParams(window.location.search);
             const groupId = urlParams.get('group');
             if (!groupId) {
-                window.location.href = 'index.html';
+                window.location.href = 'community.html';
                 return;
             }
             const cachedProfile = localStorage.getItem('vynix_profile');
@@ -535,6 +555,7 @@
                     return;
                 }
                 currentGroupId = groupId;
+                groupKey = currentGroupData.encryptionKey || null; // Assume key stored in group data
                 isAdmin = currentGroupData.admins && currentGroupData.admins[currentUser.uid] === true;
                 applyGroupRestrictions();
                 setupGroupChatInterface();
@@ -548,7 +569,6 @@
                 setTimeout(() => window.location.href = 'community.html', 2000);
             }
         }
-
         function applyGroupRestrictions() {
             const inputArea = document.getElementById('groupChatInputArea');
             const settings = currentGroupData.settings || {};
@@ -562,7 +582,6 @@
                 document.getElementById('groupActionBtn').onclick = sendGroupMessage;
             }
         }
-
         function loadMyProfile() {
             db.ref(`users/${currentUser.uid}/profile`).on('value', snap => {
                 const data = snap.val() || {};
@@ -572,14 +591,12 @@
                 localStorage.setItem('vynix_profile', JSON.stringify(myProfile));
             });
         }
-
         function setupGroupChatInterface() {
             document.getElementById('groupChatName').textContent = currentGroupData.name;
             document.getElementById('groupChatAvatar').src = currentGroupData.photo || DEFAULT_AVATAR;
             document.getElementById('groupChatInfo').textContent = `${currentGroupData.memberCount || Object.keys(currentGroupData.participants || {}).length} members`;
             document.getElementById('fullGroupChatView').style.display = 'flex';
         }
-
         function listenForReadReceipts() {
             if (!currentGroupId) return;
             db.ref(`users`).on('value', snap => {
@@ -597,7 +614,6 @@
                 loadGroupMessages(); // simple way: re-call the render function
             });
         }
-
         function getReadStatus(messageTs) {
             if (!messageTs) return 'sent';
             let deliveredCount = 0;
@@ -615,7 +631,6 @@
             if (deliveredCount + readCount === totalOthers && totalOthers > 0) return 'delivered';
             return 'sent';
         }
-
         async function loadGroupMessages() {
             if (!currentGroupId) return;
             const messagesRef = db.ref(`groupMessages/${currentGroupId}`).limitToLast(50);
@@ -642,11 +657,12 @@
                     const isSent = m.sender === currentUser.uid;
                     const timeStr = formatTimeAgo(m.ts);
                     const readStatus = isSent ? getReadStatus(m.ts) : '';
+                    const decryptedText = decrypt(m.text || '', groupKey);
                     const msgEl = document.createElement('div');
                     msgEl.className = `message ${isSent ? 'sent' : 'received'}`;
                     msgEl.innerHTML = `
                         ${!isSent ? `<div class="message-header">${m.senderName || 'Unknown'}</div>` : ''}
-                        <div class="message-content">${m.text}</div>
+                        <div class="message-content">${decryptedText}</div>
                         <div class="message-footer">
                             <div class="message-time">${timeStr}</div>
                             ${isSent ? `
@@ -662,7 +678,6 @@
                 list.scrollTop = list.scrollHeight;
             });
         }
-
         function updateTypingStatus() {
             if (!currentGroupId) return;
             const input = document.getElementById('groupMessageInput');
@@ -677,7 +692,6 @@
                 db.ref(`groupTyping/${currentGroupId}/${currentUser.uid}`).remove();
             }
         }
-
         function listenForTyping() {
             if (!currentGroupId) return;
             if (typingListener) typingListener.off();
@@ -708,7 +722,6 @@
                 }
             });
         }
-
         async function sendGroupMessage() {
             const settings = currentGroupData.settings || {};
             if (settings.restrictMessages && !isAdmin) {
@@ -718,9 +731,10 @@
             const text = document.getElementById('groupMessageInput').value.trim();
             if (!text || !currentGroupId) return;
             db.ref(`groupTyping/${currentGroupId}/${currentUser.uid}`).remove();
+            const encryptedText = encrypt(text, groupKey);
             const msgRef = db.ref(`groupMessages/${currentGroupId}`).push();
             await msgRef.set({
-                text: text,
+                text: encryptedText,
                 sender: currentUser.uid,
                 senderName: myProfile.name,
                 senderPhoto: myProfile.photo,
@@ -728,14 +742,14 @@
             });
             const updates = {};
             Object.keys(currentGroupData.participants || {}).forEach(uid => {
-                updates[`users/${uid}/groups/${currentGroupId}/lastMessage`] = text;
+                updates[`users/${uid}/groups/${currentGroupId}/lastMessage`] = encryptedText; // or plain preview if needed
                 updates[`users/${uid}/groups/${currentGroupId}/timestamp`] = firebase.database.ServerValue.TIMESTAMP;
                 if (uid !== currentUser.uid) {
                     updates[`users/${uid}/groups/${currentGroupId}/unreadCount`] = firebase.database.ServerValue.increment(1);
                 }
             });
             updates[`groups/${currentGroupId}/lastMessage`] = {
-                text: text,
+                text: encryptedText,
                 sender: currentUser.uid,
                 senderName: myProfile.name,
                 timestamp: firebase.database.ServerValue.TIMESTAMP
@@ -743,14 +757,12 @@
             await db.ref().update(updates);
             document.getElementById('groupMessageInput').value = '';
         }
-
         function handleGroupEnter(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendGroupMessage();
             }
         }
-
         function formatTimeAgo(timestamp) {
             if (!timestamp) return '';
             const now = Date.now();
@@ -762,7 +774,6 @@
             const date = new Date(timestamp);
             return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
         }
-
         async function markGroupAsRead(groupId) {
             if (currentUser && groupId) {
                 await db.ref(`users/${currentUser.uid}/groups/${groupId}`).update({
@@ -771,7 +782,6 @@
                 });
             }
         }
-
         function showToast(message) {
             const toast = document.getElementById('toast');
             toast.textContent = message;
@@ -780,11 +790,9 @@
                 toast.style.display = 'none';
             }, 3000);
         }
-
         function goBack() {
-            window.location.href = 'index.html';
+            window.location.href = 'community.html';
         }
-
         if (window.cordova) {
             document.addEventListener('deviceready', () => {
                 document.addEventListener('backbutton', (e) => {
@@ -804,7 +812,6 @@
                 goBack();
             });
         }
-
         /* Group Info Bottom Sheet Functions */
         async function openGroupInfoSheet() {
             document.getElementById('sheetAvatar').src = currentGroupData.photo || DEFAULT_AVATAR;
@@ -841,12 +848,10 @@
             document.getElementById('groupInfoSheet').classList.add('visible');
             document.getElementById('sheetOverlay').classList.add('visible');
         }
-
         function closeGroupInfoSheet() {
             document.getElementById('groupInfoSheet').classList.remove('visible');
             document.getElementById('sheetOverlay').classList.remove('visible');
         }
-
         /* Add Member by Vynix ID */
         async function addMemberByVynixId() {
             if (!isAdmin) {
@@ -895,7 +900,6 @@
                 btn.textContent = "Add Member";
             }
         }
-
         /* Add Member from Friends Sheet */
         async function openAddMemberSheet() {
             closeGroupInfoSheet();
@@ -939,12 +943,10 @@
             document.getElementById('addMemberSheet').classList.add('visible');
             document.getElementById('addMemberOverlay').classList.add('visible');
         }
-
         function closeAddMemberSheet() {
             document.getElementById('addMemberSheet').classList.remove('visible');
             document.getElementById('addMemberOverlay').classList.remove('visible');
         }
-
         async function addMemberToGroup(uid) {
             if (!isAdmin && (currentGroupData.settings || {}).allowAddMembers === false) {
                 showToast('You are not allowed to add members');
@@ -971,7 +973,6 @@
                 showToast('Failed to add member');
             }
         }
-
         function changeGroupPhoto() {
             if (!isAdmin) {
                 showToast('Only admins can change group photo');
@@ -979,7 +980,6 @@
             }
             document.getElementById('groupPhotoUpload').click();
         }
-
         async function uploadGroupPhoto(file) {
             if (!file || !isAdmin) return;
             try {
@@ -995,7 +995,6 @@
                 showToast('Failed to update photo');
             }
         }
-
         function editGroupName() {
             if (!isAdmin) {
                 showToast('Only admins can edit group name');
@@ -1012,7 +1011,6 @@
                 });
             }
         }
-
         async function removeMember(uid) {
             if (!isAdmin || uid === currentUser.uid) return;
             if (!confirm('Remove this member from the group?')) return;
@@ -1029,7 +1027,6 @@
                 showToast('Failed to remove member');
             }
         }
-
         async function exitGroup() {
             if (isAdmin) {
                 if (!confirm('You are an admin. Exiting will not delete the group, but you will lose admin rights. Continue?')) return;
