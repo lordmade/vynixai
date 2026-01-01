@@ -524,6 +524,10 @@
             color: var(--text-secondary);
             border-radius: 4px;
         }
+        .deleted-message {
+            font-style: italic;
+            opacity: 0.6;
+        }
     </style>
 </head>
 <body>
@@ -563,8 +567,8 @@
         <div class="menu-item" onclick="replyToMessage()"><span class="material-symbols-rounded">reply</span> Reply</div>
         <div class="menu-item" onclick="reactToMessage()"><span class="material-symbols-rounded">mood</span> React</div>
         <div class="menu-item" onclick="copyMessageText()"><span class="material-symbols-rounded">content_copy</span> Copy</div>
-        <div class="menu-item danger" onclick="deleteMessageForEveryone()"><span class="material-symbols-rounded">delete</span> Delete for Everyone</div>
-        <div class="menu-item danger" onclick="deleteMessageForMe()"><span class="material-symbols-rounded">delete</span> Delete for Me</div>
+        <div class="menu-item danger" id="deleteForEveryoneItem" onclick="deleteMessageForEveryone()"><span class="material-symbols-rounded">delete</span> Delete for Everyone</div>
+        <div class="menu-item" onclick="deleteMessageForMe()"><span class="material-symbols-rounded">delete</span> Delete for Me</div>
     </div>
     <!-- Reaction Picker -->
     <div id="reactionPicker">
@@ -822,14 +826,16 @@
                     const timeStr = formatTime(m.ts);
                     const readStatus = isSent ? getReadStatus(m.ts) : '';
                     let content = '';
-                    if (m.type === 'image') {
+                    if (m.deleted) {
+                        content = '<div class="deleted-message">This message was deleted</div>';
+                    } else if (m.type === 'image') {
                         content = `<div class="media-message"><img src="${m.url}" onclick="openMediaViewer('${m.url}', 'image')" loading="lazy"></div>`;
                     } else if (m.type === 'video') {
                         content = `<div class="media-message video"><video src="${m.url}" onclick="openMediaViewer('${m.url}', 'video')" playsinline loading="lazy"></video></div>`;
                     } else {
                         content = decrypt(m.text || '', groupKey);
                     }
-                    if (m.replyTo) {
+                    if (m.replyTo && !m.deleted) {
                         const replyText = m.replyTo.text ? decrypt(m.replyTo.text, groupKey) : '[Media]';
                         content = `<div style="font-size:13px; opacity:0.7; margin-bottom:4px; padding:4px 8px; background:rgba(255,255,255,0.1); border-left:3px solid var(--accent-blue); border-radius:4px;">${m.replyTo.senderName}: ${replyText}</div>${content}`;
                     }
@@ -843,7 +849,7 @@
                         ${reactionsHtml}
                         <div class="message-footer">
                             <div class="message-time">${timeStr}</div>
-                            ${isSent ? `
+                            ${isSent && !m.deleted ? `
                                 <span class="material-symbols-rounded read-receipt ${readStatus === 'read' ? 'read' : readStatus === 'delivered' ? 'delivered' : ''}">
                                     ${readStatus === 'read' ? 'done_all' : 'done_all'}
                                 </span>
@@ -875,6 +881,7 @@
                     longPressTimer = setTimeout(() => {
                         selectMessage(msgEl);
                         showMessageMenu(e);
+                        updateDeleteForEveryoneVisibility();
                     }, 500);
                 }
             });
@@ -886,6 +893,7 @@
                     const msgEl = e.target.closest('.message');
                     selectMessage(msgEl);
                     showMessageMenu(e);
+                    updateDeleteForEveryoneVisibility();
                 }
             });
             messageList.addEventListener('click', e => {
@@ -916,6 +924,20 @@
         function hideMessageMenu() {
             document.getElementById('messageMenu').style.display = 'none';
         }
+        function updateDeleteForEveryoneVisibility() {
+            const item = document.getElementById('deleteForEveryoneItem');
+            if (!selectedMessageKey) {
+                item.style.display = 'none';
+                return;
+            }
+            // Simple check: assume message is own if sent class exists
+            const msgEl = document.querySelector(`.message[data-key="${selectedMessageKey}"]`);
+            if (msgEl && msgEl.classList.contains('sent')) {
+                item.style.display = 'flex';
+            } else {
+                item.style.display = 'none';
+            }
+        }
         function showReactionPicker(e) {
             const picker = document.getElementById('reactionPicker');
             picker.style.display = 'flex';
@@ -934,10 +956,8 @@
             const msgEl = document.querySelector(`.message[data-key="${selectedMessageKey}"]`);
             const sender = msgEl.querySelector('.message-header')?.textContent || myProfile.name;
             let text = '';
-            if (msgEl.querySelector('.message-content img')) {
-                text = '[Image]';
-            } else if (msgEl.querySelector('.message-content video')) {
-                text = '[Video]';
+            if (msgEl.querySelector('.media-message')) {
+                text = '[Media]';
             } else {
                 text = msgEl.querySelector('.message-content').textContent.trim().substring(0, 100);
             }
@@ -980,10 +1000,8 @@
             if (!selectedMessageKey) return;
             const msgEl = document.querySelector(`.message[data-key="${selectedMessageKey}"]`);
             let text = '';
-            if (msgEl.querySelector('.message-content img')) {
-                text = '[Image]';
-            } else if (msgEl.querySelector('.message-content video')) {
-                text = '[Video]';
+            if (msgEl.querySelector('.media-message')) {
+                text = '[Media]';
             } else {
                 text = msgEl.querySelector('.message-content').innerText;
             }
@@ -992,15 +1010,14 @@
         }
         async function deleteMessageForEveryone() {
             if (!selectedMessageKey) return;
-            const msgSnap = await db.ref(`groupMessages/${currentGroupId}/${selectedMessageKey}`).once('value');
-            const msg = msgSnap.val();
-            if (msg.sender !== currentUser.uid) {
+            const msgEl = document.querySelector(`.message[data-key="${selectedMessageKey}"]`);
+            if (!msgEl || !msgEl.classList.contains('sent')) {
                 showToast('You can only delete your own messages');
                 return;
             }
             await db.ref(`groupMessages/${currentGroupId}/${selectedMessageKey}`).update({ 
                 deleted: true, 
-                text: 'This message was deleted',
+                text: null,
                 type: null,
                 url: null
             });
@@ -1009,7 +1026,8 @@
         }
         function deleteMessageForMe() {
             if (!selectedMessageKey) return;
-            document.querySelector(`.message[data-key="${selectedMessageKey}"]`).style.display = 'none';
+            const msgEl = document.querySelector(`.message[data-key="${selectedMessageKey}"]`);
+            if (msgEl) msgEl.style.display = 'none';
             hideMessageMenu();
             showToast('Message deleted for you');
         }
