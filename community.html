@@ -1175,6 +1175,42 @@
         filter: brightness(0.9) contrast(1.1);
     }
 }
+
+        /* Status card letter avatar styling */
+.status-info img {
+    transition: all 0.2s ease;
+}
+
+.status-info img[src^="data:image"] {
+    border: 1px solid rgba(255,255,255,0.3);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Dark mode for status letter avatars */
+@media (prefers-color-scheme: dark) {
+    .status-info img[src^="data:image"] {
+        border: 1px solid rgba(255,255,255,0.2);
+        filter: brightness(0.9) contrast(1.1);
+    }
+}
+
+/* Story viewer letter avatar styling */
+#storyHeaderInfo img {
+    transition: all 0.2s ease;
+}
+
+#storyHeaderInfo img[src^="data:image"] {
+    border: 2px solid rgba(255,255,255,0.8);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+/* Dark mode for story letter avatars */
+@media (prefers-color-scheme: dark) {
+    #storyHeaderInfo img[src^="data:image"] {
+        border: 2px solid rgba(255,255,255,0.6);
+        filter: brightness(0.9) contrast(1.1);
+    }
+}
     </style>
 </head>
 <body>
@@ -2580,22 +2616,31 @@ db.ref('messages').on('child_added', outerSnap => {
             });
             filterChatList();
         }
-        function renderMomentsFromCache() {
-            const grid = document.getElementById('statusGrid');
-            grid.innerHTML = "";
-            const now = Date.now();
-            Object.keys(cachedMoments).forEach(uid => {
-                const items = cachedMoments[uid].filter(m => now - m.ts < 86400000);
-                if (items.length) {
-                    const last = items[items.length - 1];
-                    grid.innerHTML += `
-                        <div class="status-card" data-friend-uid="${uid}" onclick="openStoriesCached('${uid}')">
-                            ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
-                            <div class="status-info"><b>${last.name}</b></div>
-                        </div>`;
-                }
-            });
+       function renderMomentsFromCache() {
+    const grid = document.getElementById('statusGrid');
+    grid.innerHTML = "";
+    const now = Date.now();
+    Object.keys(cachedMoments).forEach(uid => {
+        const items = cachedMoments[uid].filter(m => now - m.ts < 86400000);
+        if (items.length) {
+            const last = items[items.length - 1];
+            const profileName = last.name || "User";
+            const profilePhoto = last.photo || "";
+            const letterAvatar = generateLetterAvatar(profileName);
+            
+            grid.innerHTML += `
+                <div class="status-card" data-friend-uid="${uid}" onclick="openStoriesCached('${uid}')">
+                    ${last.type === 'video' ? `<video src="${last.url}" muted loop playsinline></video>` : `<img src="${last.url}">`}
+                    <div class="status-info">
+                        <img src="${profilePhoto || letterAvatar}" 
+                             onerror="this.onerror=null; this.src='${letterAvatar}'"
+                             style="width:24px; height:24px; border-radius:50%; margin-right:8px; vertical-align:middle;">
+                        <b>${profileName}</b>
+                    </div>
+                </div>`;
         }
+    });
+}
         function openStoriesCached(uid) {
             const now = Date.now();
             storyQueue = cachedMoments[uid]?.filter(m => now - m.ts < 86400000).map(m => ({...m, uid})) || [];
@@ -2734,31 +2779,37 @@ db.ref('messages').on('child_added', outerSnap => {
                 performUpload(file, 0);
             }
         }
-        async function performUpload(file, duration = 0) {
-            toast("Posting Moment...");
-            const form = new FormData();
-            form.append('file', file);
-            form.append('upload_preset', UPLOAD_PRESET);
-            try {
-                const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method:'POST', body:form });
-                const data = await res.json();
-                if(data.secure_url) {
-                    const pushRef = await db.ref(`moments/${currentUser.uid}`).push();
-                    await pushRef.set({
-                        url: data.secure_url,
-                        type: data.resource_type,
-                        ts: Date.now(),
-                        name: myProfile.name || "User",
-                        photo: myProfile.photo,
-                        key: pushRef.key,
-                        duration: duration > 0 ? Math.min(duration, 60) : 0
-                    });
-                    toast("Moment is live!");
-                }
-            } catch(e) {
-                toast("No internet - try again when online");
-            }
+       async function performUpload(file, duration = 0) {
+    toast("Posting Moment...");
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', UPLOAD_PRESET);
+    try {
+        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { 
+            method: 'POST', 
+            body: form 
+        });
+        const data = await res.json();
+        if(data.secure_url) {
+            const pushRef = await db.ref(`moments/${currentUser.uid}`).push();
+            await pushRef.set({
+                url: data.secure_url,
+                type: data.resource_type,
+                ts: Date.now(),
+                name: myProfile.name || "User",
+                photo: myProfile.photo || "", // Ensure photo is set
+                key: pushRef.key,
+                duration: duration > 0 ? Math.min(duration, 60) : 0
+            });
+            toast("Moment is live!");
+        } else {
+            toast("Upload failed - no URL returned");
         }
+    } catch(e) {
+        toast("No internet - try again when online");
+        console.error("Upload error:", e);
+    }
+}
         function formatViewTime(viewTs, storyTs) {
             const viewDate = new Date(viewTs);
             const storyDate = new Date(storyTs);
@@ -2890,7 +2941,7 @@ db.ref('messages').on('child_added', outerSnap => {
             document.querySelectorAll('.bottom-sheet').forEach(s => s.classList.remove('active'));
             document.getElementById('overlay').style.display = 'none';
         }
-     async function loadMoments() {
+    async function loadMoments() {
     db.ref('moments').on('value', snap => {
         const grid = document.getElementById('statusGrid');
         grid.innerHTML = "";
@@ -2916,9 +2967,11 @@ db.ref('messages').on('child_added', outerSnap => {
                 const last = items[items.length-1];
                 const isOwn = uid === currentUser.uid;
                 
-                // Get profile data for letter avatar
-                const profilePhoto = data.photo || "";
-                const profileName = data.name || "User";
+                // Fix: Get the actual profile data for this user
+                let profileName = last.name || "User";
+                let profilePhoto = last.photo || "";
+                
+                // Use letter avatar as fallback
                 const letterAvatar = generateLetterAvatar(profileName);
                 
                 grid.innerHTML += `
@@ -2930,7 +2983,7 @@ db.ref('messages').on('child_added', outerSnap => {
                                  style="width:24px; height:24px; border-radius:50%; margin-right:8px; vertical-align:middle;">
                             <b>${profileName}</b>
                         </div>
-                        ${isOwn ? `<div class="status-views" onclick="event.stopPropagation(); showViewsList('${uid}', '${last.key}', '${last.ts}')"><span class="material-symbols-rounded" style="font-size:18px;vertical-align:middle;">visibility</span> ${count}</div>` : ''}
+                        ${isOwn ? `<div class="status-views" onclick="event.stopPropagation(); showViewsList('${uid}', '${last.key}', '${last.ts}')"><span class="material-symbols-rounded" style="font-size:18px;vertical-align:middle;">visibility</span> 0</div>` : ''}
                     </div>`;
                 
                 setupFriendProfileListener(uid);
@@ -2955,27 +3008,34 @@ db.ref('messages').on('child_added', outerSnap => {
         renderMomentsFromCache();
     });
 }
-        function openStories(uid) {
-            setupFriendProfileListener(uid);
-            setupOnlineStatusListener(uid);
-            db.ref(`moments/${uid}`).once('value', snap => {
-                storyQueue = [];
-                const now = Date.now();
-                snap.forEach(s => {
-                    const val = s.val();
-                    val.key = s.key;
-                    val.uid = uid;
-                    if (uid === currentUser.uid) {
-                        val.name = myProfile.name || val.name || "User";
-                        val.photo = myProfile.photo || val.photo || "";
-                    }
-                    if(now - val.ts < 86400000) storyQueue.push(val);
-                });
-                storyIndex = 0;
-                document.getElementById('storyViewer').style.display = 'block';
-                showStory();
-            });
-        }
+       function openStories(uid) {
+    setupFriendProfileListener(uid);
+    setupOnlineStatusListener(uid);
+    db.ref(`moments/${uid}`).once('value', snap => {
+        storyQueue = [];
+        const now = Date.now();
+        snap.forEach(s => {
+            const val = s.val();
+            val.key = s.key;
+            val.uid = uid;
+            
+            // Ensure proper name and photo with letter avatar fallback
+            if (uid === currentUser.uid) {
+                val.name = myProfile.name || val.name || "User";
+                val.photo = myProfile.photo || val.photo || "";
+            } else {
+                val.name = val.name || "User";
+                val.photo = val.photo || "";
+            }
+            
+            if(now - val.ts < 86400000) storyQueue.push(val);
+        });
+        
+        storyIndex = 0;
+        document.getElementById('storyViewer').style.display = 'block';
+        showStory();
+    });
+}
         function handleStoryTap(e) {
             if (e.target.closest('.story-sound-btn') || e.target.closest('.story-delete')) return;
             const screenWidth = window.innerWidth;
