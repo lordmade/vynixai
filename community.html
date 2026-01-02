@@ -3174,18 +3174,16 @@ if (notificationAudio) {
             currentStoryUid = null;
             currentStoryTs = null;
         }
+
 async function loadChats() {
     db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
         const list = document.getElementById('chatList');
-
-        // Clear everything except group cards (we'll re-sort everything together)
+        // Preserve group cards
         const groupCards = Array.from(list.querySelectorAll('.group-card'));
         list.innerHTML = "";
-        
-        // Re-add group cards temporarily (they will be re-positioned later)
+        // Re-append group cards
         groupCards.forEach(card => list.appendChild(card));
-
-        // Add ride card if missing
+        // Add ride card
         if (!list.querySelector('.chat-card[onclick*="ride.html"]')) {
             list.innerHTML += `
                 <div class="chat-card" onclick="window.location.href='ride.html'">
@@ -3201,59 +3199,34 @@ async function loadChats() {
                     <span class="chat-time">New</span>
                 </div>`;
         }
-
+        // Continue with friend chat rendering...
         cachedChats = {};
-        const friendItems = [];
-
+        const chatsArray = [];
         snap.forEach(child => {
             const data = child.val();
             cachedChats[child.key] = data;
-            friendItems.push({
-                type: 'friend',
-                uid: child.key,
-                data: data
-            });
+            chatsArray.push({ key: child.key, data: data });
             setupFriendProfileListener(child.key);
             setupOnlineStatusListener(child.key);
         });
-
         localStorage.setItem('vynix_chats', JSON.stringify(cachedChats));
-
-        // Get current groups (already rendered via displayGroups)
-        const currentGroupItems = Array.from(list.querySelectorAll('.group-card')).map(card => ({
-            type: 'group',
-            id: card.dataset.groupId,
-            ts: parseInt(card.dataset.ts) || 0,
-            element: card
-        }));
-
-        // Combine friends and groups into one array for unified sorting
-        const allItems = [...friendItems, ...currentGroupItems];
-
-        // Fetch profiles for friends and sort everything by timestamp
-        const combinedSorted = [];
-        for (const item of friendItems) {
-            const friendUid = item.uid;
-            const chatData = item.data;
+        chatsArray.sort((a, b) => (b.data.ts || 0) - (a.data.ts || 0));
+        for (const chat of chatsArray) {
+            const friendUid = chat.key;
+            const chatData = chat.data;
             const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
-            const profile = profileSnap.val() || { name: "User", photo: "" };
-
+            const profile = profileSnap.val() || { name: "User", photo: "", publicKey: "" };
             let dMsg = "You are now connected 🔒";
             if (chatData.lastMsg) {
                 dMsg = decrypt(chatData.lastMsg, friendUid);
             }
-
-            const ts = chatData.ts || 0;
-            const timeAgo = formatTimeAgo(ts);
+            const timeAgo = formatTimeAgo(chatData.ts);
             const unreadCount = chatData.unreadCount || 0;
             const isFav = favorites[friendUid] ? '<span class="material-symbols-rounded favorite-indicator">star</span>' : '';
-
             const chatCard = document.createElement('div');
             chatCard.className = 'chat-card';
             chatCard.dataset.friendUid = friendUid;
-            chatCard.dataset.ts = ts;
             chatCard.onclick = () => openFullChat(friendUid, profile.name, profile.photo || generateLetterAvatar(profile.name));
-
             chatCard.innerHTML = `
                 <div class="avatar-box" data-friend-uid="\( {friendUid}" onclick="event.stopPropagation(); showProfileDetail(' \){friendUid}', event)">
                     <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}"
@@ -3267,34 +3240,9 @@ async function loadChats() {
                 \( {unreadCount > 0 ? `<span class="unread-badge"> \){unreadCount > 99 ? '99+' : unreadCount}</span>` : ''}
                 ${isFav}
             `;
-
-            combinedSorted.push({
-                ts: ts,
-                element: chatCard
-            });
+            list.appendChild(chatCard);
         }
-
-        // Add existing group elements with their timestamps
-        currentGroupItems.forEach(groupItem => {
-            combinedSorted.push({
-                ts: groupItem.ts,
-                element: groupItem.element
-            });
-        });
-
-        // Sort all by timestamp (newest first)
-        combinedSorted.sort((a, b) => b.ts - a.ts);
-
-        // Clear list again and rebuild in correct order
-        list.innerHTML = "";
-        // Ride card first
-        const rideCard = document.querySelector('.chat-card[onclick*="ride.html"]');
-        if (rideCard) list.appendChild(rideCard);
-
-        // Then sorted chats + groups
-        combinedSorted.forEach(item => list.appendChild(item.element));
-
-        // Re-attach swipe for favorite (only on friend cards)
+        // Re-attach swipe listeners
         document.querySelectorAll('#chatList .chat-card[data-friend-uid]').forEach(card => {
             let startX = 0;
             card.addEventListener('touchstart', e => {
@@ -3309,7 +3257,6 @@ async function loadChats() {
                 }
             });
         });
-
         filterChatList();
     }, (error) => {
         console.log('Chats offline, using cache');
