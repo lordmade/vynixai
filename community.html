@@ -3325,52 +3325,62 @@ if (notificationAudio) {
     });
 }
         async function openFullChat(friendUid, fallbackName = "User", fallbackPhoto = "") {
-            isTransitioning = true;
-            markAsRead(friendUid);
-            currentFriendUid = friendUid;
-            currentRoomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
-            const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
-            const profile = profileSnap.val() || { name: fallbackName, photo: fallbackPhoto, publicKey: "" };
-            document.getElementById('chatFriendName').textContent = profile.name;
-            document.getElementById('chatFriendAvatar').src = profile.photo || '';
-            document.getElementById('fullChatView').style.display = 'flex';
-            document.getElementById('chatsTab').style.display = 'none';
-            document.getElementById('statusTab').style.display = 'none';
-            document.getElementById('settingsTab').style.display = 'none';
-            document.querySelector('.pill-nav').style.display = 'none';
-            if (!profile.publicKey) {
-                toast('Chat not end-to-end encrypted - friend needs to update app');
+    isTransitioning = true;
+    markAsRead(friendUid);
+    currentFriendUid = friendUid;
+    currentRoomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
+
+    // Immediately show the chat view with fallback data
+    document.getElementById('chatFriendName').textContent = fallbackName;
+    document.getElementById('chatFriendAvatar').src = fallbackPhoto || generateLetterAvatar(fallbackName);
+    document.getElementById('chatStatusInfo').textContent = 'Loading...';
+    document.getElementById('fullChatView').style.display = 'flex';
+    document.getElementById('chatsTab').style.display = 'none';
+    document.getElementById('statusTab').style.display = 'none';
+    document.getElementById('settingsTab').style.display = 'none';
+    document.querySelector('.bottom-nav-container').style.display = 'none'; // hide bottom nav
+
+    // Now fetch real profile
+    try {
+        const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
+        const profile = profileSnap.val() || { name: fallbackName, photo: fallbackPhoto };
+        document.getElementById('chatFriendName').textContent = profile.name || fallbackName;
+        setupAvatarWithFallback(document.getElementById('chatFriendAvatar'), profile.name || fallbackName, profile.photo);
+    } catch (e) {
+        console.log("Could not load friend profile");
+    }
+
+    // Encryption key setup
+    const profileSnap = await db.ref(`users/${friendUid}/profile`).once('value');
+    const profile = profileSnap.val() || {};
+    if (!profile.publicKey) {
+        toast('Chat not end-to-end encrypted - friend needs to update app');
+        sharedKeys[currentFriendUid] = currentRoomId;
+    } else {
+        if (!sharedKeys[currentFriendUid]) {
+            try {
+                const friendPublicJwk = JSON.parse(profile.publicKey);
+                const secret = await deriveSharedSecret(friendPublicJwk);
+                const keyHex = Array.from(secret).map(b => b.toString(16).padStart(2, '0')).join('');
+                sharedKeys[currentFriendUid] = keyHex;
+                localStorage.setItem('sharedKeys', JSON.stringify(sharedKeys));
+            } catch (e) {
+                toast('Failed to establish secure channel');
+                console.error(e);
                 sharedKeys[currentFriendUid] = currentRoomId;
-            } else {
-                if (!sharedKeys[currentFriendUid]) {
-                    try {
-                        const friendPublicJwk = JSON.parse(profile.publicKey);
-                        const secret = await deriveSharedSecret(friendPublicJwk);
-                        const keyHex = Array.from(secret).map(b => b.toString(16).padStart(2, '0')).join('');
-                        sharedKeys[currentFriendUid] = keyHex;
-                        localStorage.setItem('sharedKeys', JSON.stringify(sharedKeys));
-                    } catch (e) {
-                        toast('Failed to establish secure channel');
-                        console.error(e);
-                        sharedKeys[currentFriendUid] = currentRoomId;
-                    }
-                }
-            }
-            loadMessages();
-            updateChatStatus();
-            listenForTyping();
-            setupFriendProfileListener(friendUid);
-            setupOnlineStatusListener(friendUid);
-            setTimeout(() => { isTransitioning = false; }, 100);
-            if (!hasShownReactionTutorial && document.querySelectorAll('#messageList .message').length > 0) {
-                document.getElementById('reactionTutorial').style.display = 'flex';
-                setTimeout(() => {
-                    document.getElementById('reactionTutorial').style.display = 'none';
-                    localStorage.setItem('reaction_tutorial_shown', 'true');
-                    hasShownReactionTutorial = true;
-                }, 5000);
             }
         }
+    }
+
+    // Load messages and status
+    loadMessages();
+    updateChatStatus();
+    listenForTyping();
+    setupFriendProfileListener(friendUid);
+    setupOnlineStatusListener(friendUid);
+
+    setTimeout(() => { isTransitioning = false; }, 100);
+}
         function updateChatStatus() {
             if (!currentFriendUid) return;
             if (onlineListener) { onlineListener.off(); onlineListener = null; }
@@ -4039,27 +4049,27 @@ async function showProfileDetail(uid, e) {
                 }, 1000);
             }
             function closeFullChat() {
-                isTransitioning = true;
-                if (document.getElementById('callControls').style.display === 'flex') {
-                    endCall();
-                }
-                document.getElementById('fullChatView').style.display = 'none';
-                document.getElementById('chatsTab').style.display = 'block';
-                document.querySelector('.pill-nav').style.display = 'flex';
-                currentFriendUid = null;
-                currentRoomId = null;
-                document.getElementById('messageList').innerHTML = '';
-                document.getElementById('reactionTutorial').style.display = 'none';
-                document.getElementById('typingIndicator').style.display = 'none';
-                if (messagesListener) { messagesListener.off(); messagesListener = null; }
-                if (onlineListener) { onlineListener.off(); onlineListener = null; }
-                if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
-                if (typingListener) { typingListener.off(); typingListener = null; }
-                db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
-                document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
-                setTimeout(() => { isTransitioning = false; }, 100);
-                switchTab('chats');
-            }
+    isTransitioning = true;
+    if (document.getElementById('callControls').style.display === 'flex') {
+        endCall();
+    }
+    document.getElementById('fullChatView').style.display = 'none';
+    document.getElementById('chatsTab').style.display = 'block';
+    document.querySelector('.bottom-nav-container').style.display = 'flex'; // show bottom nav again
+    currentFriendUid = null;
+    currentRoomId = null;
+    document.getElementById('messageList').innerHTML = '';
+    document.getElementById('reactionTutorial').style.display = 'none';
+    document.getElementById('typingIndicator').style.display = 'none';
+    if (messagesListener) { messagesListener.off(); messagesListener = null; }
+    if (onlineListener) { onlineListener.off(); onlineListener = null; }
+    if (lastSeenListener) { lastSeenListener.off(); lastSeenListener = null; }
+    if (typingListener) { typingListener.off(); typingListener = null; }
+    db.ref(`typing/\( {currentRoomId}/ \){currentUser.uid}`).remove();
+    document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+    setTimeout(() => { isTransitioning = false; }, 100);
+    switchTab('chats');
+}
             updateActionBtn();
            async function loadGroups() {
         db.ref(`users/${currentUser.uid}/groups`).on('value', async snap => {
