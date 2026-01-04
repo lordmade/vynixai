@@ -1503,6 +1503,69 @@ main {
 .message.call-bubble .material-symbols-rounded {
   font-size: 18px;
 }
+        .call-top-sheet {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 76px;
+  background: var(--glass-white);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(0,0,0,.05);
+  display: none;                 /* toggled via class */
+  align-items: center;
+  padding: 0 20px;
+  z-index: 3100;                 /* above chat header */
+}
+.call-top-sheet.active {
+  display: flex;
+}
+.call-avatar {
+  position: relative;
+  margin-right: 12px;
+}
+.call-avatar img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.online-dot {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
+  background: var(--online-green);
+  border: 2px solid var(--glass-white);
+  border-radius: 50%;
+}
+.call-info {
+  flex: 1;
+}
+.call-info #callName {
+  font-weight: 600;
+  font-size: 16px;
+}
+.call-info #callStatus {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.hangup-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #ff3b30;
+  color: #fff;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.hangup-btn .material-symbols-rounded {
+  font-size: 28px;
+}
     </style>
 </head>
 <body>
@@ -2155,6 +2218,20 @@ main {
         <button class="btn-primary btn-danger" onclick="executeDeleteCurrentMoment()">Delete</button>
         <button class="btn-primary btn-secondary" style="margin-top:12px;" onclick="closeCustomAlert('deleteMomentAlert')">Cancel</button>
     </div>
+</div>
+    <!-- CALL TOP SHEET -->
+<div id="callTopSheet" class="call-top-sheet">
+  <div class="call-avatar">
+    <img id="callAvatar" src="" alt="">
+    <div id="callOnlineBadge" class="online-dot"></div>
+  </div>
+  <div class="call-info">
+    <div id="callName"></div>
+    <div id="callStatus">Connecting…</div>
+  </div>
+  <button class="hangup-btn" onclick="endCall()">
+    <span class="material-symbols-rounded">call_end</span>
+  </button>
 </div>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
@@ -4766,6 +4843,82 @@ function acceptCall() {
 function endCall() {
   const duration = document.getElementById('callTimer').textContent;
   sendCallMessage('call_end', `Call ended · ${duration}`);
+
+  if (localStream) localStream.getTracks().forEach(t => t.stop());
+  if (peerConnection) peerConnection.close();
+  clearInterval(callTimerInterval);
+  document.getElementById('callControls').style.display = 'none';
+  db.ref(`calls/${currentRoomId}`).remove();
+  db.ref(`incomingCalls/${currentUser.uid}`).remove();
+  db.ref(`incomingCalls/${currentFriendUid}`).remove();
+  isCaller = false; localStream = null; remoteStream = null; peerConnection = null;
+}
+</script>
+    <!-- ======  CALL TOP-SHEET LOGIC  ====== -->
+<script>
+/* ---------------  TOP-SHEET HELPERS --------------- */
+function showCallSheet(name, photo, isOnline = false) {
+  const sheet = document.getElementById('callTopSheet');
+  document.getElementById('callName').textContent = name;
+  document.getElementById('callAvatar').src = photo || generateLetterAvatar(name);
+  document.getElementById('callOnlineBadge').style.display = isOnline ? 'block' : 'none';
+  sheet.classList.add('active');
+}
+function hideCallSheet() {
+  document.getElementById('callTopSheet').classList.remove('active');
+}
+
+/* ---------------  START CALL --------------- */
+function startVoiceCall() {
+  if (!currentRoomId) return;
+  sendCallMessage('call', 'Calling…');
+  isCaller = true;
+  const friendName = document.getElementById('chatFriendName').textContent;
+  const friendPhoto = document.getElementById('chatFriendAvatar').src;
+  showCallSheet(friendName, friendPhoto, document.getElementById('chatHeaderOnline').style.display === 'block');
+
+  navigator.mediaDevices.getUserMedia({audio: true, video: false})
+    .then(stream => {
+      localStream = stream;
+      createPeerConnection();
+      localStream.getTracks().forEach(t => peerConnection.addTrack(t, stream));
+      peerConnection.createOffer()
+        .then(o => peerConnection.setLocalDescription(o))
+        .then(() => db.ref(`calls/${currentRoomId}/offer`).set(peerConnection.localDescription));
+      listenForAnswer(); listenForICE();
+    })
+    .catch(() => sendCallMessage('error', 'Microphone denied'));
+}
+
+/* ---------------  ACCEPT CALL --------------- */
+function acceptCall() {
+  closeCustomAlert('incomingCallAlert');
+  sendCallMessage('call', 'Call accepted');
+  isCaller = false;
+  const friendName = document.getElementById('chatFriendName').textContent;
+  const friendPhoto = document.getElementById('chatFriendAvatar').src;
+  showCallSheet(friendName, friendPhoto, document.getElementById('chatHeaderOnline').style.display === 'block');
+
+  navigator.mediaDevices.getUserMedia({audio: true, video: false})
+    .then(stream => {
+      localStream = stream;
+      createPeerConnection();
+      localStream.getTracks().forEach(t => peerConnection.addTrack(t, stream));
+      db.ref(`calls/${currentRoomId}/offer`).once('value')
+        .then(snap => peerConnection.setRemoteDescription(new RTCSessionDescription(snap.val())))
+        .then(() => peerConnection.createAnswer())
+        .then(ans => peerConnection.setLocalDescription(ans))
+        .then(() => db.ref(`calls/${currentRoomId}/answer`).set(peerConnection.localDescription));
+      listenForICE(); startCallTimer();
+    })
+    .catch(() => sendCallMessage('error', 'Microphone denied'));
+}
+
+/* ---------------  END CALL --------------- */
+function endCall() {
+  const duration = document.getElementById('callTimer').textContent;
+  sendCallMessage('call_end', `Call ended · ${duration}`);
+  hideCallSheet();
 
   if (localStream) localStream.getTracks().forEach(t => t.stop());
   if (peerConnection) peerConnection.close();
