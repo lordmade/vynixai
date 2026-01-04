@@ -3976,35 +3976,47 @@ if (notificationAudio) {
             }
         }
         async function sendMessage() {
-            const text = messageInput.value.trim();
-            if (!text || !currentRoomId) return;
-            const key = sharedKeys[currentFriendUid];
-            const encrypted = CryptoJS.AES.encrypt(text, key).toString();
-            const msgRef = db.ref(`messages/${currentRoomId}`).push();
-            msgRef.set({
-                text: encrypted,
-                sender: currentUser.uid,
-                ts: Date.now(),
-                reactions: {}
-            }).then(() => {
-                const updates = {};
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
-                return db.ref().update(updates);
-            }).then(() => {
-                messageInput.value = '';
-                updateActionBtn();
-                if (currentRoomId) {
-                    db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
-                }
-            }).catch(err => {
-                toast("Failed to send (check internet)");
-                console.error(err);
-            });
-        }
+  const text = messageInput.value.trim();
+  if (!text || !currentRoomId) return;
+
+  const key = sharedKeys[currentFriendUid];
+  if (!key) {
+    toast('Encryption key missing – re-open chat');
+    return;
+  }
+
+  const encrypted = CryptoJS.AES.encrypt(text, key).toString();
+  const msgRef = db.ref(`messages/${currentRoomId}`).push();
+
+  try {
+    /* 1. write the message */
+    await msgRef.set({
+      type: 'text',
+      text: encrypted,
+      sender: currentUser.uid,
+      ts: Date.now(),
+      reactions: {}
+    });
+
+    /* 2. update both user’s chat headers */
+    const updates = {};
+    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+    await db.ref().update(updates);
+
+    /* 3. local clean-up */
+    messageInput.value = '';
+    updateInputButtons();
+    db.ref(`typing/${currentRoomId}/${currentUser.uid}`).remove();
+
+  } catch (err) {
+    console.error('Send error:', err);
+    toast('Failed to send – check internet');
+  }
+}
         function handleEnter(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
