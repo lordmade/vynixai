@@ -3837,7 +3837,7 @@ if (notificationAudio) {
             toast('Message deleted for everyone');
         }
         
-                    function loadMessages() {
+                  function loadMessages() {
     document.getElementById('messageList').innerHTML = '<div style="text-align:center; color:#999; padding:20px;">Loading messages...</div>';
     messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(50).on('value', snap => {
         const list = document.getElementById('messageList');
@@ -3895,6 +3895,13 @@ if (notificationAudio) {
                     <div class="message-time">${timeStr}</div>
                     ${reactionsHtml}
                 `;
+            } else if (m.type === 'image') {
+                const url = decrypt(m.url, currentFriendUid);
+                content = `
+                    <img src="${url}" style="max-width:100%;border-radius:12px;display:block;" onclick="window.open('${url}','_blank')">
+                    <div class="message-time">${timeStr}</div>
+                    ${reactionsHtml}
+                `;
             } else {
                 const decrypted = decrypt(m.text || '', currentFriendUid);
                 content = `
@@ -3930,7 +3937,6 @@ if (notificationAudio) {
         list.scrollTop = list.scrollHeight;
     });
 }
-
         function updateInputButtons() {
     const input = document.getElementById('messageInput');
     const sendBtn = document.getElementById('sendBtn');
@@ -4617,6 +4623,58 @@ async function showProfileDetail(uid, e) {
         function joinChannel(subject) {
     toast(`Joining ${subject.charAt(0).toUpperCase() + subject.slice(1)} channel...`);
     // Future: implement actual channel joining logic
+}
+
+        /*  open the hidden file input  */
+function pickImage() {
+    document.getElementById('imagePicker').click();
+}
+
+/*  upload → encrypt → send as message  */
+async function handleImagePick(file) {
+    if (!file) return;
+    toast('Uploading image…');
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', UPLOAD_PRESET);
+
+    try {
+        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
+            method: 'POST',
+            body: form
+        });
+        const data = await res.json();
+        if (!data.secure_url) throw new Error('No URL');
+
+        /* encrypt like every other message */
+        const key = sharedKeys[currentFriendUid];
+        const encrypted = CryptoJS.AES.encrypt(data.secure_url, key).toString();
+
+        /* push to the same messages node */
+        const msgRef = db.ref(`messages/${currentRoomId}`).push();
+        await msgRef.set({
+            type: 'image',
+            url: encrypted,
+            sender: currentUser.uid,
+            ts: Date.now(),
+            reactions: {}
+        });
+
+        /* update chat headers (same as text) */
+        const updates = {};
+        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = '[Photo]';
+        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
+        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = '[Photo]';
+        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
+        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+        await db.ref().update(updates);
+
+        toast('Photo sent');
+    } catch (e) {
+        console.error(e);
+        toast('Upload failed – check internet');
+    }
 }
         
         </script>
