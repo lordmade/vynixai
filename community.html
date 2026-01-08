@@ -265,6 +265,8 @@
             z-index: 2600;
             transform: translateY(100%);
             transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+            max-height: 80vh;
+            overflow-y: auto;
         }
         .bottom-sheet.active { transform: translateY(0); }
         .v-input { width: 100%; padding: 14px; border: 1px solid var(--border-light); border-radius: 12px; margin-bottom: 12px; font-size: 15px; background: var(--bg-body); color: var(--text-main); }
@@ -273,6 +275,22 @@
         #pageLoader { position: fixed; inset: 0; background: var(--bg-body); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .shimmer { background: linear-gradient(90deg, var(--bg-body) 25%, var(--border-light) 50%, var(--bg-body) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
         @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+        /* Friends list in sheet */
+        .friend-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 0;
+            cursor: pointer;
+        }
+        .friend-item .avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            margin-right: 15px;
+        }
+        .friend-item .chat-name {
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
@@ -312,12 +330,15 @@
     </div>
     <div class="overlay" id="overlay" onclick="closeAll()"></div>
     <div class="bottom-sheet" id="friendsSheet">
-        <h3 style="margin-bottom:15px; font-weight:700;">Add New Connection</h3>
-        <input type="text" id="friendVynixId" class="v-input" placeholder="Enter Vynix ID (e.g. vnx_...)">
-        <button class="btn-primary" onclick="addFriendLogic()">Start Chatting</button>
+        <h3 style="margin-bottom:15px; font-weight:700;">Your Friends</h3>
+        <div id="friendsList"></div>
+        <div style="margin-top:20px;">
+            <input type="text" id="friendVynixId" class="v-input" placeholder="Enter Vynix ID (e.g. vnx_...)">
+            <button class="btn-primary" onclick="addFriendLogic()">Add Friend</button>
+        </div>
     </div>
     <div id="fabAddFriend" onclick="openFriendsSheet()">
-        <span class="material-symbols-rounded">add</span>
+        <span class="material-symbols-rounded">person_add</span>
     </div>
 
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
@@ -452,14 +473,17 @@
             return null;
         }
 
-        /* --- Chat List with Swipe to Delete --- */
-        function loadChats() {
+        /* --- Main Chat List (only active conversations) --- */
+        async function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
                 const list = document.getElementById('chatList');
                 list.innerHTML = '';
                 const chats = [];
                 snap.forEach(child => {
-                    if (child.val().lastMsg) chats.push({ uid: child.key, data: child.val() });
+                    const data = child.val();
+                    if (data.lastMsg) { // Only show if at least one message sent
+                        chats.push({ uid: child.key, data: data });
+                    }
                 });
                 chats.sort((a,b) => (b.data.ts || 0) - (a.data.ts || 0));
 
@@ -467,12 +491,12 @@
                     list.innerHTML = `<div style="text-align:center;padding:50px 20px;color:var(--text-muted);">
                         <span class="material-symbols-rounded" style="font-size:48px;opacity:0.3;margin-bottom:10px;">chat_bubble_outline</span>
                         <p>No chats yet.</p>
-                        <p style="font-size:12px;margin-top:5px;">Your ID: <b>${myVId}</b></p>
+                        <p style="font-size:12px;margin-top:5px;">Your ID: <b>@${myVId}</b></p>
                     </div>`;
                     return;
                 }
 
-                chats.forEach(async chat => {
+                for (const chat of chats) {
                     const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
                     const profile = pSnap.val() || { name: "User", photo: "" };
                     const lastText = decrypt(chat.data.lastMsg, chat.uid);
@@ -502,13 +526,12 @@
                         </div>`;
                     list.appendChild(wrapper);
 
-                    // Online indicator
                     db.ref(`users/${chat.uid}/online`).on('value', s => {
                         const el = document.getElementById(`online_${chat.uid}`);
                         if (el) el.style.display = s.val() === true ? 'block' : 'none';
                     });
 
-                    // Swipe to delete logic
+                    // Swipe to delete
                     const card = wrapper.querySelector('.chat-card');
                     let startX = 0;
                     let currentX = 0;
@@ -533,32 +556,60 @@
                         isDragging = false;
                         const diffX = startX - currentX;
                         if (diffX > 100) {
-                            // Fully swipe to delete
                             card.style.transform = `translateX(-100%)`;
                             setTimeout(() => deleteChat(chat.uid, wrapper), 300);
                         } else {
-                            // Return to original
                             card.style.transform = '';
                         }
                     });
-                });
+                }
             });
         }
 
         async function deleteChat(friendUid, wrapperElement) {
             const roomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
             try {
-                // Remove chat reference for both users
                 await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).remove();
                 await db.ref(`users/${friendUid}/chats/${currentUser.uid}`).remove();
-                // Optionally delete messages (be careful - irreversible)
-                // await db.ref(`messages/${roomId}`).remove();
-
                 toast("Chat deleted");
                 if (wrapperElement) wrapperElement.remove();
             } catch (e) {
                 toast("Failed to delete chat");
             }
+        }
+
+        /* --- Friends Sheet (all added friends) --- */
+        async function loadFriendsList() {
+            const list = document.getElementById('friendsList');
+            list.innerHTML = '';
+            const snap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
+            if (!snap.exists()) {
+                list.innerHTML = '<p style="text-align:center;color:var(--text-muted);">No friends yet. Add one below!</p>';
+                return;
+            }
+            const friends = [];
+            snap.forEach(child => friends.push(child.key));
+
+            for (const uid of friends) {
+                const profileSnap = await db.ref(`users/${uid}/profile`).once('value');
+                const profile = profileSnap.val() || { name: "User", photo: "" };
+                list.innerHTML += `
+                    <div class="friend-item" onclick="openFullChat('${uid}')">
+                        <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
+                        <div class="chat-name">${profile.name}</div>
+                    </div>`;
+            }
+        }
+
+        function openFriendsSheet() {
+            loadFriendsList();
+            document.getElementById('overlay').classList.add('active');
+            document.getElementById('friendsSheet').classList.add('active');
+        }
+
+        function closeAll() {
+            document.getElementById('overlay').classList.remove('active');
+            document.getElementById('friendsSheet').classList.remove('active');
         }
 
         /* --- Full Chat View --- */
@@ -672,17 +723,7 @@
             await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update({ unreadCount: 0 });
         }
 
-        /* --- Add Friend & Utilities --- */
-        function openFriendsSheet() {
-            document.getElementById('overlay').classList.add('active');
-            document.getElementById('friendsSheet').classList.add('active');
-        }
-
-        function closeAll() {
-            document.getElementById('overlay').classList.remove('active');
-            document.getElementById('friendsSheet').classList.remove('active');
-        }
-
+        /* --- Add Friend --- */
         async function addFriendLogic() {
             const raw = document.getElementById('friendVynixId').value.trim().toLowerCase();
             const vid = raw.startsWith('@') ? raw.substring(1) : raw;
@@ -692,15 +733,29 @@
 
             const targetUid = snap.val();
             if (targetUid === currentUser.uid) { toast("That's you!"); return; }
-            await db.ref(`users/${currentUser.uid}/chats/${targetUid}`).update({ ts: Date.now(), unreadCount: 0 });
+
+            const existing = await db.ref(`users/${currentUser.uid}/chats/${targetUid}`).once('value');
+            if (existing.exists()) {
+                toast('Already added!');
+                closeAll();
+                openFullChat(targetUid);
+                return;
+            }
+
+            await db.ref(`users/${currentUser.uid}/chats/${targetUid}`).set({
+                lastMsg: null,
+                ts: Date.now(),
+                unreadCount: 0
+            });
+            toast("Friend added! Tap their name to start chatting.");
             closeAll();
-            openFullChat(targetUid);
+            document.getElementById('friendVynixId').value = "";
         }
 
         function searchFriends() {
             const term = document.getElementById('friendSearch').value.toLowerCase();
             document.querySelectorAll('.chat-card').forEach(c => {
-                const name = c.querySelector('.chat-name').textContent.toLowerCase();
+                const name = c.querySelector('.chat-name')?.textContent.toLowerCase() || '';
                 c.style.display = name.includes(term) ? 'flex' : 'none';
             });
         }
