@@ -505,10 +505,12 @@
         let myVId = "";
         let currentFriendUid = null;
         let currentRoomId = null;
-        let activeChatRef = null;
+        let chatsListener = null;
+        let messagesListener = null;
         let sharedKeys = JSON.parse(localStorage.getItem('sharedKeys') || '{}');
         let currentSubTab = 'all';
         let currentContextUid = null;
+        let cachedChats = JSON.parse(localStorage.getItem('cached_chats') || '{}');
 
         auth.onAuthStateChanged(user => {
             if (user) {
@@ -591,6 +593,12 @@
                 const publicJwk = await generateKeyPair();
                 await db.ref(`users/${currentUser.uid}/profile`).update({ publicKey: JSON.stringify(publicJwk) });
             }
+
+            // Load cached chats if offline
+            if (!navigator.onLine && Object.keys(cachedChats).length > 0) {
+                renderChatsFromCache();
+            }
+
             loadChats();
             setTimeout(() => document.getElementById('pageLoader').style.display = 'none', 500);
         }
@@ -617,19 +625,46 @@
             return null;
         }
 
-        /* --- Sub Tabs --- */
-        function switchSubTab(tab) {
-            currentSubTab = tab;
-            document.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
-            document.querySelector(`.sub-tab[onclick="switchSubTab('${tab}')"]`).classList.add('active');
-            loadChats();
+        /* --- Offline Support & Duplicate Prevention --- */
+        function renderChatsFromCache() {
+            const list = document.getElementById('chatList');
+            list.innerHTML = '';
+            const chats = Object.values(cachedChats);
+            chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
+            if (chats.length === 0) {
+                list.innerHTML = '<p style="text-align:center;padding:50px;color:var(--text-muted);">No chats available offline</p>';
+                return;
+            }
+            chats.forEach(chat => {
+                const lastText = chat.lastMsgText || "[Message]";
+                list.innerHTML += `
+                    <div class="chat-card" onclick="openFullChat('${chat.uid}')">
+                        <div class="avatar-container">
+                            <img class="avatar" src="${chat.photo || generateLetterAvatar(chat.name)}">
+                            <div class="online-indicator" style="display:none"></div>
+                        </div>
+                        <div class="chat-info">
+                            <div class="chat-header-row">
+                                <div class="chat-name">${chat.name}</div>
+                                <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
+                            </div>
+                            <div class="chat-msg-row">
+                                <div class="chat-msg">${lastText}</div>
+                                ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
+                            </div>
+                        </div>
+                    </div>`;
+            });
         }
 
-        /* --- Main Chat List with Filters --- */
         async function loadChats() {
-            db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
-                const list = document.getElementById('chatList');
-                list.innerHTML = '';
+            if (chatsListener) chatsListener.off();
+            chatsListener = db.ref(`users/${currentUser.uid}/chats`);
+
+            chatsListener.on('value', async snap => {
+                if (!snap.exists()) return;
+
+                cachedChats = {}; // Clear cache
                 const chats = [];
                 snap.forEach(child => {
                     const data = child.val();
@@ -640,23 +675,20 @@
                 });
                 chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
 
+                const list = document.getElementById('chatList');
+                list.innerHTML = '';
+
                 let filtered = chats;
-                if (currentSubTab === 'favourite') {
-                    filtered = chats.filter(c => c.isFavourite);
-                } else if (currentSubTab === 'unread') {
-                    filtered = chats.filter(c => c.unreadCount > 0);
-                } else if (currentSubTab === 'archived') {
-                    filtered = chats.filter(c => c.isArchived);
-                }
+                if (currentSubTab === 'favourite') filtered = chats.filter(c => c.isFavourite);
+                else if (currentSubTab === 'unread') filtered = chats.filter(c => c.unreadCount > 0);
+                else if (currentSubTab === 'archived') filtered = chats.filter(c => c.isArchived);
 
                 if (filtered.length === 0) {
-                    let message = "No chats yet.";
-                    if (currentSubTab === 'favourite') message = "No favourite chats.";
-                    if (currentSubTab === 'unread') message = "No unread chats.";
-                    if (currentSubTab === 'archived') message = "No archived chats.";
-                    list.innerHTML = `<div style="text-align:center;padding:50px 20px;color:var(--text-muted);">
-                        <p>${message}</p>
-                    </div>`;
+                    let msg = "No chats yet.";
+                    if (currentSubTab === 'favourite') msg = "No favourite chats.";
+                    if (currentSubTab === 'unread') msg = "No unread chats.";
+                    if (currentSubTab === 'archived') msg = "No archived chats.";
+                    list.innerHTML = `<p style="text-align:center;padding:50px;color:var(--text-muted);">${msg}</p>`;
                     return;
                 }
 
@@ -664,6 +696,17 @@
                     const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
                     const profile = pSnap.val() || { name: "User", photo: "" };
                     const lastText = decrypt(chat.lastMsg, chat.uid);
+
+                    // Cache for offline
+                    cachedChats[chat.uid] = {
+                        uid: chat.uid,
+                        name: profile.name,
+                        photo: profile.photo,
+                        lastMsgText: lastText,
+                        ts: chat.ts,
+                        unreadCount: chat.unreadCount || 0
+                    };
+                    localStorage.setItem('cached_chats', JSON.stringify(cachedChats));
 
                     list.innerHTML += `
                         <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
@@ -688,7 +731,6 @@
                         if (el) el.style.display = s.val() === true ? 'block' : 'none';
                     });
 
-                    // Long press for context menu
                     const card = list.lastElementChild;
                     let longPressTimer;
                     card.addEventListener('touchstart', e => {
@@ -709,10 +751,8 @@
             currentContextUid = uid;
             const menu = document.getElementById('contextMenu');
             menu.style.display = 'block';
-            const rect = e.target.getBoundingClientRect();
-            menu.style.left = `${rect.left + rect.width / 2}px`;
-            menu.style.top = `${rect.top}px`;
-            menu.style.transform = 'translateX(-50%)';
+            menu.style.left = `${e.pageX}px`;
+            menu.style.top = `${e.pageY}px`;
             document.addEventListener('click', hideContextMenu);
         }
 
@@ -769,6 +809,7 @@
                 });
 
                 await Promise.all(deletePromises);
+                localStorage.removeItem('cached_chats');
                 toast("All chats and messages permanently deleted");
             } catch (e) {
                 console.error(e);
@@ -838,21 +879,21 @@
 
         function closeFullChat() {
             document.getElementById('fullChatView').style.display = 'none';
-            if (activeChatRef) {
-                activeChatRef.off();
-                activeChatRef = null;
+            if (messagesListener) {
+                messagesListener.off();
+                messagesListener = null;
             }
             currentFriendUid = null;
         }
 
         function loadMessages() {
-            if (activeChatRef) activeChatRef.off();
+            if (messagesListener) messagesListener.off();
             const list = document.getElementById('messageList');
             list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
-            activeChatRef = db.ref(`messages/${currentRoomId}`).limitToLast(50);
+            messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(50);
 
-            activeChatRef.on('value', snap => {
+            messagesListener.on('value', snap => {
                 list.innerHTML = '';
                 if (!snap.exists()) {
                     list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;margin-top:20px;">Messages are end-to-end encrypted.<br>Start the conversation!</div>';
