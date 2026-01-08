@@ -1118,29 +1118,38 @@ function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRea
 }
 
 // Replace loadMessages function
+// Replace the entire loadMessages function with this improved version
 async function loadMessages() {
     if (messagesListener) messagesListener.off();
     const list = document.getElementById('messageList');
+    
+    // Clear all existing messages completely
     list.innerHTML = '';
+    
+    // Track processed messages to prevent duplicates
+    const renderedMessages = new Set();
+    const pendingMessages = new Map();
 
-    // Clear existing messages and track processed keys
-    const processedMessageKeys = new Set();
-    const processedLocalIds = new Set();
-
-    // Load from cache first
+    // Load cached messages first
     const cached = await getCachedMessages(currentRoomId);
+    
+    // Process cached messages
     if (cached.length > 0) {
         cached.sort((a,b) => a.ts - b.ts);
+        
         cached.forEach(m => {
-            if (m.key) processedMessageKeys.add(m.key);
-            if (m.localId) processedLocalIds.add(m.localId);
+            // Track rendered messages
+            if (m.key) renderedMessages.add(m.key);
+            if (m.localId) pendingMessages.set(m.localId, m);
             
             const isSent = m.sender === currentUser.uid;
             const text = decrypt(m.text, currentFriendUid);
             const isRead = m.read || false;
+            
             const el = createMessageElement(text, isSent, m.ts, m.localId || '', m.key || '', isRead);
             list.appendChild(el);
         });
+        
         list.scrollTop = list.scrollHeight;
     }
 
@@ -1152,19 +1161,29 @@ async function loadMessages() {
         msg.key = snap.key;
 
         // Skip if already rendered from cache
-        if (processedMessageKeys.has(msg.key)) return;
+        if (renderedMessages.has(msg.key)) return;
 
+        // Add to rendered messages to prevent future duplicates
+        renderedMessages.add(msg.key);
+
+        // Cache the message
         await cacheMessage(currentRoomId, msg);
 
-        // Remove pending version if exists
-        if (msg.localId) {
+        // Remove pending version if exists (but only if it's the same message)
+        if (msg.localId && pendingMessages.has(msg.localId)) {
             const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
-            if (pendingEl) pendingEl.remove();
+            if (pendingEl) {
+                // Only remove if this is the Firebase confirmation of our pending message
+                pendingEl.remove();
+                pendingMessages.delete(msg.localId);
+            }
         }
 
+        // Create and add the confirmed message
         const isSent = msg.sender === currentUser.uid;
         const text = decrypt(msg.text, currentFriendUid);
         const isRead = msg.read || false;
+        
         const el = createMessageElement(text, isSent, msg.ts, '', msg.key, isRead);
         list.appendChild(el);
         list.scrollTop = list.scrollHeight;
@@ -1179,14 +1198,88 @@ async function loadMessages() {
     db.ref(`messages/${currentRoomId}`).on('child_changed', snap => {
         const msg = snap.val();
         const existingEl = list.querySelector(`[data-msg-key="${snap.key}"]`);
-        if (existingEl) {
+        if (existingEl && msg.read) {
             const ticks = existingEl.querySelector('.message-ticks');
-            if (ticks && msg.read) {
+            if (ticks) {
                 ticks.classList.add('read');
                 ticks.textContent = '✓✓';
             }
         }
     });
+}
+
+// Also update createMessageElement to be more consistent
+function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRead = false) {
+    const el = document.createElement('div');
+    el.className = `message ${isSent ? 'sent' : 'received'}`;
+    if (localId) el.dataset.localId = localId;
+    if (msgKey) el.dataset.msgKey = msgKey;
+    
+    const ticks = isSent ? `<span class="message-ticks ${isRead ? 'read' : ''}">✓✓</span>` : '';
+    el.innerHTML = `${text}<div class="message-time">${formatMessageTime(ts)}${ticks}</div>`;
+    
+    // Add pending class only for local messages that haven't been confirmed
+    if (localId && !msgKey) {
+        el.classList.add('pending');
+    }
+    
+    return el;
+}
+
+// Update sendMessage to be cleaner
+async function sendMessage() {
+    const input = document.getElementById('messageInput');
+    const text = input.value.trim();
+    if (!text || !currentFriendUid) return;
+    const key = sharedKeys[currentFriendUid];
+    if (!key) { toast('Security key missing'); return; }
+    const encrypted = CryptoJS.AES.encrypt(text, key).toString();
+
+    const tempTs = Date.now();
+    const localId = tempTs + Math.random();
+
+    const list = document.getElementById('messageList');
+    
+    // Create and append pending message
+    const el = createMessageElement(text, true, tempTs, localId, '', false);
+    list.appendChild(el);
+    list.scrollTop = list.scrollHeight;
+
+    input.value = '';
+    input.style.height = 'auto';
+    document.getElementById('sendBtn').classList.remove('visible');
+
+    // Cache pending message
+    await cacheMessage(currentRoomId, {
+        text: encrypted,
+        sender: currentUser.uid,
+        ts: tempTs,
+        pending: true,
+        localId: localId,
+        read: false
+    });
+
+    if (navigator.onLine) {
+        try {
+            const msgRef = await db.ref(`messages/${currentRoomId}`).push({
+                text: encrypted, 
+                sender: currentUser.uid, 
+                ts: tempTs,
+                read: false
+            });
+
+            const updates = {};
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = tempTs;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+
+            await db.ref().update(updates);
+        } catch (e) {
+            console.error("Send failed:", e);
+        }
+    }
 }
         /* --- Send Message (with offline support) --- */
         function autoResizeInput(field) {
