@@ -632,6 +632,10 @@
     font-weight: 700;
     letter-spacing: 1px;
 }
+        #friendsList {
+    max-height: 50vh;
+    overflow-y: auto;
+}
     </style>
 </head>
 <body>
@@ -1315,26 +1319,59 @@
 
         /* --- Friends Sheet (all added friends) --- */
         async function loadFriendsList() {
-            const list = document.getElementById('friendsList');
-            list.innerHTML = '';
-            const snap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
-            if (!snap.exists()) {
-                list.innerHTML = '<p style="text-align:center;color:var(--text-muted);">No friends yet. Add one below!</p>';
-                return;
-            }
-            const friends = [];
-            snap.forEach(child => friends.push(child.key));
+    const list = document.getElementById('friendsList');
+    list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">Loading friends...</div>';
 
-            for (const uid of friends) {
-                const profileSnap = await db.ref(`users/${uid}/profile`).once('value');
-                const profile = profileSnap.val() || { name: "User", photo: "" };
-                list.innerHTML += `
-                    <div class="friend-item" onclick="openFullChat('${uid}')">
-                        <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
-                        <div class="chat-name">${profile.name}</div>
-                    </div>`;
-            }
+    try {
+        const snap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
+        
+        if (!snap.exists() || snap.numChildren() === 0) {
+            list.innerHTML = '<p style="text-align:center;color:var(--text-muted);padding:40px;">No friends yet.<br>Add one using their Vynix ID below!</p>';
+            return;
         }
+
+        list.innerHTML = ''; // Clear loading message
+        const friendUids = [];
+        snap.forEach(child => {
+            friendUids.push(child.key);
+        });
+
+        // Load all friends in parallel for better performance
+        const friendPromises = friendUids.map(async (uid) => {
+            const profileSnap = await db.ref(`users/${uid}/profile`).once('value');
+            const profile = profileSnap.val() || { name: "Unknown User", photo: "" };
+            return { uid, name: profile.name, photo: profile.photo };
+        });
+
+        const friends = await Promise.all(friendPromises);
+
+        // Sort alphabetically by name
+        friends.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Render all friends
+        if (friends.length === 0) {
+            list.innerHTML = '<p style="text-align:center;color:var(--text-muted);padding:40px;">No friends found.</p>';
+            return;
+        }
+
+        friends.forEach(friend => {
+            const photoSrc = friend.photo || generateLetterAvatar(friend.name);
+            list.innerHTML += `
+                <div class="friend-item" onclick="openFullChat('${friend.uid}')">
+                    <img class="avatar" src="${photoSrc}" onerror="this.src='${generateLetterAvatar(friend.name)}'">
+                    <div>
+                        <div class="chat-name">${friend.name}</div>
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">Tap to chat</div>
+                    </div>
+                </div>
+            `;
+        });
+
+    } catch (error) {
+        console.error("Error loading friends:", error);
+        list.innerHTML = '<p style="text-align:center;color:var(--danger);padding:40px;">Failed to load friends.</p>';
+    }
+}
 
         function openFriendsSheet() {
             loadFriendsList();
