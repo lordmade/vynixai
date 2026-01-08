@@ -430,6 +430,15 @@
             user-select: none;
             pointer-events: none;
         }
+        .message-ticks {
+    font-size: 16px;
+    color: var(--text-muted);
+    margin-left: 4px;
+    vertical-align: middle;
+}
+.message-ticks.read {
+    color: var(--primary);
+}
     </style>
 </head>
 <body>
@@ -1097,29 +1106,37 @@ async function initApp() {
             history.back();
         }
 
+function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRead = false) {
+    const el = document.createElement('div');
+    el.className = `message ${isSent ? 'sent' : 'received'} ${localId ? 'pending' : ''}`;
+    if (localId) el.dataset.localId = localId;
+    if (msgKey) el.dataset.msgKey = msgKey;
+    
+    const ticks = isSent ? `<span class="message-ticks ${isRead ? 'read' : ''}">${isRead ? '✓✓' : '✓✓'}</span>` : '';
+    el.innerHTML = `${text}<div class="message-time">${formatMessageTime(ts)}${ticks}</div>`;
+    return el;
+}
+
+// Replace loadMessages function
 async function loadMessages() {
     if (messagesListener) messagesListener.off();
     const list = document.getElementById('messageList');
     list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
-    // Clear any existing message elements first
     list.innerHTML = '';
     const processedMessageKeys = new Set();
 
     const cached = await getCachedMessages(currentRoomId);
     if (cached.length > 0) {
         cached.sort((a,b) => a.ts - b.ts);
-        cached.forEach(m => {
+        for (const m of cached) {
             if (m.key) processedMessageKeys.add(m.key);
             const isSent = m.sender === currentUser.uid;
             const text = decrypt(m.text, currentFriendUid);
-            const el = document.createElement('div');
-            el.className = `message ${isSent ? 'sent' : 'received'} ${m.pending ? 'pending' : ''}`;
-            el.dataset.localId = m.localId;
-            el.dataset.msgKey = m.key || '';
-            el.innerHTML = `${text}<div class="message-time">${formatMessageTime(m.ts)}${m.pending ? '<div class="pending-indicator">Sending...</div>' : ''}</div>`;
+            const isRead = m.read || false;
+            const el = createMessageElement(text, isSent, m.ts, m.localId || '', m.key || '', isRead);
             list.appendChild(el);
-        });
+        }
         list.scrollTop = list.scrollHeight;
     }
 
@@ -1129,7 +1146,6 @@ async function loadMessages() {
         const msg = snap.val();
         msg.key = snap.key;
 
-        // Skip if already rendered from cache
         if (processedMessageKeys.has(msg.key)) return;
 
         await cacheMessage(currentRoomId, msg);
@@ -1139,12 +1155,28 @@ async function loadMessages() {
 
         const isSent = msg.sender === currentUser.uid;
         const text = decrypt(msg.text, currentFriendUid);
-        const el = document.createElement('div');
-        el.className = `message ${isSent ? 'sent' : 'received'}`;
-        el.dataset.msgKey = msg.key;
-        el.innerHTML = `${text}<div class="message-time">${formatMessageTime(msg.ts)}</div>`;
+        const isRead = msg.read || false;
+        const el = createMessageElement(text, isSent, msg.ts, '', msg.key, isRead);
         list.appendChild(el);
         list.scrollTop = list.scrollHeight;
+
+        // Mark message as read if we're viewing friend's chat
+        if (!isSent && currentFriendUid) {
+            await db.ref(`messages/${currentRoomId}/${msg.key}`).update({ read: true });
+        }
+    });
+
+    // Listen for read status updates
+    db.ref(`messages/${currentRoomId}`).on('child_changed', snap => {
+        const msg = snap.val();
+        const existingEl = list.querySelector(`[data-msg-key="${snap.key}"]`);
+        if (existingEl) {
+            const ticks = existingEl.querySelector('.message-ticks');
+            if (ticks) {
+                ticks.classList.add('read');
+                ticks.textContent = '✓✓';
+            }
+        }
     });
 }
 
@@ -1157,59 +1189,65 @@ async function loadMessages() {
             else btn.classList.remove('visible');
         }
 
-        async function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const text = input.value.trim();
-            if (!text || !currentFriendUid) return;
-            const key = sharedKeys[currentFriendUid];
-            if (!key) { toast('Security key missing'); return; }
-            const encrypted = CryptoJS.AES.encrypt(text, key).toString();
+async function sendMessage() {
+    const input = document.getElementById('messageInput');
+    const text = input.value.trim();
+    if (!text || !currentFriendUid) return;
+    const key = sharedKeys[currentFriendUid];
+    if (!key) { toast('Security key missing'); return; }
+    const encrypted = CryptoJS.AES.encrypt(text, key).toString();
 
-            const tempTs = Date.now();
-            const localId = tempTs + Math.random();
+    const tempTs = Date.now();
+    const localId = tempTs + Math.random();
 
-            const list = document.getElementById('messageList');
-            const el = document.createElement('div');
-            el.className = 'message sent pending';
-            el.dataset.localId = localId;
-            el.innerHTML = `${text}<div class="message-time">${formatMessageTime(tempTs)}<div class="pending-indicator">Sending...</div></div>`;
-            list.appendChild(el);
-            list.scrollTop = list.scrollHeight;
+    const list = document.getElementById('messageList');
+    const el = createMessageElement(text, true, tempTs, localId, '', false);
+    list.appendChild(el);
+    list.scrollTop = list.scrollHeight;
 
-            await cacheMessage(currentRoomId, {
-                text: encrypted,
-                sender: currentUser.uid,
+    await cacheMessage(currentRoomId, {
+        text: encrypted,
+        sender: currentUser.uid,
+        ts: tempTs,
+        pending: true,
+        localId: localId,
+        read: false
+    });
+
+    input.value = '';
+    input.style.height = 'auto';
+    document.getElementById('sendBtn').classList.remove('visible');
+
+    if (navigator.onLine) {
+        try {
+            const msgRef = await db.ref(`messages/${currentRoomId}`).push({
+                text: encrypted, 
+                sender: currentUser.uid, 
                 ts: tempTs,
-                pending: true,
-                localId: localId
+                read: false
             });
 
-            input.value = '';
-            input.style.height = 'auto';
-            document.getElementById('sendBtn').classList.remove('visible');
+            const updates = {};
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = tempTs;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
 
-            if (navigator.onLine) {
-                try {
-                    const msgRef = await db.ref(`messages/${currentRoomId}`).push({
-                        text: encrypted, sender: currentUser.uid, ts: tempTs
-                    });
+            await db.ref().update(updates);
 
-                    const updates = {};
-                    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-                    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
-                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = tempTs;
-                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
-
-                    await db.ref().update(updates);
-
-                    el.classList.remove('pending');
-                    el.querySelector('.pending-indicator').remove();
-                } catch (e) {
-                    console.error("Immediate send failed:", e);
-                }
+            // Remove pending indicator
+            const pendingEl = list.querySelector(`[data-local-id="${localId}"]`);
+            if (pendingEl) {
+                pendingEl.classList.remove('pending');
+                const pendingIndicator = pendingEl.querySelector('.pending-indicator');
+                if (pendingIndicator) pendingIndicator.remove();
             }
+        } catch (e) {
+            console.error("Immediate send failed:", e);
         }
+    }
+}
 
         async function syncPendingMessages() {
             if (!navigator.onLine) return;
