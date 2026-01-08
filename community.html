@@ -52,7 +52,6 @@
             display: flex;
             flex-direction: column;
         }
-        /* --- Main List View --- */
         #mainView {
             height: 100%;
             display: flex;
@@ -102,7 +101,6 @@
             padding-bottom: 80px;
             background: var(--bg-card);
         }
-        /* Swipe to Delete */
         .chat-card-wrapper {
             position: relative;
             overflow: hidden;
@@ -159,7 +157,6 @@
             border-radius: 9px; padding: 0 5px; font-size: 11px; font-weight: 700;
             display: flex; align-items: center; justify-content: center;
         }
-        /* --- Full Chat View --- */
         #fullChatView {
             position: fixed; top: 0; left: 0; width: 100%; height: 100dvh;
             background: var(--bg-body);
@@ -434,11 +431,11 @@
         <span class="material-symbols-rounded">person_add</span>
     </div>
 
-    <!-- Confirmation Dialog for Clear All Chats -->
+    <!-- Confirmation Dialog -->
     <div class="confirm-dialog" id="clearAllConfirm">
         <div class="confirm-box">
             <div class="confirm-title">Clear All Chats?</div>
-            <div class="confirm-message">This will permanently delete all your conversations. This action cannot be undone.</div>
+            <div class="confirm-message">This will permanently delete ALL your encrypted conversations for both you and your friends from Firebase. This action cannot be undone.</div>
             <div class="confirm-buttons">
                 <button class="confirm-cancel" onclick="closeConfirm()">Cancel</button>
                 <button class="confirm-delete" onclick="executeClearAllChats()">Delete All</button>
@@ -578,7 +575,6 @@
             return null;
         }
 
-        /* --- Main Chat List (only active conversations) --- */
         async function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
                 const list = document.getElementById('chatList');
@@ -613,7 +609,7 @@
                             <span class="material-symbols-rounded">delete</span>
                             Delete
                         </div>
-                        <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
+                        <div class="chat-card" data-uid="${chat.uid}">
                             <div class="avatar-container">
                                 <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
                                 <div class="online-indicator" id="online_${chat.uid}" style="display:none"></div>
@@ -641,9 +637,19 @@
                     let currentX = 0;
                     let isDragging = false;
 
+                    card.addEventListener('click', (e) => {
+                        if (card.classList.contains('swiped')) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            return;
+                        }
+                        openFullChat(chat.uid);
+                    });
+
                     card.addEventListener('touchstart', e => {
                         startX = e.touches[0].clientX;
                         isDragging = true;
+                        card.classList.remove('swiped');
                     });
 
                     card.addEventListener('touchmove', e => {
@@ -652,6 +658,9 @@
                         const diffX = startX - currentX;
                         if (diffX > 0) {
                             card.style.transform = `translateX(-${diffX}px)`;
+                            if (diffX > 20) {
+                                card.classList.add('swiped');
+                            }
                         }
                     });
 
@@ -664,25 +673,60 @@
                             setTimeout(() => confirmDeleteSingleChat(chat.uid, wrapper), 300);
                         } else {
                             card.style.transform = '';
+                            card.classList.remove('swiped');
                         }
                     });
                 }
             });
         }
 
-        /* --- Confirmation for Single Chat Delete --- */
+        /* --- Delete Functions --- */
+        async function deleteChat(friendUid, wrapperElement) {
+            const roomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
+            try {
+                await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).remove();
+                await db.ref(`users/${friendUid}/chats/${currentUser.uid}`).remove();
+                await db.ref(`messages/${roomId}`).remove();  // Permanently deletes all encrypted messages
+                toast("Chat deleted");
+                if (wrapperElement) wrapperElement.remove();
+            } catch (e) {
+                console.error(e);
+                toast("Failed to delete chat");
+            }
+        }
+
+        /* --- Clear All Chats (both sides + messages) --- */
+        async function executeClearAllChats() {
+            try {
+                const chatsSnap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
+                const updates = {};
+                chatsSnap.forEach(child => {
+                    const friendUid = child.key;
+                    const roomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
+                    updates[`users/${currentUser.uid}/chats/${friendUid}`] = null;
+                    updates[`users/${friendUid}/chats/${currentUser.uid}`] = null;
+                    updates[`messages/${roomId}`] = null;  // Delete all messages
+                });
+                await db.ref().update(updates);
+                toast("All chats and messages permanently deleted");
+            } catch (e) {
+                toast("Failed to clear all chats");
+            }
+            closeConfirm();
+        }
+
+        /* --- Confirmation Dialog --- */
+        function confirmClearAllChats() {
+            document.getElementById('clearAllConfirm').querySelector('.confirm-title').textContent = 'Clear All Chats?';
+            document.getElementById('clearAllConfirm').querySelector('.confirm-message').textContent = 'This will permanently delete ALL your encrypted conversations and messages for both you and your friends from Firebase. This action cannot be undone.';
+            document.getElementById('clearAllConfirm').classList.add('active');
+        }
+
         function confirmDeleteSingleChat(friendUid, wrapperElement) {
             pendingDeleteUid = friendUid;
             pendingDeleteWrapper = wrapperElement;
             document.getElementById('clearAllConfirm').querySelector('.confirm-title').textContent = 'Delete Chat?';
-            document.getElementById('clearAllConfirm').querySelector('.confirm-message').textContent = 'This will delete the conversation permanently.';
-            document.getElementById('clearAllConfirm').classList.add('active');
-        }
-
-        /* --- Confirmation for Clear All Chats --- */
-        function confirmClearAllChats() {
-            document.getElementById('clearAllConfirm').querySelector('.confirm-title').textContent = 'Clear All Chats?';
-            document.getElementById('clearAllConfirm').querySelector('.confirm-message').textContent = 'This will permanently delete ALL your conversations. This action cannot be undone.';
+            document.getElementById('clearAllConfirm').querySelector('.confirm-message').textContent = 'This will permanently delete the conversation and all encrypted messages for both users.';
             document.getElementById('clearAllConfirm').classList.add('active');
         }
 
@@ -695,28 +739,6 @@
         let pendingDeleteUid = null;
         let pendingDeleteWrapper = null;
 
-        async function executeClearAllChats() {
-            try {
-                await db.ref(`users/${currentUser.uid}/chats`).remove();
-                toast("All chats cleared");
-            } catch (e) {
-                toast("Failed to clear chats");
-            }
-            closeConfirm();
-        }
-
-        async function deleteChat(friendUid, wrapperElement) {
-            const roomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
-            try {
-                await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).remove();
-                await db.ref(`users/${friendUid}/chats/${currentUser.uid}`).remove();
-                toast("Chat deleted");
-                if (wrapperElement) wrapperElement.remove();
-            } catch (e) {
-                toast("Failed to delete chat");
-            }
-        }
-
         async function executeSingleDelete() {
             if (pendingDeleteUid && pendingDeleteWrapper) {
                 await deleteChat(pendingDeleteUid, pendingDeleteWrapper);
@@ -724,7 +746,8 @@
             closeConfirm();
         }
 
-        /* --- Friends Sheet (all added friends) --- */
+        /* --- Rest of the code remains unchanged --- */
+
         async function loadFriendsList() {
             const list = document.getElementById('friendsList');
             list.innerHTML = '';
@@ -758,7 +781,6 @@
             document.getElementById('friendsSheet').classList.remove('active');
         }
 
-        /* --- Full Chat View --- */
         async function openFullChat(friendUid) {
             currentFriendUid = friendUid;
             currentRoomId = currentUser.uid < friendUid ? currentUser.uid + "_" + friendUid : friendUid + "_" + currentUser.uid;
@@ -820,7 +842,6 @@
             });
         }
 
-        /* --- Send Message --- */
         function autoResizeInput(field) {
             field.style.height = 'auto';
             field.style.height = field.scrollHeight + 'px';
@@ -869,7 +890,6 @@
             await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update({ unreadCount: 0 });
         }
 
-        /* --- Add Friend --- */
         async function addFriendLogic() {
             const raw = document.getElementById('friendVynixId').value.trim().toLowerCase();
             const vid = raw.startsWith('@') ? raw.substring(1) : raw;
