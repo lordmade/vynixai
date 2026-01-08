@@ -96,17 +96,20 @@
             font-size: 14px;
         }
         .search-input:focus { outline: none; border-color: var(--primary); }
-        /* Pill-shaped Sub Tabs */
+        /* Pill-shaped Sub Tabs - Centered */
         .sub-tabs {
             display: flex;
-            gap: 8px;
-            padding: 0 15px 12px;
+            justify-content: center;   /* Center the tabs horizontally */
+            gap: 12px;
+            padding: 12px 15px;
             overflow-x: auto;
             scrollbar-width: none;
+            background: var(--bg-card);
+            flex-shrink: 0;
         }
         .sub-tabs::-webkit-scrollbar { display: none; }
         .sub-tab {
-            padding: 8px 16px;
+            padding: 8px 20px;
             border-radius: 20px;
             background: var(--bg-body);
             color: var(--text-muted);
@@ -520,7 +523,7 @@
         let currentSubTab = 'all';
         let currentContextUid = null;
         let cachedChats = JSON.parse(localStorage.getItem('cached_chats') || '{}');
-        let pendingMessages = []; // Queue for offline sending
+        let pendingMessages = [];
 
         // IndexedDB Setup for messages
         let idb = null;
@@ -678,7 +681,6 @@
             loadChats();
             setTimeout(() => document.getElementById('pageLoader').style.display = 'none', 500);
 
-            // Sync pending messages when back online
             window.addEventListener('online', syncPendingMessages);
         }
 
@@ -939,7 +941,6 @@
             const list = document.getElementById('messageList');
             list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
-            // Load from IndexedDB first (offline support)
             const cached = await getCachedMessages(currentRoomId);
             if (cached.length > 0) {
                 list.innerHTML = '';
@@ -964,7 +965,6 @@
 
                 await cacheMessage(currentRoomId, msg);
 
-                // Remove any pending version
                 const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
                 if (pendingEl) pendingEl.remove();
 
@@ -979,7 +979,15 @@
             });
         }
 
-        /* --- Offline Message Sending --- */
+        /* --- Send Message (with offline support) --- */
+        function autoResizeInput(field) {
+            field.style.height = 'auto';
+            field.style.height = field.scrollHeight + 'px';
+            const btn = document.getElementById('sendBtn');
+            if (field.value.trim().length > 0) btn.classList.add('visible');
+            else btn.classList.remove('visible');
+        }
+
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const text = input.value.trim();
@@ -989,9 +997,8 @@
             const encrypted = CryptoJS.AES.encrypt(text, key).toString();
 
             const tempTs = Date.now();
-            const localId = tempTs + Math.random(); // Unique temporary ID
+            const localId = tempTs + Math.random();
 
-            // Immediately show message locally with pending state
             const list = document.getElementById('messageList');
             const el = document.createElement('div');
             el.className = 'message sent pending';
@@ -1000,7 +1007,6 @@
             list.appendChild(el);
             list.scrollTop = list.scrollHeight;
 
-            // Cache the pending message
             await cacheMessage(currentRoomId, {
                 text: encrypted,
                 sender: currentUser.uid,
@@ -1013,14 +1019,12 @@
             input.style.height = 'auto';
             document.getElementById('sendBtn').classList.remove('visible');
 
-            // Try to send immediately if online
             if (navigator.onLine) {
                 try {
                     const msgRef = await db.ref(`messages/${currentRoomId}`).push({
                         text: encrypted, sender: currentUser.uid, ts: tempTs
                     });
 
-                    // Update metadata
                     const updates = {};
                     updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
                     updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
@@ -1030,15 +1034,12 @@
 
                     await db.ref().update(updates);
 
-                    // Remove pending state
                     el.classList.remove('pending');
                     el.querySelector('.pending-indicator').remove();
                 } catch (e) {
                     console.error("Immediate send failed:", e);
-                    // Will retry when back online
                 }
             }
-            // If offline, message stays pending and will sync later
         }
 
         async function syncPendingMessages() {
@@ -1055,7 +1056,6 @@
                         ts: msg.ts
                     });
 
-                    // Update chat metadata once (only on first successful send)
                     if (pending.indexOf(msg) === 0) {
                         const updates = {};
                         updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = msg.text;
@@ -1066,7 +1066,6 @@
                         await db.ref().update(updates);
                     }
 
-                    // Remove pending flag from cache
                     const tx = idb.transaction(STORE_NAME, 'readwrite');
                     const store = tx.objectStore(STORE_NAME);
                     const getReq = store.get(msg.localId);
@@ -1079,22 +1078,11 @@
                     };
                 } catch (e) {
                     console.error("Sync failed for message:", e);
-                    // Keep pending for next try
                 }
             }
         }
 
-        // Listen for online status and sync
         window.addEventListener('online', syncPendingMessages);
-
-        /* --- Other functions remain the same --- */
-        function autoResizeInput(field) {
-            field.style.height = 'auto';
-            field.style.height = field.scrollHeight + 'px';
-            const btn = document.getElementById('sendBtn');
-            if (field.value.trim().length > 0) btn.classList.add('visible');
-            else btn.classList.remove('visible');
-        }
 
         document.getElementById('sendBtn').addEventListener('click', sendMessage);
         function handleEnter(e) {
