@@ -233,6 +233,8 @@
             position: relative;
             word-wrap: break-word;
             box-shadow: 0 1px 1px rgba(0,0,0,0.05);
+            transition: transform 0.2s ease;
+            touch-action: pan-y;
         }
         .message.received {
             align-self: flex-start;
@@ -249,6 +251,10 @@
         .message.pending {
             opacity: 0.7;
         }
+        .message.swiping {
+            transform: translateX(-20px);
+            transition: transform 0.2s ease;
+        }
         .message-time {
             font-size: 10px;
             margin-top: 4px;
@@ -260,6 +266,39 @@
             opacity: 0.6;
             margin-top: 4px;
             text-align: right;
+        }
+        /* Message Actions Popup */
+        .message-actions-popup {
+            position: fixed;
+            background: var(--bg-card);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+            padding: 8px 0;
+            z-index: 3000;
+            display: none;
+            min-width: 160px;
+        }
+        .message-action-item {
+            padding: 12px 20px;
+            font-size: 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: background 0.2s;
+        }
+        .message-action-item:active {
+            background: var(--bg-body);
+        }
+        .message-action-item .material-symbols-rounded {
+            font-size: 20px;
+        }
+        .message-action-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.3);
+            z-index: 2999;
+            display: none;
         }
         /* Reaction Styles */
         .reaction-picker {
@@ -386,6 +425,11 @@
         .v-input { width: 100%; padding: 14px; border: 1px solid var(--border-light); border-radius: 12px; margin-bottom: 12px; font-size: 15px; background: var(--bg-body); color: var(--text-main); }
         .btn-primary { width: 100%; padding: 14px; background: var(--primary); color: white; border: none; border-radius: 12px; font-weight: 600; font-size: 15px; cursor: pointer; }
         .btn-danger { background: var(--danger); }
+        .btn-secondary {
+            background: var(--bg-body);
+            color: var(--text-main);
+            border: 1px solid var(--border-light);
+        }
         #toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 10px 20px; border-radius: 30px; z-index: 3000; font-size: 13px; display: none; }
         #pageLoader { position: fixed; inset: 0; background: var(--bg-body); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .shimmer { background: linear-gradient(90deg, var(--bg-body) 25%, var(--border-light) 50%, var(--bg-body) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
@@ -497,17 +541,52 @@
         .message-ticks.read {
             color: var(--primary);
         }
-        .recent-reaction {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-top: 2px;
-    animation: fadeIn 0.3s ease;
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(-5px); }
-    to { opacity: 1; transform: translateY(0); }
-}
+        /* Forward selector styles */
+        .forward-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 4000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .forward-selector {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 20px;
+            max-width: 400px;
+            max-height: 70vh;
+            overflow-y: auto;
+            width: 90%;
+        }
+        .forward-friend-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            cursor: pointer;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: background 0.2s;
+        }
+        .forward-friend-item:hover {
+            background: var(--bg-body);
+        }
+        .forward-friend-item.selected {
+            background: var(--primary);
+            color: white;
+        }
+        .message-edit-input {
+            width: 100%;
+            min-height: 40px;
+            padding: 8px;
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            background: var(--bg-body);
+            color: var(--text-main);
+            font-size: 14px;
+            resize: vertical;
+        }
     </style>
 </head>
 <body>
@@ -608,6 +687,20 @@
         <div class="reaction-emoji" data-emoji="🎉">🎉</div>
     </div>
 
+    <!-- Message Actions Popup -->
+    <div class="message-action-overlay" id="messageActionOverlay" onclick="hideMessageActions()"></div>
+    <div class="message-actions-popup" id="messageActionsPopup">
+        <div class="message-action-item" onclick="deleteMessage()">
+            <span class="material-symbols-rounded">delete</span> Delete
+        </div>
+        <div class="message-action-item" onclick="editMessage()">
+            <span class="material-symbols-rounded">edit</span> Edit
+        </div>
+        <div class="message-action-item" onclick="forwardMessage()">
+            <span class="material-symbols-rounded">forward</span> Forward
+        </div>
+    </div>
+
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -637,6 +730,15 @@
         let currentContextUid = null;
         let cachedChats = JSON.parse(localStorage.getItem('cached_chats') || '{}');
         let pendingMessages = [];
+
+        // Variables for swipe handling
+        let currentMessageEl = null;
+        let currentMessageKey = null;
+        let currentMessageText = null;
+        let startX = 0;
+        let currentX = 0;
+        let isSwiping = false;
+        let swipeThreshold = 100;
 
         // IndexedDB Setup for messages
         let idb = null;
@@ -951,148 +1053,111 @@
         }
 
         /* --- Main Chat List with Filters --- */
-async function loadChats() {
-    if (chatsListener) chatsListener.off();
-    chatsListener = db.ref(`users/${currentUser.uid}/chats`);
+        async function loadChats() {
+            if (chatsListener) chatsListener.off();
+            chatsListener = db.ref(`users/${currentUser.uid}/chats`);
 
-    chatsListener.on('value', async snap => {
-        if (!snap.exists()) return;
+            chatsListener.on('value', async snap => {
+                if (!snap.exists()) return;
 
-        cachedChats = {};
-        const chats = [];
-        snap.forEach(child => {
-            const data = child.val();
-            if (data.lastMsg) {
-                data.uid = child.key;
-                chats.push(data);
-            }
-        });
-        chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
-
-        const list = document.getElementById('chatList');
-        list.innerHTML = '';
-
-        let filtered = chats;
-        if (currentSubTab === 'favourite') filtered = chats.filter(c => c.isFavourite);
-        else if (currentSubTab === 'unread') filtered = chats.filter(c => c.unreadCount > 0);
-        else if (currentSubTab === 'archived') filtered = chats.filter(c => c.isArchived);
-
-        if (filtered.length === 0) {
-            let msg = "No chats yet.";
-            if (currentSubTab === 'favourite') msg = "No favourite chats.";
-            if (currentSubTab === 'unread') msg = "No unread chats.";
-            if (currentSubTab === 'archived') msg = "No archived chats.";
-            list.innerHTML = `<p style="text-align:center;padding:50px;color:var(--text-muted);">${msg}</p>`;
-            return;
-        }
-
-        for (const chat of filtered) {
-            const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
-            const profile = pSnap.val() || { name: "User", photo: "" };
-            const lastText = decrypt(chat.lastMsg, chat.uid);
-
-            // Check if last message was sent by current user and is read
-            let readStatus = '';
-            if (chat.lastMsgSender === currentUser.uid) {
-                const roomId = currentUser.uid < chat.uid ? currentUser.uid + "_" + chat.uid : chat.uid + "_" + currentUser.uid;
-                const lastMsgSnap = await db.ref(`messages/${roomId}`).orderByChild('ts').limitToLast(1).once('value');
-                lastMsgSnap.forEach(child => {
-                    const msg = child.val();
-                    if (msg.read && msg.sender === currentUser.uid) {
-                        readStatus = '<span style="color:var(--primary);margin-left:4px;">✓✓</span>';
-                    } else if (msg.sender === currentUser.uid) {
-                        readStatus = '<span style="color:var(--text-muted);margin-left:4px;">✓✓</span>';
+                cachedChats = {};
+                const chats = [];
+                snap.forEach(child => {
+                    const data = child.val();
+                    if (data.lastMsg) {
+                        data.uid = child.key;
+                        chats.push(data);
                     }
                 });
-            }
+                chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
 
-            // Check for recent reaction
-            let recentReactionHtml = '';
-            if (chat.recentReaction) {
-                const reaction = chat.recentReaction;
-                const timeAgo = Date.now() - reaction.timestamp;
-                if (timeAgo < 30000) { // Show for 30 seconds
-                    recentReactionHtml = `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${reaction.reactorName} reacted with ${reaction.emoji}</div>`;
+                const list = document.getElementById('chatList');
+                list.innerHTML = '';
+
+                let filtered = chats;
+                if (currentSubTab === 'favourite') filtered = chats.filter(c => c.isFavourite);
+                else if (currentSubTab === 'unread') filtered = chats.filter(c => c.unreadCount > 0);
+                else if (currentSubTab === 'archived') filtered = chats.filter(c => c.isArchived);
+
+                if (filtered.length === 0) {
+                    let msg = "No chats yet.";
+                    if (currentSubTab === 'favourite') msg = "No favourite chats.";
+                    if (currentSubTab === 'unread') msg = "No unread chats.";
+                    if (currentSubTab === 'archived') msg = "No archived chats.";
+                    list.innerHTML = `<p style="text-align:center;padding:50px;color:var(--text-muted);">${msg}</p>`;
+                    return;
                 }
-            }
 
-            cachedChats[chat.uid] = {
-                uid: chat.uid,
-                name: profile.name,
-                photo: profile.photo,
-                lastMsgText: lastText,
-                ts: chat.ts,
-                unreadCount: chat.unreadCount || 0
-            };
-            localStorage.setItem('cached_chats', JSON.stringify(cachedChats));
+                for (const chat of filtered) {
+                    const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
+                    const profile = pSnap.val() || { name: "User", photo: "" };
+                    const lastText = decrypt(chat.lastMsg, chat.uid);
 
-            list.innerHTML += `
-                <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
-                    <div class="avatar-container">
-                        <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
-                        <div class="online-indicator" id="online_${chat.uid}" style="display:none"></div>
-                    </div>
-                    <div class="chat-info">
-                        <div class="chat-header-row">
-                            <div class="chat-name">${profile.name}</div>
-                            <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
-                        </div>
-                        <div class="chat-msg-row">
-                            <div class="chat-msg">${lastText}${readStatus}</div>
-                            ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>` : ''}
-                        </div>
-                        ${recentReactionHtml}
-                    </div>
-                </div>`;
+                    // Check if last message was sent by current user and is read
+                    let readStatus = '';
+                    if (chat.lastMsgSender === currentUser.uid) {
+                        const roomId = currentUser.uid < chat.uid ? currentUser.uid + "_" + chat.uid : chat.uid + "_" + currentUser.uid;
+                        const lastMsgSnap = await db.ref(`messages/${roomId}`).orderByChild('ts').limitToLast(1).once('value');
+                        lastMsgSnap.forEach(child => {
+                            const msg = child.val();
+                            if (msg.read && msg.sender === currentUser.uid) {
+                                readStatus = '<span style="color:var(--primary);margin-left:4px;">✓✓</span>';
+                            } else if (msg.sender === currentUser.uid) {
+                                readStatus = '<span style="color:var(--text-muted);margin-left:4px;">✓✓</span>';
+                            }
+                        });
+                    }
 
-            db.ref(`users/${chat.uid}/online`).on('value', s => {
-                const el = document.getElementById(`online_${chat.uid}`);
-                if (el) el.style.display = s.val() === true ? 'block' : 'none';
-            });
+                    cachedChats[chat.uid] = {
+                        uid: chat.uid,
+                        name: profile.name,
+                        photo: profile.photo,
+                        lastMsgText: lastText,
+                        ts: chat.ts,
+                        unreadCount: chat.unreadCount || 0
+                    };
+                    localStorage.setItem('cached_chats', JSON.stringify(cachedChats));
 
-            const card = list.lastElementChild;
-            let longPressTimer;
-            card.addEventListener('touchstart', e => {
-                longPressTimer = setTimeout(() => showContextMenu(e, chat.uid), 500);
-            });
-            card.addEventListener('touchend', () => clearTimeout(longPressTimer));
-            card.addEventListener('touchmove', () => clearTimeout(longPressTimer));
-            card.addEventListener('contextmenu', e => {
-                e.preventDefault();
-                showContextMenu(e, chat.uid);
+                    list.innerHTML += `
+                        <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
+                            <div class="avatar-container">
+                                <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
+                                <div class="online-indicator" id="online_${chat.uid}" style="display:none"></div>
+                            </div>
+                            <div class="chat-info">
+                                <div class="chat-header-row">
+                                    <div class="chat-name">${profile.name}</div>
+                                    <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
+                                </div>
+                                <div class="chat-msg-row">
+                                    <div class="chat-msg">${lastText}${readStatus}</div>
+                                    ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>` : ''}
+                                </div>
+                            </div>
+                        </div>`;
+
+                    db.ref(`users/${chat.uid}/online`).on('value', s => {
+                        const el = document.getElementById(`online_${chat.uid}`);
+                        if (el) el.style.display = s.val() === true ? 'block' : 'none';
+                    });
+
+                    const card = list.lastElementChild;
+                    let longPressTimer;
+                    card.addEventListener('touchstart', e => {
+                        longPressTimer = setTimeout(() => showContextMenu(e, chat.uid), 500);
+                    });
+                    card.addEventListener('touchend', () => clearTimeout(longPressTimer));
+                    card.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+                    card.addEventListener('contextmenu', e => {
+                        e.preventDefault();
+                        showContextMenu(e, chat.uid);
+                    });
+                }
+
+                // Update unread dot after rendering
+                updateUnreadDot();
             });
         }
-
-        // Listen for recent reaction updates
-        chatsListener.on('child_changed', async (snap) => {
-            const chat = snap.val();
-            const chatCard = document.querySelector(`[data-uid="${snap.key}"]`);
-            if (chatCard && chat.recentReaction) {
-                const reaction = chat.recentReaction;
-                const timeAgo = Date.now() - reaction.timestamp;
-                if (timeAgo < 30000) {
-                    const existingReaction = chatCard.querySelector('.recent-reaction');
-                    if (existingReaction) {
-                        existingReaction.remove();
-                    }
-                    
-                    const reactionHtml = `<div class="recent-reaction" style="font-size:11px;color:var(--text-muted);margin-top:2px;">${reaction.reactorName} reacted with ${reaction.emoji}</div>`;
-                    const chatInfo = chatCard.querySelector('.chat-info');
-                    chatInfo.insertAdjacentHTML('beforeend', reactionHtml);
-                    
-                    // Auto-remove after 30 seconds
-                    setTimeout(() => {
-                        const reactionEl = chatCard.querySelector('.recent-reaction');
-                        if (reactionEl) reactionEl.remove();
-                    }, 30000 - timeAgo);
-                }
-            }
-        });
-
-        // Update unread dot after rendering
-        updateUnreadDot();
-    });
-}
 
         function showContextMenu(e, uid) {
             e.preventDefault();
@@ -1279,114 +1344,496 @@ async function loadChats() {
             });
         });
 
-       async function trackRecentReaction(friendUid, emoji, reactorName) {
-    if (!friendUid || !emoji || !reactorName) return;
-    
-    const recentReaction = {
-        emoji: emoji,
-        reactorName: reactorName,
-        timestamp: Date.now()
-    };
-    
-    // Store recent reaction for the chat card
-    await db.ref(`users/${currentUser.uid}/chats/${friendUid}/recentReaction`).set(recentReaction);
-    
-    // Clear after 30 seconds
-    setTimeout(async () => {
-        const snap = await db.ref(`users/${currentUser.uid}/chats/${friendUid}/recentReaction`).once('value');
-        if (snap.exists() && snap.val().timestamp === recentReaction.timestamp) {
-            await db.ref(`users/${currentUser.uid}/chats/${friendUid}/recentReaction`).remove();
-        }
-    }, 30000);
-}
-
-// Update the toggleReaction function to track reactions
-async function toggleReaction(msgKey, emoji) {
-    if (!msgKey || !currentRoomId) return;
-    
-    try {
-        const reactionRef = db.ref(`messages/${currentRoomId}/${msgKey}/reactions/${emoji}`);
-        const snap = await reactionRef.once('value');
-        const users = snap.val() || [];
-        
-        // Get reactor name
-        const reactorSnap = await db.ref(`users/${currentUser.uid}/profile/name`).once('value');
-        const reactorName = reactorSnap.val() || "Someone";
-        
-        if (users.includes(currentUser.uid)) {
-            // Remove reaction
-            const updatedUsers = users.filter(uid => uid !== currentUser.uid);
-            if (updatedUsers.length === 0) {
-                await reactionRef.remove();
-            } else {
-                await reactionRef.set(updatedUsers);
-            }
-        } else {
-            // Add reaction and track it
-            await reactionRef.set([...users, currentUser.uid]);
+        // Toggle reaction on/off
+        async function toggleReaction(msgKey, emoji) {
+            if (!msgKey || !currentRoomId) return;
             
-            // Track recent reaction for chat card (only if reacting to friend's message)
-            const msgSnap = await db.ref(`messages/${currentRoomId}/${msgKey}`).once('value');
-            const msg = msgSnap.val();
-            if (msg && msg.sender !== currentUser.uid) {
-                await trackRecentReaction(msg.sender, emoji, reactorName);
-            }
-        }
-    } catch (error) {
-        console.error("Error toggling reaction:", error);
-    }
-}
-
-
-        function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRead = false, reactions = {}) {
-            const el = document.createElement('div');
-            el.className = `message ${isSent ? 'sent' : 'received'} ${localId ? 'pending' : ''}`;
-            if (localId) el.dataset.localId = localId;
-            if (msgKey) el.dataset.msgKey = msgKey;
-            
-            // Build reactions HTML
-            let reactionsHtml = '';
-            if (reactions && Object.keys(reactions).length > 0) {
-                reactionsHtml = '<div class="message-reactions">';
-                Object.entries(reactions).forEach(([emoji, users]) => {
-                    if (users && users.length > 0) {
-                        const count = users.length;
-                        const userReacted = users.includes(currentUser.uid);
-                        reactionsHtml += `
-                            <div class="reaction-badge ${userReacted ? 'user-reacted' : ''}" 
-                                 data-emoji="${emoji}" 
-                                 data-key="${msgKey}"
-                                 onclick="toggleReaction('${msgKey}', '${emoji}')">
-                                <span class="emoji">${emoji}</span>
-                                ${count > 1 ? `<span class="count">${count}</span>` : ''}
-                            </div>
-                        `;
+            try {
+                const reactionRef = db.ref(`messages/${currentRoomId}/${msgKey}/reactions/${emoji}`);
+                const snap = await reactionRef.once('value');
+                const users = snap.val() || [];
+                
+                if (users.includes(currentUser.uid)) {
+                    // Remove reaction
+                    const updatedUsers = users.filter(uid => uid !== currentUser.uid);
+                    if (updatedUsers.length === 0) {
+                        await reactionRef.remove();
+                    } else {
+                        await reactionRef.set(updatedUsers);
                     }
+                } else {
+                    // Add reaction
+                    await reactionRef.set([...users, currentUser.uid]);
+                }
+            } catch (error) {
+                console.error("Error toggling reaction:", error);
+            }
+        }
+
+        // Message action functions
+        async function deleteMessage() {
+            const popup = document.getElementById('messageActionsPopup');
+            const msgKey = popup.dataset.currentMsgKey;
+            const msgEl = popup.dataset.currentMsgEl;
+            
+            if (!msgKey || !msgEl) return;
+            
+            try {
+                // Remove from Firebase
+                await db.ref(`messages/${currentRoomId}/${msgKey}`).remove();
+                
+                // Remove from DOM
+                msgEl.remove();
+                
+                toast("Message deleted");
+            } catch (error) {
+                console.error("Error deleting message:", error);
+                toast("Failed to delete message");
+            }
+            
+            hideMessageActions();
+        }
+
+        async function editMessage() {
+            const popup = document.getElementById('messageActionsPopup');
+            const msgKey = popup.dataset.currentMsgKey;
+            const msgText = popup.dataset.currentMsgText;
+            const msgEl = popup.dataset.currentMsgEl;
+            
+            if (!msgKey || !msgText || !msgEl) return;
+            
+            // Create inline edit input
+            const messageContent = msgEl.querySelector('.message-content') || msgEl;
+            const originalHtml = messageContent.innerHTML;
+            
+            const editInput = document.createElement('textarea');
+            editInput.className = 'message-edit-input';
+            editInput.value = msgText;
+            editInput.style.width = '100%';
+            editInput.style.minHeight = '40px';
+            editInput.style.padding = '8px';
+            editInput.style.border = '1px solid var(--border-light)';
+            editInput.style.borderRadius = '8px';
+            editInput.style.background = 'var(--bg-body)';
+            editInput.style.color = 'var(--text-main)';
+            editInput.style.fontSize = '14px';
+            editInput.style.resize = 'vertical';
+            
+            messageContent.innerHTML = '';
+            messageContent.appendChild(editInput);
+            editInput.focus();
+            
+            // Handle save/cancel
+            const saveEdit = async () => {
+                const newText = editInput.value.trim();
+                if (newText && newText !== msgText) {
+                    try {
+                        // Encrypt new text
+                        const key = sharedKeys[currentFriendUid];
+                        if (!key) {
+                            toast('Security key missing');
+                            return;
+                        }
+                        const encrypted = CryptoJS.AES.encrypt(newText, key).toString();
+                        
+                        // Update in Firebase
+                        await db.ref(`messages/${currentRoomId}/${msgKey}/text`).set(encrypted);
+                        
+                        // Update last message in chat if this was the last message
+                        const lastMsgSnap = await db.ref(`messages/${currentRoomId}`).orderByChild('ts').limitToLast(1).once('value');
+                        let isLastMessage = false;
+                        lastMsgSnap.forEach(child => {
+                            if (child.key === msgKey) {
+                                isLastMessage = true;
+                            }
+                        });
+                        
+                        if (isLastMessage) {
+                            // Update chat last message
+                            const updates = {};
+                            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+                            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+                            await db.ref().update(updates);
+                        }
+                        
+                        toast("Message edited");
+                    } catch (error) {
+                        console.error("Error editing message:", error);
+                        toast("Failed to edit message");
+                    }
+                }
+                messageContent.innerHTML = originalHtml;
+                hideMessageActions();
+            };
+            
+            const cancelEdit = () => {
+                messageContent.innerHTML = originalHtml;
+                hideMessageActions();
+            };
+            
+            editInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    saveEdit();
+                } else if (e.key === 'Escape') {
+                    cancelEdit();
+                }
+            });
+            
+            editInput.addEventListener('blur', () => {
+                setTimeout(saveEdit, 100);
+            });
+            
+            hideMessageActions();
+        }
+
+        async function forwardMessage() {
+            const popup = document.getElementById('messageActionsPopup');
+            const msgText = popup.dataset.currentMsgText;
+            
+            if (!msgText) return;
+            
+            // Open friend selector for forwarding
+            openForwardSelector(msgText);
+            hideMessageActions();
+        }
+
+        function openForwardSelector(messageText) {
+            // Create forward selector overlay
+            const overlay = document.createElement('div');
+            overlay.className = 'forward-overlay';
+            overlay.style.cssText = `
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.5);
+                z-index: 4000;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            `;
+            
+            const selector = document.createElement('div');
+            selector.className = 'forward-selector';
+            selector.style.cssText = `
+                background: var(--bg-card);
+                border-radius: 16px;
+                padding: 20px;
+                max-width: 400px;
+                max-height: 70vh;
+                overflow-y: auto;
+                width: 90%;
+            `;
+            
+            selector.innerHTML = `
+                <h3 style="margin-bottom:15px;font-weight:700;">Forward Message</h3>
+                <div style="margin-bottom:15px;padding:10px;background:var(--bg-body);border-radius:8px;font-size:14px;">${messageText}</div>
+                <div id="forwardFriendsList"></div>
+                <div style="display:flex;gap:10px;margin-top:15px;">
+                    <button class="btn-secondary" onclick="closeForwardSelector()" style="flex:1;padding:10px;border:none;border-radius:8px;background:var(--bg-body);">Cancel</button>
+                    <button class="btn-primary" onclick="sendForwardedMessage()" style="flex:1;padding:10px;border:none;border-radius:8px;">Send</button>
+                </div>
+            `;
+            
+            overlay.appendChild(selector);
+            document.body.appendChild(overlay);
+            
+            // Load friends for forwarding
+            loadFriendsForForwarding();
+            
+            // Store message text for forwarding
+            selector.dataset.messageText = messageText;
+        }
+
+        function closeForwardSelector() {
+            const overlay = document.querySelector('.forward-overlay');
+            if (overlay) overlay.remove();
+        }
+
+        async function loadFriendsForForwarding() {
+            const list = document.getElementById('forwardFriendsList');
+            list.innerHTML = '<div style="text-align:center;padding:20px;">Loading friends...</div>';
+            
+            try {
+                const snap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
+                if (!snap.exists()) {
+                    list.innerHTML = '<p style="text-align:center;color:var(--text-muted);">No friends to forward to</p>';
+                    return;
+                }
+                
+                list.innerHTML = '';
+                const friends = [];
+                snap.forEach(child => friends.push(child.key));
+                
+                for (const uid of friends) {
+                    if (uid === currentFriendUid) continue; // Don't show current chat
+                    
+                    const profileSnap = await db.ref(`users/${uid}/profile`).once('value');
+                    const profile = profileSnap.val() || { name: "User", photo: "" };
+                    
+                    const friendEl = document.createElement('div');
+                    friendEl.className = 'forward-friend-item';
+                    friendEl.style.cssText = `
+                        display: flex;
+                        align-items: center;
+                        padding: 12px;
+                        cursor: pointer;
+                        border-radius: 8px;
+                        margin-bottom: 8px;
+                        transition: background 0.2s;
+                    `;
+                    
+                    friendEl.innerHTML = `
+                        <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}" style="width:40px;height:40px;margin-right:12px;">
+                        <div class="chat-name">${profile.name}</div>
+                    `;
+                    
+                    friendEl.addEventListener('click', () => {
+                        // Toggle selection
+                        const selected = document.querySelectorAll('.forward-friend-item.selected');
+                        selected.forEach(el => el.classList.remove('selected'));
+                        friendEl.classList.add('selected');
+                        // Store UID for forwarding
+                        friendEl.dataset.friendUid = uid;
+                    });
+                    
+                    list.appendChild(friendEl);
+                }
+                
+                if (list.children.length === 0) {
+                    list.innerHTML = '<p style="text-align:center;color:var(--text-muted);">No other friends to forward to</p>';
+                }
+            } catch (error) {
+                console.error("Error loading friends:", error);
+                list.innerHTML = '<p style="text-align:center;color:var(--text-muted);">Error loading friends</p>';
+            }
+        }
+
+        async function sendForwardedMessage() {
+            const selector = document.querySelector('.forward-selector');
+            const selected = selector.querySelector('.forward-friend-item.selected');
+            
+            if (!selected) {
+                toast("Please select a friend to forward to");
+                return;
+            }
+            
+            const messageText = selector.dataset.messageText;
+            const targetUid = selected.dataset.friendUid;
+            
+            if (!targetUid) {
+                toast("Please select a friend");
+                return;
+            }
+            
+            try {
+                // Create forwarded message
+                const forwardedText = `Forwarded: ${messageText}`;
+                
+                // Get encryption key for target friend
+                const profileSnap = await db.ref(`users/${targetUid}/profile`).once('value');
+                const profile = profileSnap.val() || {};
+                
+                if (!sharedKeys[targetUid] && profile.publicKey) {
+                    const secret = await deriveSharedSecret(JSON.parse(profile.publicKey));
+                    sharedKeys[targetUid] = secret;
+                    localStorage.setItem('sharedKeys', JSON.stringify(sharedKeys));
+                }
+                
+                const key = sharedKeys[targetUid];
+                if (!key) {
+                    toast('Security key missing for forwarding');
+                    return;
+                }
+                
+                const encrypted = CryptoJS.AES.encrypt(forwardedText, key).toString();
+                const timestamp = Date.now();
+                
+                // Create room ID for target friend
+                const targetRoomId = currentUser.uid < targetUid ? currentUser.uid + "_" + targetUid : targetUid + "_" + currentUser.uid;
+                
+                // Send the forwarded message
+                await db.ref(`messages/${targetRoomId}`).push({
+                    text: encrypted,
+                    sender: currentUser.uid,
+                    ts: timestamp,
+                    read: false
                 });
-                reactionsHtml += '</div>';
+                
+                // Update chat timestamps
+                const updates = {};
+                updates[`users/${currentUser.uid}/chats/${targetUid}/lastMsg`] = encrypted;
+                updates[`users/${currentUser.uid}/chats/${targetUid}/ts`] = timestamp;
+                updates[`users/${targetUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+                updates[`users/${targetUid}/chats/${currentUser.uid}/ts`] = timestamp;
+                updates[`users/${targetUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+                
+                await db.ref().update(updates);
+                
+                toast("Message forwarded");
+                closeForwardSelector();
+                
+            } catch (error) {
+                console.error("Error forwarding message:", error);
+                toast("Failed to forward message");
+            }
+        }
+
+        function hideMessageActions() {
+            const popup = document.getElementById('messageActionsPopup');
+            const overlay = document.getElementById('messageActionOverlay');
+            
+            popup.style.display = 'none';
+            overlay.style.display = 'none';
+            
+            // Reset message position
+            document.querySelectorAll('.message.swiping').forEach(msg => {
+                msg.style.transform = '';
+                msg.classList.remove('swiping');
+            });
+        }
+
+        function showMessageActions(e, messageEl, msgKey, msgText) {
+            e.preventDefault();
+            
+            // Reset all swiped messages
+            document.querySelectorAll('.message.swiping').forEach(msg => {
+                msg.style.transform = '';
+                msg.classList.remove('swiping');
+            });
+            
+            const popup = document.getElementById('messageActionsPopup');
+            const overlay = document.getElementById('messageActionOverlay');
+            
+            // Position popup near the message
+            const rect = messageEl.getBoundingClientRect();
+            popup.style.left = `${rect.right + 10}px`;
+            popup.style.top = `${rect.top + window.scrollY}px`;
+            
+            // Adjust position if popup would go off screen
+            const popupRect = popup.getBoundingClientRect();
+            if (popupRect.right > window.innerWidth) {
+                popup.style.left = `${rect.left - popup.offsetWidth - 10}px`;
             }
             
-            const ticks = isSent ? `<span class="message-ticks ${isRead ? 'read' : ''}">✓✓</span>` : '';
-            el.innerHTML = `${text}<div class="message-time">${formatMessageTime(ts)}${ticks}</div>${reactionsHtml}`;
+            // Show overlay and popup
+            overlay.style.display = 'block';
+            popup.style.display = 'block';
             
-            // Add long press event for reactions
-            let longPressTimer;
-            el.addEventListener('touchstart', e => {
-                longPressTimer = setTimeout(() => showReactionPicker(e, el, msgKey), 500);
-            });
-            el.addEventListener('touchend', () => clearTimeout(longPressTimer));
-            el.addEventListener('touchmove', () => clearTimeout(longPressTimer));
-            el.addEventListener('contextmenu', e => {
-                e.preventDefault();
-                showReactionPicker(e, el, msgKey);
-            });
+            // Store current message info
+            popup.dataset.currentMsgKey = msgKey;
+            popup.dataset.currentMsgText = msgText;
+            popup.dataset.currentMsgEl = messageEl;
             
-            // Add pending class only for local messages that haven't been confirmed
-            if (localId && !msgKey) {
-                el.classList.add('pending');
+            // Hide after 3 seconds or when clicking outside
+            setTimeout(() => {
+                hideMessageActions();
+            }, 3000);
+        }
+
+        // Add swipe listeners to messages
+        function addSwipeListeners(messageEl) {
+            messageEl.addEventListener('touchstart', handleTouchStart, { passive: false });
+            messageEl.addEventListener('touchmove', handleTouchMove, { passive: false });
+            messageEl.addEventListener('touchend', handleTouchEnd, { passive: false });
+            
+            // Mouse events for desktop testing
+            messageEl.addEventListener('mousedown', handleMouseDown);
+            messageEl.addEventListener('mousemove', handleMouseMove);
+            messageEl.addEventListener('mouseup', handleMouseUp);
+            messageEl.addEventListener('mouseleave', handleMouseLeave);
+        }
+
+        function handleTouchStart(e) {
+            startX = e.touches[0].clientX;
+            currentX = startX;
+            isSwiping = true;
+            currentMessageEl = e.currentTarget;
+            currentMessageKey = currentMessageEl.dataset.msgKey;
+            currentMessageText = currentMessageEl.textContent;
+        }
+
+        function handleTouchMove(e) {
+            if (!isSwiping || !currentMessageEl) return;
+            
+            currentX = e.touches[0].clientX;
+            const diffX = currentX - startX;
+            
+            if (diffX < 0) { // Only allow left swipe
+                currentMessageEl.style.transform = `translateX(${Math.max(diffX, -100)}px)`;
+                currentMessageEl.classList.add('swiping');
+            }
+        }
+
+        function handleTouchEnd(e) {
+            if (!isSwiping || !currentMessageEl) return;
+            
+            const diffX = currentX - startX;
+            
+            if (Math.abs(diffX) > swipeThreshold) {
+                // Show action menu
+                showMessageActions(e, currentMessageEl, currentMessageKey, currentMessageText);
+            } else {
+                // Reset position
+                currentMessageEl.style.transform = '';
+                currentMessageEl.classList.remove('swiping');
             }
             
-            return el;
+            resetSwipeState();
+        }
+
+        function handleMouseDown(e) {
+            startX = e.clientX;
+            currentX = startX;
+            isSwiping = true;
+            currentMessageEl = e.currentTarget;
+            currentMessageKey = currentMessageEl.dataset.msgKey;
+            currentMessageText = currentMessageEl.textContent;
+        }
+
+        function handleMouseMove(e) {
+            if (!isSwiping || !currentMessageEl) return;
+            
+            currentX = e.clientX;
+            const diffX = currentX - startX;
+            
+            if (diffX < 0) { // Only allow left swipe
+                currentMessageEl.style.transform = `translateX(${Math.max(diffX, -100)}px)`;
+                currentMessageEl.classList.add('swiping');
+            }
+        }
+
+        function handleMouseUp(e) {
+            if (!isSwiping || !currentMessageEl) return;
+            
+            const diffX = currentX - startX;
+            
+            if (Math.abs(diffX) > swipeThreshold) {
+                // Show action menu
+                showMessageActions(e, currentMessageEl, currentMessageKey, currentMessageText);
+            } else {
+                // Reset position
+                currentMessageEl.style.transform = '';
+                currentMessageEl.classList.remove('swiping');
+            }
+            
+            resetSwipeState();
+        }
+
+        function handleMouseLeave(e) {
+            if (currentMessageEl) {
+                currentMessageEl.style.transform = '';
+                currentMessageEl.classList.remove('swiping');
+            }
+            resetSwipeState();
+        }
+
+        function resetSwipeState() {
+            isSwiping = false;
+            currentMessageEl = null;
+            currentMessageKey = null;
+            currentMessageText = null;
+            startX = 0;
+            currentX = 0;
         }
 
         /* --- Send Message (with offline support) --- */
@@ -1458,6 +1905,66 @@ async function toggleReaction(msgKey, emoji) {
             } else {
                 toast("Message will be sent when online");
             }
+        }
+
+        function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRead = false, reactions = {}) {
+            const el = document.createElement('div');
+            el.className = `message ${isSent ? 'sent' : 'received'} ${localId ? 'pending' : ''}`;
+            if (localId) el.dataset.localId = localId;
+            if (msgKey) el.dataset.msgKey = msgKey;
+            
+            // Build reactions HTML
+            let reactionsHtml = '';
+            if (reactions && Object.keys(reactions).length > 0) {
+                reactionsHtml = '<div class="message-reactions">';
+                Object.entries(reactions).forEach(([emoji, users]) => {
+                    if (users && users.length > 0) {
+                        const count = users.length;
+                        const userReacted = users.includes(currentUser.uid);
+                        reactionsHtml += `
+                            <div class="reaction-badge ${userReacted ? 'user-reacted' : ''}" 
+                                 data-emoji="${emoji}" 
+                                 data-key="${msgKey}"
+                                 onclick="toggleReaction('${msgKey}', '${emoji}')">
+                                <span class="emoji">${emoji}</span>
+                                ${count > 1 ? `<span class="count">${count}</span>` : ''}
+                            </div>
+                        `;
+                    }
+                });
+                reactionsHtml += '</div>';
+            }
+            
+            const ticks = isSent ? `<span class="message-ticks ${isRead ? 'read' : ''}">✓✓</span>` : '';
+            
+            // Wrap message content for better editing
+            el.innerHTML = `
+                <div class="message-content">${text}</div>
+                <div class="message-time">${formatMessageTime(ts)}${ticks}</div>
+                ${reactionsHtml}
+            `;
+            
+            // Add long press event for reactions
+            let longPressTimer;
+            el.addEventListener('touchstart', e => {
+                longPressTimer = setTimeout(() => showReactionPicker(e, el, msgKey), 500);
+            });
+            el.addEventListener('touchend', () => clearTimeout(longPressTimer));
+            el.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+            el.addEventListener('contextmenu', e => {
+                e.preventDefault();
+                showReactionPicker(e, el, msgKey);
+            });
+            
+            // Add swipe listeners
+            addSwipeListeners(el);
+            
+            // Add pending class only for local messages that haven't been confirmed
+            if (localId && !msgKey) {
+                el.classList.add('pending');
+            }
+            
+            return el;
         }
 
         async function loadMessages() {
