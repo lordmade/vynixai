@@ -1121,37 +1121,46 @@ function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRea
 async function loadMessages() {
     if (messagesListener) messagesListener.off();
     const list = document.getElementById('messageList');
-    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
-
     list.innerHTML = '';
-    const processedMessageKeys = new Set();
 
+    // Clear existing messages and track processed keys
+    const processedMessageKeys = new Set();
+    const processedLocalIds = new Set();
+
+    // Load from cache first
     const cached = await getCachedMessages(currentRoomId);
     if (cached.length > 0) {
         cached.sort((a,b) => a.ts - b.ts);
-        for (const m of cached) {
+        cached.forEach(m => {
             if (m.key) processedMessageKeys.add(m.key);
+            if (m.localId) processedLocalIds.add(m.localId);
+            
             const isSent = m.sender === currentUser.uid;
             const text = decrypt(m.text, currentFriendUid);
             const isRead = m.read || false;
             const el = createMessageElement(text, isSent, m.ts, m.localId || '', m.key || '', isRead);
             list.appendChild(el);
-        }
+        });
         list.scrollTop = list.scrollHeight;
     }
 
+    // Realtime listener for new messages
     messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(100);
 
     messagesListener.on('child_added', async snap => {
         const msg = snap.val();
         msg.key = snap.key;
 
+        // Skip if already rendered from cache
         if (processedMessageKeys.has(msg.key)) return;
 
         await cacheMessage(currentRoomId, msg);
 
-        const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
-        if (pendingEl) pendingEl.remove();
+        // Remove pending version if exists
+        if (msg.localId) {
+            const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
+            if (pendingEl) pendingEl.remove();
+        }
 
         const isSent = msg.sender === currentUser.uid;
         const text = decrypt(msg.text, currentFriendUid);
@@ -1160,7 +1169,7 @@ async function loadMessages() {
         list.appendChild(el);
         list.scrollTop = list.scrollHeight;
 
-        // Mark message as read if we're viewing friend's chat
+        // Mark as read if received message
         if (!isSent && currentFriendUid) {
             await db.ref(`messages/${currentRoomId}/${msg.key}`).update({ read: true });
         }
@@ -1172,14 +1181,13 @@ async function loadMessages() {
         const existingEl = list.querySelector(`[data-msg-key="${snap.key}"]`);
         if (existingEl) {
             const ticks = existingEl.querySelector('.message-ticks');
-            if (ticks) {
+            if (ticks && msg.read) {
                 ticks.classList.add('read');
                 ticks.textContent = '✓✓';
             }
         }
     });
 }
-
         /* --- Send Message (with offline support) --- */
         function autoResizeInput(field) {
             field.style.height = 'auto';
@@ -1201,10 +1209,13 @@ async function sendMessage() {
     const localId = tempTs + Math.random();
 
     const list = document.getElementById('messageList');
+    
+    // Create and append message element
     const el = createMessageElement(text, true, tempTs, localId, '', false);
     list.appendChild(el);
     list.scrollTop = list.scrollHeight;
 
+    // Cache message with localId
     await cacheMessage(currentRoomId, {
         text: encrypted,
         sender: currentUser.uid,
@@ -1236,7 +1247,7 @@ async function sendMessage() {
 
             await db.ref().update(updates);
 
-            // Remove pending indicator
+            // Remove pending indicator but keep the message
             const pendingEl = list.querySelector(`[data-local-id="${localId}"]`);
             if (pendingEl) {
                 pendingEl.classList.remove('pending');
