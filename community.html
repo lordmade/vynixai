@@ -96,10 +96,33 @@
             font-size: 14px;
         }
         .search-input:focus { outline: none; border-color: var(--primary); }
+        /* Pill-shaped Sub Tabs */
+        .sub-tabs {
+            display: flex;
+            gap: 8px;
+            padding: 0 15px 12px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        .sub-tabs::-webkit-scrollbar { display: none; }
+        .sub-tab {
+            padding: 8px 16px;
+            border-radius: 20px;
+            background: var(--bg-body);
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 600;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .sub-tab.active {
+            background: var(--primary);
+            color: white;
+        }
         #chatList {
             flex: 1;
             overflow-y: auto;
-            padding-bottom: 80px;
             background: var(--bg-card);
         }
         .chat-card {
@@ -348,6 +371,28 @@
             background: var(--danger);
             color: white;
         }
+        /* Context Menu on Long Press */
+        #contextMenu {
+            position: fixed;
+            background: var(--bg-card);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+            padding: 8px 0;
+            z-index: 4000;
+            display: none;
+            min-width: 160px;
+        }
+        .menu-item {
+            padding: 12px 20px;
+            font-size: 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .menu-item:active {
+            background: var(--bg-body);
+        }
         /* Ensure no long-press on any image/avatar */
         img, .avatar {
             -webkit-touch-callout: none;
@@ -374,6 +419,12 @@
         </header>
         <div class="search-container">
             <input type="text" class="search-input" id="friendSearch" placeholder="Search chats..." onkeyup="searchFriends()">
+        </div>
+        <div class="sub-tabs">
+            <div class="sub-tab active" onclick="switchSubTab('all')">All</div>
+            <div class="sub-tab" onclick="switchSubTab('favourite')">Favourite</div>
+            <div class="sub-tab" onclick="switchSubTab('unread')">Unread</div>
+            <div class="sub-tab" onclick="switchSubTab('archived')">Archived</div>
         </div>
         <div id="chatList"></div>
     </div>
@@ -422,6 +473,16 @@
         </div>
     </div>
 
+    <!-- Context Menu -->
+    <div id="contextMenu">
+        <div class="menu-item" onclick="markAsFavourite(currentContextUid)">
+            <span class="material-symbols-rounded">star</span> Favourite
+        </div>
+        <div class="menu-item" onclick="archiveChat(currentContextUid)">
+            <span class="material-symbols-rounded">archive</span> Archive
+        </div>
+    </div>
+
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -446,6 +507,8 @@
         let currentRoomId = null;
         let activeChatRef = null;
         let sharedKeys = JSON.parse(localStorage.getItem('sharedKeys') || '{}');
+        let currentSubTab = 'all';
+        let currentContextUid = null;
 
         auth.onAuthStateChanged(user => {
             if (user) {
@@ -554,7 +617,15 @@
             return null;
         }
 
-        /* --- Main Chat List (no swipe) --- */
+        /* --- Sub Tabs --- */
+        function switchSubTab(tab) {
+            currentSubTab = tab;
+            document.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
+            document.querySelector(`.sub-tab[onclick="switchSubTab('${tab}')"]`).classList.add('active');
+            loadChats(); // Reload with new filter
+        }
+
+        /* --- Main Chat List with Filters --- */
         async function loadChats() {
             db.ref(`users/${currentUser.uid}/chats`).on('value', async snap => {
                 const list = document.getElementById('chatList');
@@ -563,27 +634,39 @@
                 snap.forEach(child => {
                     const data = child.val();
                     if (data.lastMsg) {
-                        chats.push({ uid: child.key, data: data });
+                        data.uid = child.key;
+                        chats.push(data);
                     }
                 });
-                chats.sort((a,b) => (b.data.ts || 0) - (a.data.ts || 0));
+                chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
 
-                if (chats.length === 0) {
+                let filtered = chats;
+                if (currentSubTab === 'favourite') {
+                    filtered = chats.filter(c => c.isFavourite);
+                } else if (currentSubTab === 'unread') {
+                    filtered = chats.filter(c => c.unreadCount > 0);
+                } else if (currentSubTab === 'archived') {
+                    filtered = chats.filter(c => c.isArchived);
+                }
+
+                if (filtered.length === 0) {
+                    let message = "No chats yet.";
+                    if (currentSubTab === 'favourite') message = "No favourite chats.";
+                    if (currentSubTab === 'unread') message = "No unread chats.";
+                    if (currentSubTab === 'archived') message = "No archived chats.";
                     list.innerHTML = `<div style="text-align:center;padding:50px 20px;color:var(--text-muted);">
-                        <span class="material-symbols-rounded" style="font-size:48px;opacity:0.3;margin-bottom:10px;">chat_bubble_outline</span>
-                        <p>No chats yet.</p>
-                        <p style="font-size:12px;margin-top:5px;">Your ID: <b>@${myVId}</b></p>
+                        <p>${message}</p>
                     </div>`;
                     return;
                 }
 
-                for (const chat of chats) {
+                for (const chat of filtered) {
                     const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
                     const profile = pSnap.val() || { name: "User", photo: "" };
-                    const lastText = decrypt(chat.data.lastMsg, chat.uid);
+                    const lastText = decrypt(chat.lastMsg, chat.uid);
 
                     list.innerHTML += `
-                        <div class="chat-card" onclick="openFullChat('${chat.uid}')">
+                        <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
                             <div class="avatar-container">
                                 <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
                                 <div class="online-indicator" id="online_${chat.uid}" style="display:none"></div>
@@ -591,11 +674,11 @@
                             <div class="chat-info">
                                 <div class="chat-header-row">
                                     <div class="chat-name">${profile.name}</div>
-                                    <div class="chat-time">${formatTimeAgo(chat.data.ts)}</div>
+                                    <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
                                 </div>
                                 <div class="chat-msg-row">
                                     <div class="chat-msg">${lastText}</div>
-                                    ${chat.data.unreadCount > 0 ? `<div class="unread-badge">${chat.data.unreadCount}</div>` : ''}
+                                    ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
                                 </div>
                             </div>
                         </div>`;
@@ -604,8 +687,50 @@
                         const el = document.getElementById(`online_${chat.uid}`);
                         if (el) el.style.display = s.val() === true ? 'block' : 'none';
                     });
+
+                    // Long press for context menu
+                    const card = list.lastElementChild;
+                    let longPressTimer;
+                    card.addEventListener('touchstart', e => {
+                        longPressTimer = setTimeout(() => showContextMenu(e, chat.uid), 500);
+                    });
+                    card.addEventListener('touchend', () => clearTimeout(longPressTimer));
+                    card.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+                    card.addEventListener('contextmenu', e => {
+                        e.preventDefault();
+                        showContextMenu(e, chat.uid);
+                    });
                 }
             });
+        }
+
+        function showContextMenu(e, uid) {
+            e.preventDefault();
+            currentContextUid = uid;
+            const menu = document.getElementById('contextMenu');
+            menu.style.display = 'block';
+            menu.style.left = `${e.pageX}px`;
+            menu.style.top = `${e.pageY}px`;
+            document.addEventListener('click', hideContextMenu);
+        }
+
+        function hideContextMenu() {
+            document.getElementById('contextMenu').style.display = 'none';
+            document.removeEventListener('click', hideContextMenu);
+        }
+
+        async function markAsFavourite(uid) {
+            hideContextMenu();
+            const isFav = await db.ref(`users/${currentUser.uid}/chats/${uid}/isFavourite`).once('value');
+            await db.ref(`users/${currentUser.uid}/chats/${uid}`).update({ isFavourite: !isFav.val() });
+            toast(!isFav.val() ? "Added to favourites" : "Removed from favourites");
+        }
+
+        async function archiveChat(uid) {
+            hideContextMenu();
+            const isArchived = await db.ref(`users/${currentUser.uid}/chats/${uid}/isArchived`).once('value');
+            await db.ref(`users/${currentUser.uid}/chats/${uid}`).update({ isArchived: !isArchived.val() });
+            toast(!isArchived.val() ? "Chat archived" : "Chat unarchived");
         }
 
         /* --- Confirmation Dialogs --- */
@@ -619,7 +744,6 @@
             document.getElementById('clearAllConfirm').classList.remove('active');
         }
 
-        /* --- Clear All Chats (permanently deletes messages too) --- */
         async function executeClearAllChats() {
             try {
                 const chatsSnap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
@@ -816,7 +940,9 @@
             await db.ref(`users/${currentUser.uid}/chats/${targetUid}`).set({
                 lastMsg: null,
                 ts: Date.now(),
-                unreadCount: 0
+                unreadCount: 0,
+                isFavourite: false,
+                isArchived: false
             });
             toast("Friend added! Tap their name to start chatting.");
             closeAll();
