@@ -1113,7 +1113,54 @@ main {
         #fabCreateGroup:active {
             transform: scale(0.9);
         }
-     
+
+
+        /* Swipe container */
+    .swipe-container {
+        position: relative;
+        overflow: hidden;
+        border-radius: 20px; /* match chat-card */
+        margin-bottom: 8px;
+    }
+
+    /* The actual chat card (now inside swipe-container) */
+    .swipe-card {
+        position: relative;
+        background: var(--glass-white);
+        backdrop-filter: blur(20px);
+        padding: 16px;
+        display: flex;
+        align-items: center;
+        transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        cursor: pointer;
+        z-index: 2;
+        border-radius: 20px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+
+    /* Delete background revealed on swipe */
+    .swipe-delete-bg {
+        position: absolute;
+        top: 0; bottom: 0; left: 0; right: 0;
+        background: #ff3b30;
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 30px;
+        font-size: 18px;
+        font-weight: 600;
+        z-index: 1;
+    }
+
+    .swipe-delete-bg span {
+        margin-right: 8px;
+    }
+
+    /* Swiped state */
+    .swipe-card.swiped {
+        transform: translateX(-120px);
+    }
     </style>
 </head>
 <body>
@@ -3376,41 +3423,186 @@ async function showProfileDetail(uid, e) {
             }
         });
     }
-    function displayGroups(groups) {
-        const list = document.getElementById('chatList');
-        const groupCards = list.querySelectorAll('.group-card');
-        groupCards.forEach(card => card.remove());
-        groups.forEach(group => {
-            const lastMsg = group.lastMessage?.text || 'No messages yet';
-            const timeAgo = formatTimeAgo(group.lastMessage?.timestamp || group.createdAt);
-            const unreadCount = group.unreadCount || 0;
- 
-            const groupCard = document.createElement('div');
-            groupCard.className = 'chat-card group-card';
-            groupCard.dataset.groupId = group.id;
-            groupCard.onclick = () => openGroupChat(group.id);
- 
-            groupCard.innerHTML = `
-                <div class="avatar-box">
-                    <img class="avatar" src="${group.photo || 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTgiIGhlaWdodD0iNTgiIHZpZXdCb3g9IjAgMCA1OCA1OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjkiIGN5PSIyOSIgcj0iMjkiIGZpbGw9IiNmMGYwZjAiLz4KPHN2ZyB4PSIxOSIgeT0iMTUiIHdpZHRoPSIyMCIgaGVpZ2h0PSIyOCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNHYyaDE2di0yYzAtMi42Ni01LjMzLTQtOC00eiIgZmlsbD0iIzk5OSIvPgo8L3N2Zz4KPC9zdmc+'}" alt="${group.name}">
-                </div>
-                <div class="chat-info">
-                    <span class="chat-name">${group.name}</span>
-                    <span class="chat-msg">${lastMsg}</span>
-                </div>
-                ${timeAgo ? `<span class="chat-time">${timeAgo}</span>` : ''}
-                ${unreadCount > 0 ? `<span class="unread-badge">${unreadCount > 99 ? '99+' : unreadCount}</span>` : ''}
-            `;
- 
-            const rideCard = list.querySelector('.chat-card');
-            if (rideCard) {
-                rideCard.parentNode.insertBefore(groupCard, rideCard.nextSibling);
-            } else {
-                list.appendChild(groupCard);
+
+        // Add this JavaScript function (place it with your other functions)
+function setupGroupSwipeToDelete() {
+    document.querySelectorAll('.group-card').forEach(card => {
+        let startX = 0;
+        let currentX = 0;
+        let isDragging = false;
+        let groupId = card.dataset.groupId;
+
+        // Create swipe container and delete background
+        const container = document.createElement('div');
+        container.className = 'swipe-container';
+
+        const deleteBg = document.createElement('div');
+        deleteBg.className = 'swipe-delete-bg';
+        deleteBg.innerHTML = '<span class="material-symbols-rounded">delete</span> Delete';
+
+        // Wrap card
+        card.parentNode.insertBefore(container, card);
+        container.appendChild(deleteBg);
+        container.appendChild(card);
+        card.classList.add('swipe-card');
+
+        // Touch events
+        card.addEventListener('touchstart', e => {
+            startX = e.touches[0].clientX;
+            isDragging = true;
+            card.style.transition = 'none';
+        });
+
+        card.addEventListener('touchmove', e => {
+            if (!isDragging) return;
+            currentX = e.touches[0].clientX;
+            const diffX = currentX - startX;
+
+            if (diffX < 0) { // only allow left swipe
+                card.style.transform = `translateX(${diffX}px)`;
             }
         });
-        filterChatList();
-    }
+
+        card.addEventListener('touchend', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            card.style.transition = 'transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1)';
+
+            const diffX = currentX - startX;
+            if (diffX < -80) {
+                // Swiped far enough → show confirm modal
+                card.classList.add('swiped');
+                showLeaveGroupConfirm(groupId, card, container);
+            } else {
+                // Reset position
+                card.style.transform = 'translateX(0)';
+            }
+        });
+
+        // Optional: click on card when not swiped opens chat
+        card.addEventListener('click', () => {
+            if (!card.classList.contains('swiped')) {
+                openGroupChat(groupId);
+            }
+        });
+    });
+}
+
+// Custom confirm modal for leaving group
+function showLeaveGroupConfirm(groupId, cardElement, containerElement) {
+    // Create modal overlay
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = '100%';
+    overlay.style.height = '100%';
+    overlay.style.background = 'rgba(0,0,0,0.6)';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.zIndex = '9000';
+    overlay.style.backdropFilter = 'blur(8px)';
+
+    const modal = document.createElement('div');
+    modal.style.background = 'var(--glass-white)';
+    modal.style.padding = '30px';
+    modal.style.borderRadius = '20px';
+    modal.style.maxWidth = '320px';
+    modal.style.width = '85%';
+    modal.style.textAlign = 'center';
+    modal.style.boxShadow = '0 8px 32px rgba(0,0,0,0.3)';
+
+    modal.innerHTML = `
+        <h3 style="margin:0 0 15px 0; font-size:20px;">Leave Group?</h3>
+        <p style="color:var(--text-secondary); margin:0 0 30px 0;">
+            You will no longer see messages from this group.
+        </p>
+        <button id="confirmLeaveBtn" style="
+            width:100%; background:#ff3b30; color:#fff; border:none; 
+            padding:16px; border-radius:20px; font-weight:700; font-size:16px; margin-bottom:12px;">
+            Leave Group
+        </button>
+        <button id="cancelLeaveBtn" style="
+            width:100%; background:var(--bg-color); color:var(--text-primary); border:none; 
+            padding:16px; border-radius:20px; font-weight:600;">
+            Cancel
+        </button>
+    `;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // Cancel → reset swipe
+    document.getElementById('cancelLeaveBtn').onclick = () => {
+        cardElement.classList.remove('swiped');
+        cardElement.style.transform = 'translateX(0)';
+        document.body.removeChild(overlay);
+    };
+
+    // Confirm → remove group
+    document.getElementById('confirmLeaveBtn').onclick = async () => {
+        try {
+            // Remove from user's groups list
+            await db.ref(`users/${currentUser.uid}/groups/${groupId}`).remove();
+            // Optional: leave group membership if you track members
+            // await db.ref(`groups/${groupId}/members/${currentUser.uid}`).remove();
+
+            toast('You left the group');
+            containerElement.remove(); // remove card from DOM
+        } catch (err) {
+            toast('Failed to leave group');
+            console.error(err);
+        }
+        document.body.removeChild(overlay);
+    };
+
+    // Close on overlay click
+    overlay.onclick = (e) => {
+        if (e.target === overlay) {
+            document.getElementById('cancelLeaveBtn').click();
+        }
+    };
+}
+        
+// Replace your existing displayGroups function with this updated version
+function displayGroups(groups) {
+    const list = document.getElementById('chatList');
+    const groupCards = list.querySelectorAll('.group-card');
+    groupCards.forEach(card => card.remove());
+
+    groups.forEach(group => {
+        const lastMsg = group.lastMessage?.text || 'No messages yet';
+        const timeAgo = formatTimeAgo(group.lastMessage?.timestamp || group.createdAt);
+        const unreadCount = group.unreadCount || 0;
+
+        const groupCard = document.createElement('div');
+        groupCard.className = 'chat-card group-card';
+        groupCard.dataset.groupId = group.id;
+
+        groupCard.innerHTML = `
+            <div class="avatar-box">
+                <img class="avatar" src="${group.photo || 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTgiIGhlaWdodD0iNTgiIHZpZXdCb3g9IjAgMCA1OCA1OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjkiIGN5PSIyOSIgcj0iMjkiIGZpbGw9IiNmMGYwZjAiLz4KPHN2ZyB4PSIxOSIgeT0iMTUiIHdpZHRoPSIyMCIgaGVpZ2h0PSIyOCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj4KPHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNHYyaDE2di0yYzAtMi42Ni01LjMzLTQtOC00eiIgZmlsbD0iIzk5OSIvPgo8L3N2Zz4KPC9zdmc+'}" alt="${group.name}">
+            </div>
+            <div class="chat-info">
+                <span class="chat-name">${group.name}</span>
+                <span class="chat-msg">${lastMsg}</span>
+            </div>
+            ${timeAgo ? `<span class="chat-time">${timeAgo}</span>` : ''}
+            ${unreadCount > 0 ? `<span class="unread-badge">${unreadCount > 99 ? '99+' : unreadCount}</span>` : ''}
+        `;
+
+        const rideCard = list.querySelector('.chat-card');
+        if (rideCard) {
+            rideCard.parentNode.insertBefore(groupCard, rideCard.nextSibling);
+        } else {
+            list.appendChild(groupCard);
+        }
+    });
+
+    // Setup swipe-to-delete after rendering groups
+    setupGroupSwipeToDelete();
+}
     function openGroupChat(groupId) {
         window.location.href = `groups.html?group=${groupId}`;
     }
