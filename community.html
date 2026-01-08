@@ -940,111 +940,148 @@
         }
 
         /* --- Main Chat List with Filters --- */
-        async function loadChats() {
-            if (chatsListener) chatsListener.off();
-            chatsListener = db.ref(`users/${currentUser.uid}/chats`);
+async function loadChats() {
+    if (chatsListener) chatsListener.off();
+    chatsListener = db.ref(`users/${currentUser.uid}/chats`);
 
-            chatsListener.on('value', async snap => {
-                if (!snap.exists()) return;
+    chatsListener.on('value', async snap => {
+        if (!snap.exists()) return;
 
-                cachedChats = {};
-                const chats = [];
-                snap.forEach(child => {
-                    const data = child.val();
-                    if (data.lastMsg) {
-                        data.uid = child.key;
-                        chats.push(data);
+        cachedChats = {};
+        const chats = [];
+        snap.forEach(child => {
+            const data = child.val();
+            if (data.lastMsg) {
+                data.uid = child.key;
+                chats.push(data);
+            }
+        });
+        chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
+
+        const list = document.getElementById('chatList');
+        list.innerHTML = '';
+
+        let filtered = chats;
+        if (currentSubTab === 'favourite') filtered = chats.filter(c => c.isFavourite);
+        else if (currentSubTab === 'unread') filtered = chats.filter(c => c.unreadCount > 0);
+        else if (currentSubTab === 'archived') filtered = chats.filter(c => c.isArchived);
+
+        if (filtered.length === 0) {
+            let msg = "No chats yet.";
+            if (currentSubTab === 'favourite') msg = "No favourite chats.";
+            if (currentSubTab === 'unread') msg = "No unread chats.";
+            if (currentSubTab === 'archived') msg = "No archived chats.";
+            list.innerHTML = `<p style="text-align:center;padding:50px;color:var(--text-muted);">${msg}</p>`;
+            return;
+        }
+
+        for (const chat of filtered) {
+            const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
+            const profile = pSnap.val() || { name: "User", photo: "" };
+            const lastText = decrypt(chat.lastMsg, chat.uid);
+
+            // Check if last message was sent by current user and is read
+            let readStatus = '';
+            if (chat.lastMsgSender === currentUser.uid) {
+                const roomId = currentUser.uid < chat.uid ? currentUser.uid + "_" + chat.uid : chat.uid + "_" + currentUser.uid;
+                const lastMsgSnap = await db.ref(`messages/${roomId}`).orderByChild('ts').limitToLast(1).once('value');
+                lastMsgSnap.forEach(child => {
+                    const msg = child.val();
+                    if (msg.read && msg.sender === currentUser.uid) {
+                        readStatus = '<span style="color:var(--primary);margin-left:4px;">✓✓</span>';
+                    } else if (msg.sender === currentUser.uid) {
+                        readStatus = '<span style="color:var(--text-muted);margin-left:4px;">✓✓</span>';
                     }
                 });
-                chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
+            }
 
-                const list = document.getElementById('chatList');
-                list.innerHTML = '';
-
-                let filtered = chats;
-                if (currentSubTab === 'favourite') filtered = chats.filter(c => c.isFavourite);
-                else if (currentSubTab === 'unread') filtered = chats.filter(c => c.unreadCount > 0);
-                else if (currentSubTab === 'archived') filtered = chats.filter(c => c.isArchived);
-
-                if (filtered.length === 0) {
-                    let msg = "No chats yet.";
-                    if (currentSubTab === 'favourite') msg = "No favourite chats.";
-                    if (currentSubTab === 'unread') msg = "No unread chats.";
-                    if (currentSubTab === 'archived') msg = "No archived chats.";
-                    list.innerHTML = `<p style="text-align:center;padding:50px;color:var(--text-muted);">${msg}</p>`;
-                    return;
+            // Check for recent reaction
+            let recentReactionHtml = '';
+            if (chat.recentReaction) {
+                const reaction = chat.recentReaction;
+                const timeAgo = Date.now() - reaction.timestamp;
+                if (timeAgo < 30000) { // Show for 30 seconds
+                    recentReactionHtml = `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${reaction.reactorName} reacted with ${reaction.emoji}</div>`;
                 }
+            }
 
-                for (const chat of filtered) {
-                    const pSnap = await db.ref(`users/${chat.uid}/profile`).once('value');
-                    const profile = pSnap.val() || { name: "User", photo: "" };
-                    const lastText = decrypt(chat.lastMsg, chat.uid);
+            cachedChats[chat.uid] = {
+                uid: chat.uid,
+                name: profile.name,
+                photo: profile.photo,
+                lastMsgText: lastText,
+                ts: chat.ts,
+                unreadCount: chat.unreadCount || 0
+            };
+            localStorage.setItem('cached_chats', JSON.stringify(cachedChats));
 
-                    // Check if last message was sent by current user and is read
-                    let readStatus = '';
-                    if (chat.lastMsgSender === currentUser.uid) {
-                        const roomId = currentUser.uid < chat.uid ? currentUser.uid + "_" + chat.uid : chat.uid + "_" + currentUser.uid;
-                        const lastMsgSnap = await db.ref(`messages/${roomId}`).orderByChild('ts').limitToLast(1).once('value');
-                        lastMsgSnap.forEach(child => {
-                            const msg = child.val();
-                            if (msg.read && msg.sender === currentUser.uid) {
-                                readStatus = '<span style="color:var(--primary);margin-left:4px;">✓✓</span>';
-                            } else if (msg.sender === currentUser.uid) {
-                                readStatus = '<span style="color:var(--text-muted);margin-left:4px;">✓✓</span>';
-                            }
-                        });
-                    }
+            list.innerHTML += `
+                <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
+                    <div class="avatar-container">
+                        <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
+                        <div class="online-indicator" id="online_${chat.uid}" style="display:none"></div>
+                    </div>
+                    <div class="chat-info">
+                        <div class="chat-header-row">
+                            <div class="chat-name">${profile.name}</div>
+                            <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
+                        </div>
+                        <div class="chat-msg-row">
+                            <div class="chat-msg">${lastText}${readStatus}</div>
+                            ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>` : ''}
+                        </div>
+                        ${recentReactionHtml}
+                    </div>
+                </div>`;
 
-                    cachedChats[chat.uid] = {
-                        uid: chat.uid,
-                        name: profile.name,
-                        photo: profile.photo,
-                        lastMsgText: lastText,
-                        ts: chat.ts,
-                        unreadCount: chat.unreadCount || 0
-                    };
-                    localStorage.setItem('cached_chats', JSON.stringify(cachedChats));
+            db.ref(`users/${chat.uid}/online`).on('value', s => {
+                const el = document.getElementById(`online_${chat.uid}`);
+                if (el) el.style.display = s.val() === true ? 'block' : 'none';
+            });
 
-                    list.innerHTML += `
-                        <div class="chat-card" data-uid="${chat.uid}" onclick="openFullChat('${chat.uid}')">
-                            <div class="avatar-container">
-                                <img class="avatar" src="${profile.photo || generateLetterAvatar(profile.name)}">
-                                <div class="online-indicator" id="online_${chat.uid}" style="display:none"></div>
-                            </div>
-                            <div class="chat-info">
-                                <div class="chat-header-row">
-                                    <div class="chat-name">${profile.name}</div>
-                                    <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
-                                </div>
-                                <div class="chat-msg-row">
-                                    <div class="chat-msg">${lastText}${readStatus}</div>
-                                    ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>` : ''}
-                                </div>
-                            </div>
-                        </div>`;
-
-                    db.ref(`users/${chat.uid}/online`).on('value', s => {
-                        const el = document.getElementById(`online_${chat.uid}`);
-                        if (el) el.style.display = s.val() === true ? 'block' : 'none';
-                    });
-
-                    const card = list.lastElementChild;
-                    let longPressTimer;
-                    card.addEventListener('touchstart', e => {
-                        longPressTimer = setTimeout(() => showContextMenu(e, chat.uid), 500);
-                    });
-                    card.addEventListener('touchend', () => clearTimeout(longPressTimer));
-                    card.addEventListener('touchmove', () => clearTimeout(longPressTimer));
-                    card.addEventListener('contextmenu', e => {
-                        e.preventDefault();
-                        showContextMenu(e, chat.uid);
-                    });
-                }
-
-                // Update unread dot after rendering
-                updateUnreadDot();
+            const card = list.lastElementChild;
+            let longPressTimer;
+            card.addEventListener('touchstart', e => {
+                longPressTimer = setTimeout(() => showContextMenu(e, chat.uid), 500);
+            });
+            card.addEventListener('touchend', () => clearTimeout(longPressTimer));
+            card.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+            card.addEventListener('contextmenu', e => {
+                e.preventDefault();
+                showContextMenu(e, chat.uid);
             });
         }
+
+        // Listen for recent reaction updates
+        chatsListener.on('child_changed', async (snap) => {
+            const chat = snap.val();
+            const chatCard = document.querySelector(`[data-uid="${snap.key}"]`);
+            if (chatCard && chat.recentReaction) {
+                const reaction = chat.recentReaction;
+                const timeAgo = Date.now() - reaction.timestamp;
+                if (timeAgo < 30000) {
+                    const existingReaction = chatCard.querySelector('.recent-reaction');
+                    if (existingReaction) {
+                        existingReaction.remove();
+                    }
+                    
+                    const reactionHtml = `<div class="recent-reaction" style="font-size:11px;color:var(--text-muted);margin-top:2px;">${reaction.reactorName} reacted with ${reaction.emoji}</div>`;
+                    const chatInfo = chatCard.querySelector('.chat-info');
+                    chatInfo.insertAdjacentHTML('beforeend', reactionHtml);
+                    
+                    // Auto-remove after 30 seconds
+                    setTimeout(() => {
+                        const reactionEl = chatCard.querySelector('.recent-reaction');
+                        if (reactionEl) reactionEl.remove();
+                    }, 30000 - timeAgo);
+                }
+            }
+        });
+
+        // Update unread dot after rendering
+        updateUnreadDot();
+    });
+}
 
         function showContextMenu(e, uid) {
             e.preventDefault();
@@ -1231,31 +1268,64 @@
             });
         });
 
-        // Toggle reaction on/off
-        async function toggleReaction(msgKey, emoji) {
-            if (!msgKey || !currentRoomId) return;
+       async function trackRecentReaction(friendUid, emoji, reactorName) {
+    if (!friendUid || !emoji || !reactorName) return;
+    
+    const recentReaction = {
+        emoji: emoji,
+        reactorName: reactorName,
+        timestamp: Date.now()
+    };
+    
+    // Store recent reaction for the chat card
+    await db.ref(`users/${currentUser.uid}/chats/${friendUid}/recentReaction`).set(recentReaction);
+    
+    // Clear after 30 seconds
+    setTimeout(async () => {
+        const snap = await db.ref(`users/${currentUser.uid}/chats/${friendUid}/recentReaction`).once('value');
+        if (snap.exists() && snap.val().timestamp === recentReaction.timestamp) {
+            await db.ref(`users/${currentUser.uid}/chats/${friendUid}/recentReaction`).remove();
+        }
+    }, 30000);
+}
+
+// Update the toggleReaction function to track reactions
+async function toggleReaction(msgKey, emoji) {
+    if (!msgKey || !currentRoomId) return;
+    
+    try {
+        const reactionRef = db.ref(`messages/${currentRoomId}/${msgKey}/reactions/${emoji}`);
+        const snap = await reactionRef.once('value');
+        const users = snap.val() || [];
+        
+        // Get reactor name
+        const reactorSnap = await db.ref(`users/${currentUser.uid}/profile/name`).once('value');
+        const reactorName = reactorSnap.val() || "Someone";
+        
+        if (users.includes(currentUser.uid)) {
+            // Remove reaction
+            const updatedUsers = users.filter(uid => uid !== currentUser.uid);
+            if (updatedUsers.length === 0) {
+                await reactionRef.remove();
+            } else {
+                await reactionRef.set(updatedUsers);
+            }
+        } else {
+            // Add reaction and track it
+            await reactionRef.set([...users, currentUser.uid]);
             
-            try {
-                const reactionRef = db.ref(`messages/${currentRoomId}/${msgKey}/reactions/${emoji}`);
-                const snap = await reactionRef.once('value');
-                const users = snap.val() || [];
-                
-                if (users.includes(currentUser.uid)) {
-                    // Remove reaction
-                    const updatedUsers = users.filter(uid => uid !== currentUser.uid);
-                    if (updatedUsers.length === 0) {
-                        await reactionRef.remove();
-                    } else {
-                        await reactionRef.set(updatedUsers);
-                    }
-                } else {
-                    // Add reaction
-                    await reactionRef.set([...users, currentUser.uid]);
-                }
-            } catch (error) {
-                console.error("Error toggling reaction:", error);
+            // Track recent reaction for chat card (only if reacting to friend's message)
+            const msgSnap = await db.ref(`messages/${currentRoomId}/${msgKey}`).once('value');
+            const msg = msgSnap.val();
+            if (msg && msg.sender !== currentUser.uid) {
+                await trackRecentReaction(msg.sender, emoji, reactorName);
             }
         }
+    } catch (error) {
+        console.error("Error toggling reaction:", error);
+    }
+}
+
 
         function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRead = false, reactions = {}) {
             const el = document.createElement('div');
