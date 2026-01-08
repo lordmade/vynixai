@@ -1097,48 +1097,56 @@ async function initApp() {
             history.back();
         }
 
-        async function loadMessages() {
-            if (messagesListener) messagesListener.off();
-            const list = document.getElementById('messageList');
-            list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
+async function loadMessages() {
+    if (messagesListener) messagesListener.off();
+    const list = document.getElementById('messageList');
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
-            const cached = await getCachedMessages(currentRoomId);
-            if (cached.length > 0) {
-                list.innerHTML = '';
-                cached.sort((a,b) => a.ts - b.ts);
-                cached.forEach(m => {
-                    const isSent = m.sender === currentUser.uid;
-                    const text = decrypt(m.text, currentFriendUid);
-                    const el = document.createElement('div');
-                    el.className = `message ${isSent ? 'sent' : 'received'} ${m.pending ? 'pending' : ''}`;
-                    el.dataset.localId = m.localId;
-                    el.innerHTML = `${text}<div class="message-time">${formatMessageTime(m.ts)}${m.pending ? '<div class="pending-indicator">Sending...</div>' : ''}</div>`;
-                    list.appendChild(el);
-                });
-                list.scrollTop = list.scrollHeight;
-            }
+    // Clear any existing message elements first
+    list.innerHTML = '';
+    const processedMessageKeys = new Set();
 
-            messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(100);
+    const cached = await getCachedMessages(currentRoomId);
+    if (cached.length > 0) {
+        cached.sort((a,b) => a.ts - b.ts);
+        cached.forEach(m => {
+            if (m.key) processedMessageKeys.add(m.key);
+            const isSent = m.sender === currentUser.uid;
+            const text = decrypt(m.text, currentFriendUid);
+            const el = document.createElement('div');
+            el.className = `message ${isSent ? 'sent' : 'received'} ${m.pending ? 'pending' : ''}`;
+            el.dataset.localId = m.localId;
+            el.dataset.msgKey = m.key || '';
+            el.innerHTML = `${text}<div class="message-time">${formatMessageTime(m.ts)}${m.pending ? '<div class="pending-indicator">Sending...</div>' : ''}</div>`;
+            list.appendChild(el);
+        });
+        list.scrollTop = list.scrollHeight;
+    }
 
-            messagesListener.on('child_added', async snap => {
-                const msg = snap.val();
-                msg.key = snap.key;
+    messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(100);
 
-                await cacheMessage(currentRoomId, msg);
+    messagesListener.on('child_added', async snap => {
+        const msg = snap.val();
+        msg.key = snap.key;
 
-                const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
-                if (pendingEl) pendingEl.remove();
+        // Skip if already rendered from cache
+        if (processedMessageKeys.has(msg.key)) return;
 
-                const isSent = msg.sender === currentUser.uid;
-                const text = decrypt(msg.text, currentFriendUid);
-                const el = document.createElement('div');
-                el.className = `message ${isSent ? 'sent' : 'received'}`;
-                el.dataset.msgKey = msg.key;
-                el.innerHTML = `${text}<div class="message-time">${formatMessageTime(msg.ts)}</div>`;
-                list.appendChild(el);
-                list.scrollTop = list.scrollHeight;
-            });
-        }
+        await cacheMessage(currentRoomId, msg);
+
+        const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
+        if (pendingEl) pendingEl.remove();
+
+        const isSent = msg.sender === currentUser.uid;
+        const text = decrypt(msg.text, currentFriendUid);
+        const el = document.createElement('div');
+        el.className = `message ${isSent ? 'sent' : 'received'}`;
+        el.dataset.msgKey = msg.key;
+        el.innerHTML = `${text}<div class="message-time">${formatMessageTime(msg.ts)}</div>`;
+        list.appendChild(el);
+        list.scrollTop = list.scrollHeight;
+    });
+}
 
         /* --- Send Message (with offline support) --- */
         function autoResizeInput(field) {
