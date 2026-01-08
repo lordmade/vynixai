@@ -1117,6 +1117,68 @@ function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRea
     return el;
 }
 
+// Replace the sendMessage function with this improved version
+async function sendMessage() {
+    const input = document.getElementById('messageInput');
+    const text = input.value.trim();
+    if (!text || !currentFriendUid) return;
+    const key = sharedKeys[currentFriendUid];
+    if (!key) { toast('Security key missing'); return; }
+    const encrypted = CryptoJS.AES.encrypt(text, key).toString();
+
+    const tempTs = Date.now();
+    const localId = tempTs + Math.random();
+
+    const list = document.getElementById('messageList');
+    
+    // Create and append pending message
+    const el = createMessageElement(text, true, tempTs, localId, '', false);
+    list.appendChild(el);
+    list.scrollTop = list.scrollHeight;
+
+    input.value = '';
+    input.style.height = 'auto';
+    document.getElementById('sendBtn').classList.remove('visible');
+
+    // Cache pending message for offline support
+    await cacheMessage(currentRoomId, {
+        text: encrypted,
+        sender: currentUser.uid,
+        ts: tempTs,
+        pending: true,
+        localId: localId,
+        read: false
+    });
+
+    // Try to send to Firebase if online
+    if (navigator.onLine) {
+        try {
+            const msgRef = await db.ref(`messages/${currentRoomId}`).push({
+                text: encrypted, 
+                sender: currentUser.uid, 
+                ts: tempTs,
+                read: false,
+                localId: localId // Include localId to match with pending
+            });
+
+            const updates = {};
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = tempTs;
+            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+
+            await db.ref().update(updates);
+        } catch (e) {
+            console.error("Send failed:", e);
+            toast("Message will be sent when online");
+        }
+    } else {
+        toast("Message will be sent when online");
+    }
+}
+
+// Update the loadMessages function to handle pending messages better
 async function loadMessages() {
     if (messagesListener) messagesListener.off();
     const list = document.getElementById('messageList');
@@ -1125,6 +1187,7 @@ async function loadMessages() {
     // Clear any existing message elements completely
     list.innerHTML = '';
     const processedMessageKeys = new Set();
+    const pendingLocalIds = new Set();
 
     // If online, load from Firebase first
     if (navigator.onLine) {
@@ -1167,6 +1230,7 @@ async function loadMessages() {
             cached.sort((a,b) => a.ts - b.ts);
             cached.forEach(m => {
                 if (m.key) processedMessageKeys.add(m.key);
+                if (m.localId) pendingLocalIds.add(m.localId);
                 
                 const isSent = m.sender === currentUser.uid;
                 const text = decrypt(m.text, currentFriendUid);
@@ -1194,10 +1258,13 @@ async function loadMessages() {
         // Cache the message for offline use
         await cacheMessage(currentRoomId, msg);
 
-        // Remove pending version if exists
+        // Remove pending version if exists (but only if it's the same message)
         if (msg.localId) {
             const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
-            if (pendingEl) pendingEl.remove();
+            if (pendingEl) {
+                // Only remove if this is the Firebase confirmation of our pending message
+                pendingEl.remove();
+            }
         }
 
         // Add the new message
@@ -1245,66 +1312,6 @@ function createMessageElement(text, isSent, ts, localId = '', msgKey = '', isRea
     }
     
     return el;
-}
-
-// Update sendMessage to be cleaner
-async function sendMessage() {
-    const input = document.getElementById('messageInput');
-    const text = input.value.trim();
-    if (!text || !currentFriendUid) return;
-    const key = sharedKeys[currentFriendUid];
-    if (!key) { toast('Security key missing'); return; }
-    const encrypted = CryptoJS.AES.encrypt(text, key).toString();
-
-    const tempTs = Date.now();
-    const localId = tempTs + Math.random();
-
-    const list = document.getElementById('messageList');
-    
-    // Create and append pending message
-    const el = createMessageElement(text, true, tempTs, localId, '', false);
-    list.appendChild(el);
-    list.scrollTop = list.scrollHeight;
-
-    input.value = '';
-    input.style.height = 'auto';
-    document.getElementById('sendBtn').classList.remove('visible');
-
-    // Cache pending message for offline support
-    await cacheMessage(currentRoomId, {
-        text: encrypted,
-        sender: currentUser.uid,
-        ts: tempTs,
-        pending: true,
-        localId: localId,
-        read: false
-    });
-
-    // Try to send to Firebase if online
-    if (navigator.onLine) {
-        try {
-            const msgRef = await db.ref(`messages/${currentRoomId}`).push({
-                text: encrypted, 
-                sender: currentUser.uid, 
-                ts: tempTs,
-                read: false
-            });
-
-            const updates = {};
-            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-            updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
-            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = tempTs;
-            updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
-
-            await db.ref().update(updates);
-        } catch (e) {
-            console.error("Send failed:", e);
-            toast("Message will be sent when online");
-        }
-    } else {
-        toast("Message will be sent when online");
-    }
 }
         /* --- Send Message (with offline support) --- */
         function autoResizeInput(field) {
