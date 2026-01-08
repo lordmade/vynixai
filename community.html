@@ -115,6 +115,7 @@
         }
         .sub-tabs::-webkit-scrollbar { display: none; }
         .sub-tab {
+            position: relative;
             padding: 8px 20px;
             border-radius: 20px;
             background: var(--bg-body);
@@ -129,6 +130,16 @@
         .sub-tab.active {
             background: var(--primary);
             color: white;
+        }
+        .sub-tab.unread-dot::after {
+            content: '';
+            position: absolute;
+            top: 8px;
+            right: 12px;
+            width: 8px;
+            height: 8px;
+            background: var(--primary);
+            border-radius: 50%;
         }
         #chatList {
             flex: 1;
@@ -810,8 +821,33 @@
         function switchSubTab(tab) {
             currentSubTab = tab;
             document.querySelectorAll('.sub-tab').forEach(t => t.classList.remove('active'));
-            document.querySelector(`.sub-tab[data-tab="${tab}"]`).classList.add('active');
+            const activeTab = document.querySelector(`.sub-tab[data-tab="${tab}"]`);
+            activeTab.classList.add('active');
+
+            // Update unread dot on "Unread" tab
+            if (tab === 'unread') {
+                updateUnreadDot();
+            } else {
+                activeTab.classList.remove('unread-dot');
+            }
+
             loadChats();
+        }
+
+        async function updateUnreadDot() {
+            const snap = await db.ref(`users/${currentUser.uid}/chats`).once('value');
+            let hasUnread = false;
+            snap.forEach(child => {
+                if ((child.val().unreadCount || 0) > 0) {
+                    hasUnread = true;
+                }
+            });
+            const unreadTab = document.querySelector('.sub-tab[data-tab="unread"]');
+            if (hasUnread) {
+                unreadTab.classList.add('unread-dot');
+            } else {
+                unreadTab.classList.remove('unread-dot');
+            }
         }
 
         /* --- Main Chat List with Filters --- */
@@ -878,7 +914,7 @@
                                 </div>
                                 <div class="chat-msg-row">
                                     <div class="chat-msg">${lastText}</div>
-                                    ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
+                                    ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount > 99 ? '99+' : chat.unreadCount}</div>` : ''}
                                 </div>
                             </div>
                         </div>`;
@@ -900,6 +936,9 @@
                         showContextMenu(e, chat.uid);
                     });
                 }
+
+                // Update unread dot after rendering
+                updateUnreadDot();
             });
         }
 
@@ -1034,7 +1073,6 @@
                 statusEl.style.color = s.val() === true ? 'var(--online)' : 'var(--text-muted)';
             });
 
-            // Push state so back button works
             history.pushState({chatOpen: true}, '');
         }
 
@@ -1045,16 +1083,11 @@
                 messagesListener = null;
             }
             currentFriendUid = null;
-
-            // Go back in history to remove the pushed state
             history.back();
         }
 
         async function loadMessages() {
-            if (messagesListener) {
-                messagesListener.off();
-                messagesListener = null;
-            }
+            if (messagesListener) messagesListener.off();
             const list = document.getElementById('messageList');
             list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
@@ -1208,6 +1241,7 @@
 
         async function markAsRead(friendUid) {
             await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update({ unreadCount: 0 });
+            updateUnreadDot();
         }
 
         async function addFriendLogic() {
