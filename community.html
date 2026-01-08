@@ -512,6 +512,75 @@
         let currentContextUid = null;
         let cachedChats = JSON.parse(localStorage.getItem('cached_chats') || '{}');
 
+        // IndexedDB Setup
+        let idb = null;
+        const DB_NAME = 'vynix_messages';
+        const DB_VERSION = 1;
+        const STORE_NAME = 'messages';
+
+        function openIndexedDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    idb = request.result;
+                    resolve(idb);
+                };
+
+                request.onupgradeneeded = (e) => {
+                    idb = e.target.result;
+                    if (!idb.objectStoreNames.contains(STORE_NAME)) {
+                        const store = idb.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                        store.createIndex('roomId', 'roomId', { unique: false });
+                        store.createIndex('ts', 'ts', { unique: false });
+                    }
+                };
+            });
+        }
+
+        async function cacheMessage(roomId, message) {
+            if (!idb) return;
+            const tx = idb.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            store.put({ roomId, ...message });
+            await tx.done;
+        }
+
+        async function getCachedMessages(roomId) {
+            if (!idb) return [];
+            const tx = idb.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const index = store.index('roomId');
+            const request = index.getAll(roomId);
+            return new Promise((resolve) => {
+                request.onsuccess = () => resolve(request.result);
+            });
+        }
+
+        async function clearCachedMessages(roomId) {
+            if (!idb) return;
+            const tx = idb.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const index = store.index('roomId');
+            const request = index.openCursor(IDBKeyRange.only(roomId));
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (cursor) {
+                    cursor.delete();
+                    cursor.continue();
+                }
+            };
+            await tx.done;
+        }
+
+        async function clearAllCachedMessages() {
+            if (!idb) return;
+            const tx = idb.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).clear();
+            await tx.done;
+        }
+
         auth.onAuthStateChanged(user => {
             if (user) {
                 currentUser = user;
@@ -576,6 +645,8 @@
         }
 
         async function initApp() {
+            await openIndexedDB(); // Initialize IndexedDB early
+
             listenToMyProfile();
             const snap = await db.ref(`users/${currentUser.uid}/profile`).once('value');
             const data = snap.val() || {};
@@ -592,11 +663,6 @@
             if (!localStorage.getItem('privateKey')) {
                 const publicJwk = await generateKeyPair();
                 await db.ref(`users/${currentUser.uid}/profile`).update({ publicKey: JSON.stringify(publicJwk) });
-            }
-
-            // Load cached chats if offline
-            if (!navigator.onLine && Object.keys(cachedChats).length > 0) {
-                renderChatsFromCache();
             }
 
             loadChats();
@@ -625,38 +691,7 @@
             return null;
         }
 
-        /* --- Offline Support & Duplicate Prevention --- */
-        function renderChatsFromCache() {
-            const list = document.getElementById('chatList');
-            list.innerHTML = '';
-            const chats = Object.values(cachedChats);
-            chats.sort((a,b) => (b.ts || 0) - (a.ts || 0));
-            if (chats.length === 0) {
-                list.innerHTML = '<p style="text-align:center;padding:50px;color:var(--text-muted);">No chats available offline</p>';
-                return;
-            }
-            chats.forEach(chat => {
-                const lastText = chat.lastMsgText || "[Message]";
-                list.innerHTML += `
-                    <div class="chat-card" onclick="openFullChat('${chat.uid}')">
-                        <div class="avatar-container">
-                            <img class="avatar" src="${chat.photo || generateLetterAvatar(chat.name)}">
-                            <div class="online-indicator" style="display:none"></div>
-                        </div>
-                        <div class="chat-info">
-                            <div class="chat-header-row">
-                                <div class="chat-name">${chat.name}</div>
-                                <div class="chat-time">${formatTimeAgo(chat.ts)}</div>
-                            </div>
-                            <div class="chat-msg-row">
-                                <div class="chat-msg">${lastText}</div>
-                                ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
-                            </div>
-                        </div>
-                    </div>`;
-            });
-        }
-
+        /* --- Main Chat List with Filters --- */
         async function loadChats() {
             if (chatsListener) chatsListener.off();
             chatsListener = db.ref(`users/${currentUser.uid}/chats`);
@@ -664,7 +699,7 @@
             chatsListener.on('value', async snap => {
                 if (!snap.exists()) return;
 
-                cachedChats = {}; // Clear cache
+                cachedChats = {};
                 const chats = [];
                 snap.forEach(child => {
                     const data = child.val();
@@ -697,7 +732,6 @@
                     const profile = pSnap.val() || { name: "User", photo: "" };
                     const lastText = decrypt(chat.lastMsg, chat.uid);
 
-                    // Cache for offline
                     cachedChats[chat.uid] = {
                         uid: chat.uid,
                         name: profile.name,
@@ -809,6 +843,7 @@
                 });
 
                 await Promise.all(deletePromises);
+                await clearAllCachedMessages();
                 localStorage.removeItem('cached_chats');
                 toast("All chats and messages permanently deleted");
             } catch (e) {
@@ -886,24 +921,17 @@
             currentFriendUid = null;
         }
 
-        function loadMessages() {
+        async function loadMessages() {
             if (messagesListener) messagesListener.off();
             const list = document.getElementById('messageList');
             list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
-            messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(50);
-
-            messagesListener.on('value', snap => {
+            // Try offline cache first
+            const cached = await getCachedMessages(currentRoomId);
+            if (cached.length > 0) {
                 list.innerHTML = '';
-                if (!snap.exists()) {
-                    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px;margin-top:20px;">Messages are end-to-end encrypted.<br>Start the conversation!</div>';
-                    return;
-                }
-                const msgs = [];
-                snap.forEach(c => msgs.push({key: c.key, ...c.val()}));
-                msgs.sort((a,b) => a.ts - b.ts);
-
-                msgs.forEach(m => {
+                cached.sort((a,b) => a.ts - b.ts);
+                cached.forEach(m => {
                     const isSent = m.sender === currentUser.uid;
                     const text = decrypt(m.text, currentFriendUid);
                     const el = document.createElement('div');
@@ -911,8 +939,29 @@
                     el.innerHTML = `${text}<div class="message-time">${formatMessageTime(m.ts)}</div>`;
                     list.appendChild(el);
                 });
+                list.scrollTop = list.scrollHeight;
+            }
 
-                list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+            messagesListener = db.ref(`messages/${currentRoomId}`).limitToLast(100);
+
+            messagesListener.on('child_added', async snap => {
+                const msg = snap.val();
+                msg.key = snap.key;
+
+                // Cache the new message
+                await cacheMessage(currentRoomId, msg);
+
+                // Only add if not already in view (avoid duplicates)
+                if (document.querySelector(`[data-msg-key="${msg.key}"]`)) return;
+
+                const isSent = msg.sender === currentUser.uid;
+                const text = decrypt(msg.text, currentFriendUid);
+                const el = document.createElement('div');
+                el.className = `message ${isSent ? 'sent' : 'received'}`;
+                el.dataset.msgKey = msg.key;
+                el.innerHTML = `${text}<div class="message-time">${formatMessageTime(msg.ts)}</div>`;
+                list.appendChild(el);
+                list.scrollTop = list.scrollHeight;
             });
         }
 
@@ -934,7 +983,7 @@
             const encrypted = CryptoJS.AES.encrypt(text, key).toString();
 
             try {
-                await db.ref(`messages/${currentRoomId}`).push({
+                const msgRef = await db.ref(`messages/${currentRoomId}`).push({
                     text: encrypted, sender: currentUser.uid, ts: Date.now()
                 });
 
