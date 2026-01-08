@@ -225,11 +225,20 @@
             color: #fff;
             border-radius: 16px 16px 4px 16px;
         }
+        .message.pending {
+            opacity: 0.7;
+        }
         .message-time {
             font-size: 10px;
             margin-top: 4px;
             text-align: right;
             opacity: 0.7;
+        }
+        .pending-indicator {
+            font-size: 12px;
+            opacity: 0.6;
+            margin-top: 4px;
+            text-align: right;
         }
         #chatInputArea {
             flex-shrink: 0;
@@ -511,8 +520,9 @@
         let currentSubTab = 'all';
         let currentContextUid = null;
         let cachedChats = JSON.parse(localStorage.getItem('cached_chats') || '{}');
+        let pendingMessages = []; // Queue for offline sending
 
-        // IndexedDB Setup
+        // IndexedDB Setup for messages
         let idb = null;
         const DB_NAME = 'vynix_messages';
         const DB_VERSION = 1;
@@ -531,7 +541,7 @@
                 request.onupgradeneeded = (e) => {
                     idb = e.target.result;
                     if (!idb.objectStoreNames.contains(STORE_NAME)) {
-                        const store = idb.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                        const store = idb.createObjectStore(STORE_NAME, { keyPath: 'localId', autoIncrement: true });
                         store.createIndex('roomId', 'roomId', { unique: false });
                         store.createIndex('ts', 'ts', { unique: false });
                     }
@@ -645,7 +655,7 @@
         }
 
         async function initApp() {
-            await openIndexedDB(); // Initialize IndexedDB early
+            await openIndexedDB();
 
             listenToMyProfile();
             const snap = await db.ref(`users/${currentUser.uid}/profile`).once('value');
@@ -667,6 +677,9 @@
 
             loadChats();
             setTimeout(() => document.getElementById('pageLoader').style.display = 'none', 500);
+
+            // Sync pending messages when back online
+            window.addEventListener('online', syncPendingMessages);
         }
 
         function listenToMyProfile() {
@@ -926,7 +939,7 @@
             const list = document.getElementById('messageList');
             list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);">Loading messages...</div>';
 
-            // Try offline cache first
+            // Load from IndexedDB first (offline support)
             const cached = await getCachedMessages(currentRoomId);
             if (cached.length > 0) {
                 list.innerHTML = '';
@@ -935,8 +948,9 @@
                     const isSent = m.sender === currentUser.uid;
                     const text = decrypt(m.text, currentFriendUid);
                     const el = document.createElement('div');
-                    el.className = `message ${isSent ? 'sent' : 'received'}`;
-                    el.innerHTML = `${text}<div class="message-time">${formatMessageTime(m.ts)}</div>`;
+                    el.className = `message ${isSent ? 'sent' : 'received'} ${m.pending ? 'pending' : ''}`;
+                    el.dataset.localId = m.localId;
+                    el.innerHTML = `${text}<div class="message-time">${formatMessageTime(m.ts)}${m.pending ? '<div class="pending-indicator">Sending...</div>' : ''}</div>`;
                     list.appendChild(el);
                 });
                 list.scrollTop = list.scrollHeight;
@@ -948,11 +962,11 @@
                 const msg = snap.val();
                 msg.key = snap.key;
 
-                // Cache the new message
                 await cacheMessage(currentRoomId, msg);
 
-                // Only add if not already in view (avoid duplicates)
-                if (document.querySelector(`[data-msg-key="${msg.key}"]`)) return;
+                // Remove any pending version
+                const pendingEl = list.querySelector(`[data-local-id="${msg.localId}"]`);
+                if (pendingEl) pendingEl.remove();
 
                 const isSent = msg.sender === currentUser.uid;
                 const text = decrypt(msg.text, currentFriendUid);
@@ -965,15 +979,7 @@
             });
         }
 
-        /* --- Send Message --- */
-        function autoResizeInput(field) {
-            field.style.height = 'auto';
-            field.style.height = field.scrollHeight + 'px';
-            const btn = document.getElementById('sendBtn');
-            if (field.value.trim().length > 0) btn.classList.add('visible');
-            else btn.classList.remove('visible');
-        }
-
+        /* --- Offline Message Sending --- */
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const text = input.value.trim();
@@ -982,27 +988,112 @@
             if (!key) { toast('Security key missing'); return; }
             const encrypted = CryptoJS.AES.encrypt(text, key).toString();
 
-            try {
-                const msgRef = await db.ref(`messages/${currentRoomId}`).push({
-                    text: encrypted, sender: currentUser.uid, ts: Date.now()
-                });
+            const tempTs = Date.now();
+            const localId = tempTs + Math.random(); // Unique temporary ID
 
-                const updates = {};
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
-                updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = Date.now();
-                updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+            // Immediately show message locally with pending state
+            const list = document.getElementById('messageList');
+            const el = document.createElement('div');
+            el.className = 'message sent pending';
+            el.dataset.localId = localId;
+            el.innerHTML = `${text}<div class="message-time">${formatMessageTime(tempTs)}<div class="pending-indicator">Sending...</div></div>`;
+            list.appendChild(el);
+            list.scrollTop = list.scrollHeight;
 
-                await db.ref().update(updates);
+            // Cache the pending message
+            await cacheMessage(currentRoomId, {
+                text: encrypted,
+                sender: currentUser.uid,
+                ts: tempTs,
+                pending: true,
+                localId: localId
+            });
 
-                input.value = '';
-                input.style.height = 'auto';
-                document.getElementById('sendBtn').classList.remove('visible');
-            } catch(e) {
-                console.error(e);
-                toast('Failed to send');
+            input.value = '';
+            input.style.height = 'auto';
+            document.getElementById('sendBtn').classList.remove('visible');
+
+            // Try to send immediately if online
+            if (navigator.onLine) {
+                try {
+                    const msgRef = await db.ref(`messages/${currentRoomId}`).push({
+                        text: encrypted, sender: currentUser.uid, ts: tempTs
+                    });
+
+                    // Update metadata
+                    const updates = {};
+                    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = encrypted;
+                    updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = tempTs;
+                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = encrypted;
+                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = tempTs;
+                    updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+
+                    await db.ref().update(updates);
+
+                    // Remove pending state
+                    el.classList.remove('pending');
+                    el.querySelector('.pending-indicator').remove();
+                } catch (e) {
+                    console.error("Immediate send failed:", e);
+                    // Will retry when back online
+                }
             }
+            // If offline, message stays pending and will sync later
+        }
+
+        async function syncPendingMessages() {
+            if (!navigator.onLine) return;
+
+            const cached = await getCachedMessages(currentRoomId);
+            const pending = cached.filter(m => m.pending);
+
+            for (const msg of pending) {
+                try {
+                    await db.ref(`messages/${currentRoomId}`).push({
+                        text: msg.text,
+                        sender: currentUser.uid,
+                        ts: msg.ts
+                    });
+
+                    // Update chat metadata once (only on first successful send)
+                    if (pending.indexOf(msg) === 0) {
+                        const updates = {};
+                        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/lastMsg`] = msg.text;
+                        updates[`users/${currentUser.uid}/chats/${currentFriendUid}/ts`] = msg.ts;
+                        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/lastMsg`] = msg.text;
+                        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/ts`] = msg.ts;
+                        updates[`users/${currentFriendUid}/chats/${currentUser.uid}/unreadCount`] = firebase.database.ServerValue.increment(1);
+                        await db.ref().update(updates);
+                    }
+
+                    // Remove pending flag from cache
+                    const tx = idb.transaction(STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(STORE_NAME);
+                    const getReq = store.get(msg.localId);
+                    getReq.onsuccess = () => {
+                        const record = getReq.result;
+                        if (record) {
+                            delete record.pending;
+                            store.put(record);
+                        }
+                    };
+                } catch (e) {
+                    console.error("Sync failed for message:", e);
+                    // Keep pending for next try
+                }
+            }
+        }
+
+        // Listen for online status and sync
+        window.addEventListener('online', syncPendingMessages);
+
+        /* --- Other functions remain the same --- */
+        function autoResizeInput(field) {
+            field.style.height = 'auto';
+            field.style.height = field.scrollHeight + 'px';
+            const btn = document.getElementById('sendBtn');
+            if (field.value.trim().length > 0) btn.classList.add('visible');
+            else btn.classList.remove('visible');
         }
 
         document.getElementById('sendBtn').addEventListener('click', sendMessage);
@@ -1014,7 +1105,6 @@
             await db.ref(`users/${currentUser.uid}/chats/${friendUid}`).update({ unreadCount: 0 });
         }
 
-        /* --- Add Friend --- */
         async function addFriendLogic() {
             const raw = document.getElementById('friendVynixId').value.trim().toLowerCase();
             const vid = raw.startsWith('@') ? raw.substring(1) : raw;
