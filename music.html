@@ -161,6 +161,41 @@
       background: none; border: none; font-size: 1.8rem;
       color: var(--text-secondary); cursor: pointer;
     }
+    /* Pill Tabs */
+    .pill-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin: 1.5rem 0 2rem;
+      overflow-x: auto;
+      padding-bottom: 0.5rem;
+      scrollbar-width: none; /* Firefox */
+    }
+    .pill-tabs::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+
+    .pill-tab {
+      padding: 0.55rem 1.25rem;
+      background: var(--bg-panel);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--pill-radius);
+      font-weight: 600;
+      font-size: 0.92rem;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .pill-tab:hover {
+      background: #f0f0f0;
+      color: var(--text-primary);
+    }
+
+    .pill-tab.active {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
     /* Responsive */
     @media (max-width: 1024px) {
       .sidebar { transform: translateX(-100%); }
@@ -171,6 +206,7 @@
       .player-track-info { display: flex; width: 100%; justify-content: center; }
       .player-controls { width: 100%; }
       .main-content { padding-bottom: 220px; padding-top: 5rem; }
+      .pill-tab { font-size: 0.85rem; padding: 0.5rem 1rem; }
     }
     @media (min-width: 1025px) {
       .hamburger, .bottom-nav { display: none !important; }
@@ -212,8 +248,8 @@
     <aside class="sidebar" id="sidebar">
       <div class="logo">VYNIX MAX</div>
       <nav>
-        <a href="#" class="nav-pill active"><span class="material-symbols-rounded">home</span> Home</a>
-        <a href="#" class="nav-pill"><span class="material-symbols-rounded">search</span> Search</a>
+        <a href="#" class="nav-pill active" id="homeNav"><span class="material-symbols-rounded">home</span> Home</a>
+        <a href="#" class="nav-pill" id="searchNav"><span class="material-symbols-rounded">search</span> Search</a>
       </nav>
       <div class="nav-section">
         <div class="nav-section-title">PLAYLISTS</div>
@@ -233,6 +269,12 @@
       <div style="max-width: 1280px; margin: 0 auto;">
         <input type="text" id="searchInput" placeholder="What do you want to listen to?"
                style="width:100%; max-width:420px; margin-bottom:2.5rem; border-radius:var(--pill-radius); padding:1rem 1rem 1rem 3.5rem; background:var(--bg-panel) url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2220%22 height=%2220%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%235e5e5e%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><circle cx=%2211%22 cy=%2211%22 r=%228%22/><line x1=%2221%22 y1=%2221%22 x2=%2216.65%22 y2=%2216.65%22/></svg>') no-repeat 1.2rem center; border:1px solid var(--border);"/>
+        
+        <!-- Category Pills Tabs -->
+        <div class="pill-tabs" id="categoryTabs">
+          <!-- Pills will be injected here via JS -->
+        </div>
+        
         <h2 class="section-title" id="currentViewTitle">All Tracks</h2>
         <div class="grid" id="musicGrid"></div>
       </div>
@@ -240,8 +282,8 @@
   </div>
   <!-- Bottom Navigation - Mobile only -->
   <nav class="bottom-nav">
-    <div class="bottom-nav-item active"><span class="material-symbols-rounded">home</span></div>
-    <div class="bottom-nav-item"><span class="material-symbols-rounded">search</span></div>
+    <div class="bottom-nav-item active" id="bottomHome"><span class="material-symbols-rounded">home</span></div>
+    <div class="bottom-nav-item" id="bottomSearch"><span class="material-symbols-rounded">search</span></div>
     <div class="bottom-nav-item"><span class="material-symbols-rounded">library_music</span></div>
   </nav>
   <!-- Fixed Player -->
@@ -255,9 +297,9 @@
     </div>
     <div class="player-controls">
       <div class="control-btns">
-        <span class="material-symbols-rounded">skip_previous</span>
+        <span class="material-symbols-rounded" id="prevBtn">skip_previous</span>
         <span id="playPauseBtn" class="material-symbols-rounded play-trigger">play_circle</span>
-        <span class="material-symbols-rounded">skip_next</span>
+        <span class="material-symbols-rounded" id="nextBtn">skip_next</span>
       </div>
       <div class="progress-bar-wrapper">
         <span id="curTime">0:00</span>
@@ -267,7 +309,7 @@
         <span id="durTime">0:00</span>
       </div>
       <div class="volume-control">
-        <span class="material-symbols-rounded">volume_up</span>
+        <span class="material-symbols-rounded" id="volumeIcon">volume_up</span>
         <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="1" class="volume-slider"/>
       </div>
     </div>
@@ -298,11 +340,19 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
+
 // =============================================
 // State & DOM Elements
 // =============================================
 let currentUser = null;
 let allTracks = [];
+let currentCategoryFilter = 'all'; // 'all', genre name, or mood name
+let allGenres = [];
+let allMoods = [];
+let currentPlaylistId = null;
+let currentTrackIndex = 0;
+let playlistQueue = []; // Current playing queue
+
 const authScreen = document.getElementById('authScreen');
 const mainApp = document.getElementById('mainApp');
 const loginForm = document.getElementById('loginForm');
@@ -335,6 +385,20 @@ const playlistNameInput = document.getElementById('playlistNameInput');
 const savePlaylistBtn = document.getElementById('savePlaylistBtn');
 const playlistList = document.getElementById('playlistList');
 const createPlaylistBtn = document.getElementById('createPlaylistBtn');
+const categoryTabs = document.getElementById('categoryTabs');
+const currentViewTitle = document.getElementById('currentViewTitle');
+
+// Navigation elements
+const homeNav = document.getElementById('homeNav');
+const searchNav = document.getElementById('searchNav');
+const bottomHome = document.getElementById('bottomHome');
+const bottomSearch = document.getElementById('bottomSearch');
+
+// Player controls
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const volumeIcon = document.getElementById('volumeIcon');
+
 // =============================================
 // Auth Handlers
 // =============================================
@@ -342,6 +406,7 @@ function toggleAuth() {
   loginForm.classList.toggle('hidden');
   signupForm.classList.toggle('hidden');
 }
+
 auth.onAuthStateChanged(user => {
   currentUser = user;
   if (user) {
@@ -353,19 +418,23 @@ auth.onAuthStateChanged(user => {
     mainApp.classList.add('hidden');
   }
 });
+
 loginBtn.onclick = () => {
   const email = loginEmail.value.trim();
   const password = loginPassword.value;
   auth.signInWithEmailAndPassword(email, password)
     .catch(err => loginError.textContent = err.message);
 };
+
 signupBtn.onclick = () => {
   const email = signupEmail.value.trim();
   const password = signupPassword.value;
   auth.createUserWithEmailAndPassword(email, password)
     .catch(err => signupError.textContent = err.message);
 };
+
 signOutBtn.onclick = () => auth.signOut();
+
 // =============================================
 // Hamburger + Sidebar
 // =============================================
@@ -373,8 +442,45 @@ function toggleSidebar() {
   sidebar.classList.toggle('open');
   overlay.classList.toggle('active');
 }
+
 hamburger.onclick = toggleSidebar;
 overlay.onclick = toggleSidebar;
+
+// =============================================
+// Navigation
+// =============================================
+function setActiveNav(activeNav) {
+  // Sidebar
+  document.querySelectorAll('.nav-pill').forEach(nav => nav.classList.remove('active'));
+  activeNav.classList.add('active');
+  
+  // Bottom nav
+  document.querySelectorAll('.bottom-nav-item').forEach(item => item.classList.remove('active'));
+  if (activeNav === homeNav || activeNav === bottomHome) {
+    bottomHome.classList.add('active');
+  } else if (activeNav === searchNav || activeNav === bottomSearch) {
+    bottomSearch.classList.add('active');
+  }
+}
+
+homeNav.onclick = (e) => {
+  e.preventDefault();
+  setActiveNav(homeNav);
+  currentCategoryFilter = 'all';
+  updateActivePill(document.querySelector('.pill-tab.active'));
+  filterAndRenderTracks();
+  currentViewTitle.textContent = 'All Tracks';
+};
+
+searchNav.onclick = (e) => {
+  e.preventDefault();
+  setActiveNav(searchNav);
+  searchInput.focus();
+};
+
+bottomHome.onclick = () => homeNav.onclick();
+bottomSearch.onclick = () => searchNav.onclick();
+
 // =============================================
 // Playlist Modal
 // =============================================
@@ -382,10 +488,13 @@ function openPlaylistModal() {
   playlistNameInput.value = '';
   playlistModal.classList.add('active');
 }
+
 function closePlaylistModal() {
   playlistModal.classList.remove('active');
 }
+
 createPlaylistBtn.onclick = openPlaylistModal;
+
 savePlaylistBtn.onclick = () => {
   const name = playlistNameInput.value.trim();
   if (!name) return alert("Please enter a playlist name");
@@ -401,6 +510,90 @@ savePlaylistBtn.onclick = () => {
     })
     .catch(err => alert("Error creating playlist: " + err.message));
 };
+
+// =============================================
+// Category Tabs
+// =============================================
+function loadCategories() {
+  // Load Genres
+  db.ref("/content/musicGenres").once("value", snap => {
+    allGenres = [];
+    snap.forEach(child => {
+      allGenres.push(child.val().name);
+    });
+    renderCategoryTabs();
+  }).catch(err => console.error("Error loading genres:", err));
+
+  // Load Moods
+  db.ref("/content/musicMoods").once("value", snap => {
+    allMoods = [];
+    snap.forEach(child => {
+      allMoods.push(child.val().name);
+    });
+    renderCategoryTabs();
+  }).catch(err => console.error("Error loading moods:", err));
+}
+
+function renderCategoryTabs() {
+  const container = categoryTabs;
+  container.innerHTML = '';
+
+  // "All Tracks" pill
+  const allPill = document.createElement('div');
+  allPill.className = 'pill-tab active';
+  allPill.textContent = 'All Tracks';
+  allPill.onclick = () => {
+    currentCategoryFilter = 'all';
+    updateActivePill(allPill);
+    filterAndRenderTracks();
+    currentViewTitle.textContent = 'All Tracks';
+  };
+  container.appendChild(allPill);
+
+  // Add a small separator
+  const genreHeader = document.createElement('div');
+  genreHeader.style.cssText = 'font-size: 0.8rem; color: var(--text-secondary); margin: 1rem 0 0.5rem; font-weight: 600;';
+  genreHeader.textContent = 'GENRES';
+  container.appendChild(genreHeader);
+
+  // Genres
+  allGenres.forEach(genre => {
+    const pill = createPill(genre, 'genre');
+    container.appendChild(pill);
+  });
+
+  // Add a small separator
+  const moodHeader = document.createElement('div');
+  moodHeader.style.cssText = 'font-size: 0.8rem; color: var(--text-secondary); margin: 1rem 0 0.5rem; font-weight: 600;';
+  moodHeader.textContent = 'MOODS';
+  container.appendChild(moodHeader);
+
+  // Moods
+  allMoods.forEach(mood => {
+    const pill = createPill(mood, 'mood');
+    container.appendChild(pill);
+  });
+}
+
+function createPill(name, type) {
+  const pill = document.createElement('div');
+  pill.className = 'pill-tab';
+  pill.textContent = name;
+  pill.title = `${type.toUpperCase()}: ${name}`;
+  pill.onclick = () => {
+    currentCategoryFilter = name;
+    updateActivePill(pill);
+    filterAndRenderTracks();
+    currentViewTitle.textContent = `${name} • ${type.toUpperCase()}`;
+  };
+  return pill;
+}
+
+function updateActivePill(selectedPill) {
+  document.querySelectorAll('.pill-tab').forEach(p => p.classList.remove('active'));
+  selectedPill.classList.add('active');
+}
+
 // =============================================
 // Load Tracks & Playlists
 // =============================================
@@ -413,8 +606,9 @@ function loadContent() {
       track.id = child.key;
       allTracks.push(track);
     });
-    renderTracks(allTracks);
+    filterAndRenderTracks();
   });
+
   // User's playlists
   db.ref(`users/${currentUser.uid}/playlists`).on("value", snap => {
     playlistList.innerHTML = '';
@@ -425,13 +619,48 @@ function loadContent() {
       item.href = '#';
       item.className = 'nav-pill';
       item.innerHTML = `<span class="material-symbols-rounded">playlist_play</span> ${playlist.name}`;
-      item.onclick = () => showPlaylist(pid);
+      item.onclick = (e) => {
+        e.preventDefault();
+        showPlaylist(pid);
+      };
       playlistList.appendChild(item);
     });
   });
+
+  // Load categories once
+  loadCategories();
 }
+
+function showPlaylist(pid) {
+  currentPlaylistId = pid;
+  db.ref(`users/${currentUser.uid}/playlists/${pid}`).once("value", snap => {
+    const playlist = snap.val();
+    if (playlist && playlist.tracks) {
+      const playlistTracks = playlist.tracks.map(trackId => 
+        allTracks.find(t => t.id === trackId)
+      ).filter(Boolean);
+      
+      renderTracks(playlistTracks);
+      currentViewTitle.textContent = playlist.name;
+      setActiveNav(homeNav);
+      currentCategoryFilter = 'playlist';
+    }
+  });
+}
+
 function renderTracks(tracks) {
   musicGrid.innerHTML = '';
+  if (tracks.length === 0) {
+    const emptyMsg = document.createElement('div');
+    emptyMsg.style.cssText = 'grid-column: 1/-1; text-align: center; color: var(--text-secondary); padding: 4rem 1rem; font-size: 1.1rem;';
+    emptyMsg.innerHTML = `
+      <span class="material-symbols-rounded" style="font-size: 3rem; display: block; margin-bottom: 1rem; opacity: 0.5;">library_music</span>
+      No tracks found
+    `;
+    musicGrid.appendChild(emptyMsg);
+    return;
+  }
+
   tracks.forEach(track => {
     const card = document.createElement('div');
     card.className = 'card';
@@ -441,23 +670,65 @@ function renderTracks(tracks) {
       <div class="card-info">
         <div style="font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${track.title}</div>
         <div style="color:var(--text-secondary); font-size:0.85rem;">${track.artist}</div>
+        ${track.genres ? `<div class="category-tags" style="margin-top:0.5rem; display:flex; flex-wrap:wrap; gap:0.25rem; justify-content:center;">
+          ${track.genres.slice(0, 2).map(g => `<span style="font-size:0.75rem; background:rgba(229,9,20,0.1); color:var(--accent); padding:0.15rem 0.5rem; border-radius:12px;">${g}</span>`).join('')}
+        </div>` : ''}
       </div>
     `;
-    card.onclick = () => playTrack(track);
+    card.onclick = () => playTrack(track, tracks);
     musicGrid.appendChild(card);
   });
 }
+
+// Enhanced filter function
+function filterAndRenderTracks() {
+  const term = searchInput.value.toLowerCase().trim();
+
+  let filtered = allTracks.filter(track => {
+    const matchesSearch =
+      !term ||
+      track.title?.toLowerCase().includes(term) ||
+      track.artist?.toLowerCase().includes(term) ||
+      (track.album && track.album.toLowerCase().includes(term));
+
+    if (currentCategoryFilter === 'all' || currentCategoryFilter === 'playlist') return matchesSearch;
+
+    // Check if track has this genre or mood
+    const hasGenre = track.genres?.includes(currentCategoryFilter);
+    const hasMood  = track.moods?.includes(currentCategoryFilter);
+
+    return matchesSearch && (hasGenre || hasMood);
+  });
+
+  renderTracks(filtered);
+}
+
 // =============================================
 // Player Controls
 // =============================================
-function playTrack(track) {
+function playTrack(track, trackList = null) {
+  if (trackList) {
+    playlistQueue = trackList;
+    currentTrackIndex = playlistQueue.findIndex(t => t.id === track.id);
+  }
+  
   audio.src = track.audio;
   audio.play().catch(e => console.log("Play blocked:", e));
   playerTitle.textContent = track.title;
   playerArtist.textContent = track.artist;
   playerCover.src = track.cover || 'https://via.placeholder.com/56';
   playPauseBtn.textContent = 'pause_circle';
+  
+  // Show genres in player if available
+  const genreInfo = document.querySelector('.player-track-info div');
+  if (track.genres && track.genres.length > 0) {
+    const genreDiv = document.createElement('div');
+    genreDiv.style.cssText = 'font-size:0.75rem; color:var(--accent); margin-top:0.25rem; opacity:0.8;';
+    genreDiv.textContent = track.genres.slice(0, 2).join(', ');
+    genreInfo.appendChild(genreDiv);
+  }
 }
+
 playPauseBtn.onclick = () => {
   if (audio.paused) {
     audio.play();
@@ -467,6 +738,23 @@ playPauseBtn.onclick = () => {
     playPauseBtn.textContent = 'play_circle';
   }
 };
+
+// Previous/Next track
+prevBtn.onclick = () => {
+  if (playlistQueue.length > 0 && currentTrackIndex > 0) {
+    currentTrackIndex--;
+    playTrack(playlistQueue[currentTrackIndex], playlistQueue);
+  }
+};
+
+nextBtn.onclick = () => {
+  if (playlistQueue.length > 0 && currentTrackIndex < playlistQueue.length - 1) {
+    currentTrackIndex++;
+    playTrack(playlistQueue[currentTrackIndex], playlistQueue);
+  }
+};
+
+// Progress bar
 audio.ontimeupdate = () => {
   if (!audio.duration) return;
   const percent = (audio.currentTime / audio.duration) * 100;
@@ -474,29 +762,68 @@ audio.ontimeupdate = () => {
   curTime.textContent = formatTime(audio.currentTime);
   durTime.textContent = formatTime(audio.duration);
 };
+
 document.getElementById('progressClick').onclick = e => {
   const rect = e.currentTarget.getBoundingClientRect();
   const pos = (e.clientX - rect.left) / rect.width;
   audio.currentTime = pos * audio.duration;
 };
+
+// Volume control
 volumeSlider.oninput = e => {
   audio.volume = parseFloat(e.target.value);
+  volumeIcon.textContent = audio.volume > 0.5 ? 'volume_up' : audio.volume > 0 ? 'volume_down' : 'volume_off';
 };
+
 function formatTime(seconds) {
   if (isNaN(seconds)) return "0:00";
   const min = Math.floor(seconds / 60);
   const sec = Math.floor(seconds % 60);
   return `${min}:${sec < 10 ? '0' : ''}${sec}`;
 }
-// Live Search
-searchInput.oninput = e => {
-  const term = e.target.value.toLowerCase().trim();
-  const filtered = allTracks.filter(t =>
-    t.title?.toLowerCase().includes(term) ||
-    t.artist?.toLowerCase().includes(term)
-  );
-  renderTracks(filtered);
+
+// Audio ended
+audio.onended = () => {
+  nextBtn.onclick();
 };
+
+// =============================================
+// Search & Filtering
+// =============================================
+searchInput.oninput = () => {
+  filterAndRenderTracks();
+};
+
+// Clear search on escape
+searchInput.onkeydown = (e) => {
+  if (e.key === 'Escape') {
+    searchInput.value = '';
+    filterAndRenderTracks();
+  }
+};
+
+// =============================================
+// Add to Playlist (bonus feature)
+// =============================================
+function addToPlaylist(trackId, playlistId) {
+  if (!currentUser) return;
+  
+  db.ref(`users/${currentUser.uid}/playlists/${playlistId}/tracks`).transaction(tracks => {
+    if (!tracks) tracks = [];
+    if (!tracks.includes(trackId)) {
+      tracks.push(trackId);
+    }
+    return tracks;
+  }).then(() => {
+    alert("Added to playlist!");
+  });
+}
+
+// Context menu or long press for add to playlist (optional enhancement)
+// For now, we'll add a simple global add button when track is playing
+document.addEventListener('DOMContentLoaded', () => {
+  // You can add a floating action button or context menu here
+});
 </script>
 </body>
 </html>
