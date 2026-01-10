@@ -1302,15 +1302,21 @@ function createSongRow(track) {
       <div style="color:var(--text-secondary); font-size:0.94rem; margin-top:0.3rem;">${track.artist || 'Unknown'}</div>
     </div>
     <div style="display:flex; gap:1.2rem;">
-      <button class="ctrl-btn ${likedTracks.has(track.id) ? 'liked' : ''}" style="font-size:1.8rem;" onclick="event.stopPropagation();toggleLike('${track.id}')">
+      <button class="ctrl-btn like-btn ${likedTracks.has(track.id) ? 'liked' : ''}" 
+              style="font-size:1.8rem;" 
+              data-track-id="${track.id}"
+              onclick="event.stopPropagation(); toggleLike('${track.id}', this)">
         <span class="material-symbols-rounded">favorite</span>
       </button>
-      <button class="ctrl-btn" style="font-size:1.8rem;" onclick="event.stopPropagation();addToPlaylist('${track.id}')">
+      <button class="ctrl-btn" style="font-size:1.8rem;" 
+              onclick="event.stopPropagation();addToPlaylist('${track.id}')">
         <span class="material-symbols-rounded">playlist_add</span>
       </button>
     </div>
   `;
+
   div.onclick = () => playTrack(track);
+  
   return div;
 }
 
@@ -1437,12 +1443,74 @@ function clearSearch() {
 // =============================================
 // Likes & Playlists
 // =============================================
-function toggleLike(trackId) {
+function toggleLike(trackId, buttonElement = null) {
   const uid = auth.currentUser?.uid;
   if (!uid || !trackId) return;
 
-  const ref = db.ref(`users/${uid}/likes/${trackId}`);
-  likedTracks.has(trackId) ? ref.remove() : ref.set(true);
+  const wasLiked = likedTracks.has(trackId);
+  const likeRef = db.ref(`users/${uid}/likes/${trackId}`);
+
+  // ── 1. Optimistic UI Update ─────────────────────────────────────
+  if (wasLiked) {
+    // We're unliking
+    likedTracks.delete(trackId);
+    if (buttonElement) {
+      buttonElement.classList.remove('liked');
+    }
+  } else {
+    // We're liking
+    likedTracks.add(trackId);
+    if (buttonElement) {
+      buttonElement.classList.add('liked');
+    }
+  }
+
+  // ── 2. Actually update Firebase ─────────────────────────────────
+  const updatePromise = wasLiked ? likeRef.remove() : likeRef.set(true);
+
+  updatePromise.catch(error => {
+    console.error("Like update failed:", error);
+    // Rollback optimistic update on failure
+    if (wasLiked) {
+      likedTracks.add(trackId);
+      if (buttonElement) buttonElement.classList.add('liked');
+    } else {
+      likedTracks.delete(trackId);
+      if (buttonElement) buttonElement.classList.remove('liked');
+    }
+    // Optional: show toast/notification to user
+     modal.alert("Failed to update like status");
+  });
+
+  // ── 3. Special behavior: Remove row from playlist view when unliking ──
+  if (currentPlaylistId && wasLiked) {
+    // Find and remove the song row in current playlist view
+    const row = document.querySelector(
+      `#playlistTracksList .song-row [data-track-id="${trackId}"]`
+    )?.closest('.song-row');
+
+    if (row) {
+      row.style.transition = 'all 0.4s ease';
+      row.style.opacity = '0';
+      row.style.transform = 'translateX(-24px)';
+
+      setTimeout(() => {
+        row.remove();
+
+        // Show empty state if playlist became empty
+        const container = document.getElementById('playlistTracksList');
+        if (container.children.length === 0) {
+          container.innerHTML = 
+            '<div style="padding:4rem; text-align:center; color:var(--text-muted);">' +
+            'This playlist is empty' +
+            '</div>';
+        }
+      }, 420);
+    }
+  }
+
+  // ── 4. Refresh library view (since likes changed) ───────────────
+  renderLibrary();
 }
 
 function createNewPlaylist() {
