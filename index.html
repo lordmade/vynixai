@@ -616,9 +616,152 @@ img {
 .main-view {
   padding-bottom: calc(var(--player-mini) + 24px);
 }
+
+    .app-skeleton-loader {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-main);
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.skeleton-wrapper {
+  width: 100%;
+  max-width: 1400px;
+  padding: 1rem;
+}
+
+.skeleton-header {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+  padding: 1.2rem 1.6rem;
+  margin-bottom: 1.8rem;
+}
+
+.skeleton-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+}
+
+.skeleton-search {
+  flex: 1;
+  max-width: 480px;
+  height: 48px;
+  border-radius: 999px;
+}
+
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%);  }
+}
+
+.skeleton-bar,
+.skeleton-chip,
+.skeleton-card,
+.skeleton-title,
+.skeleton-avatar,
+.skeleton-song-row,
+.skeleton-search {
+  background: linear-gradient(
+    90deg,
+    rgba(200,200,200,0.12) 0%,
+    rgba(200,200,200,0.25) 50%,
+    rgba(200,200,200,0.12) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite linear;
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-bar::after,
+.skeleton-chip::after,
+.skeleton-card::after,
+.skeleton-title::after,
+.skeleton-avatar::after,
+.skeleton-song-row::after,
+.skeleton-search::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255,255,255,0.15),
+    transparent
+  );
+  animation: shimmer 1.8s infinite;
+}
+
+/* Sizes & Shapes */
+.skeleton-bar.long     { height: 100%; width: 100%; border-radius: 999px; }
+.skeleton-bar.short    { height: 18px; width: 60%; border-radius: 6px; }
+.skeleton-title        { height: 32px; width: 240px; border-radius: 8px; margin-bottom: 1.6rem; }
+.skeleton-chip         { height: 38px; width: 110px; border-radius: 999px; }
+.skeleton-card         { width: 168px; height: 240px; border-radius: var(--radius-l); flex-shrink: 0; }
+.skeleton-song-row     { height: 80px; width: 100%; border-radius: var(--radius-m); margin: 8px 0; }
+.skeleton-grid         { display: flex; gap: 1.4rem; overflow-x: auto; padding-bottom: 1.8rem; }
+.skeleton-genres       { display: flex; flex-wrap: wrap; gap: 12px; padding: 0 1.6rem; margin: 1.8rem 0; }
+.skeleton-section      { padding: 0 1.6rem; }
+.skeleton-song-list    { padding: 0 1.6rem; }
   </style>
 </head>
 <body>
+
+  <!-- Full Page Skeleton Loader -->
+<div id="appLoader" class="app-skeleton-loader">
+  <div class="skeleton-wrapper">
+    <!-- Header / Top bar -->
+    <div class="skeleton-header glass">
+      <div class="skeleton-avatar"></div>
+      <div class="skeleton-search">
+        <div class="skeleton-bar long"></div>
+      </div>
+    </div>
+
+    <!-- Genre Chips -->
+    <div class="skeleton-genres">
+      <div class="skeleton-chip"></div>
+      <div class="skeleton-chip"></div>
+      <div class="skeleton-chip"></div>
+      <div class="skeleton-chip"></div>
+      <div class="skeleton-chip"></div>
+      <div class="skeleton-chip"></div>
+    </div>
+
+    <!-- Section Title + Trending Cards -->
+    <div class="skeleton-section">
+      <div class="skeleton-title"></div>
+      <div class="skeleton-grid">
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+      </div>
+    </div>
+
+    <!-- Song List -->
+    <div class="skeleton-section">
+      <div class="skeleton-title"></div>
+      <div class="skeleton-song-list">
+        <div class="skeleton-song-row"></div>
+        <div class="skeleton-song-row"></div>
+        <div class="skeleton-song-row"></div>
+        <div class="skeleton-song-row"></div>
+        <div class="skeleton-song-row"></div>
+        <div class="skeleton-song-row"></div>
+        <div class="skeleton-song-row"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
   <div id="pwaTopSheet" aria-live="polite">
   <div class="pwa-sheet-content">
@@ -1023,36 +1166,103 @@ const modal = {
 // Data & Rendering
 // =============================================
 function loadData(uid) {
-  db.ref('content/music').on('value', snap => {
-    allTracks = [];
-    snap.forEach(child => {
-      const t = child.val();
-      t.id = child.key;
-      allTracks.push(t);
-    });
-    renderHome();
-    if (currentPlaylistId) renderPlaylistTracks();
-  });
+  // ── State for initial loading ───────────────────────────────
+  let initialTracksLoaded = false;
+  let initialGenresLoaded = false;
 
+  const loader = document.getElementById('appLoader');
+
+  const checkIfReadyToHideLoader = () => {
+    if (initialTracksLoaded && initialGenresLoaded) {
+      // Small delay prevents flash-of-unstyled-content feeling
+      setTimeout(() => {
+        loader.style.opacity = '0';
+        setTimeout(() => {
+          loader.style.display = 'none';
+        }, 400); // match transition duration
+      }, 300);
+    }
+  };
+
+  // ── 1. Critical data: Tracks ─────────────────────────────────
+  db.ref('content/music')
+    .once('value')                    // ← initial full read
+    .then(snap => {
+      allTracks = [];
+      snap.forEach(child => {
+        const t = child.val();
+        t.id = child.key;
+        allTracks.push(t);
+      });
+
+      initialTracksLoaded = true;
+      renderHome();
+      checkIfReadyToHideLoader();
+
+      // After initial load → switch to real-time listener
+      db.ref('content/music').on('value', snap => {
+        allTracks = [];
+        snap.forEach(child => {
+          const t = child.val();
+          t.id = child.key;
+          allTracks.push(t);
+        });
+        renderHome();
+        if (currentPlaylistId) renderPlaylistTracks();
+      });
+    })
+    .catch(err => {
+      console.error('Failed to load tracks:', err);
+      // Optional: show error state in UI
+    });
+
+  // ── 2. Critical data: Genres ─────────────────────────────────
+  db.ref('/content/musicGenres')
+    .once('value')
+    .then(snap => {
+      allGenres = [];
+      snap.forEach(c => {
+        const name = c.val()?.name;
+        if (name) allGenres.push(name);
+      });
+      allGenres.sort();
+
+      initialGenresLoaded = true;
+      renderGenreChips();
+      checkIfReadyToHideLoader();
+
+      // Real-time updates for genres (usually rare, but good practice)
+      db.ref('/content/musicGenres').on('value', snap => {
+        allGenres = [];
+        snap.forEach(c => {
+          const name = c.val()?.name;
+          if (name) allGenres.push(name);
+        });
+        allGenres.sort();
+        renderGenreChips();
+      });
+    })
+    .catch(err => {
+      console.error('Failed to load genres:', err);
+    });
+
+  // ── 3. User-specific data (can load after UI is shown) ───────
   db.ref(`users/${uid}/likes`).on('value', snap => {
     likedTracks.clear();
-    if (snap.val()) Object.keys(snap.val()).forEach(k => likedTracks.add(k));
+    if (snap.val()) {
+      Object.keys(snap.val()).forEach(k => likedTracks.add(k));
+    }
     renderLibrary();
-  });
-
-  db.ref('/content/musicGenres').on('value', snap => {
-    allGenres = [];
-    snap.forEach(c => {
-      const name = c.val()?.name;
-      if (name) allGenres.push(name);
-    });
-    allGenres.sort();
-    renderGenreChips();
   });
 
   db.ref(`users/${uid}/playlists`).on('value', snap => {
     playlists = snap.val() || {};
     renderPlaylists();
+
+    // If user was viewing a playlist and it changed → refresh view
+    if (currentPlaylistId && playlists[currentPlaylistId]) {
+      renderPlaylistTracks();
+    }
   });
 }
 
