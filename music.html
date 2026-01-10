@@ -105,6 +105,23 @@
       box-shadow: 0 6px 20px var(--accent-glow);
     }
 
+    .playlist-item {
+      padding: 0.7rem 1rem;
+      border-radius: var(--radius-s);
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 0.94rem;
+    }
+
+    .playlist-item:hover {
+      background: rgba(141, 50, 217, 0.1);
+    }
+
+    .playlist-item.active {
+      background: var(--accent-primary);
+      color: white;
+    }
+
     .category-chip {
       padding: 0.55rem 1.2rem;
       background: rgba(141,50,217,0.08);
@@ -194,7 +211,7 @@
       font-size: 1.3rem;
     }
 
-    /* Hero Banner, Cards, Player Bar, Lyrics etc. - keeping your original styles */
+    /* Hero Banner */
     .hero-banner {
       height: 220px;
       border-radius: var(--radius-l);
@@ -382,7 +399,7 @@
     }
 
     .action-btn:hover { color: var(--accent-primary); }
-    .action-btn.liked { color: var(--accent-secondary); }
+    .action-btn.liked { color: var(--accent-primary); }
 
     .player-bar {
       position: fixed;
@@ -538,20 +555,6 @@
       transform: translateY(0);
     }
 
-    .lyrics-line {
-      font-size: 1.8rem;
-      color: var(--text-muted);
-      margin: 1.8rem 0;
-      font-weight: 700;
-      transition: all 0.4s;
-    }
-
-    .lyrics-line.active {
-      color: var(--text-main);
-      transform: scale(1.12);
-      text-shadow: 0 0 25px var(--accent-glow);
-    }
-
     .close-lyrics {
       position: absolute;
       top: 2.5rem;
@@ -674,10 +677,6 @@
 
       <div class="section-title">
         <span id="currentSectionTitle">Trending Now</span>
-        <div style="display:flex; gap:12px">
-          <span class="material-symbols-rounded" style="cursor:pointer; background:rgba(0,0,0,0.06); padding:6px; border-radius:50%">chevron_left</span>
-          <span class="material-symbols-rounded" style="cursor:pointer; background:rgba(0,0,0,0.06); padding:6px; border-radius:50%">chevron_right</span>
-        </div>
       </div>
 
       <div class="grid-scroller" id="trendingGrid"></div>
@@ -697,6 +696,12 @@
     <div id="view-discover" class="hidden">
       <h1 style="margin-bottom:2rem">Discover</h1>
       <p style="color:var(--text-muted)">Explore music by genre</p>
+    </div>
+
+    <!-- Playlist View -->
+    <div id="view-playlist" class="hidden">
+      <h1 style="margin-bottom:1rem" id="playlistTitle">Playlist</h1>
+      <div id="playlistTracksList"></div>
     </div>
   </main>
 
@@ -721,7 +726,9 @@
         <div id="pTitle">Not Playing</div>
         <div id="pArtist">Select a track</div>
       </div>
-      <span class="material-symbols-rounded action-btn" id="likeBtn">favorite</span>
+      <button class="action-btn" id="likeBtn">
+        <span class="material-symbols-rounded">favorite</span>
+      </button>
     </div>
 
     <div class="controls-wrapper">
@@ -775,9 +782,7 @@
   <audio id="audio"></audio>
 
 <script>
-  // ──────────────────────────────────────────────────────────────────────────────
   // CONFIG & INIT
-  // ──────────────────────────────────────────────────────────────────────────────
   const firebaseConfig = {
     apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
     authDomain: "fire-b-a8878.firebaseapp.com",
@@ -791,25 +796,23 @@
   const auth = firebase.auth();
   const db = firebase.database();
 
-  // ──────────────────────────────────────────────────────────────────────────────
   // STATE
-  // ──────────────────────────────────────────────────────────────────────────────
   let allTracks = [];
-  let queue = [];
-  let currentIdx = 0;
+  let allGenres = [];
+  let playlists = {};
+  let currentPlaylistId = null;
+  let currentTrack = null;
   let likedTracks = new Set();
   let currentGenreFilter = null;
-  let allGenres = [];
 
   const audio = document.getElementById('audio');
 
-  // ──────────────────────────────────────────────────────────────────────────────
-  // DOM REFERENCES
-  // ──────────────────────────────────────────────────────────────────────────────
+  // DOM
   const views = {
     home: document.getElementById('view-home'),
     library: document.getElementById('view-library'),
-    discover: document.getElementById('view-discover')
+    discover: document.getElementById('view-discover'),
+    playlist: document.getElementById('view-playlist')
   };
 
   const genreContainers = [
@@ -817,19 +820,16 @@
     document.getElementById('mainGenreChips')
   ];
 
-  // ──────────────────────────────────────────────────────────────────────────────
   // GENRES FROM DASHBOARD
-  // ──────────────────────────────────────────────────────────────────────────────
   function loadGenres() {
     db.ref('/content/musicGenres').on('value', snap => {
       allGenres = [];
       snap.forEach(child => {
-        const genre = child.val().name;
-        if (genre) allGenres.push(genre);
+        const name = child.val().name;
+        if (name) allGenres.push(name);
       });
       allGenres.sort();
       renderGenreFilters();
-      renderHome(); // refresh view when genres change
     });
   }
 
@@ -837,36 +837,101 @@
     genreContainers.forEach(container => {
       if (!container) return;
       container.innerHTML = '';
-
-      // All chip
       const allChip = document.createElement('div');
       allChip.className = `category-chip ${!currentGenreFilter ? 'active' : ''}`;
       allChip.textContent = 'All';
-      allChip.onclick = () => {
-        currentGenreFilter = null;
-        renderGenreFilters();
-        renderHome();
-      };
+      allChip.onclick = () => { currentGenreFilter = null; renderGenreFilters(); renderHome(); };
       container.appendChild(allChip);
 
-      // Genre chips from dashboard
-      allGenres.forEach(genre => {
+      allGenres.forEach(g => {
         const chip = document.createElement('div');
-        chip.className = `category-chip ${currentGenreFilter === genre ? 'active' : ''}`;
-        chip.textContent = genre;
-        chip.onclick = () => {
-          currentGenreFilter = genre;
-          renderGenreFilters();
-          renderHome();
-        };
+        chip.className = `category-chip ${currentGenreFilter === g ? 'active' : ''}`;
+        chip.textContent = g;
+        chip.onclick = () => { currentGenreFilter = g; renderGenreFilters(); renderHome(); };
         container.appendChild(chip);
       });
     });
   }
 
-  // ──────────────────────────────────────────────────────────────────────────────
+  // PLAYLISTS
+  function createNewPlaylist() {
+    const name = prompt("Enter playlist name:");
+    if (!name || !name.trim()) return;
+    const uid = auth.currentUser.uid;
+    const ref = db.ref(`users/${uid}/playlists`).push();
+    ref.set({ name: name.trim(), tracks: {} }).then(() => {
+      alert(`Playlist "${name.trim()}" created!`);
+    });
+  }
+
+  function loadPlaylists(uid) {
+    db.ref(`users/${uid}/playlists`).on('value', snap => {
+      playlists = snap.val() || {};
+      renderPlaylists();
+    });
+  }
+
+  function renderPlaylists() {
+    const container = document.getElementById('playlistContainer');
+    container.innerHTML = '';
+    Object.keys(playlists).forEach(id => {
+      const pl = playlists[id];
+      const div = document.createElement('div');
+      div.className = 'playlist-item';
+      div.textContent = pl.name || 'Untitled';
+      div.onclick = () => openPlaylist(id, pl.name);
+      container.appendChild(div);
+    });
+  }
+
+  function openPlaylist(id, name) {
+    currentPlaylistId = id;
+    document.getElementById('playlistTitle').textContent = name;
+    switchView('playlist');
+    renderPlaylistTracks();
+  }
+
+  function renderPlaylistTracks() {
+    const container = document.getElementById('playlistTracksList');
+    container.innerHTML = '';
+    const tracks = playlists[currentPlaylistId]?.tracks || {};
+    const trackIds = Object.keys(tracks);
+    if (trackIds.length === 0) {
+      container.innerHTML = '<div style="color:#9ca3af; padding:2rem; text-align:center;">This playlist is empty</div>';
+      return;
+    }
+    trackIds.forEach(tid => {
+      const track = allTracks.find(t => t.id === tid);
+      if (track) {
+        const row = createSongRow(track);
+        row.onclick = () => playTrack(track);
+        container.appendChild(row);
+      }
+    });
+  }
+
+  function addToPlaylist(trackId) {
+    if (!currentTrack) return;
+    const uid = auth.currentUser.uid;
+    const options = Object.keys(playlists).map(id => ({
+      id,
+      name: playlists[id].name || 'Untitled'
+    }));
+    if (options.length === 0) {
+      alert("Create a playlist first!");
+      return;
+    }
+    let choices = options.map((p, i) => `${i+1}. ${p.name}`).join('\n');
+    const choice = prompt(`Add to playlist:\n${choices}\n\nEnter number:`);
+    const idx = parseInt(choice) - 1;
+    if (idx >= 0 && idx < options.length) {
+      const plId = options[idx].id;
+      db.ref(`users/${uid}/playlists/${plId}/tracks/${trackId}`).set(true);
+      alert("Added to playlist!");
+    }
+  }
+
   // AUTH & DATA
-  // ──────────────────────────────────────────────────────────────────────────────
   auth.onAuthStateChanged(user => {
     if (user) {
       document.getElementById('authOverlay').classList.add('hidden');
@@ -890,36 +955,32 @@
   }
 
   function loadData(uid) {
-    // Load tracks
     db.ref('content/music').on('value', snap => {
       allTracks = [];
       snap.forEach(c => {
-        const track = c.val();
-        track.id = c.key;
-        allTracks.push(track);
+        const t = c.val();
+        t.id = c.key;
+        allTracks.push(t);
       });
       renderHome();
+      if (currentPlaylistId) renderPlaylistTracks();
     });
 
-    // Load likes
     db.ref(`users/${uid}/likes`).on('value', snap => {
       likedTracks.clear();
       if (snap.val()) Object.keys(snap.val()).forEach(k => likedTracks.add(k));
-      renderLibrary();
       updatePlayerLikeBtn();
     });
 
-    // Load genres from dashboard
     loadGenres();
+    loadPlaylists(uid);
   }
 
-  // ──────────────────────────────────────────────────────────────────────────────
   // RENDERING
-  // ──────────────────────────────────────────────────────────────────────────────
   function getFilteredTracks() {
     if (!currentGenreFilter) return allTracks;
-    return allTracks.filter(t => 
-      (t.genres && t.genres.includes(currentGenreFilter)) || 
+    return allTracks.filter(t =>
+      (t.genres && t.genres.includes(currentGenreFilter)) ||
       t.genre === currentGenreFilter
     );
   }
@@ -935,7 +996,7 @@
 
     const filtered = getFilteredTracks();
 
-    titleEl.textContent = currentGenreFilter ? currentGenreFilter : 'Trending Now';
+    titleEl.textContent = currentGenreFilter || 'Trending Now';
     listTitleEl.textContent = currentGenreFilter ? `${currentGenreFilter} Tracks` : 'Recent Uploads';
 
     filtered.slice(0, 8).forEach(t => {
@@ -954,13 +1015,11 @@
   function renderLibrary() {
     const container = document.getElementById('likedSongsList');
     container.innerHTML = '';
-
     const liked = allTracks.filter(t => likedTracks.has(t.id));
     if (liked.length === 0) {
       container.innerHTML = '<div style="color:#9ca3af; padding:1.5rem; text-align:center;">No liked songs yet...</div>';
       return;
     }
-
     liked.forEach(t => {
       const row = createSongRow(t, true);
       row.onclick = () => playTrack(t);
@@ -984,7 +1043,7 @@
     return div;
   }
 
-  function createSongRow(track, isLikedView = false) {
+  function createSongRow(track) {
     const div = document.createElement('div');
     div.className = 'song-row';
     div.innerHTML = `
@@ -995,45 +1054,40 @@
       </div>
       <div class="row-actions">
         <button class="action-btn" onclick="event.stopPropagation(); toggleLike('${track.id}')">
-          <span class="material-symbols-rounded ${likedTracks.has(track.id)?'liked':''}" 
-                style="font-variation-settings:'FILL' ${likedTracks.has(track.id)?1:0}">favorite</span>
+          <span class="material-symbols-rounded ${likedTracks.has(track.id) ? 'liked' : ''}">favorite</span>
         </button>
-        <span class="action-btn material-symbols-rounded">more_horiz</span>
+        <button class="action-btn" onclick="event.stopPropagation(); addToPlaylist('${track.id}')">
+          <span class="material-symbols-rounded">playlist_add</span>
+        </button>
       </div>
     `;
     return div;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────────
-  // PLAYER & OTHER FUNCTIONS (kept as is)
-  // ──────────────────────────────────────────────────────────────────────────────
+  // PLAYER
   function playTrack(track) {
-    if (!queue.includes(track)) queue = [...allTracks];
-    currentIdx = queue.findIndex(t => t.id === track.id);
+    currentTrack = track;
     document.getElementById('pTitle').textContent = track.title;
     document.getElementById('pArtist').textContent = track.artist || 'Unknown';
     document.getElementById('pCover').src = track.cover || 'https://via.placeholder.com/60';
     document.getElementById('lyricsCover').src = track.cover || 'https://via.placeholder.com/220';
     document.getElementById('lyricsTitle').textContent = track.title;
     document.getElementById('lyricsArtist').textContent = track.artist || 'Unknown';
+
     updatePlayerLikeBtn(track.id);
+
     audio.src = track.audio;
-    audio.play().catch(e => console.log("Playback prevented:", e));
+    audio.play().catch(() => {});
     updatePlayIcons(true);
   }
 
   function togglePlay() {
-    if (audio.paused) {
-      audio.play();
-      updatePlayIcons(true);
-    } else {
-      audio.pause();
-      updatePlayIcons(false);
-    }
+    if (audio.paused) audio.play(); else audio.pause();
+    updatePlayIcons(!audio.paused);
   }
 
-  function updatePlayIcons(isPlaying) {
-    const icon = isPlaying ? 'pause' : 'play_arrow';
+  function updatePlayIcons(playing) {
+    const icon = playing ? 'pause' : 'play_arrow';
     document.querySelector('#playPauseBtn span').textContent = icon;
     document.getElementById('mobPlayIcon').textContent = icon;
   }
@@ -1054,9 +1108,10 @@
 
   document.getElementById('playPauseBtn').onclick = togglePlay;
 
+  // LIKE BUTTON (PURPLE WHEN LIKED)
   function toggleLike(trackId) {
     const uid = auth.currentUser?.uid;
-    if (!uid) return;
+    if (!uid || !currentTrack) return;
     if (likedTracks.has(trackId)) {
       db.ref(`users/${uid}/likes/${trackId}`).remove();
     } else {
@@ -1064,19 +1119,21 @@
     }
   }
 
-  function updatePlayerLikeBtn(tid = null) {
+  function updatePlayerLikeBtn(trackId = null) {
     const btn = document.getElementById('likeBtn');
-    const isLiked = likedTracks.has(tid);
+    const span = btn.querySelector('span');
+    const isLiked = trackId && likedTracks.has(trackId);
     if (isLiked) {
       btn.classList.add('liked');
-      btn.style.fontVariationSettings = "'FILL' 1";
+      span.style.fontVariationSettings = "'FILL' 1";
     } else {
       btn.classList.remove('liked');
-      btn.style.fontVariationSettings = "'FILL' 0";
+      span.style.fontVariationSettings = "'FILL' 0";
     }
-    btn.onclick = () => toggleLike(tid);
+    btn.onclick = () => toggleLike(currentTrack?.id);
   }
 
+  // UTILS
   function formatTime(seconds) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
@@ -1084,12 +1141,11 @@
   }
 
   function switchView(view) {
-    Object.values(views).forEach(el => el.classList.add('hidden'));
+    Object.values(views).forEach(v => v.classList.add('hidden'));
     if (views[view]) views[view].classList.remove('hidden');
     document.querySelectorAll('.nav-item, .b-nav-item').forEach(el => {
       el.classList.remove('active');
-      const viewText = view.charAt(0).toUpperCase() + view.slice(1);
-      if (el.textContent.includes(viewText)) el.classList.add('active');
+      if (el.textContent.toLowerCase().includes(view)) el.classList.add('active');
     });
   }
 
@@ -1104,15 +1160,8 @@
     });
   };
 
-  function createNewPlaylist() {
-    alert("Playlist creation coming soon!");
-  }
-
-  // Prevent zoom on mobile
-  document.addEventListener('touchstart', e => {
-    if (e.touches.length > 1) e.preventDefault();
-  }, { passive: false });
-
+  // Mobile touch fixes
+  document.addEventListener('touchstart', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
   document.addEventListener('contextmenu', e => e.preventDefault());
 </script>
 </body>
