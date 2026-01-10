@@ -728,12 +728,22 @@
 
   <div class="controls-wrapper">
     <div class="main-controls">
-      <button class="ctrl-btn"><span class="material-symbols-rounded">shuffle</span></button>
-      <button class="ctrl-btn" id="prevBtn"><span class="material-symbols-rounded">skip_previous</span></button>
-      <button class="play-fab" id="playPauseBtn"><span class="material-symbols-rounded">play_arrow</span></button>
-      <button class="ctrl-btn" id="nextBtn"><span class="material-symbols-rounded">skip_next</span></button>
-      <button class="ctrl-btn"><span class="material-symbols-rounded">repeat</span></button>
-    </div>
+  <button class="ctrl-btn" onclick="toggleShuffle()">
+    <span class="material-symbols-rounded">shuffle</span>
+  </button>
+  <button class="ctrl-btn" id="prevBtn" onclick="playPrevTrack()">
+    <span class="material-symbols-rounded">skip_previous</span>
+  </button>
+  <button class="play-fab" id="playPauseBtn" onclick="togglePlay()">
+    <span class="material-symbols-rounded">play_arrow</span>
+  </button>
+  <button class="ctrl-btn" id="nextBtn" onclick="playNextTrack()">
+    <span class="material-symbols-rounded">skip_next</span>
+  </button>
+  <button class="ctrl-btn" onclick="toggleRepeat()">
+    <span class="material-symbols-rounded">repeat</span>
+  </button>
+</div>
     <div class="progress-area">
       <span id="currTime">0:00</span>
       <div class="prog-bar" id="progBar"><div class="prog-fill" id="progFill"></div></div>
@@ -827,6 +837,10 @@ let currentPlaylistId = null;
 let currentTrack = null;
 let likedTracks = new Set();
 let currentGenreFilter = null;
+let isShuffled = false;
+let isRepeating = false;
+let currentTrackIndex = 0;
+let shuffledIndices = [];
 
 const audio = document.getElementById('audio');
 const playerBar = document.getElementById('playerBar');
@@ -1033,7 +1047,11 @@ function renderPlaylists() {
 // =============================================
 function playTrack(track) {
   currentTrack = track;
-
+  
+  // Find the track index in the filtered tracks
+  const tracks = getFilteredTracks();
+  currentTrackIndex = tracks.findIndex(t => t.id === track.id);
+  
   // Update all player UI elements
   document.getElementById('pTitle').textContent = track.title || 'Unknown';
   document.getElementById('pArtist').textContent = track.artist || 'Unknown';
@@ -1059,7 +1077,17 @@ function playTrack(track) {
   updatePlayerVisibility();
 }
 
+// Add this function to handle mobile play button
 function togglePlay() {
+  if (!currentTrack) {
+    // If no track is playing, play the first track
+    const tracks = getFilteredTracks();
+    if (tracks.length > 0) {
+      playTrack(tracks[0]);
+    }
+    return;
+  }
+  
   if (audio.paused) {
     audio.play().catch(() => {});
   } else {
@@ -1109,6 +1137,28 @@ audio.ontimeupdate = () => {
     document.getElementById('currTime').textContent = formatTime(audio.currentTime);
     document.getElementById('durTime').textContent = formatTime(audio.duration);
   }
+};
+
+// Handle track ending - Add this here
+audio.onended = () => {
+  if (isRepeating) {
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } else {
+    playNextTrack();
+  }
+};
+
+// Progress bar click handler
+document.getElementById('progBar').onclick = e => {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pos = (e.clientX - rect.left) / rect.width;
+  audio.currentTime = pos * audio.duration;
+};
+
+// Volume slider
+volSlider.oninput = () => {
+  audio.volume = volSlider.value;
 };
 
 document.getElementById('progBar').onclick = e => {
@@ -1239,6 +1289,92 @@ function createNewPlaylist() {
     db.ref(`users/${uid}/playlists`).push().set({ name, tracks: {} })
       .then(() => modal.alert(`"${name}" created!`));
   });
+}
+
+  function getShuffledIndices(length) {
+  const indices = Array.from({length}, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  return indices;
+}
+
+function getNextTrackIndex() {
+  const tracks = getFilteredTracks();
+  if (tracks.length === 0) return -1;
+  
+  if (isShuffled) {
+    if (shuffledIndices.length === 0) {
+      shuffledIndices = getShuffledIndices(tracks.length);
+    }
+    const currentShuffledIndex = shuffledIndices.indexOf(currentTrackIndex);
+    const nextShuffledIndex = (currentShuffledIndex + 1) % shuffledIndices.length;
+    return shuffledIndices[nextShuffledIndex];
+  } else {
+    return (currentTrackIndex + 1) % tracks.length;
+  }
+}
+
+function getPrevTrackIndex() {
+  const tracks = getFilteredTracks();
+  if (tracks.length === 0) return -1;
+  
+  if (isShuffled) {
+    if (shuffledIndices.length === 0) {
+      shuffledIndices = getShuffledIndices(tracks.length);
+    }
+    const currentShuffledIndex = shuffledIndices.indexOf(currentTrackIndex);
+    const prevShuffledIndex = (currentShuffledIndex - 1 + shuffledIndices.length) % shuffledIndices.length;
+    return shuffledIndices[prevShuffledIndex];
+  } else {
+    return (currentTrackIndex - 1 + tracks.length) % tracks.length;
+  }
+}
+
+  function toggleShuffle() {
+  isShuffled = !isShuffled;
+  const shuffleBtn = document.querySelector('.ctrl-btn .material-symbols-rounded');
+  
+  if (isShuffled) {
+    // Generate new shuffle order
+    const tracks = getFilteredTracks();
+    shuffledIndices = getShuffledIndices(tracks.length);
+    shuffleBtn.style.fontVariationSettings = "'FILL' 1";
+    shuffleBtn.style.color = 'var(--accent-primary)';
+  } else {
+    shuffleBtn.style.fontVariationSettings = "'FILL' 0";
+    shuffleBtn.style.color = '';
+  }
+}
+
+function toggleRepeat() {
+  isRepeating = !isRepeating;
+  const repeatBtn = document.querySelectorAll('.ctrl-btn .material-symbols-rounded')[4]; // The repeat button
+  
+  if (isRepeating) {
+    repeatBtn.style.fontVariationSettings = "'FILL' 1";
+    repeatBtn.style.color = 'var(--accent-primary)';
+  } else {
+    repeatBtn.style.fontVariationSettings = "'FILL' 0";
+    repeatBtn.style.color = '';
+  }
+}
+
+function playNextTrack() {
+  const nextIndex = getNextTrackIndex();
+  if (nextIndex !== -1) {
+    const tracks = getFilteredTracks();
+    playTrack(tracks[nextIndex]);
+  }
+}
+
+function playPrevTrack() {
+  const prevIndex = getPrevTrackIndex();
+  if (prevIndex !== -1) {
+    const tracks = getFilteredTracks();
+    playTrack(tracks[prevIndex]);
+  }
 }
 
 function addToPlaylist(trackId) {
