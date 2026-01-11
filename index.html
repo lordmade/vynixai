@@ -1928,20 +1928,16 @@ function toggleLike(trackId, buttonElement = null) {
   renderLibrary();
 }
 
- function togglePlaylistLike(playlistId, ownerUserId, buttonElement) {
+function togglePlaylistLike(playlistId, ownerUserId, buttonElement) {
   const uid = auth.currentUser?.uid;
   if (!uid || !playlistId) return;
 
   const wasLiked = likedPlaylists.has(playlistId);
-  const likeRef = db.ref(`users/${uid}/likedPlaylists/${playlistId}`);
-  const publicCountRef = db.ref(`publicPlaylists/${playlistId}/likesCount`);
-  const ownerCountRef = db.ref(`users/${ownerUserId}/playlists/${playlistId}/likesCount`);
-
-  // Optimistic UI update (instant feedback)
   const countEl = buttonElement.querySelector('.like-count');
   const iconEl = buttonElement.querySelector('span.material-symbols-rounded');
   let currentCount = parseInt(countEl?.textContent || '0');
 
+  // Optimistic UI
   if (wasLiked) {
     likedPlaylists.delete(playlistId);
     buttonElement.classList.remove('liked');
@@ -1953,26 +1949,26 @@ function toggleLike(trackId, buttonElement = null) {
     iconEl.textContent = 'favorite';
     currentCount += 1;
   }
-
   if (countEl) countEl.textContent = currentCount;
 
-  // Real Firebase updates
-  const updates = {};
-  updates[`users/${uid}/likedPlaylists/${playlistId}`] = wasLiked ? null : true;
+  // Firebase - atomic transaction for count
+  const publicCountRef = db.ref(`publicPlaylists/${playlistId}/likesCount`);
+  const ownerCountRef = db.ref(`users/${ownerUserId}/playlists/${playlistId}/likesCount`);
 
-  // Atomic increment/decrement using transaction
   publicCountRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
   ownerCountRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
 
-  db.ref().update(updates).catch(err => {
-    console.error('Like update failed:', err);
-    // Rollback UI on error
-    likedPlaylists[wasLiked ? 'add' : 'delete'](playlistId);
-    buttonElement.classList.toggle('liked', !wasLiked);
-    iconEl.textContent = wasLiked ? 'favorite' : 'favorite_border';
-    if (countEl) countEl.textContent = currentCount + (wasLiked ? 1 : -1);
-    modal.alert("Failed to update like. Please try again.");
-  });
+  // User's like status
+  db.ref(`users/${uid}/likedPlaylists/${playlistId}`).set(wasLiked ? null : true)
+    .catch(err => {
+      console.error('Like failed:', err);
+      // Rollback UI
+      likedPlaylists[wasLiked ? 'add' : 'delete'](playlistId);
+      buttonElement.classList.toggle('liked', !wasLiked);
+      iconEl.textContent = wasLiked ? 'favorite' : 'favorite_border';
+      if (countEl) countEl.textContent = currentCount + (wasLiked ? 1 : -1);
+      modal.alert("Failed to update like. Try again.");
+    });
 }
 
 function createNewPlaylist() {
@@ -2143,18 +2139,20 @@ function appendPlaylistCard(pl, container, isFeatured = false) {
 
   const card = document.createElement('div');
   card.className = 'playlist-card' + (isFeatured ? ' featured' : '');
+
   card.innerHTML = `
     <div class="cover">
-      <img src="https://i.postimg.cc/8zF8q662/dda96d43-056a-4418-a156-9adf6e0551de.jpg" alt="${pl.name}" loading="lazy" onerror="this.src='https://i.postimg.cc/8zF8q662/dda96d43-056a-4418-a156-9adf6e0551de.jpg'">
+      <img src="${coverSrc}" alt="${pl.name || 'Playlist cover'}" loading="lazy" onerror="this.src='${DEFAULT_COVER}'">
     </div>
     <div class="info">
       <div class="name">${pl.name}</div>
       <div class="by">By ${pl.createdBy || 'Someone'}</div>
-      <div class="meta" style="font-size:0.88rem; color:var(--text-muted); margin-top:0.3rem;">
-        ${pl.trackCount || '?'} tracks • ${pl.likesCount || 0} likes
+      <div class="meta" style="font-size:0.9rem; color:var(--text-muted); margin-top:0.4rem;">
+        ${pl.trackCount || '?'} tracks
       </div>
       <button class="like-playlist-btn ${isLiked ? 'liked' : ''}" data-playlist-id="${pl.id}">
         <span class="material-symbols-rounded">${isLiked ? 'favorite' : 'favorite_border'}</span>
+        <span class="like-count">${pl.likesCount || 0}</span>
       </button>
     </div>
   `;
@@ -2165,12 +2163,12 @@ function appendPlaylistCard(pl, container, isFeatured = false) {
     loadAndPlayCommunityPlaylist(pl.userId, pl.id, pl.name);
   });
 
-  // Like button
+  // Like toggle with real count read/update
   const likeBtn = card.querySelector('.like-playlist-btn');
-  likeBtn.onclick = e => {
+  likeBtn.addEventListener('click', e => {
     e.stopPropagation();
     togglePlaylistLike(pl.id, pl.userId, likeBtn);
-  };
+  });
 
   container.appendChild(card);
 }
