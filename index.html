@@ -1485,52 +1485,57 @@ function loadData(uid) {
   };
 
   // ── 1. Load & keep tracks real-time ───────────────────────────────────────
-  db.ref('content/music').once('value').then(snap => {
+// ── 1. Load tracks once at startup ─────────────────────────────────────────
+db.ref('content/music').once('value').then(snap => {
     allTracks = [];
     snap.forEach(child => {
-      const t = child.val();
-      t.id = child.key;
-      allTracks.push(t);
+        const t = child.val();
+        t.id = child.key;
+        allTracks.push(t);
     });
 
     initialTracksLoaded = true;
     renderHome();
+    renderLibrary();           // optional — good to have
     checkIfReadyToHideLoader();
+}).catch(err => {
+    console.error('Failed to load initial tracks:', err);
+});
 
-    // Real-time updates: when any track field changes (especially playCount)
-    db.ref('content/music').on('child_changed', snapshot => {
-      const updatedTrack = snapshot.val();
-      if (!updatedTrack) return;
+// ── 2. Listen for real-time changes (playCount updates mostly) ─────────────
+db.ref('content/music').on('child_changed', snapshot => {
+    const updated = snapshot.val();
+    if (!updated) return;
+    updated.id = snapshot.key;
 
-      updatedTrack.id = snapshot.key;
+    // Update our in-memory array
+    const idx = allTracks.findIndex(t => t.id === updated.id);
+    if (idx !== -1) {
+        allTracks[idx] = { ...allTracks[idx], ...updated };
+    } else {
+        // Very rare: completely new track added by admin
+        allTracks.push(updated);
+    }
 
-      // Update local array (keeps data fresh without full reload)
-      const index = allTracks.findIndex(t => t.id === updatedTrack.id);
-      if (index !== -1) {
-        allTracks[index] = { ...allTracks[index], ...updatedTrack };
-      } else {
-        // Rare: completely new track added by admin
-        allTracks.push(updatedTrack);
-      }
+    // Only update what's necessary in the UI
+    updateTrackPlayCountInUI(updated.id, updated.playCount || 0);
 
-      // Re-render only the views that show track data / play counts
-      renderHome();
-      renderLibrary();
-      if (currentPlaylistId) renderPlaylistTracks();
-    });
+    // Optional: if you want trending cards to always reflect newest play counts
+    // (recommended if play counts change frequently)
+    renderTrendingCardsOnly();
+});
 
-    // Optional: listen for brand new tracks added to the catalog
-    db.ref('content/music').on('child_added', snapshot => {
-      const newTrack = snapshot.val();
-      newTrack.id = snapshot.key;
-      allTracks.push(newTrack);
-      renderHome();
-    });
-
-  }).catch(err => {
-    console.error('Failed to load tracks:', err);
-  });
-
+// Optional: also catch brand new tracks (very rare in your case)
+db.ref('content/music').on('child_added', snapshot => {
+    const newTrack = snapshot.val();
+    newTrack.id = snapshot.key;
+    
+    // Avoid duplicate if already in array from initial load
+    if (!allTracks.some(t => t.id === newTrack.id)) {
+        allTracks.push(newTrack);
+        renderHome(); // or just renderTrendingCardsOnly() + renderSongsListOnly()
+    }
+});
   // ── 2. Load & keep genres real-time ───────────────────────────────────────
   db.ref('/content/musicGenres').once('value').then(snap => {
     allGenres = [];
@@ -1623,24 +1628,25 @@ function getFilteredTracks() {
   return allTracks.filter(t => (t.genres?.includes(currentGenreFilter)) || t.genre === currentGenreFilter);
 }
 function createTrackCard(track) {
-  const div = document.createElement('div');
-  div.className = 'track-card';
-  div.innerHTML = `
-    <div class="card-img-wrap">
-      <img src="${track.cover || DEFAULT_COVER}" alt="${track.title}" onerror="this.src='${DEFAULT_COVER}'">
-      <div class="play-overlay"><span class="material-symbols-rounded" style="font-size:3.8rem;">play_arrow</span></div>
-    </div>
-    <div style="padding:1rem;">
-      <div style="font-weight:700; font-size:1.1rem;">${track.title || 'Unknown'}</div>
-      <div style="color:var(--text-secondary); font-size:0.92rem; margin-top:0.3rem;">${track.artist || 'Unknown'}</div>
-      <!-- NEW: Play count display -->
-      <div style="margin-top:0.5rem; font-size:0.82rem; color:var(--text-muted);">
-        ${track.playCount || 0} plays
-      </div>
-    </div>
-  `;
-  div.onclick = () => playTrack(track);
-  return div;
+    const div = document.createElement('div');
+    div.className = 'track-card';
+    div.dataset.trackId = track.id;   // ← important for targeting
+
+    div.innerHTML = `
+        <div class="card-img-wrap">
+            <img src="${track.cover || DEFAULT_COVER}" alt="${track.title}" onerror="this.src='${DEFAULT_COVER}'">
+            <div class="play-overlay"><span class="material-symbols-rounded" style="font-size:3.8rem;">play_arrow</span></div>
+        </div>
+        <div style="padding:1rem;">
+            <div style="font-weight:700; font-size:1.1rem;">${track.title || 'Unknown'}</div>
+            <div style="color:var(--text-secondary); font-size:0.92rem; margin-top:0.3rem;">${track.artist || 'Unknown'}</div>
+            <div class="play-count-display" style="margin-top:0.5rem; font-size:0.82rem; color:var(--text-muted);">
+                ${track.playCount || 0} plays
+            </div>
+        </div>
+    `;
+    div.onclick = () => playTrack(track);
+    return div;
 }
 function createSongRow(track) {
   const div = document.createElement('div');
@@ -1679,6 +1685,37 @@ function renderHome() {
   filtered.forEach(t => list.appendChild(createSongRow(t)));
   applySearchFilter();
 }
+
+  // Only refresh the horizontal trending cards (most visible part)
+function renderTrendingCardsOnly() {
+    const grid = document.getElementById('trendingGrid');
+    if (!grid) return;
+
+    grid.innerHTML = ''; // clear previous cards
+
+    const filtered = getFilteredTracks();
+    // Show top 12 (or however many you want)
+    filtered.slice(0, 12).forEach(track => {
+        grid.appendChild(createTrackCard(track));
+    });
+}
+
+// Surgical update of play count display in UI (very fast, no full re-render)
+function updateTrackPlayCountInUI(trackId, newCount) {
+    // Update all visible track cards
+    document.querySelectorAll(`.track-card[data-track-id="${trackId}"] .play-count-display,
+                               .track-card [data-track-id="${trackId}"] .play-count-display`)
+        .forEach(el => {
+            el.textContent = `${newCount || 0} plays`;
+        });
+
+    // Update song rows (if visible in list/library/playlist)
+    document.querySelectorAll(`.song-row[data-track-id="${trackId}"] .play-count-display`)
+        .forEach(el => {
+            el.textContent = `${newCount || 0} plays`;
+        });
+}
+  
 function renderLibrary() {
   const container = document.getElementById('likedSongsList');
   container.innerHTML = '';
