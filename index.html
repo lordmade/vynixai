@@ -1237,20 +1237,47 @@ document.getElementById('progBar').onclick = e => {
 // Player Controls
 // =============================================
 function playTrack(track) {
+  if (!track?.id) {
+    console.warn("Cannot play track: missing track ID");
+    return;
+  }
+
   currentTrack = track;
   const tracks = getFilteredTracks();
   currentTrackIndex = tracks.findIndex(t => t.id === track.id);
+
+  // Update player UI
   document.getElementById('pTitle').textContent = track.title || 'Unknown';
   document.getElementById('pArtist').textContent = track.artist || 'Unknown';
+
   const cover = document.getElementById('pCover');
   cover.src = track.cover || DEFAULT_COVER;
+
   document.getElementById('lyricsCover').src = track.cover || DEFAULT_COVER;
   document.getElementById('lyricsTitle').textContent = track.title || 'Unknown';
   document.getElementById('lyricsArtist').textContent = track.artist || 'Unknown';
+
   audio.src = track.audio || '';
-  audio.play().catch(() => {});
-  updatePlayIcons(true);
-  playerBar.classList.remove('hidden');
+  
+  // Start playback
+  audio.play()
+    .then(() => {
+      updatePlayIcons(true);
+      playerBar.classList.remove('hidden');
+
+      // ── Increment play count only after playback actually starts ──
+      firebase.database()
+        .ref(`content/music/${track.id}/playCount`)
+        .set(firebase.database.ServerValue.increment(1))
+        .catch(err => {
+          console.error("Failed to increment play count:", err);
+        });
+    })
+    .catch(err => {
+      console.error("Playback failed:", err);
+      // Optional: show user message
+      // modal.alert("Could not play this track. It may be unavailable.");
+    });
 }
 function togglePlay() {
   if (!currentTrack) {
@@ -1447,6 +1474,7 @@ function loadData(uid) {
   let initialTracksLoaded = false;
   let initialGenresLoaded = false;
   const loader = document.getElementById('appLoader');
+
   const checkIfReadyToHideLoader = () => {
     if (initialTracksLoaded && initialGenresLoaded) {
       setTimeout(() => {
@@ -1455,6 +1483,8 @@ function loadData(uid) {
       }, 300);
     }
   };
+
+  // ── Tracks ────────────────────────────────────────────────────────────────
   db.ref('content/music').once('value').then(snap => {
     allTracks = [];
     snap.forEach(child => {
@@ -1462,20 +1492,46 @@ function loadData(uid) {
       t.id = child.key;
       allTracks.push(t);
     });
+
     initialTracksLoaded = true;
     renderHome();
     checkIfReadyToHideLoader();
-    db.ref('content/music').on('value', snap => {
-      allTracks = [];
-      snap.forEach(child => {
-        const t = child.val();
-        t.id = child.key;
-        allTracks.push(t);
-      });
-      renderHome();
-      if (currentPlaylistId) renderPlaylistTracks();
+
+    // ── IMPORTANT: Real-time listener for track changes (including playCount) ──
+    db.ref('content/music').on('child_changed', snapshot => {
+      const updatedTrack = snapshot.val();
+      if (!updatedTrack) return;
+
+      updatedTrack.id = snapshot.key;
+
+      // Update our local array (prevents stale data)
+      const index = allTracks.findIndex(t => t.id === updatedTrack.id);
+      if (index !== -1) {
+        allTracks[index] = { ...allTracks[index], ...updatedTrack };
+      } else {
+        // Rare case: completely new track added by admin
+        allTracks.push(updatedTrack);
+      }
+
+      // Re-render views that display play counts
+      renderHome();           // updates cards + list on home
+      renderLibrary();        // updates liked songs view
+      if (currentPlaylistId) renderPlaylistTracks(); // updates current playlist
     });
-  }).catch(err => console.error('Failed to load tracks:', err));
+
+    // Optional: also listen for completely new tracks (admin adds music)
+    db.ref('content/music').on('child_added', snapshot => {
+      const newTrack = snapshot.val();
+      newTrack.id = snapshot.key;
+      allTracks.push(newTrack);
+      renderHome();
+    });
+
+  }).catch(err => {
+    console.error('Failed to load tracks:', err);
+  });
+
+  // ── Genres ────────────────────────────────────────────────────────────────
   db.ref('/content/musicGenres').once('value').then(snap => {
     allGenres = [];
     snap.forEach(c => {
@@ -1483,9 +1539,12 @@ function loadData(uid) {
       if (name) allGenres.push(name);
     });
     allGenres.sort();
+
     initialGenresLoaded = true;
     renderGenreChips();
     checkIfReadyToHideLoader();
+
+    // Keep genres real-time too
     db.ref('/content/musicGenres').on('value', snap => {
       allGenres = [];
       snap.forEach(c => {
@@ -1496,11 +1555,14 @@ function loadData(uid) {
       renderGenreChips();
     });
   }).catch(err => console.error('Failed to load genres:', err));
+
+  // ── User likes & playlists (already real-time) ────────────────────────────
   db.ref(`users/${uid}/likes`).on('value', snap => {
     likedTracks.clear();
     if (snap.val()) Object.keys(snap.val()).forEach(k => likedTracks.add(k));
     renderLibrary();
   });
+
   db.ref(`users/${uid}/playlists`).on('value', snap => {
     playlists = snap.val() || {};
     renderPlaylists();
@@ -1563,6 +1625,10 @@ function createTrackCard(track) {
     <div style="padding:1rem;">
       <div style="font-weight:700; font-size:1.1rem;">${track.title || 'Unknown'}</div>
       <div style="color:var(--text-secondary); font-size:0.92rem; margin-top:0.3rem;">${track.artist || 'Unknown'}</div>
+      <!-- NEW: Play count display -->
+      <div style="margin-top:0.5rem; font-size:0.82rem; color:var(--text-muted);">
+        ${track.playCount || 0} plays
+      </div>
     </div>
   `;
   div.onclick = () => playTrack(track);
