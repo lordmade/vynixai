@@ -1160,45 +1160,73 @@ firebase.initializeApp({
 const auth = firebase.auth();
 const db = firebase.database();
 
-  // Track which public playlists current user has liked
+// Global Set – which public playlists the current user has liked
 let likedPlaylists = new Set();
 
-// Listen to user's liked playlists (real-time)
-function listenToLikedPlaylists() {
+// 1. Listen to user's own likes (determines filled/empty heart)
+function listenToUserLikedPlaylists() {
   const uid = auth.currentUser?.uid;
   if (!uid) return;
 
   db.ref(`users/${uid}/likedPlaylists`).on('value', snap => {
     likedPlaylists.clear();
-    if (snap.val()) {
+    if (snap.exists() && snap.val()) {
       Object.keys(snap.val()).forEach(id => likedPlaylists.add(id));
     }
-    // Optional: refresh Discover if currently viewing
-    if (!document.getElementById('view-discover').classList.contains('hidden')) {
-      loadCommunityPlaylists();
+    
+    // Only update heart icons — NO full reload
+    updateAllLikeButtonsInView();
+  });
+}
+
+// Helper: refresh only the heart icons & user like state (very fast)
+function updateAllLikeButtonsInView() {
+  document.querySelectorAll('.like-playlist-btn').forEach(btn => {
+    const playlistId = btn.dataset.playlistId;
+    const isLiked = likedPlaylists.has(playlistId);
+    
+    btn.classList.toggle('liked', isLiked);
+    btn.querySelector('span.material-symbols-rounded').textContent = 
+      isLiked ? 'favorite' : 'favorite_border';
+  });
+}
+
+// 2. Listen to like COUNT changes globally (live counter updates)
+function listenToPublicPlaylistLikeCounts() {
+  db.ref('publicPlaylists').on('child_changed', snap => {
+    const playlistId = snap.key;
+    const newLikes = snap.val()?.likesCount ?? 0;
+
+    // Find only this one card and update its counter
+    const countEl = document.querySelector(
+      `.like-playlist-btn[data-playlist-id="${playlistId}"] .like-count`
+    );
+    if (countEl) {
+      countEl.textContent = newLikes;
     }
   });
 }
 
+// In auth.onAuthStateChanged – replace your current listener
 auth.onAuthStateChanged(user => {
   if (!user) {
     window.location.replace('login.html');
     return;
   }
 
-  // ── User is logged in ───────────────────────────────────────
-  // Personalize hero banner greeting
+  // Personalize greeting
   const firstName = user.displayName?.split(' ')[0] || 'Music Lover';
   const heroTitle = document.querySelector('.hero-text h1');
   if (heroTitle) {
     heroTitle.textContent = `Welcome back, ${firstName}!`;
   }
 
-  // Load all main data
+  // Load data
   loadData(user.uid);
 
-  // Start listening to user's liked public playlists
-  listenToLikedPlaylists();
+  // Start smart listeners
+  listenToUserLikedPlaylists();         // heart state
+  listenToPublicPlaylistLikeCounts();   // live count updates
 });
 
 // =============================================
@@ -1791,19 +1819,19 @@ function toggleLike(trackId, buttonElement = null) {
   renderLibrary();
 }
 
-  function togglePlaylistLike(playlistId, ownerUserId, buttonElement) {
+ function togglePlaylistLike(playlistId, ownerUserId, buttonElement) {
   const uid = auth.currentUser?.uid;
   if (!uid || !playlistId) return;
 
   const wasLiked = likedPlaylists.has(playlistId);
   const likeRef = db.ref(`users/${uid}/likedPlaylists/${playlistId}`);
-  const publicPlaylistRef = db.ref(`publicPlaylists/${playlistId}/likesCount`);
-  const ownerPlaylistRef = db.ref(`users/${ownerUserId}/playlists/${playlistId}/likesCount`);
+  const publicCountRef = db.ref(`publicPlaylists/${playlistId}/likesCount`);
+  const ownerCountRef = db.ref(`users/${ownerUserId}/playlists/${playlistId}/likesCount`);
 
-  // Optimistic UI
+  // Optimistic UI update (instant feedback)
   const countEl = buttonElement.querySelector('.like-count');
   const iconEl = buttonElement.querySelector('span.material-symbols-rounded');
-  let currentCount = parseInt(countEl.textContent) || 0;
+  let currentCount = parseInt(countEl?.textContent || '0');
 
   if (wasLiked) {
     likedPlaylists.delete(playlistId);
@@ -1816,29 +1844,25 @@ function toggleLike(trackId, buttonElement = null) {
     iconEl.textContent = 'favorite';
     currentCount += 1;
   }
-  countEl.textContent = currentCount;
 
-  // Real Firebase update
+  if (countEl) countEl.textContent = currentCount;
+
+  // Real Firebase updates
   const updates = {};
+  updates[`users/${uid}/likedPlaylists/${playlistId}`] = wasLiked ? null : true;
 
-  if (wasLiked) {
-    updates[`users/${uid}/likedPlaylists/${playlistId}`] = null;
-  } else {
-    updates[`users/${uid}/likedPlaylists/${playlistId}`] = true;
-  }
-
-  // Update like count (transaction for atomic increment)
-  publicPlaylistRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
-  ownerPlaylistRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
+  // Atomic increment/decrement using transaction
+  publicCountRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
+  ownerCountRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
 
   db.ref().update(updates).catch(err => {
-    console.error('Like failed:', err);
-    // Rollback UI
+    console.error('Like update failed:', err);
+    // Rollback UI on error
     likedPlaylists[wasLiked ? 'add' : 'delete'](playlistId);
     buttonElement.classList.toggle('liked', !wasLiked);
     iconEl.textContent = wasLiked ? 'favorite' : 'favorite_border';
-    countEl.textContent = currentCount + (wasLiked ? 1 : -1);
-    modal.alert("Failed to update like. Try again.");
+    if (countEl) countEl.textContent = currentCount + (wasLiked ? 1 : -1);
+    modal.alert("Failed to update like. Please try again.");
   });
 }
 
