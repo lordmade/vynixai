@@ -832,6 +832,41 @@ img {
 .nav-item:hover .ctrl-btn {
   opacity: 1;
 }
+    .playlist-card .cover img {
+  object-fit: cover;
+}
+
+/* Make default cover more obvious when no custom image */
+.playlist-card .cover img[src*="data:image/svg+xml"] {
+  object-fit: contain;
+  background: #2a1a3f;
+  padding: 20%;
+}
+
+    .like-playlist-btn {
+  background: none;
+  border: none;
+  padding: 0.5rem;
+  border-radius: 50%;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+}
+
+.like-playlist-btn:hover {
+  transform: scale(1.1);
+}
+
+.like-playlist-btn.liked {
+  color: var(--accent);
+}
+
+.like-playlist-btn .like-count {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
   </style>
 </head>
 <body>
@@ -1125,20 +1160,45 @@ firebase.initializeApp({
 const auth = firebase.auth();
 const db = firebase.database();
 
+  // Track which public playlists current user has liked
+let likedPlaylists = new Set();
+
+// Listen to user's liked playlists (real-time)
+function listenToLikedPlaylists() {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+
+  db.ref(`users/${uid}/likedPlaylists`).on('value', snap => {
+    likedPlaylists.clear();
+    if (snap.val()) {
+      Object.keys(snap.val()).forEach(id => likedPlaylists.add(id));
+    }
+    // Optional: refresh Discover if currently viewing
+    if (!document.getElementById('view-discover').classList.contains('hidden')) {
+      loadCommunityPlaylists();
+    }
+  });
+}
+
 auth.onAuthStateChanged(user => {
   if (!user) {
     window.location.replace('login.html');
-  } else {
-    // ── User is logged in ───────────────────────────────────────
-    // Personalize hero banner greeting
-    const firstName = user.displayName?.split(' ')[0] || 'Music Lover';
-    const heroTitle = document.querySelector('.hero-text h1');
-    if (heroTitle) {
-      heroTitle.textContent = `Welcome back, ${firstName}!`;
-    }
-
-    loadData(user.uid);
+    return;
   }
+
+  // ── User is logged in ───────────────────────────────────────
+  // Personalize hero banner greeting
+  const firstName = user.displayName?.split(' ')[0] || 'Music Lover';
+  const heroTitle = document.querySelector('.hero-text h1');
+  if (heroTitle) {
+    heroTitle.textContent = `Welcome back, ${firstName}!`;
+  }
+
+  // Load all main data
+  loadData(user.uid);
+
+  // Start listening to user's liked public playlists
+  listenToLikedPlaylists();
 });
 
 // =============================================
@@ -1731,6 +1791,57 @@ function toggleLike(trackId, buttonElement = null) {
   renderLibrary();
 }
 
+  function togglePlaylistLike(playlistId, ownerUserId, buttonElement) {
+  const uid = auth.currentUser?.uid;
+  if (!uid || !playlistId) return;
+
+  const wasLiked = likedPlaylists.has(playlistId);
+  const likeRef = db.ref(`users/${uid}/likedPlaylists/${playlistId}`);
+  const publicPlaylistRef = db.ref(`publicPlaylists/${playlistId}/likesCount`);
+  const ownerPlaylistRef = db.ref(`users/${ownerUserId}/playlists/${playlistId}/likesCount`);
+
+  // Optimistic UI
+  const countEl = buttonElement.querySelector('.like-count');
+  const iconEl = buttonElement.querySelector('span.material-symbols-rounded');
+  let currentCount = parseInt(countEl.textContent) || 0;
+
+  if (wasLiked) {
+    likedPlaylists.delete(playlistId);
+    buttonElement.classList.remove('liked');
+    iconEl.textContent = 'favorite_border';
+    currentCount = Math.max(0, currentCount - 1);
+  } else {
+    likedPlaylists.add(playlistId);
+    buttonElement.classList.add('liked');
+    iconEl.textContent = 'favorite';
+    currentCount += 1;
+  }
+  countEl.textContent = currentCount;
+
+  // Real Firebase update
+  const updates = {};
+
+  if (wasLiked) {
+    updates[`users/${uid}/likedPlaylists/${playlistId}`] = null;
+  } else {
+    updates[`users/${uid}/likedPlaylists/${playlistId}`] = true;
+  }
+
+  // Update like count (transaction for atomic increment)
+  publicPlaylistRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
+  ownerPlaylistRef.transaction(current => (current || 0) + (wasLiked ? -1 : 1));
+
+  db.ref().update(updates).catch(err => {
+    console.error('Like failed:', err);
+    // Rollback UI
+    likedPlaylists[wasLiked ? 'add' : 'delete'](playlistId);
+    buttonElement.classList.toggle('liked', !wasLiked);
+    iconEl.textContent = wasLiked ? 'favorite' : 'favorite_border';
+    countEl.textContent = currentCount + (wasLiked ? 1 : -1);
+    modal.alert("Failed to update like. Try again.");
+  });
+}
+
 function createNewPlaylist() {
   modal.show(
     'Create New Playlist',
@@ -1868,13 +1979,15 @@ function loadCommunityPlaylists() {
         container.innerHTML = `
           <div style="padding:6rem 1rem; text-align:center; color:var(--text-muted); line-height:1.6;">
             No public playlists yet...<br>
-            <small>Share your music! Create a playlist and toggle it public.</small>
+            <small>Be the first! Create a playlist and make it public.</small>
           </div>`;
         return;
       }
 
       const playlistsArray = [];
-      snap.forEach(child => playlistsArray.push({ id: child.key, ...child.val() }));
+      snap.forEach(child => {
+        playlistsArray.push({ id: child.key, ...child.val() });
+      });
 
       playlistsArray.sort((a, b) => {
         const likesDiff = (b.likesCount || 0) - (a.likesCount || 0);
@@ -1883,29 +1996,47 @@ function loadCommunityPlaylists() {
 
       playlistsArray.forEach(pl => {
         const coverSrc = pl.coverUrl || DEFAULT_COVER;
+        const isLikedByUser = likedPlaylists.has(pl.id); // we'll define this Set below
 
         const card = document.createElement('div');
         card.className = 'playlist-card';
         card.innerHTML = `
           <div class="cover">
-            <img src="https://i.postimg.cc/8zF8q662/dda96d43-056a-4418-a156-9adf6e0551de.jpg" alt="${pl.name}" onerror="this.src='${DEFAULT_COVER}'">
+            <img src="${coverSrc}" alt="${pl.name}" onerror="this.src='${DEFAULT_COVER}'">
           </div>
           <div class="info">
             <div class="name">${pl.name}</div>
             <div class="by">
               By ${pl.createdBy || 'Someone'} • ${pl.trackCount || '?'} tracks
-              ${pl.likesCount ? ` • ${pl.likesCount} likes` : ''}
             </div>
+            <button class="like-playlist-btn ${isLikedByUser ? 'liked' : ''}" 
+                    data-playlist-id="${pl.id}"
+                    style="margin-top:0.8rem; background:none; border:none; color:${isLikedByUser ? 'var(--accent)' : 'var(--text-secondary)'}; font-size:1.4rem; cursor:pointer; display:flex; align-items:center; gap:0.5rem;">
+              <span class="material-symbols-rounded">${isLikedByUser ? 'favorite' : 'favorite_border'}</span>
+              <span class="like-count">${pl.likesCount || 0}</span>
+            </button>
           </div>
         `;
 
-        card.onclick = () => loadAndPlayCommunityPlaylist(pl.userId, pl.id, pl.name);
+        // Click card body → play playlist
+        card.querySelector('.cover, .name, .by').onclick = (e) => {
+          e.stopPropagation();
+          loadAndPlayCommunityPlaylist(pl.userId, pl.id, pl.name);
+        };
+
+        // Like button toggle
+        const likeBtn = card.querySelector('.like-playlist-btn');
+        likeBtn.onclick = (e) => {
+          e.stopPropagation();
+          togglePlaylistLike(pl.id, pl.userId, likeBtn);
+        };
+
         container.appendChild(card);
       });
     })
     .catch(err => {
       console.error(err);
-      container.innerHTML = '<div style="padding:5rem; text-align:center; color:#ff5252;">Failed to load playlists</div>';
+      container.innerHTML = '<div style="padding:5rem; text-align:center; color:#ff5252;">Failed to load</div>';
     });
 }
 
