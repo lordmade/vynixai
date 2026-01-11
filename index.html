@@ -1796,102 +1796,140 @@ function addToPlaylist(trackId) {
   });
 }
 
-  // =============================================
-// DISCOVER TAB FUNCTIONS
 // =============================================
-
+// DISCOVER TAB FUNCTIONS (Simplified)
+// =============================================
 function loadDiscoverContent() {
-  loadTrendingSA();
-  loadMoods();
-  loadCommunityPlaylists();
-  renderDiscoverGenres();
+  loadCommunityPlaylists();      // Main focus: other users' public playlists
+  renderDiscoverGenres();        // Genre chips
 }
 
-// 1. Trending in South Africa (static for now - later dynamic)
-function loadTrendingSA() {
-  const container = document.getElementById('discover-trending-sa');
-  if (!container) return;
-
-  // Example tracks - replace with real data from Firebase later
-  const sample = [
-    { title: "Water", artist: "Tyla", cover: "https://i.postimg.cc/..."},
-    { title: "Push 2 Start", artist: "Tyla", cover: DEFAULT_COVER },
-    { title: "Amanikiniki", artist: "MFR Souls", cover: DEFAULT_COVER },
-    // Add 6-10 more...
-  ];
-
-  container.innerHTML = '';
-  sample.forEach(t => container.appendChild(createTrackCard(t)));
-}
-
-// 2. Moods & Activities (static)
-function loadMoods() {
-  const container = document.getElementById('discover-moods');
-  if (!container) return;
-
-  const moods = [
-    { name: "Chill", cover: "https://images.unsplash.com/photo-1511671782779-c97d3d27b1d4?w=400" },
-    { name: "Party", cover: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400" },
-    { name: "Workout", cover: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=400" },
-    { name: "Focus", cover: "https://images.unsplash.com/photo-1506869640319-fe1a24fd76f8?w=400" },
-    { name: "Night Drive", cover: "https://images.unsplash.com/photo-1502877338535-766e3a6052c0?w=400" },
-    { name: "Rainy Days", cover: "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=400" },
-  ];
-
-  container.innerHTML = '';
-  moods.forEach(m => {
-    const card = document.createElement('div');
-    card.className = 'mood-card';
-    card.innerHTML = `
-      <div class="cover">
-        <img src="${m.cover}" alt="${m.name}">
-        <div class="label">${m.name}</div>
-      </div>
-    `;
-    card.onclick = () => modal.alert(`Loading ${m.name} mood... (coming soon)`);
-    container.appendChild(card);
-  });
-}
-
-// 3. Community Playlists (automatic from public index)
+// 1. Community Playlists – Other users' public playlists (core feature now)
 function loadCommunityPlaylists() {
   const container = document.getElementById('communityPlaylists');
   if (!container) return;
 
+  container.innerHTML = '<div style="padding:4rem; text-align:center; color:var(--text-muted);">Loading community playlists...</div>';
+
   db.ref('publicPlaylists')
-    .orderByChild('likesCount')
-    .limitToLast(12)
+    .orderByChild('likesCount')     // Most popular first
+    .limitToLast(20)                // Show up to 20 (feel free to increase)
     .once('value')
     .then(snap => {
       container.innerHTML = '';
-      if (!snap.exists()) {
-        container.innerHTML = '<div style="padding:4rem; text-align:center; color:var(--text-muted);">No public playlists yet... Be the first!</div>';
+
+      if (!snap.exists() || snap.numChildren() === 0) {
+        container.innerHTML = `
+          <div style="padding:5rem 1rem; text-align:center; color:var(--text-muted); line-height:1.6;">
+            No public playlists available yet...<br>
+            <small>Create a playlist and make it public to share your music with others!</small>
+          </div>`;
         return;
       }
 
+      const playlistsArray = [];
       snap.forEach(child => {
-        const pl = child.val();
+        playlistsArray.push({ id: child.key, ...child.val() });
+      });
+
+      // Sort: highest likes first, fallback to newest
+      playlistsArray.sort((a, b) => {
+        const likesDiff = (b.likesCount || 0) - (a.likesCount || 0);
+        if (likesDiff !== 0) return likesDiff;
+        return (b.createdAt || 0) - (a.createdAt || 0);
+      });
+
+      playlistsArray.forEach(pl => {
         const card = document.createElement('div');
         card.className = 'playlist-card';
         card.innerHTML = `
           <div class="cover">
-            <img src="${pl.coverUrl || DEFAULT_COVER}" alt="${pl.name}">
+            <img src="${pl.coverUrl || DEFAULT_COVER}" alt="${pl.name}" onerror="this.src='${DEFAULT_COVER}'">
           </div>
           <div class="info">
             <div class="name">${pl.name}</div>
-            <div class="by">By ${pl.createdBy || 'Someone'}</div>
+            <div class="by">
+              By ${pl.createdBy || 'Someone'} • 
+              ${pl.trackCount || '—'} tracks
+              ${pl.likesCount ? ` • ${pl.likesCount} likes` : ''}
+            </div>
           </div>
         `;
+
+        // Click → load and play this playlist
         card.onclick = () => {
-          // You can implement full playlist loading here later
-          modal.alert(`Opening "${pl.name}" by ${pl.createdBy}`);
+          loadAndPlayCommunityPlaylist(pl.userId, pl.id, pl.name);
         };
+
         container.appendChild(card);
       });
+    })
+    .catch(err => {
+      console.error('Failed to load community playlists:', err);
+      container.innerHTML = `
+        <div style="padding:4rem; text-align:center; color:#ff5252;">
+          Failed to load community playlists<br>
+          <small>Please try again later</small>
+        </div>`;
     });
 }
 
-// 4. Discover Genres (big chips)
+// 2. Load & Play Another User's Public Playlist
+function loadAndPlayCommunityPlaylist(userId, playlistId, playlistName) {
+  db.ref(`users/${userId}/playlists/${playlistId}`)
+    .once('value')
+    .then(snap => {
+      const playlist = snap.val();
+      if (!playlist || !playlist.tracks) {
+        modal.alert("This playlist is empty or no longer available.");
+        return;
+      }
+
+      const trackIds = Object.keys(playlist.tracks || {});
+      if (trackIds.length === 0) {
+        modal.alert("This playlist has no tracks yet.");
+        return;
+      }
+
+      // Match tracks from global music library
+      const playlistTracks = [];
+      trackIds.forEach(id => {
+        const track = allTracks.find(t => t.id === id);
+        if (track) playlistTracks.push(track);
+      });
+
+      if (playlistTracks.length === 0) {
+        modal.alert("None of the tracks in this playlist are available right now.");
+        return;
+      }
+
+      // Switch to playlist view
+      currentPlaylistId = `community_${playlistId}`; // temporary identifier
+      document.getElementById('playlistTitle').textContent = playlistName || "Community Playlist";
+
+      switchView('playlist');
+
+      // Render the tracks in playlist view
+      const container = document.getElementById('playlistTracksList');
+      container.innerHTML = '';
+      playlistTracks.forEach(track => {
+        container.appendChild(createSongRow(track));
+      });
+
+      // Optional: auto-play first track
+      if (playlistTracks.length > 0) {
+        playTrack(playlistTracks[0]);
+      }
+
+      modal.alert(`Now playing: "${playlistName}" (${playlistTracks.length} tracks)`);
+    })
+    .catch(err => {
+      console.error('Failed to load playlist:', err);
+      modal.alert("Failed to load this playlist. Try again later.");
+    });
+}
+
+// 3. Discover Genres (unchanged – big chips)
 function renderDiscoverGenres() {
   const container = document.getElementById('discoverGenres');
   if (!container) return;
@@ -1904,21 +1942,20 @@ function renderDiscoverGenres() {
     chip.style.cssText = 'padding:0.8rem 1.6rem; background:rgba(192,132,252,0.14); border-radius:999px; cursor:pointer; font-weight:600; transition:all 0.3s;';
     chip.onclick = () => {
       currentGenreFilter = g;
-      switchView('home'); // or create genre-specific view
+      switchView('home'); // goes back to home with genre filter
     };
     container.appendChild(chip);
   });
 }
 
-// Hook into switchView
+// Hook into switchView (unchanged)
 const originalSwitchView = switchView;
 switchView = function(view) {
   originalSwitchView(view);
   if (view === 'discover') {
-    loadDiscoverContent();
+    loadDiscoverContent(); // Now only loads playlists + genres
   }
 };
-
 // =============================================
 // Event Listeners + Init
 // =============================================
