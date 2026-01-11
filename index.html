@@ -1615,7 +1615,14 @@ function renderPlaylists() {
     item.style.position = 'relative';
 
     item.innerHTML = `
-      <span>${pl.name || 'Untitled'} ${pl.public ? '🔓' : ''}</span>
+      <div style="display:flex; align-items:center; gap:0.9rem;">
+        <div style="width:36px;height:36px;border-radius:8px;overflow:hidden;">
+          <img src="${pl.coverUrl || DEFAULT_COVER}" alt="cover" 
+               style="width:100%;height:100%;object-fit:cover;" 
+               onerror="this.src='${DEFAULT_COVER}'">
+        </div>
+        <span>${pl.name || 'Untitled'} ${pl.public ? '🔓' : ''}</span>
+      </div>
       <button class="ctrl-btn" style="position:absolute; right:12px; font-size:1.6rem;"
         onclick="event.stopPropagation(); openEditPlaylistModal('${id}')">
         <span class="material-symbols-rounded">edit</span>
@@ -1623,7 +1630,7 @@ function renderPlaylists() {
     `;
 
     item.onclick = (e) => {
-      if (e.target.closest('.ctrl-btn')) return; // don't trigger if clicking edit
+      if (e.target.closest('.ctrl-btn')) return;
       currentPlaylistId = id;
       document.getElementById('playlistTitle').textContent = pl.name || 'Playlist';
       switchView('playlist');
@@ -1733,24 +1740,42 @@ function createNewPlaylist() {
       </p>
       <input type="text" class="modal-input" id="playlistNameInput" placeholder="e.g. Amapiano Nights 2026" autofocus>
       
+      <div style="margin:1.8rem 0 1rem;">
+        <label style="display:block; font-weight:600; margin-bottom:0.6rem;">Cover Image (optional)</label>
+        <div class="upload-area" id="playlistCoverUploadArea" style="height:140px; font-size:0.9rem;">
+          <span>Click or drag image (optional)</span>
+          <input type="file" id="playlistCoverFileInput" accept="image/*"/>
+          <img id="playlistCoverPreview" class="preview" style="max-height:100px; margin-top:0.8rem;" alt="Preview"/>
+        </div>
+      </div>
+
       <div style="margin:1.6rem 0; display:flex; align-items:center; gap:0.9rem;">
         <input type="checkbox" id="makePublicCheckbox" checked style="width:18px;height:18px; accent-color:var(--accent);">
-        <label for="makePublicCheckbox" style="font-size:0.96rem; color:var(--text-primary); cursor:pointer; user-select:none;">
+        <label for="makePublicCheckbox" style="font-size:0.96rem; color:var(--text-primary); cursor:pointer;">
           Make this playlist public<br>
           <span style="font-size:0.84rem; color:var(--text-muted);">(visible to everyone in Discover)</span>
         </label>
       </div>
     `,
-    false, '', () => {
-      const nameInput = document.getElementById('playlistNameInput');
-      const publicCheckbox = document.getElementById('makePublicCheckbox');
-      
-      const name = nameInput.value.trim();
-      const isPublic = publicCheckbox.checked;
+    false, '', async () => {
+      const name = document.getElementById('playlistNameInput').value.trim();
+      const isPublic = document.getElementById('makePublicCheckbox').checked;
+      const fileInput = document.getElementById('playlistCoverFileInput');
+      let coverUrl = null;
 
       if (!name) {
         modal.alert('Playlist name is required!');
         return;
+      }
+
+      // Upload cover if selected
+      if (fileInput.files && fileInput.files[0]) {
+        try {
+          coverUrl = await uploadToCloudinary(fileInput.files[0], 'playlistCoverProgress'); // add progress if you want
+        } catch (err) {
+          console.error('Cover upload failed:', err);
+          modal.alert('Failed to upload cover – using default.');
+        }
       }
 
       const uid = auth.currentUser.uid;
@@ -1765,13 +1790,13 @@ function createNewPlaylist() {
         createdBy: displayName,
         createdAt: firebase.database.ServerValue.TIMESTAMP,
         public: isPublic,
-        likesCount: 0
+        likesCount: 0,
+        coverUrl: coverUrl || null  // null = will use DEFAULT_COVER later
       };
 
       const updates = {};
       updates[`users/${uid}/playlists/${playlistId}`] = playlistData;
 
-      // If public → also add to global discoverable index
       if (isPublic) {
         updates[`publicPlaylists/${playlistId}`] = {
           ...playlistData,
@@ -1783,16 +1808,19 @@ function createNewPlaylist() {
       db.ref().update(updates)
         .then(() => {
           modal.alert(
-            `Playlist <strong>"${name}"</strong> created successfully!` +
+            `Playlist <strong>"${name}"</strong> created!` +
             (isPublic ? '<br><br>It’s now visible to everyone in Discover 🎉' : '')
           );
         })
         .catch(err => {
-          console.error('Playlist creation failed:', err);
-          modal.alert('Something went wrong. Please try again.');
+          console.error(err);
+          modal.alert('Failed to create playlist.');
         });
     }
   );
+
+  // Optional: setup upload preview for create modal
+  setupUpload("playlistCoverUploadArea", "playlistCoverFileInput", "playlistCoverPreview", "playlistCoverProgress");
 }
 
 function addToPlaylist(trackId) {
@@ -1830,8 +1858,8 @@ function loadCommunityPlaylists() {
   container.innerHTML = '<div style="padding:5rem 1rem; text-align:center; color:var(--text-muted);">Loading community playlists...</div>';
 
   db.ref('publicPlaylists')
-    .orderByChild('likesCount')     // Most popular first
-    .limitToLast(20)                // Adjust number as needed
+    .orderByChild('likesCount')
+    .limitToLast(20)
     .once('value')
     .then(snap => {
       container.innerHTML = '';
@@ -1839,56 +1867,45 @@ function loadCommunityPlaylists() {
       if (!snap.exists() || snap.numChildren() === 0) {
         container.innerHTML = `
           <div style="padding:6rem 1rem; text-align:center; color:var(--text-muted); line-height:1.6;">
-            No public playlists available yet...<br><br>
-            <small>Be the first! Create a playlist and make it public to share your music with others.</small>
+            No public playlists yet...<br>
+            <small>Share your music! Create a playlist and toggle it public.</small>
           </div>`;
         return;
       }
 
       const playlistsArray = [];
-      snap.forEach(child => {
-        playlistsArray.push({ id: child.key, ...child.val() });
-      });
+      snap.forEach(child => playlistsArray.push({ id: child.key, ...child.val() }));
 
-      // Sort: highest likes first, then newest
       playlistsArray.sort((a, b) => {
         const likesDiff = (b.likesCount || 0) - (a.likesCount || 0);
-        if (likesDiff !== 0) return likesDiff;
-        return (b.createdAt || 0) - (a.createdAt || 0);
+        return likesDiff !== 0 ? likesDiff : (b.createdAt || 0) - (a.createdAt || 0);
       });
 
       playlistsArray.forEach(pl => {
+        const coverSrc = pl.coverUrl || DEFAULT_COVER;
+
         const card = document.createElement('div');
         card.className = 'playlist-card';
         card.innerHTML = `
           <div class="cover">
-            <img src="${pl.coverUrl || DEFAULT_COVER}" alt="${pl.name}" onerror="this.src='${DEFAULT_COVER}'">
+            <img src="${coverSrc}" alt="${pl.name}" onerror="this.src='${DEFAULT_COVER}'">
           </div>
           <div class="info">
             <div class="name">${pl.name}</div>
             <div class="by">
-              By ${pl.createdBy || 'Someone'} • 
-              ${pl.trackCount || Object.keys(pl.tracks || {}).length || '?'} tracks
+              By ${pl.createdBy || 'Someone'} • ${pl.trackCount || '?'} tracks
               ${pl.likesCount ? ` • ${pl.likesCount} likes` : ''}
             </div>
           </div>
         `;
 
-        // Click to load and play this playlist
-        card.onclick = () => {
-          loadAndPlayCommunityPlaylist(pl.userId, pl.id, pl.name);
-        };
-
+        card.onclick = () => loadAndPlayCommunityPlaylist(pl.userId, pl.id, pl.name);
         container.appendChild(card);
       });
     })
     .catch(err => {
-      console.error('Error loading community playlists:', err);
-      container.innerHTML = `
-        <div style="padding:5rem 1rem; text-align:center; color:#ff5252;">
-          Failed to load community playlists<br>
-          <small>Please check your connection and try again</small>
-        </div>`;
+      console.error(err);
+      container.innerHTML = '<div style="padding:5rem; text-align:center; color:#ff5252;">Failed to load playlists</div>';
     });
 }
 
