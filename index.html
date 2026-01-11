@@ -824,6 +824,14 @@ img {
   font-size: 0.88rem;
   color: var(--text-secondary);
 }
+    /* Make edit button nicer in sidebar */
+.nav-item .ctrl-btn {
+  opacity: 0.6;
+  transition: all 0.3s;
+}
+.nav-item:hover .ctrl-btn {
+  opacity: 1;
+}
   </style>
 </head>
 <body>
@@ -1085,6 +1093,19 @@ img {
     </div>
   </div>
 </footer>
+
+  <!-- Edit Playlist Modal -->
+<div class="modal-overlay" id="editPlaylistModal">
+  <div class="modal-content" style="max-width:480px;">
+    <div class="modal-title">Edit Playlist</div>
+    <div id="editPlaylistBody"></div>
+    <div class="modal-error" id="editPlaylistError" style="color:#ff6b6b; margin:1rem 0;"></div>
+    <div style="display:flex; gap:1rem; justify-content:flex-end; margin-top:2rem;">
+      <button class="btn btn-secondary" onclick="closeEditPlaylistModal()">Cancel</button>
+      <button class="btn btn-primary" id="saveEditPlaylistBtn">Save Changes</button>
+    </div>
+  </div>
+</div>
 
 <audio id="audio"></audio>
 
@@ -1588,17 +1609,27 @@ function renderGenreChips() {
 function renderPlaylists() {
   const cont = document.getElementById('playlistContainer');
   cont.innerHTML = '';
-
   Object.entries(playlists).forEach(([id, pl]) => {
     const item = document.createElement('div');
     item.className = 'nav-item';
-    item.textContent = pl.name || 'Untitled';
-    item.onclick = () => {
+    item.style.position = 'relative';
+
+    item.innerHTML = `
+      <span>${pl.name || 'Untitled'} ${pl.public ? '🔓' : ''}</span>
+      <button class="ctrl-btn" style="position:absolute; right:12px; font-size:1.6rem;"
+        onclick="event.stopPropagation(); openEditPlaylistModal('${id}')">
+        <span class="material-symbols-rounded">edit</span>
+      </button>
+    `;
+
+    item.onclick = (e) => {
+      if (e.target.closest('.ctrl-btn')) return; // don't trigger if clicking edit
       currentPlaylistId = id;
       document.getElementById('playlistTitle').textContent = pl.name || 'Playlist';
       switchView('playlist');
       renderPlaylistTracks();
     };
+
     cont.appendChild(item);
   });
 }
@@ -1943,6 +1974,92 @@ switchView = function(view) {
     loadDiscoverContent(); // Only loads community playlists + genres
   }
 };
+
+
+  // =============================================
+// Edit Playlist (Name + Public Toggle)
+// =============================================
+function openEditPlaylistModal(playlistId) {
+  const playlist = playlists[playlistId];
+  if (!playlist) return modal.alert("Playlist not found.");
+
+  const body = document.getElementById('editPlaylistBody');
+  body.innerHTML = `
+    <p style="margin-bottom:1.2rem; color:var(--text-secondary);">
+      Update your playlist settings:
+    </p>
+    <label style="font-weight:600; display:block; margin-bottom:0.5rem;">Playlist Name</label>
+    <input type="text" class="modal-input" id="editPlaylistName" value="${playlist.name || ''}" placeholder="Playlist name">
+
+    <div style="margin:1.8rem 0; display:flex; align-items:center; gap:1rem;">
+      <input type="checkbox" id="editPublicCheckbox" ${playlist.public ? 'checked' : ''} 
+             style="width:20px;height:20px; accent-color:var(--accent);">
+      <div>
+        <label for="editPublicCheckbox" style="font-weight:600; cursor:pointer;">
+          Make this playlist public
+        </label>
+        <div style="font-size:0.86rem; color:var(--text-muted); margin-top:0.3rem;">
+          When public, others can discover and play your playlist in the Community section
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('editPlaylistModal').classList.add('show');
+
+  // Save changes
+  document.getElementById('saveEditPlaylistBtn').onclick = () => {
+    const newName = document.getElementById('editPlaylistName').value.trim();
+    const isPublic = document.getElementById('editPublicCheckbox').checked;
+
+    if (!newName) {
+      document.getElementById('editPlaylistError').textContent = "Playlist name cannot be empty!";
+      return;
+    }
+
+    const uid = auth.currentUser.uid;
+    const updates = {
+      [`users/${uid}/playlists/${playlistId}/name`]: newName,
+      [`users/${uid}/playlists/${playlistId}/public`]: isPublic
+    };
+
+    // If changing to public → add to public index
+    if (isPublic && !playlist.public) {
+      updates[`publicPlaylists/${playlistId}`] = {
+        name: newName,
+        createdBy: auth.currentUser.displayName || 'Someone',
+        userId: uid,
+        trackCount: Object.keys(playlist.tracks || {}).length,
+        likesCount: playlist.likesCount || 0,
+        createdAt: playlist.createdAt || firebase.database.ServerValue.TIMESTAMP
+      };
+    }
+
+    // If changing to private → remove from public index
+    if (!isPublic && playlist.public) {
+      updates[`publicPlaylists/${playlistId}`] = null;
+    }
+
+    db.ref().update(updates)
+      .then(() => {
+        modal.alert("Playlist updated successfully!");
+        closeEditPlaylistModal();
+        // Refresh playlist list in sidebar
+        renderPlaylists();
+      })
+      .catch(err => {
+        console.error(err);
+        document.getElementById('editPlaylistError').textContent = "Failed to update. Try again.";
+      });
+  };
+}
+
+function closeEditPlaylistModal() {
+  document.getElementById('editPlaylistModal').classList.remove('show');
+  document.getElementById('editPlaylistBody').innerHTML = '';
+}
+
+  
 // =============================================
 // Event Listeners + Init
 // =============================================
