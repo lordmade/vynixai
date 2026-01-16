@@ -83,10 +83,29 @@
       color:var(--text-muted); text-decoration:none;
       transition:background 0.2s, color 0.2s;
       white-space:nowrap; overflow:hidden; cursor:pointer;
+      position: relative;
     }
     .nav-item:hover, .nav-item.active { background:var(--ai-bubble); color:var(--primary); }
     .nav-item .material-symbols-rounded { font-size:22px; flex-shrink:0; }
     .nav-text { font-weight:500; font-size:0.9rem; transition:opacity 0.2s; }
+    .unread-badge {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: var(--accent);
+      color: white;
+      font-size: 0.68rem;
+      font-weight: 600;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 5px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    }
     .sidebar-footer { padding:16px 12px 20px; border-top:1px solid var(--border); }
     .user-profile { display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:12px; transition:background 0.2s; margin-bottom:8px; }
     .user-profile:hover { background:var(--ai-bubble); }
@@ -140,7 +159,7 @@
         white-space:nowrap;
         padding:12px;
       }
-      .channel-item { display:inline-block; margin-right:8px; margin-bottom:0; }
+      .channel-item { display:inline-block; margin-right:8px; margin-bottom:0; position: relative; }
     }
     .channel-item {
       padding:12px 16px;
@@ -148,11 +167,30 @@
       margin-bottom:6px;
       cursor:pointer;
       color:var(--text-muted);
+      position: relative;
     }
     .channel-item:hover,
     .channel-item.active {
       background:var(--ai-bubble);
       color:var(--primary);
+    }
+    .channel-item .unread-badge {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: var(--accent);
+      color: white;
+      font-size: 0.68rem;
+      font-weight: 600;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 5px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
     }
     .community-main {
       flex:1;
@@ -406,7 +444,11 @@
     </div>
     <div class="nav-links">
       <div class="nav-item active" data-view="chat"><span class="material-symbols-rounded">chat_bubble</span><span class="nav-text">Chat</span></div>
-      <div class="nav-item" data-view="community"><span class="material-symbols-rounded">group</span><span class="nav-text">Community</span></div>
+      <div class="nav-item" data-view="community" id="communityNavItem">
+        <span class="material-symbols-rounded">group</span>
+        <span class="nav-text">Community</span>
+        <span class="unread-badge" id="communityUnreadBadge" style="display:none;">0</span>
+      </div>
       <div class="nav-item"><span class="material-symbols-rounded">school</span><span class="nav-text">Lessons</span></div>
       <div class="nav-item"><span class="material-symbols-rounded">quiz</span><span class="nav-text">Quizzes</span></div>
       <div class="nav-item"><span class="material-symbols-rounded">history</span><span class="nav-text">History</span></div>
@@ -467,13 +509,13 @@
     </div>
     <!-- Community View -->
     <div id="communityView" class="view community-view">
-      <aside class="channels-sidebar">
+      <aside class="channels-sidebar" id="channelsSidebar">
         <h3 style="padding:0 16px 12px; color:var(--text-muted); font-size:0.9rem;">Channels</h3>
-        <div class="channel-item active" data-channel="general">General</div>
-        <div class="channel-item" data-channel="maths">Maths</div>
-        <div class="channel-item" data-channel="physics">Physics</div>
-        <div class="channel-item" data-channel="life-sci">Life Sciences</div>
-        <div class="channel-item" data-channel="it-cat">IT/CAT</div>
+        <div class="channel-item active" data-channel="general">General<span class="unread-badge" data-channel="general" style="display:none;">0</span></div>
+        <div class="channel-item" data-channel="maths">Maths<span class="unread-badge" data-channel="maths" style="display:none;">0</span></div>
+        <div class="channel-item" data-channel="physics">Physics<span class="unread-badge" data-channel="physics" style="display:none;">0</span></div>
+        <div class="channel-item" data-channel="life-sci">Life Sciences<span class="unread-badge" data-channel="life-sci" style="display:none;">0</span></div>
+        <div class="channel-item" data-channel="it-cat">IT/CAT<span class="unread-badge" data-channel="it-cat" style="display:none;">0</span></div>
       </aside>
       <div class="community-main">
         <div class="community-messages" id="communityMessages"></div>
@@ -711,9 +753,75 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
       }
     }
 
-    // ── Community Chat ───────────────────────────────────────────────────────────
+    // ── Community Chat with Unread Counts ────────────────────────────────────────
     let currentChannel = 'general';
     let unsubscribeMessages = null;
+    let unreadListeners = {}; // channel → unsubscribe function
+    let lastSeenTimestamps = {}; // channel → timestamp (when user last viewed it)
+
+    // Load last seen timestamps from localStorage
+    function loadLastSeenTimestamps() {
+      try {
+        const saved = localStorage.getItem('vynix_lastSeenTimestamps');
+        if (saved) {
+          lastSeenTimestamps = JSON.parse(saved);
+        }
+      } catch (e) {
+        console.warn("Failed to load last seen timestamps", e);
+      }
+    }
+
+    // Save last seen timestamps to localStorage
+    function saveLastSeenTimestamps() {
+      try {
+        localStorage.setItem('vynix_lastSeenTimestamps', JSON.stringify(lastSeenTimestamps));
+      } catch (e) {
+        console.warn("Failed to save last seen timestamps", e);
+      }
+    }
+
+    // Mark current channel as read (update last seen timestamp)
+    function markChannelAsRead(channel) {
+      if (!auth.currentUser) return;
+      const now = firebase.firestore.Timestamp.now();
+      lastSeenTimestamps[channel] = now.toMillis();
+      saveLastSeenTimestamps();
+
+      // Update UI immediately
+      updateUnreadBadge(channel, 0);
+      updateCommunityTabBadge();
+    }
+
+    // Update single channel badge
+    function updateUnreadBadge(channel, count) {
+      const badge = document.querySelector(`.unread-badge[data-channel="${channel}"]`);
+      if (badge) {
+        if (count > 0) {
+          badge.textContent = count > 99 ? '99+' : count;
+          badge.style.display = 'flex';
+        } else {
+          badge.style.display = 'none';
+        }
+      }
+    }
+
+    // Update total unread on "Community" nav item
+    function updateCommunityTabBadge() {
+      let total = 0;
+      document.querySelectorAll('.channel-item .unread-badge').forEach(badge => {
+        if (badge.style.display !== 'none') {
+          const num = parseInt(badge.textContent.replace('+',''), 10) || 0;
+          total += num;
+        }
+      });
+      const tabBadge = document.getElementById('communityUnreadBadge');
+      if (total > 0) {
+        tabBadge.textContent = total > 99 ? '99+' : total;
+        tabBadge.style.display = 'flex';
+      } else {
+        tabBadge.style.display = 'none';
+      }
+    }
 
     function loadCommunity() {
       const user = auth.currentUser;
@@ -723,8 +831,27 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
         document.querySelector('.community-send-btn').disabled = true;
         return;
       }
+
       document.getElementById('communityInput').disabled = false;
       document.querySelector('.community-send-btn').disabled = false;
+
+      loadLastSeenTimestamps();
+
+      // Listen for unread counts on ALL channels
+      ['general','maths','physics','life-sci','it-cat'].forEach(channel => {
+        if (unreadListeners[channel]) unreadListeners[channel]();
+
+        unreadListeners[channel] = db.collection('channels').doc(channel).collection('messages')
+          .where('timestamp', '>', firebase.firestore.Timestamp.fromMillis(lastSeenTimestamps[channel] || 0))
+          .onSnapshot(snap => {
+            const unreadCount = snap.size;
+            updateUnreadBadge(channel, unreadCount);
+            updateCommunityTabBadge();
+          }, err => {
+            console.error(`Unread count listen error (${channel}):`, err);
+          });
+      });
+
       switchChannel('general');
 
       document.querySelectorAll('.channel-item').forEach(item => {
@@ -748,6 +875,9 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
       messagesContainer.innerHTML = '<div style="text-align:center; color:var(--text-muted);">Loading messages...</div>';
 
       if (unsubscribeMessages) unsubscribeMessages();
+
+      // Mark as read when switching to this channel
+      markChannelAsRead(channel);
 
       unsubscribeMessages = db.collection('channels').doc(channel).collection('messages')
         .orderBy('timestamp', 'asc')
@@ -785,6 +915,9 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
           }
 
           messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+          // After loading messages, mark as read again (in case new ones arrived while loading)
+          markChannelAsRead(channel);
         }, err => {
           console.error("Firestore listen error:", err.code, err.message);
           messagesContainer.innerHTML = `<div style="color:red; text-align:center; padding:40px;">Error loading messages (${err.code || 'unknown'}). Check your network or Firebase rules.</div>`;
@@ -812,6 +945,8 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
       })
       .then(docRef => {
         input.value = '';
+        // After sending, we can consider the channel still "read" since user is active
+        markChannelAsRead(currentChannel);
       })
       .catch(err => {
         console.error("Message send FAILED:", err.code, err.message);
@@ -847,6 +982,7 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
         renderMathInElement(welcome);
         addCopyButtonsToFormulas(welcome);
       }
+      loadLastSeenTimestamps();
     });
   </script>
 </body>
