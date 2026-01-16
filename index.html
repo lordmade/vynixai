@@ -260,7 +260,7 @@
       color:var(--text-main);
       border-bottom-left-radius:6px;
     }
-    /* ── Community WhatsApp-like styling with avatars ── */
+    /* ── Community WhatsApp-like styling with avatars + read receipts ── */
     .message.community:not(.self) {
       align-self: flex-start;
       flex-direction: row;
@@ -319,6 +319,30 @@
     }
     .message.community:not(.self) .msg-time {
       align-self: flex-start;
+    }
+    /* ── Read Receipts ── */
+    .read-receipt {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      justify-content: flex-end;
+      opacity: 0.9;
+    }
+    .read-receipt .material-symbols-rounded {
+      font-size: 1.1rem;
+      font-variation-settings: 'FILL' 1, 'wght' 400;
+    }
+    .read-receipt.sent {
+      color: #aaa;
+    }
+    .read-receipt.delivered {
+      color: #888;
+    }
+    .read-receipt.read {
+      color: #4F46E5;
     }
     .katex { font-size:1.05em !important; }
     .katex-display { margin:1em 0; position:relative; }
@@ -753,11 +777,12 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
       }
     }
 
-    // ── Community Chat with Unread Counts ────────────────────────────────────────
+    // ── Community Chat with Unread Counts + Read Receipts ────────────────────────
     let currentChannel = 'general';
     let unsubscribeMessages = null;
     let unreadListeners = {}; // channel → unsubscribe function
     let lastSeenTimestamps = {}; // channel → timestamp (when user last viewed it)
+    const currentUser = auth.currentUser;
 
     // Load last seen timestamps from localStorage
     function loadLastSeenTimestamps() {
@@ -780,14 +805,12 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
       }
     }
 
-    // Mark current channel as read (update last seen timestamp)
+    // Mark current channel as read
     function markChannelAsRead(channel) {
       if (!auth.currentUser) return;
       const now = firebase.firestore.Timestamp.now();
       lastSeenTimestamps[channel] = now.toMillis();
       saveLastSeenTimestamps();
-
-      // Update UI immediately
       updateUnreadBadge(channel, 0);
       updateCommunityTabBadge();
     }
@@ -870,13 +893,30 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
       return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=4F46E5&color=fff&size=128`;
     }
 
+    function getReadReceiptStatus(messageData) {
+      const currentUser = auth.currentUser;
+      if (!currentUser || messageData.userId !== currentUser.uid) {
+        return null; // Only show receipts for own messages
+      }
+
+      const reads = messageData.readBy || [];
+      const delivered = messageData.deliveredTo || [];
+
+      if (reads.length > 0) {
+        return 'read';
+      } else if (delivered.length > 0) {
+        return 'delivered';
+      } else {
+        return 'sent';
+      }
+    }
+
     function switchChannel(channel) {
       const messagesContainer = document.getElementById('communityMessages');
       messagesContainer.innerHTML = '<div style="text-align:center; color:var(--text-muted);">Loading messages...</div>';
 
       if (unsubscribeMessages) unsubscribeMessages();
 
-      // Mark as read when switching to this channel
       markChannelAsRead(channel);
 
       unsubscribeMessages = db.collection('channels').doc(channel).collection('messages')
@@ -893,6 +933,31 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
             msgDiv.className = `message community ${isSelf ? 'self' : ''}`;
 
             const avatarUrl = getAvatarUrl(data);
+            const receiptStatus = getReadReceiptStatus(data);
+
+            let receiptHtml = '';
+            if (isSelf && receiptStatus) {
+              let icon = 'done';
+              let statusClass = 'sent';
+              let statusText = 'Sent';
+
+              if (receiptStatus === 'delivered') {
+                icon = 'done_all';
+                statusClass = 'delivered';
+                statusText = 'Delivered';
+              } else if (receiptStatus === 'read') {
+                icon = 'done_all';
+                statusClass = 'read';
+                statusText = 'Read';
+              }
+
+              receiptHtml = `
+                <div class="read-receipt ${statusClass}">
+                  <span class="material-symbols-rounded">${icon}</span>
+                  ${statusText}
+                </div>
+              `;
+            }
 
             msgDiv.innerHTML = `
               <div class="avatar" style="background-image: url('${avatarUrl}');"></div>
@@ -904,6 +969,7 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
                     ? new Date(data.timestamp.toDate()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                     : ''
                 }</div>
+                ${receiptHtml}
               </div>
             `;
 
@@ -916,7 +982,6 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
 
           messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-          // After loading messages, mark as read again (in case new ones arrived while loading)
           markChannelAsRead(channel);
         }, err => {
           console.error("Firestore listen error:", err.code, err.message);
@@ -941,11 +1006,12 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations, proofs, 
         userId: user.uid,
         displayName: user.displayName || 'Anonymous',
         photoURL: user.photoURL || null,
-        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        deliveredTo: [user.uid], // Initially delivered to self
+        readBy: [] // Will be updated when others see it
       })
       .then(docRef => {
         input.value = '';
-        // After sending, we can consider the channel still "read" since user is active
         markChannelAsRead(currentChannel);
       })
       .catch(err => {
