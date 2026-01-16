@@ -229,6 +229,7 @@
       background:#ccc;
       cursor:not-allowed;
     }
+    /* Message Styles */
     .message { max-width:80%; display:flex; flex-direction:column; margin-bottom:12px; position: relative; }
     .message.user { align-self:flex-end; }
     .message.ai { align-self:flex-start; }
@@ -239,6 +240,7 @@
       line-height:1.5;
       border-radius:20px;
       position:relative;
+      word-break: break-word;
     }
     .message.user .msg-bubble {
       background:var(--user-bubble);
@@ -305,6 +307,78 @@
     }
     .message.community.self .msg-time { align-self: flex-end; }
     .message.community:not(.self) .msg-time { align-self: flex-start; }
+    .edited-label {
+      font-size: 0.62rem;
+      color: var(--text-muted);
+      font-style: italic;
+      margin-left: 4px;
+    }
+    /* Edit mode */
+    .message.editing .msg-bubble {
+      display: none;
+    }
+    .message.editing .edit-area {
+      display: block;
+    }
+    .edit-area {
+      display: none;
+      width: 100%;
+      margin-top: 4px;
+    }
+    .edit-area textarea {
+      width: 100%;
+      min-height: 60px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-family: inherit;
+      font-size: 0.92rem;
+      resize: vertical;
+      outline: none;
+    }
+    .edit-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+      justify-content: flex-end;
+    }
+    .edit-btn, .cancel-btn, .save-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 1.1rem;
+      transition: all 0.15s;
+    }
+    .edit-btn {
+      background: rgba(0,0,0,0.05);
+      color: #555;
+    }
+    .edit-btn:hover { background: rgba(0,0,0,0.12); }
+    .save-btn {
+      background: var(--accent);
+      color: white;
+    }
+    .save-btn:hover { background: #4338ca; }
+    .cancel-btn {
+      background: #f1f1f1;
+      color: #666;
+    }
+    .cancel-btn:hover { background: #e0e0e0; }
+    .message .edit-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .message:hover .edit-btn,
+    .message.editing .edit-btn {
+      opacity: 1;
+    }
     .read-receipt {
       font-size: 0.8rem;
       color: var(--text-muted);
@@ -348,7 +422,6 @@
     .typing-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
     .typing-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
     @keyframes pulse { to { opacity: 0.4; transform: translateY(-3px); } }
-    /* ── Emoji Reactions ── */
     .reactions-container {
       display: flex;
       flex-wrap: wrap;
@@ -369,8 +442,7 @@
       background: rgba(79,70,229,0.18);
       transform: scale(1.1);
     }
-    .reaction.active,
-    .reaction:active {
+    .reaction.active {
       background: var(--accent);
       color: white;
       border-color: var(--accent);
@@ -403,7 +475,7 @@
     .emoji-picker span:hover {
       transform: scale(1.4);
     }
-    .message .emoji-reaction-btn {
+    .emoji-reaction-btn {
       position: absolute;
       bottom: -8px;
       right: -8px;
@@ -606,7 +678,7 @@
     </div>
   </div>
 
-  <!-- Global Emoji Picker (shared across messages) -->
+  <!-- Global Emoji Picker -->
   <div id="emojiPicker" class="emoji-picker">
     <span>👍</span><span>❤️</span><span>😂</span><span>😮</span><span>😢</span>
     <span>🙌</span><span>🔥</span><span>🎉</span><span>🤔</span><span>👏</span>
@@ -814,6 +886,7 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
     let lastSeenTimestamps = {};
     let typingTimeout = null;
     let currentReactionMessageId = null;
+    let currentlyEditingMessageId = null;
 
     const emojiPicker = document.getElementById('emojiPicker');
 
@@ -942,6 +1015,87 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
       return html;
     }
 
+    function startEditing(messageDiv, messageId, originalText) {
+      if (currentlyEditingMessageId) {
+        cancelEditing();
+      }
+
+      currentlyEditingMessageId = messageId;
+      messageDiv.classList.add('editing');
+
+      const contentDiv = messageDiv.querySelector('.content');
+      const bubble = messageDiv.querySelector('.msg-bubble');
+
+      const editArea = document.createElement('div');
+      editArea.className = 'edit-area';
+      editArea.innerHTML = `
+        <textarea>${originalText}</textarea>
+        <div class="edit-actions">
+          <div class="save-btn material-symbols-rounded">check</div>
+          <div class="cancel-btn material-symbols-rounded">close</div>
+        </div>
+      `;
+      contentDiv.insertBefore(editArea, bubble.nextSibling);
+
+      const textarea = editArea.querySelector('textarea');
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+      // Save on Enter (without Shift)
+      textarea.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          saveEdit(messageDiv, messageId, textarea.value.trim());
+        }
+      });
+
+      // Save button
+      editArea.querySelector('.save-btn').onclick = () => {
+        saveEdit(messageDiv, messageId, textarea.value.trim());
+      };
+
+      // Cancel button
+      editArea.querySelector('.cancel-btn').onclick = () => {
+        cancelEditing();
+      };
+    }
+
+    function saveEdit(messageDiv, messageId, newText) {
+      if (!newText) {
+        alert("Message cannot be empty.");
+        return;
+      }
+
+      const user = auth.currentUser;
+      if (!user) return;
+
+      db.collection('channels').doc(currentChannel).collection('messages').doc(messageId)
+        .update({
+          text: newText,
+          editedAt: firebase.firestore.FieldValue.serverTimestamp()
+        })
+        .then(() => {
+          cancelEditing();
+        })
+        .catch(err => {
+          console.error("Failed to edit message:", err);
+          alert("Could not edit message. Try again.");
+        });
+    }
+
+    function cancelEditing() {
+      if (!currentlyEditingMessageId) return;
+
+      const messageDiv = document.querySelector(`.message[data-message-id="${currentlyEditingMessageId}"]`);
+      if (messageDiv) {
+        messageDiv.classList.remove('editing');
+        const editArea = messageDiv.querySelector('.edit-area');
+        if (editArea) editArea.remove();
+      }
+
+      currentlyEditingMessageId = null;
+    }
+
     function switchChannel(channel) {
       const container = document.getElementById('communityMessages');
       container.innerHTML = '<div style="text-align:center; color:var(--text-muted);">Loading messages...</div>';
@@ -971,6 +1125,8 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
               receiptHtml = `<div class="read-receipt ${cls}"><span class="material-symbols-rounded">${icon}</span>${txt}</div>`;
             }
 
+            const editedHtml = data.editedAt ? '<span class="edited-label">(edited)</span>' : '';
+
             const reactionsHtml = renderReactions(data.reactions || {});
 
             const msgDiv = document.createElement('div');
@@ -984,9 +1140,10 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
                 ${reactionsHtml}
                 <div class="msg-time">${
                   data.timestamp ? new Date(data.timestamp.toDate()).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : ''
-                }</div>
+                }${editedHtml}</div>
                 ${receiptHtml}
               </div>
+              ${isSelf ? '<div class="edit-btn material-symbols-rounded">edit</div>' : ''}
               <div class="emoji-reaction-btn">😊</div>
             `;
             container.appendChild(msgDiv);
@@ -1017,15 +1174,22 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
         });
     }
 
-    // ── Emoji Reactions Logic ────────────────────────────────────────────────────
+    // ── Event Delegation for Edit / Reaction / etc. ──────────────────────────────
     document.addEventListener('click', e => {
+      const editBtn = e.target.closest('.edit-btn');
       const reactionBtn = e.target.closest('.emoji-reaction-btn');
       const reaction = e.target.closest('.reaction');
 
-      // Close picker if clicking outside
-      if (!reactionBtn && !reaction && !emojiPicker.contains(e.target)) {
-        emojiPicker.classList.remove('active');
-        currentReactionMessageId = null;
+      // Cancel editing if clicking outside
+      if (currentlyEditingMessageId && !editBtn && !reactionBtn && !reaction && !emojiPicker.contains(e.target)) {
+        cancelEditing();
+      }
+
+      if (editBtn) {
+        const messageDiv = editBtn.closest('.message');
+        const messageId = messageDiv.dataset.messageId;
+        const originalText = messageDiv.querySelector('.msg-bubble').textContent.trim();
+        startEditing(messageDiv, messageId, originalText);
         return;
       }
 
@@ -1050,11 +1214,10 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
         msgRef.get().then(doc => {
           if (!doc.exists) return;
           const data = doc.data();
-          const reactions = data.reactions || {};
+          const reactions = {...(data.reactions || {})};
           const users = reactions[emoji] || [];
 
           if (users.includes(user.uid)) {
-            // Remove reaction
             const newUsers = users.filter(uid => uid !== user.uid);
             if (newUsers.length === 0) {
               delete reactions[emoji];
@@ -1062,7 +1225,6 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
               reactions[emoji] = newUsers;
             }
           } else {
-            // Add reaction
             reactions[emoji] = [...users, user.uid];
           }
 
@@ -1074,7 +1236,7 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
       }
     });
 
-    // ── Typing Indicator Logic ───────────────────────────────────────────────────
+    // ── Typing Logic ─────────────────────────────────────────────────────────────
     const communityInput = document.getElementById('communityInput');
 
     function setTyping(isTyping) {
@@ -1121,7 +1283,8 @@ Use proper LaTeX: $...$ for inline math, $$...$$ for display equations.`;
         timestamp: firebase.firestore.FieldValue.serverTimestamp(),
         deliveredTo: [user.uid],
         readBy: [],
-        reactions: {}
+        reactions: {},
+        editedAt: null
       }).then(() => {
         input.value = '';
         setTyping(false);
