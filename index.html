@@ -159,7 +159,6 @@
     }
     .user-pill:hover { background: #E1E5EA; }
     .user-avatar { width: 32px; height: 32px; border-radius: 50%; background-size: cover; pointer-events: none; }
-    .guest-counter { font-size: 12px; color: var(--text-muted); font-weight: 500; padding-right: 8px; }
 
     /* ─── Content Areas ───────────────────────────────── */
     .welcome-screen {
@@ -262,6 +261,41 @@
     .google-btn { width: 100%; padding: 12px; border-radius: 24px; border: 1px solid #747775; background: white; color: #1f1f1f; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; margin-top: 24px; transition: background 0.2s; }
     .google-btn:hover { background: #f0f4f9; border-color: transparent; }
 
+    /* Authentication required overlay */
+    .auth-required-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.8);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    
+    .auth-required-content {
+      background: white;
+      padding: 40px;
+      border-radius: 24px;
+      text-align: center;
+      max-width: 400px;
+      width: 90%;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    
+    .auth-required-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--text-main);
+    }
+    
+    .auth-required-message {
+      color: var(--text-secondary);
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+
     /* Fix for iOS Safari specifically */
     @supports (-webkit-touch-callout: none) {
       .top-bar {
@@ -279,6 +313,15 @@
   </style>
 </head>
 <body>
+
+  <!-- Authentication Required Overlay -->
+  <div class="auth-required-overlay" id="authRequiredOverlay">
+    <div class="auth-required-content">
+      <h2 class="auth-required-title">Welcome to Vynix AI</h2>
+      <p class="auth-required-message">Please sign in to start using Vynix AI. Authentication is required to access all features and track your usage.</p>
+      <button class="google-btn" id="authRequiredBtn" style="margin-top: 0;">Sign in with Google</button>
+    </div>
+  </div>
 
   <div class="overlay" id="overlay" onclick="closeAllOverlays()"></div>
 
@@ -313,15 +356,14 @@
         <span style="font-weight:600; font-size:1.1rem; color:var(--text-secondary)">Vynix AI</span>
       </div>
       <div class="user-pill" id="authBtn" onclick="toggleAuth()">
-        <span class="guest-counter" id="guestCount">Guest: 10</span>
-        <div class="user-avatar" id="userAvatar" style="background-image: url('https://ui-avatars.com/api/?name=Guest&background=random')"></div>
+        <div class="user-avatar" id="userAvatar" style="background-image: url('https://ui-avatars.com/api/?name=User&background=random')"></div>
       </div>
     </div>
 
     <div class="welcome-screen" id="welcomeScreen">
       <div style="max-width:800px; width:100%;">
-        <h1 class="brand-gradient-text" id="greetingName">Hello, Vynix Lingua</h1>
-        <h2 class="welcome-sub">How can I help?</h2>
+        <h1 class="brand-gradient-text" id="greetingName">Welcome to Vynix AI</h1>
+        <h2 class="welcome-sub">How can I help you today?</h2>
         <div class="suggestions-grid">
           <div class="suggestion-card" onclick="setInput('Calculate the velocity if displacement is 100m and time is 10s')">
             <span class="sug-text">Calculate<br>velocity</span>
@@ -370,7 +412,6 @@
 
     let XAI_API_KEY = ""; 
     const MODEL_ID = "grok-4-1-fast-reasoning";
-    let guestMessagesLeft = 10;
     let currentUser = null;
 
     firebase.initializeApp(firebaseConfig);
@@ -378,62 +419,6 @@
     const db = firebase.firestore();
     const provider = new firebase.auth.GoogleAuthProvider();
     const remoteConfig = firebase.remoteConfig();
-
-    // ── ENHANCED TOKEN TRACKING FOR GUESTS ──────────────────────
-    async function getOrCreateGuestId() {
-      let guestId = localStorage.getItem('vynix_guest_id');
-      
-      if (!guestId) {
-        // Create a unique guest ID
-        guestId = 'guest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem('vynix_guest_id', guestId);
-        
-        // Also store in sessionStorage as backup
-        sessionStorage.setItem('vynix_guest_id', guestId);
-      }
-      
-      return guestId;
-    }
-
-    async function syncGuestTokenUsage(guestId, tokens) {
-      try {
-        const guestRef = db.collection('guest_stats').doc(guestId);
-        const today = getTodayString();
-        
-        await guestRef.set({
-          tokenCount: tokens,
-          lastReset: today,
-          lastActive: firebase.firestore.FieldValue.serverTimestamp(),
-          isGuest: true
-        }, { merge: true });
-        
-        console.log('Guest token usage synced to Firebase:', tokens);
-      } catch (error) {
-        console.log('Failed to sync guest tokens to Firebase:', error);
-        // Fallback to localStorage only if Firebase fails
-      }
-    }
-
-    async function getGuestTokenUsageFromFirebase(guestId) {
-      try {
-        const guestRef = db.collection('guest_stats').doc(guestId);
-        const doc = await guestRef.get();
-        
-        if (doc.exists) {
-          const data = doc.data();
-          const today = getTodayString();
-          
-          // Check if data is from today
-          if (data.lastReset === today) {
-            return data.tokenCount || 0;
-          }
-        }
-      } catch (error) {
-        console.log('Failed to get guest tokens from Firebase:', error);
-      }
-      
-      return null; // Return null so we fall back to localStorage
-    }
 
     // ── VISUAL VIEWPORT API FOR MOBILE KEYBOARD SUPPORT ───
     let pendingUpdate = false;
@@ -501,40 +486,16 @@
     function getTodayString() { return new Date().toISOString().split('T')[0]; }
 
     async function checkTokenUsage(uid) {
-      if (!currentUser) {
-        const guestId = await getOrCreateGuestId();
-        
-        // First try to get from Firebase
-        const firebaseTokens = await getGuestTokenUsageFromFirebase(guestId);
-        if (firebaseTokens !== null) {
-          // Sync back to localStorage for consistency
-          localStorage.setItem('vynix_token_count_guest', firebaseTokens.toString());
-          return firebaseTokens;
-        }
-        
-        // Fall back to localStorage logic
-        const dateKey = `vynix_token_date_guest`;
-        const countKey = `vynix_token_count_guest`;
-        const lastDate = localStorage.getItem(dateKey);
-        const today = getTodayString();
-        
-        if (lastDate !== today) {
-          localStorage.setItem(dateKey, today);
-          localStorage.setItem(countKey, '0');
-          return 0;
-        }
-        
-        return parseInt(localStorage.getItem(countKey) || '0');
-      } else {
-        // Authenticated user logic (existing)
-        const userRef = db.collection('user_stats').doc(uid);
-        try {
-          const doc = await userRef.get();
-          if (!doc.exists) return 0;
-          const data = doc.data();
-          if (data.lastReset !== getTodayString()) return 0;
-          return data.tokenCount || 0;
-        } catch(e) { console.error(e); return 0; }
+      const userRef = db.collection('user_stats').doc(uid);
+      try {
+        const doc = await userRef.get();
+        if (!doc.exists) return 0;
+        const data = doc.data();
+        if (data.lastReset !== getTodayString()) return 0;
+        return data.tokenCount || 0;
+      } catch(e) { 
+        console.error(e); 
+        return 0; 
       }
     }
 
@@ -543,30 +504,18 @@
       const estimatedTokens = Math.ceil(text.length / 4);
       const today = getTodayString();
 
-      if (!currentUser) {
-        const guestId = await getOrCreateGuestId();
-        const countKey = `vynix_token_count_guest`;
-        const current = await checkTokenUsage('guest');
-        const newTotal = current + estimatedTokens;
-        
-        // Update localStorage immediately
-        localStorage.setItem(countKey, newTotal.toString());
-        
-        // Sync to Firebase in background (don't await)
-        syncGuestTokenUsage(guestId, newTotal).catch(console.error);
-      } else {
-        // Authenticated user logic (existing)
-        const userRef = db.collection('user_stats').doc(uid);
-        try {
-          const doc = await userRef.get();
-          if(!doc.exists || doc.data().lastReset !== today) {
-            await userRef.set({ tokenCount: estimatedTokens, lastReset: today }, { merge: true });
-          } else {
-            await userRef.update({
-              tokenCount: firebase.firestore.FieldValue.increment(estimatedTokens)
-            });
-          }
-        } catch(e) { console.error("Error updating tokens", e); }
+      const userRef = db.collection('user_stats').doc(uid);
+      try {
+        const doc = await userRef.get();
+        if(!doc.exists || doc.data().lastReset !== today) {
+          await userRef.set({ tokenCount: estimatedTokens, lastReset: today }, { merge: true });
+        } else {
+          await userRef.update({
+            tokenCount: firebase.firestore.FieldValue.increment(estimatedTokens)
+          });
+        }
+      } catch(e) { 
+        console.error("Error updating tokens", e); 
       }
     }
 
@@ -580,8 +529,8 @@
       overlay: document.getElementById('overlay'),
       modal: document.getElementById('authModal'),
       greeting: document.getElementById('greetingName'),
-      guestCount: document.getElementById('guestCount'),
-      avatar: document.getElementById('userAvatar')
+      avatar: document.getElementById('userAvatar'),
+      authRequiredOverlay: document.getElementById('authRequiredOverlay')
     };
 
     function toggleSidebar() { els.sidebar.classList.add('open'); els.overlay.classList.add('active'); }
@@ -590,13 +539,34 @@
       els.modal.classList.remove('active');
       els.overlay.classList.remove('active');
     }
-    function toggleAuth() { if(!currentUser) { els.modal.classList.add('active'); els.overlay.classList.add('active'); } }
-    function setInput(text) { els.input.value = text; els.input.focus(); checkInput(); }
+    function toggleAuth() { 
+      if(!currentUser) { 
+        els.modal.classList.add('active'); 
+        els.overlay.classList.add('active'); 
+      } 
+    }
+    function setInput(text) { 
+      if (!currentUser) {
+        showAuthRequired();
+        return;
+      }
+      els.input.value = text; 
+      els.input.focus(); 
+      checkInput(); 
+    }
     function checkInput() { 
       if(els.input.value.trim().length > 0) els.sendBtn.classList.add('active');
       else els.sendBtn.classList.remove('active');
     }
     els.input.addEventListener('input', checkInput);
+
+    function showAuthRequired() {
+      els.authRequiredOverlay.style.display = 'flex';
+    }
+
+    function hideAuthRequired() {
+      els.authRequiredOverlay.style.display = 'none';
+    }
 
     function activateChatMode() {
       els.welcome.classList.add('hidden');
@@ -661,19 +631,15 @@
       if (!text) return;
 
       if (!currentUser) {
-        if (guestMessagesLeft <= 0) { toggleAuth(); return; }
+        showAuthRequired();
+        return;
       }
 
-      const uid = currentUser ? currentUser.uid : 'guest';
+      const uid = currentUser.uid;
       const tokensUsed = await checkTokenUsage(uid);
       if (tokensUsed >= DAILY_TOKEN_LIMIT) {
         alert("Daily token limit reached (10,000). Come back tomorrow!");
         return;
-      }
-
-      if (!currentUser) {
-        guestMessagesLeft--;
-        els.guestCount.innerText = `Guest: ${guestMessagesLeft}`;
       }
 
       activateChatMode();
@@ -721,20 +687,30 @@
       auth.signInWithPopup(provider).then(() => closeAllOverlays()).catch(e => alert(e.message));
     };
 
-    function handleSignOut() { auth.signOut(); window.location.reload(); }
+    document.getElementById('authRequiredBtn').onclick = () => {
+      hideAuthRequired();
+      toggleAuth();
+    };
+
+    function handleSignOut() { 
+      auth.signOut(); 
+      window.location.reload(); 
+    }
 
     auth.onAuthStateChanged(user => {
       currentUser = user;
       if (user) {
-        els.guestCount.style.display = 'none';
+        hideAuthRequired();
         els.avatar.style.backgroundImage = `url(${user.photoURL})`;
         els.greeting.innerText = `Hello, ${user.displayName.split(' ')[0]}`;
         document.getElementById('logoutBtn').style.display = 'flex';
         document.getElementById('proBadge').style.display = 'none';
         initConfig();
       } else {
-        els.greeting.innerText = "Hello, Vynix Lingua";
-        els.guestCount.style.display = 'block';
+        showAuthRequired();
+        els.greeting.innerText = "Welcome to Vynix AI";
+        document.getElementById('logoutBtn').style.display = 'none';
+        document.getElementById('proBadge').style.display = 'flex';
         initConfig();
       }
     });
