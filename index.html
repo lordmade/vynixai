@@ -110,23 +110,19 @@
       margin: 16px 16px 16px 0;
       box-shadow: 0 0 0 1px rgba(0,0,0,0.02);
       overflow: hidden;
-      /* Add padding-top to account for fixed header */
       padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px) + 16px);
-      /* Use dynamic viewport height */
       min-height: 100dvh;
     }
     @media(max-width: 768px) { 
       .main { 
         margin: 0; 
         border-radius: 0;
-        /* On mobile, ensure proper spacing */
         padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0px));
       }
     }
 
     /* ─── UPDATED HEADER FOR MOBILE KEYBOARD SUPPORT ─── */
     .top-bar {
-      /* Use dynamic viewport height units for better mobile support */
       height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
       padding-top: max(env(safe-area-inset-top, 0px), 12px);
       
@@ -139,7 +135,6 @@
       padding-right: 16px;
       background: #FFFFFF;
       
-      /* Fixed positioning with transform support for viewport adjustments */
       position: fixed;
       top: 0;
       left: 0;
@@ -148,10 +143,7 @@
       
       border-bottom: 1px solid rgba(0,0,0,0.05);
       
-      /* Smooth transitions for viewport changes */
       transition: transform 0.3s ease-out;
-      
-      /* Ensure it stays above other content */
       transform: translateZ(0);
       -webkit-transform: translateZ(0);
     }
@@ -245,11 +237,9 @@
       align-items: center;
       z-index: 20;
       
-      /* Add backdrop blur for better visibility */
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
       
-      /* Smooth transitions for viewport changes */
       transition: transform 0.3s ease-out;
     }
     .input-wrapper {
@@ -275,7 +265,6 @@
     /* Fix for iOS Safari specifically */
     @supports (-webkit-touch-callout: none) {
       .top-bar {
-        /* iOS Safari specific handling */
         height: calc(var(--header-height) + env(safe-area-inset-top, 20px));
         padding-top: max(env(safe-area-inset-top, 20px), 20px);
       }
@@ -390,6 +379,62 @@
     const provider = new firebase.auth.GoogleAuthProvider();
     const remoteConfig = firebase.remoteConfig();
 
+    // ── ENHANCED TOKEN TRACKING FOR GUESTS ──────────────────────
+    async function getOrCreateGuestId() {
+      let guestId = localStorage.getItem('vynix_guest_id');
+      
+      if (!guestId) {
+        // Create a unique guest ID
+        guestId = 'guest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem('vynix_guest_id', guestId);
+        
+        // Also store in sessionStorage as backup
+        sessionStorage.setItem('vynix_guest_id', guestId);
+      }
+      
+      return guestId;
+    }
+
+    async function syncGuestTokenUsage(guestId, tokens) {
+      try {
+        const guestRef = db.collection('guest_stats').doc(guestId);
+        const today = getTodayString();
+        
+        await guestRef.set({
+          tokenCount: tokens,
+          lastReset: today,
+          lastActive: firebase.firestore.FieldValue.serverTimestamp(),
+          isGuest: true
+        }, { merge: true });
+        
+        console.log('Guest token usage synced to Firebase:', tokens);
+      } catch (error) {
+        console.log('Failed to sync guest tokens to Firebase:', error);
+        // Fallback to localStorage only if Firebase fails
+      }
+    }
+
+    async function getGuestTokenUsageFromFirebase(guestId) {
+      try {
+        const guestRef = db.collection('guest_stats').doc(guestId);
+        const doc = await guestRef.get();
+        
+        if (doc.exists) {
+          const data = doc.data();
+          const today = getTodayString();
+          
+          // Check if data is from today
+          if (data.lastReset === today) {
+            return data.tokenCount || 0;
+          }
+        }
+      } catch (error) {
+        console.log('Failed to get guest tokens from Firebase:', error);
+      }
+      
+      return null; // Return null so we fall back to localStorage
+    }
+
     // ── VISUAL VIEWPORT API FOR MOBILE KEYBOARD SUPPORT ───
     let pendingUpdate = false;
     let lastVisualViewport = {
@@ -412,24 +457,19 @@
         
         if (!topBar || !inputContainer) return;
         
-        // Calculate the offset when keyboard appears
         const viewportHeight = visualViewport.height;
         const viewportOffsetTop = visualViewport.offsetTop;
         const windowHeight = window.innerHeight;
         
-        // Check if keyboard is likely open (visual viewport is smaller)
         const keyboardOpen = viewportHeight < windowHeight * 0.8;
         
         if (keyboardOpen) {
-          // Adjust header position to stay visible
           const offset = Math.max(0, viewportOffsetTop);
           topBar.style.transform = `translateY(${offset}px)`;
           
-          // Adjust input container to stay above keyboard
           const inputOffset = Math.max(0, windowHeight - viewportHeight - viewportOffsetTop);
           inputContainer.style.transform = `translateY(-${inputOffset}px)`;
         } else {
-          // Reset positions when keyboard is closed
           topBar.style.transform = '';
           inputContainer.style.transform = '';
         }
@@ -441,30 +481,18 @@
       });
     }
 
-    // Initialize viewport handling
     function initViewportHandling() {
-      // Only run on mobile devices
       if (!window.visualViewport || window.innerWidth > 768) return;
       
-      // Add event listeners for viewport changes
       window.visualViewport.addEventListener('resize', handleViewportChange);
       window.visualViewport.addEventListener('scroll', handleViewportChange);
       
-      // Also listen for input focus/blur events
       const input = document.getElementById('userInput');
       if (input) {
-        input.addEventListener('focus', () => {
-          // Small delay to let viewport settle
-          setTimeout(handleViewportChange, 100);
-        });
-        
-        input.addEventListener('blur', () => {
-          // Reset when input loses focus
-          setTimeout(handleViewportChange, 100);
-        });
+        input.addEventListener('focus', () => setTimeout(handleViewportChange, 100));
+        input.addEventListener('blur', () => setTimeout(handleViewportChange, 100));
       }
       
-      // Initial viewport setup
       handleViewportChange();
     }
 
@@ -474,17 +502,31 @@
 
     async function checkTokenUsage(uid) {
       if (!currentUser) {
+        const guestId = await getOrCreateGuestId();
+        
+        // First try to get from Firebase
+        const firebaseTokens = await getGuestTokenUsageFromFirebase(guestId);
+        if (firebaseTokens !== null) {
+          // Sync back to localStorage for consistency
+          localStorage.setItem('vynix_token_count_guest', firebaseTokens.toString());
+          return firebaseTokens;
+        }
+        
+        // Fall back to localStorage logic
         const dateKey = `vynix_token_date_guest`;
         const countKey = `vynix_token_count_guest`;
         const lastDate = localStorage.getItem(dateKey);
         const today = getTodayString();
+        
         if (lastDate !== today) {
           localStorage.setItem(dateKey, today);
           localStorage.setItem(countKey, '0');
           return 0;
         }
+        
         return parseInt(localStorage.getItem(countKey) || '0');
       } else {
+        // Authenticated user logic (existing)
         const userRef = db.collection('user_stats').doc(uid);
         try {
           const doc = await userRef.get();
@@ -502,10 +544,18 @@
       const today = getTodayString();
 
       if (!currentUser) {
+        const guestId = await getOrCreateGuestId();
         const countKey = `vynix_token_count_guest`;
         const current = await checkTokenUsage('guest');
-        localStorage.setItem(countKey, (current + estimatedTokens).toString());
+        const newTotal = current + estimatedTokens;
+        
+        // Update localStorage immediately
+        localStorage.setItem(countKey, newTotal.toString());
+        
+        // Sync to Firebase in background (don't await)
+        syncGuestTokenUsage(guestId, newTotal).catch(console.error);
       } else {
+        // Authenticated user logic (existing)
         const userRef = db.collection('user_stats').doc(uid);
         try {
           const doc = await userRef.get();
@@ -595,13 +645,12 @@
       row.appendChild(content); els.chat.appendChild(row);
       els.chat.scrollTo(0, els.chat.scrollHeight);
       
-      // ── UPDATED MATH RENDERER ──
       renderMathInElement(row, {
         delimiters: [
           {left: "$$", right: "$$", display: true},
-          {left: "\\[", right: "\\]", display: true}, // FIXED: Supports \[ ... \] fractions
+          {left: "\\[", right: "\\]", display: true},
           {left: "\\(", right: "\\)", display: false},
-          {left: "$", right: "$", display: false}      // FIXED: Supports inline $ ... $
+          {left: "$", right: "$", display: false}
         ],
         throwOnError: false
       });
