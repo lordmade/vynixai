@@ -720,35 +720,110 @@
       }, 3000);
     }
     
-    // ── E2E ENCRYPTION FUNCTIONS ──────────────────────────────
+  // ── E2E ENCRYPTION FUNCTIONS ──────────────────────────────
+
+// Generate encryption key pair for the user
+async function generateEncryptionKeys() {
+  try {
+    keyPair = await crypto.subtle.generateKey(
+      {
+        name: "RSA-OAEP",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["encrypt", "decrypt"]
+    );
     
-    // Generate encryption key pair for the user
-    async function generateEncryptionKeys() {
-      try {
-        keyPair = await crypto.subtle.generateKey(
+    // Export and store both keys
+    const publicKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    const privateKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
+    
+    await db.collection('users').doc(currentUser.uid).set({
+      publicKey: publicKeyJwk,
+      privateKey: privateKeyJwk, // Store private key securely
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    
+    return true;
+  } catch (error) {
+    console.error("Error generating encryption keys:", error);
+    return false;
+  }
+}
+
+// Load or generate encryption keys
+async function loadEncryptionKeys() {
+  if (!currentUser) return false;
+  
+  try {
+    const userDoc = await db.collection('users').doc(currentUser.uid).get();
+    if (userDoc.exists && userDoc.data().publicKey && userDoc.data().privateKey) {
+      // Import existing keys
+      const publicKeyJwk = userDoc.data().publicKey;
+      const privateKeyJwk = userDoc.data().privateKey;
+      
+      keyPair = {
+        publicKey: await crypto.subtle.importKey(
+          "jwk",
+          publicKeyJwk,
           {
             name: "RSA-OAEP",
-            modulusLength: 2048,
-            publicExponent: new Uint8Array([1, 0, 1]),
             hash: "SHA-256",
           },
           true,
-          ["encrypt", "decrypt"]
-        );
-        
-        // Store public key in user profile
-        const publicKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-        await db.collection('users').doc(currentUser.uid).set({
-          publicKey: publicKeyJwk,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        
-        return true;
-      } catch (error) {
-        console.error("Error generating encryption keys:", error);
-        return false;
-      }
+          ["encrypt"]
+        ),
+        privateKey: await crypto.subtle.importKey(
+          "jwk",
+          privateKeyJwk,
+          {
+            name: "RSA-OAEP",
+            hash: "SHA-256",
+          },
+          true,
+          ["decrypt"]
+        )
+      };
+      
+      console.log("Encryption keys loaded successfully");
+      return true;
+    } else {
+      // Generate new keys if not found
+      return await generateEncryptionKeys();
     }
+  } catch (error) {
+    console.error("Error loading encryption keys:", error);
+    return false;
+  }
+}
+
+// Update the auth state change handler
+auth.onAuthStateChanged(async (user) => {
+  currentUser = user;
+  if (user) {
+    hideAuthRequired();
+    els.avatar.style.backgroundImage = `url(${user.photoURL})`;
+    els.greeting.innerText = `Hello, ${user.displayName.split(' ')[0]}`;
+    document.getElementById('logoutBtn').style.display = 'flex';
+    document.getElementById('proBadge').style.display = 'none';
+    
+    // Load encryption keys instead of generating new ones
+    await loadEncryptionKeys();
+    
+    // Load user memory
+    await loadUserMemory();
+    
+    initConfig();
+  } else {
+    showAuthRequired();
+    els.greeting.innerText = "Welcome to Vynix AI";
+    document.getElementById('logoutBtn').style.display = 'none';
+    document.getElementById('proBadge').style.display = 'flex';
+    initConfig();
+  }
+});
     
     // Get user's public key
     async function getUserPublicKey(uid) {
@@ -1064,32 +1139,48 @@
       });
     }
     
-    // ── TIMESTAMP FORMATTING ────────────────────────────────────
-    function formatTimestamp(timestamp) {
-      if (!timestamp) return '';
-      
-      const now = new Date();
-      const messageTime = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-      const diffMs = now - messageTime;
-      const diffMins = Math.floor(diffMs / 60000);
-      const diffHours = Math.floor(diffMs / 3600000);
-      const diffDays = Math.floor(diffMs / 86400000);
-      
-      // Smart formatting
-      if (diffMins < 1) return 'just now';
-      if (diffMins < 60) return `${diffMins}m ago`;
-      if (diffHours < 24) return `${diffHours}h ago`;
-      if (diffDays < 7) return `${diffDays}d ago`;
-      
-      // For older messages, show date and time
-      return messageTime.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true
-      });
-    }
+  // ── TIMESTAMP FORMATTING ────────────────────────────────────
+function formatTimestamp(timestamp) {
+  if (!timestamp) return '';
+  
+  let messageTime;
+  
+  // Handle Firestore Timestamp objects
+  if (timestamp.toDate) {
+    // This is a Firestore Timestamp
+    messageTime = timestamp.toDate();
+  } else if (timestamp.seconds) {
+    // This might be a Firestore Timestamp in JSON format
+    messageTime = new Date(timestamp.seconds * 1000 + timestamp.nanoseconds / 1000000);
+  } else {
+    // This is already a Date object or timestamp string
+    messageTime = new Date(timestamp);
+  }
+  
+  // Check if the date is valid
+  if (isNaN(messageTime.getTime())) return '';
+  
+  const now = new Date();
+  const diffMs = now - messageTime;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  // Smart formatting
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  // For older messages, show date and time
+  return messageTime.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
     
     // ── AI MESSAGE RENDERING WITH MEMORY ──
     function appendMessage(role, text, timestamp = new Date()) {
@@ -1180,92 +1271,91 @@
       });
     }
     
-    async function appendCommunityMessage(data) {
-      const isMe = currentUser && data.uid === currentUser.uid;
-      const row = document.createElement('div');
-      row.className = `community-row ${isMe ? 'me' : 'other'}`;
-      
-      const content = document.createElement('div');
-      content.className = 'community-content';
-      
-      let messageText = data.text;
-      
-      // Decrypt if encrypted
-      if (data.encrypted && data.encryptedData) {
-        try {
-          const decrypted = await decryptMessage(data.encryptedData);
-          messageText = decrypted;
-        } catch (error) {
-          messageText = "[Encrypted message]";
-        }
-      }
-      
-      // Create timestamp element
-      const timestamp = formatTimestamp(data.timestamp);
-      
-      if (isMe) {
-        const bubble = document.createElement('div');
-        bubble.className = 'comm-bubble';
-        bubble.innerText = messageText;
-        
-        // Add timestamp
-        if (timestamp) {
-          const timeElement = document.createElement('div');
-          timeElement.className = 'message-time';
-          timeElement.innerText = timestamp;
-          bubble.appendChild(timeElement);
-        }
-        
-        // Add encryption indicator
-        if (data.encrypted) {
-          const indicator = document.createElement('span');
-          indicator.className = 'encryption-indicator';
-          indicator.innerHTML = '<span class="material-symbols-rounded" style="font-size: 12px;">lock</span>E2E';
-          bubble.appendChild(indicator);
-        }
-        
-        content.appendChild(bubble);
-      } else {
-        const avatar = document.createElement('div');
-        avatar.className = 'comm-avatar';
-        avatar.style.backgroundImage = `url(${data.photoURL || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(data.senderName || 'User')})`;
-        
-        const group = document.createElement('div');
-        group.className = 'comm-bubble-group';
-        
-        const name = document.createElement('div');
-        name.className = 'sender-name';
-        name.innerText = data.senderName || 'Anonymous';
-        
-        const bubble = document.createElement('div');
-        bubble.className = 'comm-bubble';
-        bubble.innerText = messageText;
-        
-        // Add timestamp
-        if (timestamp) {
-          const timeElement = document.createElement('div');
-          timeElement.className = 'message-time';
-          timeElement.innerText = timestamp;
-          bubble.appendChild(timeElement);
-        }
-        
-        // Add encryption indicator
-        if (data.encrypted) {
-          const indicator = document.createElement('span');
-          indicator.className = 'encryption-indicator';
-          indicator.innerHTML = '<span class="material-symbols-rounded" style="font-size: 12px;">lock</span>E2E';
-          bubble.appendChild(indicator);
-        }
-        
-        group.append(name, bubble);
-        content.append(avatar, group);
-      }
-      
-      row.appendChild(content);
-      
-      // CHANGED: Always append to bottom (removed the insertBefore logic)
-      els.community.appendChild(row);
+async function appendCommunityMessage(data) {
+  const isMe = currentUser && data.uid === currentUser.uid;
+  const row = document.createElement('div');
+  row.className = `community-row ${isMe ? 'me' : 'other'}`;
+  
+  const content = document.createElement('div');
+  content.className = 'community-content';
+  
+  let messageText = data.text;
+  
+  // Decrypt if encrypted
+  if (data.encrypted && data.encryptedData) {
+    try {
+      const decrypted = await decryptMessage(data.encryptedData);
+      messageText = decrypted;
+    } catch (error) {
+      console.error("Decryption error:", error);
+      messageText = "[Encrypted message]";
     }
+  }
+  
+  // Create timestamp element - handle Firestore timestamp properly
+  const timestamp = formatTimestamp(data.timestamp);
+  
+  if (isMe) {
+    const bubble = document.createElement('div');
+    bubble.className = 'comm-bubble';
+    bubble.innerText = messageText;
+    
+    // Add timestamp
+    if (timestamp && timestamp !== 'just now') {
+      const timeElement = document.createElement('div');
+      timeElement.className = 'message-time';
+      timeElement.innerText = timestamp;
+      bubble.appendChild(timeElement);
+    }
+    
+    // Add encryption indicator
+    if (data.encrypted) {
+      const indicator = document.createElement('span');
+      indicator.className = 'encryption-indicator';
+      indicator.innerHTML = '<span class="material-symbols-rounded" style="font-size: 12px;">lock</span>E2E';
+      bubble.appendChild(indicator);
+    }
+    
+    content.appendChild(bubble);
+  } else {
+    const avatar = document.createElement('div');
+    avatar.className = 'comm-avatar';
+    avatar.style.backgroundImage = `url(${data.photoURL || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(data.senderName || 'User')})`;
+    
+    const group = document.createElement('div');
+    group.className = 'comm-bubble-group';
+    
+    const name = document.createElement('div');
+    name.className = 'sender-name';
+    name.innerText = data.senderName || 'Anonymous';
+    
+    const bubble = document.createElement('div');
+    bubble.className = 'comm-bubble';
+    bubble.innerText = messageText;
+    
+    // Add timestamp
+    if (timestamp && timestamp !== 'just now') {
+      const timeElement = document.createElement('div');
+      timeElement.className = 'message-time';
+      timeElement.innerText = timestamp;
+      bubble.appendChild(timeElement);
+    }
+    
+    // Add encryption indicator
+    if (data.encrypted) {
+      const indicator = document.createElement('span');
+      indicator.className = 'encryption-indicator';
+      indicator.innerHTML = '<span class="material-symbols-rounded" style="font-size: 12px;">lock</span>E2E';
+      bubble.appendChild(indicator);
+    }
+    
+    group.append(name, bubble);
+    content.append(avatar, group);
+  }
+  
+  row.appendChild(content);
+  els.community.appendChild(row);
+}
     
     function appendSystemMessage(text) {
       const row = document.createElement('div');
