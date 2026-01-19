@@ -11,10 +11,12 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-remote-config-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
   <style>
     :root {
       --bg-body: #F0F4F9;
@@ -51,7 +53,8 @@
     @media(min-width: 769px) {
       .sidebar:hover { width: var(--sidebar-width); }
       .sidebar:not(:hover) .nav-label,
-      .sidebar:not(:hover) .new-chat-text { opacity: 0; display: none; }
+      .sidebar:not(:hover) .new-chat-text,
+      .sidebar:not(:hover) .chat-meta { opacity: 0; display: none; }
       .mobile-menu-trigger { display: none !important; }
     }
     @media(max-width: 768px) {
@@ -62,7 +65,7 @@
         box-shadow: 4px 0 24px rgba(0,0,0,0.15);
       }
       .sidebar.open { transform: translateX(0); }
-      .sidebar .nav-label { opacity: 1; display: block; }
+      .sidebar .nav-label, .sidebar .chat-meta { opacity: 1; display: block; }
     }
     .new-chat-btn {
       background: #DDE3EA; color: #041E49; border: none; border-radius: 16px; height: 48px;
@@ -71,15 +74,23 @@
       overflow: hidden; transition: background 0.2s;
     }
     .new-chat-btn:hover { background: #d0d7de; }
-    .nav-list { flex: 1; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+    
+    .nav-list { flex: 1; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; overflow-x: hidden; }
+    
+    /* Updated Nav Item for Chat History */
     .nav-item {
-      display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-radius: 24px;
+      display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 24px;
       color: var(--text-secondary); cursor: pointer; text-decoration: none; white-space: nowrap;
-      transition: background 0.2s;
+      transition: background 0.2s; position: relative;
     }
     .nav-item:hover { background: rgba(0,0,0,0.05); color: var(--text-main); }
-    .nav-item.active { background: #D3E3FD; color: #041E49; font-weight: 500; }
-    .nav-icon { font-size: 22px; }
+    .nav-item.active { background: #D3E3FD; color: #041E49; font-weight: 600; }
+    
+    .nav-content-wrapper { display: flex; flex-direction: column; overflow: hidden; width: 100%; }
+    .nav-label { overflow: hidden; text-overflow: ellipsis; }
+    .chat-meta { font-size: 0.75rem; color: var(--text-muted); font-weight: 400; margin-top: 2px; }
+    .nav-icon { font-size: 20px; flex-shrink: 0; }
+
     .pro-badge {
       font-size: 10px; font-weight: 700; background: var(--primary-gradient);
       -webkit-background-clip: text; color: transparent; text-transform: uppercase; letter-spacing: 0.5px;
@@ -158,7 +169,6 @@
       display: flex; align-items: center; padding: 4px; border-radius: 4px;
     }
     .tool-btn:hover { color: var(--text-main); background: #F0F4F9; }
-    .tool-btn span { font-size: 18px; }
     .typing-indicator { display: flex; gap: 4px; padding: 10px 0; }
     .dot { width: 6px; height: 6px; background: var(--text-muted); border-radius: 50%; animation: pulse 1.2s infinite; }
     .dot:nth-child(2) { animation-delay: 0.2s; }
@@ -216,12 +226,8 @@
       <span class="material-symbols-rounded new-chat-icon">add</span>
       <span class="new-chat-text">New chat</span>
     </button>
-    <div class="nav-list">
-      <div class="nav-item active">
-        <span class="material-symbols-rounded nav-icon">chat_bubble</span>
-        <span class="nav-label">Chat</span>
+    <div class="nav-list" id="conversationList">
       </div>
-    </div>
     <div style="margin-top: auto;">
       <div class="nav-item" id="proBadge">
         <span class="material-symbols-rounded nav-icon" style="color:#D96570">sparkle</span>
@@ -296,7 +302,7 @@
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
       projectId: "fire-b-a8878",
-      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com", // ← REPLACE WITH YOUR REAL DATABASE URL
+      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com", 
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
@@ -320,6 +326,7 @@
       input: document.getElementById('userInput'),
       sendBtn: document.getElementById('sendBtn'),
       sidebar: document.getElementById('sidebar'),
+      convList: document.getElementById('conversationList'),
       overlay: document.getElementById('overlay'),
       modal: document.getElementById('authModal'),
       greeting: document.getElementById('greetingName'),
@@ -356,6 +363,21 @@
     }
     els.input.addEventListener('input', checkInput);
 
+    function formatRelativeTime(timestamp) {
+      if (!timestamp) return '';
+      const now = Date.now();
+      const diff = now - timestamp;
+      const minutes = Math.floor(diff / 60000);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      if (minutes < 1) return 'Just now';
+      if (minutes < 60) return `${minutes}m ago`;
+      if (hours < 24) return `${hours}h ago`;
+      if (days < 7) return `${days}d ago`;
+      return new Date(timestamp).toLocaleDateString();
+    }
+
     // ── Chat Logic ──────────────────────────────────────────────────
     function activateChatMode() {
       els.welcome.classList.add('hidden');
@@ -372,6 +394,10 @@
       els.welcome.style.display = 'flex';
       setTimeout(() => els.welcome.classList.remove('hidden'), 50);
       els.input.value = '';
+      
+      // Remove active class from all sidebar items
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      
       closeAllOverlays();
     }
 
@@ -453,10 +479,8 @@
 
       try {
         const prompt = `Create a very short, natural title (max 5-6 words) for this conversation based only on the first user message and AI reply.
-
 User: ${userMsg.substring(0, 300)}
 AI: ${aiResponse.substring(0, 300)}
-
 Return ONLY the title, nothing else.`;
 
         const res = await fetch("https://api.x.ai/v1/chat/completions", {
@@ -491,9 +515,68 @@ Return ONLY the title, nothing else.`;
         content,
         timestamp: firebase.database.ServerValue.TIMESTAMP
       });
+      // This update triggers the Sidebar Listener to re-order items
       database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({
         lastUpdated: firebase.database.ServerValue.TIMESTAMP
       });
+    }
+
+    // ── Sidebar Logic (Load & Display) ──────────────────────────────
+    function loadConversations() {
+      if (!currentUser) return;
+      const ref = database.ref(`users/${currentUser.uid}/conversations`);
+      
+      // Order by lastUpdated to show newest top
+      ref.orderByChild('lastUpdated').on('value', (snapshot) => {
+        els.convList.innerHTML = ''; // Clear list
+        const chats = [];
+        snapshot.forEach(child => {
+          chats.push({ id: child.key, ...child.val() });
+        });
+        
+        // Reverse to have newest first (Firebase sorts ascending)
+        chats.reverse();
+
+        chats.forEach(chat => {
+          const item = document.createElement('div');
+          item.className = `nav-item ${currentConversationId === chat.id ? 'active' : ''}`;
+          item.onclick = () => loadChatFromHistory(chat.id);
+          
+          item.innerHTML = `
+            <span class="material-symbols-rounded nav-icon">chat_bubble_outline</span>
+            <div class="nav-content-wrapper">
+              <span class="nav-label">${chat.title || 'New Chat'}</span>
+              <span class="chat-meta">${formatRelativeTime(chat.lastUpdated)}</span>
+            </div>
+          `;
+          els.convList.appendChild(item);
+        });
+      });
+    }
+
+    function loadChatFromHistory(chatId) {
+      if (currentConversationId === chatId) return; // Already here
+      
+      resetChat(); // Clear current view
+      currentConversationId = chatId;
+      activateChatMode();
+      
+      // Highlight sidebar item manually while loading
+      const items = els.convList.querySelectorAll('.nav-item');
+      items.forEach(i => i.classList.remove('active'));
+      // Note: The database listener will eventually redraw this with 'active' class
+      // but we do this visually for instant feedback if we could match ID (omitted for brevity)
+
+      // Fetch messages
+      database.ref(`users/${currentUser.uid}/conversations/${chatId}/messages`)
+        .once('value', snapshot => {
+          snapshot.forEach(child => {
+            const msg = child.val();
+            appendMessage(msg.role, msg.content, false); // false = don't re-save to DB
+          });
+        });
+        
+      closeAllOverlays();
     }
 
     // ── Send Message ────────────────────────────────────────────────
@@ -508,7 +591,7 @@ Return ONLY the title, nothing else.`;
       }
 
       activateChatMode();
-      appendMessage('user', text);
+      appendMessage('user', text, true); // Save user msg
 
       if (!currentConversationId && currentUser) {
         currentConversationId = createNewConversation(text);
@@ -549,7 +632,7 @@ RULES:
 
         if (data.choices?.[0]?.message?.content) {
           const aiText = data.choices[0].message.content;
-          appendMessage('ai', aiText, true);
+          appendMessage('ai', aiText, true); // Save AI msg (Update Trigger)
 
           // Generate title after first full exchange
           if (currentConversationId && firstUserMessage) {
@@ -558,13 +641,14 @@ RULES:
               title: title,
               lastUpdated: firebase.database.ServerValue.TIMESTAMP
             });
+            firstUserMessage = ""; // Reset so we don't regenerate title on next msg
           }
         } else {
-          appendMessage('ai', "Sorry, I encountered an error. Please try again.", true);
+          appendMessage('ai', "Sorry, I encountered an error. Please try again.", false);
         }
       } catch (err) {
         loading.remove();
-        appendMessage('ai', "Connection error. Please check your internet.", true);
+        appendMessage('ai', "Connection error. Please check your internet.", false);
       }
     }
 
@@ -586,10 +670,13 @@ RULES:
         els.greeting.innerText = `Hello, ${user.displayName?.split(' ')[0] || 'User'}`;
         document.getElementById('logoutBtn').style.display = 'flex';
         document.getElementById('proBadge').style.display = 'none';
+        
+        loadConversations(); // <--- Trigger loading sidebar
         initConfig();
       } else {
         els.greeting.innerText = "Hello, Vynix Lingua";
         els.guestCount.style.display = 'block';
+        els.convList.innerHTML = ''; // Clear sidebar if logged out
         initConfig();
       }
     });
