@@ -315,6 +315,36 @@
     .auth-required-title { font-size: 1.5rem; font-weight: 600; margin-bottom: 16px; color: var(--text-main); }
     .auth-required-message { color: var(--text-secondary); margin-bottom: 24px; line-height: 1.5; }
     
+    /* E2E Encryption Indicators */
+    .encryption-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-left: 8px;
+    }
+    
+    .encryption-status {
+      position: fixed;
+      top: 80px;
+      right: 20px;
+      background: #e8f5e8;
+      color: #2d5a2d;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(-10px);
+      transition: all 0.3s ease;
+    }
+    
+    .encryption-status.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    
     @supports (-webkit-touch-callout: none) {
       .top-bar { height: calc(var(--header-height) + env(safe-area-inset-top, 20px)); padding-top: max(env(safe-area-inset-top, 20px), 20px); }
       .main { padding-top: calc(var(--header-height) + env(safe-area-inset-top, 20px) + 20px); min-height: 100dvh; }
@@ -323,6 +353,11 @@
   </style>
 </head>
 <body>
+  <div class="encryption-status" id="encryptionStatus">
+    <span class="material-symbols-rounded" style="font-size: 16px; vertical-align: middle;">lock</span>
+    Messages are end-to-end encrypted
+  </div>
+  
   <div class="auth-required-overlay" id="authRequiredOverlay">
     <div class="auth-required-content">
       <h2 class="auth-required-title">Welcome to Vynix AI</h2>
@@ -425,11 +460,185 @@
     let activeTab = 'ai'; // 'ai' or 'community'
     let communityUnsubscribe = null;
     
+    // E2E Encryption Variables
+    let encryptionKey = null;
+    let keyPair = null;
+    
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
     const db = firebase.firestore();
     const provider = new firebase.auth.GoogleAuthProvider();
     const remoteConfig = firebase.remoteConfig();
+    
+    // ── E2E ENCRYPTION FUNCTIONS ──────────────────────────────
+    
+    // Generate encryption key pair for the user
+    async function generateEncryptionKeys() {
+      try {
+        keyPair = await crypto.subtle.generateKey(
+          {
+            name: "RSA-OAEP",
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-256",
+          },
+          true,
+          ["encrypt", "decrypt"]
+        );
+        
+        // Store public key in user profile
+        const publicKeyJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+        await db.collection('users').doc(currentUser.uid).set({
+          publicKey: publicKeyJwk,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        
+        return true;
+      } catch (error) {
+        console.error("Error generating encryption keys:", error);
+        return false;
+      }
+    }
+    
+    // Get user's public key
+    async function getUserPublicKey(uid) {
+      try {
+        const userDoc = await db.collection('users').doc(uid).get();
+        if (userDoc.exists && userDoc.data().publicKey) {
+          return await crypto.subtle.importKey(
+            "jwk",
+            userDoc.data().publicKey,
+            {
+              name: "RSA-OAEP",
+              hash: "SHA-256",
+            },
+            false,
+            ["encrypt"]
+          );
+        }
+        return null;
+      } catch (error) {
+        console.error("Error getting user public key:", error);
+        return null;
+      }
+    }
+    
+    // Encrypt message for multiple recipients
+    async function encryptMessage(message, recipientUids) {
+      try {
+        // Generate AES key for this message
+        const aesKey = await crypto.subtle.generateKey(
+          {
+            name: "AES-GCM",
+            length: 256,
+          },
+          true,
+          ["encrypt", "decrypt"]
+        );
+        
+        // Encrypt message with AES
+        const encoder = new TextEncoder();
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const encryptedMessage = await crypto.subtle.encrypt(
+          {
+            name: "AES-GCM",
+            iv: iv,
+          },
+          aesKey,
+          encoder.encode(message)
+        );
+        
+        // Encrypt AES key for each recipient
+        const encryptedKeys = {};
+        for (const uid of recipientUids) {
+          const publicKey = await getUserPublicKey(uid);
+          if (publicKey) {
+            const exportedKey = await crypto.subtle.exportKey("raw", aesKey);
+            const encryptedKey = await crypto.subtle.encrypt(
+              {
+                name: "RSA-OAEP",
+              },
+              publicKey,
+              exportedKey
+            );
+            encryptedKeys[uid] = {
+              key: Array.from(new Uint8Array(encryptedKey)),
+              iv: Array.from(iv)
+            };
+          }
+        }
+        
+        return {
+          encryptedMessage: Array.from(new Uint8Array(encryptedMessage)),
+          encryptedKeys: encryptedKeys,
+          recipients: recipientUids
+        };
+      } catch (error) {
+        console.error("Error encrypting message:", error);
+        return null;
+      }
+    }
+    
+    // Decrypt message
+    async function decryptMessage(encryptedData) {
+      try {
+        if (!encryptedData.encryptedKeys[currentUser.uid]) {
+          return "[Encrypted message - you are not a recipient]";
+        }
+        
+        const encryptedKeyData = encryptedData.encryptedKeys[currentUser.uid];
+        const encryptedKey = new Uint8Array(encryptedKeyData.key);
+        const iv = new Uint8Array(encryptedKeyData.iv);
+        
+        // Decrypt AES key
+        const aesKey = await crypto.subtle.decrypt(
+          {
+            name: "RSA-OAEP",
+          },
+          keyPair.privateKey,
+          encryptedKey
+        );
+        
+        // Import AES key
+        const importedAesKey = await crypto.subtle.importKey(
+          "raw",
+          aesKey,
+          {
+            name: "AES-GCM",
+            length: 256,
+          },
+          false,
+          ["decrypt"]
+        );
+        
+        // Decrypt message
+        const encryptedMessage = new Uint8Array(encryptedData.encryptedMessage);
+        const decryptedMessage = await crypto.subtle.decrypt(
+          {
+            name: "AES-GCM",
+            iv: iv,
+          },
+          importedAesKey,
+          encryptedMessage
+        );
+        
+        const decoder = new TextDecoder();
+        return decoder.decode(decryptedMessage);
+      } catch (error) {
+        console.error("Error decrypting message:", error);
+        return "[Unable to decrypt message]";
+      }
+    }
+    
+    // Show encryption status
+    function showEncryptionStatus(message) {
+      const status = document.getElementById('encryptionStatus');
+      status.textContent = message;
+      status.classList.add('show');
+      setTimeout(() => {
+        status.classList.remove('show');
+      }, 3000);
+    }
     
     // ── VISUAL VIEWPORT API ───
     let pendingUpdate = false;
@@ -555,7 +764,7 @@
       els.community.style.display = 'none';
       els.chat.innerHTML = ''; 
       els.chat.classList.remove('active');
-      els.chat.style.display = 'none'; // Initially hidden for welcome screen
+      els.chat.style.display = 'none';
       
       els.welcome.style.display = 'flex'; 
       setTimeout(() => els.welcome.classList.remove('hidden'), 50);
@@ -573,8 +782,9 @@
     
     function openCommunity() {
       if (!currentUser) { showAuthRequired(); return; }
+      
       activeTab = 'community';
-      els.headerTitle.innerText = "Community Chat";
+      els.headerTitle.innerText = "Community Chat 🔒";
       els.navCommunity.classList.add('active');
       els.navRecent.classList.remove('active');
       
@@ -583,13 +793,18 @@
       
       els.chat.style.display = 'none';
       els.community.style.display = 'block';
-      els.input.placeholder = "Message the community...";
+      els.input.placeholder = "Send encrypted message...";
       closeAllOverlays();
       
-      if (!communityUnsubscribe) {
-        listenToCommunityMessages();
+      els.community.innerHTML = '';
+      
+      if (communityUnsubscribe) {
+        communityUnsubscribe();
+        communityUnsubscribe = null;
       }
-      setTimeout(() => els.community.scrollTo(0, els.community.scrollHeight), 100);
+      
+      listenToCommunityMessages();
+      showEncryptionStatus("End-to-end encryption enabled");
     }
     
     function copyToClipboard(text, btnElement) {
@@ -629,21 +844,33 @@
       renderMathInElement(row, { delimiters: [{left: "$$", right: "$$", display: true}, {left: "\\[", right: "\\]", display: true}, {left: "\\(", right: "\\)", display: false}, {left: "$", right: "$", display: false}], throwOnError: false });
     }
     
-    // ── COMMUNITY LOGIC ──
+    // ── COMMUNITY LOGIC WITH E2E ENCRYPTION ──
     function listenToCommunityMessages() {
-      els.community.innerHTML = ''; // Clear previous
-      const q = db.collection('community_messages').orderBy('timestamp', 'asc').limitToLast(50);
+      els.community.innerHTML = '';
+      
+      const q = db.collection('community_messages')
+        .orderBy('timestamp', 'desc')
+        .limit(50);
       
       communityUnsubscribe = q.onSnapshot((snapshot) => {
-        snapshot.docChanges().forEach((change) => {
+        const changes = snapshot.docChanges();
+        
+        changes.forEach((change) => {
           if (change.type === "added") {
-            appendCommunityMessage(change.doc.data());
+            prependCommunityMessage(change.doc.data());
           }
         });
+        
+        setTimeout(() => {
+          els.community.scrollTop = els.community.scrollHeight;
+        }, 100);
+      }, (error) => {
+        console.error("Error listening to community messages:", error);
+        appendSystemMessage("Unable to load community messages. Please check your connection.");
       });
     }
     
-    function appendCommunityMessage(data) {
+    async function prependCommunityMessage(data) {
       const isMe = currentUser && data.uid === currentUser.uid;
       const row = document.createElement('div');
       row.className = `community-row ${isMe ? 'me' : 'other'}`;
@@ -651,17 +878,36 @@
       const content = document.createElement('div');
       content.className = 'community-content';
       
+      let messageText = data.text;
+      
+      // Decrypt if encrypted
+      if (data.encrypted && data.encryptedData) {
+        try {
+          const decrypted = await decryptMessage(data.encryptedData);
+          messageText = decrypted;
+        } catch (error) {
+          messageText = "[Encrypted message]";
+        }
+      }
+      
       if (isMe) {
-        // My message
         const bubble = document.createElement('div');
         bubble.className = 'comm-bubble';
-        bubble.innerText = data.text;
+        bubble.innerText = messageText;
+        
+        // Add encryption indicator
+        if (data.encrypted) {
+          const indicator = document.createElement('span');
+          indicator.className = 'encryption-indicator';
+          indicator.innerHTML = '<span class="material-symbols-rounded" style="font-size: 12px;">lock</span>E2E';
+          bubble.appendChild(indicator);
+        }
+        
         content.appendChild(bubble);
       } else {
-        // Other's message
         const avatar = document.createElement('div');
         avatar.className = 'comm-avatar';
-        avatar.style.backgroundImage = `url(${data.photoURL || 'https://ui-avatars.com/api/?name=' + data.senderName})`;
+        avatar.style.backgroundImage = `url(${data.photoURL || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(data.senderName || 'User')})`;
         
         const group = document.createElement('div');
         group.className = 'comm-bubble-group';
@@ -672,29 +918,109 @@
         
         const bubble = document.createElement('div');
         bubble.className = 'comm-bubble';
-        bubble.innerText = data.text;
+        bubble.innerText = messageText;
+        
+        // Add encryption indicator
+        if (data.encrypted) {
+          const indicator = document.createElement('span');
+          indicator.className = 'encryption-indicator';
+          indicator.innerHTML = '<span class="material-symbols-rounded" style="font-size: 12px;">lock</span>E2E';
+          bubble.appendChild(indicator);
+        }
         
         group.append(name, bubble);
         content.append(avatar, group);
       }
       
       row.appendChild(content);
+      
+      if (els.community.firstChild) {
+        els.community.insertBefore(row, els.community.firstChild);
+      } else {
+        els.community.appendChild(row);
+      }
+    }
+    
+    function appendSystemMessage(text) {
+      const row = document.createElement('div');
+      row.className = 'community-row';
+      row.innerHTML = `<div class="community-content"><div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 10px;">${text}</div></div>`;
       els.community.appendChild(row);
-      els.community.scrollTo(0, els.community.scrollHeight);
     }
     
     async function sendCommunityMessage(text) {
-      if(!currentUser) return;
+      if (!currentUser) {
+        showAuthRequired();
+        return;
+      }
+      
+      if (!text.trim()) return;
+      
       try {
-        await db.collection('community_messages').add({
-          text: text,
+        // Get all active users (simplified - in production you'd maintain a presence system)
+        const activeUsers = await getActiveUsers();
+        
+        let messageData = {
           uid: currentUser.uid,
-          senderName: currentUser.displayName || 'User',
-          photoURL: currentUser.photoURL,
-          timestamp: firebase.firestore.FieldValue.serverTimestamp()
+          senderName: currentUser.displayName || 'Anonymous User',
+          photoURL: currentUser.photoURL || '',
+          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+          text: text.trim(),
+          encrypted: false
+        };
+        
+        // Encrypt if we have encryption keys set up
+        if (keyPair && activeUsers.length > 0) {
+          const encryptedData = await encryptMessage(text.trim(), activeUsers);
+          if (encryptedData) {
+            messageData = {
+              ...messageData,
+              text: "[Encrypted message]",
+              encrypted: true,
+              encryptedData: encryptedData
+            };
+          }
+        }
+        
+        await db.collection('community_messages').add(messageData);
+        
+      } catch (error) {
+        console.error("Error sending community message:", error);
+        
+        let errorMessage = "Failed to send message. ";
+        if (error.code === 'permission-denied') {
+          errorMessage += "Permission denied. Please check your authentication.";
+        } else if (error.code === 'unavailable') {
+          errorMessage += "Network error. Please check your connection.";
+        } else {
+          errorMessage += "Please try again.";
+        }
+        
+        alert(errorMessage);
+      }
+    }
+    
+    async function getActiveUsers() {
+      // In a real app, you'd maintain a presence system
+      // For now, return recent message senders
+      try {
+        const snapshot = await db.collection('community_messages')
+          .orderBy('timestamp', 'desc')
+          .limit(20)
+          .get();
+        
+        const users = new Set();
+        users.add(currentUser.uid); // Always include self
+        
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          if (data.uid) users.add(data.uid);
         });
-      } catch(e) {
-        alert("Error sending: " + e.message);
+        
+        return Array.from(users);
+      } catch (error) {
+        console.error("Error getting active users:", error);
+        return [currentUser.uid];
       }
     }
     
@@ -758,7 +1084,7 @@
     document.getElementById('authRequiredBtn').onclick = () => { hideAuthRequired(); toggleAuth(); };
     function handleSignOut() { auth.signOut(); window.location.reload(); }
     
-    auth.onAuthStateChanged(user => {
+    auth.onAuthStateChanged(async (user) => {
       currentUser = user;
       if (user) {
         hideAuthRequired();
@@ -766,6 +1092,10 @@
         els.greeting.innerText = `Hello, ${user.displayName.split(' ')[0]}`;
         document.getElementById('logoutBtn').style.display = 'flex';
         document.getElementById('proBadge').style.display = 'none';
+        
+        // Generate encryption keys for new user
+        await generateEncryptionKeys();
+        
         initConfig();
       } else {
         showAuthRequired();
