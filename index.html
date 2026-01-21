@@ -612,6 +612,47 @@
     .msg-text a {
       word-break: break-all;
     }
+    .msg-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0 8px 12px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.ai-bubble-container:hover .msg-toolbar,
+.msg-toolbar.visible {
+  opacity: 1;
+}
+
+.tool-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: all 0.18s;
+}
+
+.tool-btn:hover {
+  background: rgba(0,0,0,0.06);
+  color: var(--text-main);
+}
+
+.tool-btn:active {
+  transform: scale(0.94);
+}
+
+.tool-btn.thumbs-up.active {
+  color: #34a853;
+}
+
+.tool-btn.thumbs-down.active {
+  color: #ea4335;
+}
   </style>
 </head>
 <body>
@@ -847,88 +888,150 @@
         setTimeout(() => icon.textContent = 'content_copy', 2000);
       });
     }
-    function appendMessage(role, text, shouldSave = false, isStreaming = false, extra = null) {
-      const currentMsgId = `msg-${messageId++}`;
-      const row = document.createElement('div');
-      row.className = `message-row ${role}`;
-      const content = document.createElement('div');
-      content.className = 'message-content';
-      const avatar = document.createElement('div');
-      avatar.className = 'msg-avatar';
-      if (role === 'ai') {
-        avatar.style.backgroundImage = "url('https://ui-avatars.com/api/?name=Vynix+AI&background=linear-gradient(135deg,%234285F4,%23D96570)&color=fff')";
-        const container = document.createElement('div');
-        container.className = 'ai-bubble-container';
-        const bubble = document.createElement('div');
-        bubble.className = 'msg-text';
-        const toolbar = document.createElement('div');
-        toolbar.className = 'msg-toolbar';
-        toolbar.style.opacity = isStreaming ? '0' : '1';
-        const copyBtn = document.createElement('button');
-        copyBtn.className = 'tool-btn';
-        copyBtn.innerHTML = `<span class="material-symbols-rounded" style="font-size:16px">content_copy</span>`;
-        copyBtn.onclick = () => copyToClipboard(text, copyBtn);
-        toolbar.appendChild(copyBtn);
-        container.appendChild(bubble);
-        container.appendChild(toolbar);
-        content.append(avatar, container);
-        let cleanText = stripMarkdown(text);
-        if (isStreaming) {
-          bubble.classList.add('typing-cursor');
-          bubble.style.minHeight = '1.6em';
-          let displayed = '';
-          let i = 0;
-          function typeWriter() {
-            if (i < cleanText.length) {
-              displayed += cleanText.charAt(i);
-              bubble.innerHTML = displayed.replace(/\n/g, '<br>');
-              i++;
-              const shouldScroll = (els.chat.scrollHeight - els.chat.scrollTop - els.chat.clientHeight) < 180;
-              if (shouldScroll) {
-                els.chat.scrollTo(0, els.chat.scrollHeight);
-              }
-              setTimeout(typeWriter, 16);
-            } else {
-              bubble.classList.remove('typing-cursor');
-              toolbar.style.opacity = '1';
-              MathJax.typesetPromise([bubble]).catch(err => console.warn(err));
-            }
+function appendMessage(role, text, shouldSave = false, isStreaming = false, extra = null) {
+  const currentMsgId = `msg-${messageId++}`;
+  const row = document.createElement('div');
+  row.className = `message-row ${role}`;
+  
+  const content = document.createElement('div');
+  content.className = 'message-content';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+
+  if (role === 'ai') {
+    avatar.style.backgroundImage = "url('https://ui-avatars.com/api/?name=Vynix+AI&background=linear-gradient(135deg,%234285F4,%23D96570)&color=fff')";
+
+    const container = document.createElement('div');
+    container.className = 'ai-bubble-container';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-text';
+
+    // ── Toolbar with copy + feedback buttons ───────────────────────────────
+    const toolbar = document.createElement('div');
+    toolbar.className = 'msg-toolbar';
+    toolbar.style.opacity = isStreaming ? '0' : '1';
+
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'tool-btn';
+    copyBtn.innerHTML = `<span class="material-symbols-rounded" style="font-size:16px">content_copy</span>`;
+    copyBtn.title = "Copy";
+    copyBtn.onclick = () => copyToClipboard(text, copyBtn);
+
+    // Thumbs Up
+    const thumbsUp = document.createElement('button');
+    thumbsUp.className = 'tool-btn thumbs-up';
+    thumbsUp.innerHTML = `👍`;
+    thumbsUp.title = "Good response";
+    thumbsUp.dataset.feedback = "up";
+
+    // Thumbs Down
+    const thumbsDown = document.createElement('button');
+    thumbsDown.className = 'tool-btn thumbs-down';
+    thumbsDown.innerHTML = `👎`;
+    thumbsDown.title = "Bad response";
+    thumbsDown.dataset.feedback = "down";
+
+    // Feedback logic (mutually exclusive, local for now)
+    thumbsUp.onclick = () => {
+      thumbsUp.classList.toggle('active');
+      if (thumbsUp.classList.contains('active')) {
+        thumbsDown.classList.remove('active');
+        console.log(`Feedback UP on message: ${currentMsgId}`);
+        // Optional future: saveFeedback(currentMsgId, "up");
+      }
+    };
+
+    thumbsDown.onclick = () => {
+      thumbsDown.classList.toggle('active');
+      if (thumbsDown.classList.contains('active')) {
+        thumbsUp.classList.remove('active');
+        console.log(`Feedback DOWN on message: ${currentMsgId}`);
+        // Optional future: saveFeedback(currentMsgId, "down");
+      }
+    };
+
+    toolbar.appendChild(copyBtn);
+    toolbar.appendChild(thumbsUp);
+    toolbar.appendChild(thumbsDown);
+
+    container.appendChild(bubble);
+    container.appendChild(toolbar);
+
+    content.appendChild(avatar);
+    content.appendChild(container);
+
+    // ── Render message content ───────────────────────────────────────
+    let cleanText = stripMarkdown(text);
+
+    if (isStreaming) {
+      bubble.classList.add('typing-cursor');
+      bubble.style.minHeight = '1.6em';
+      let displayed = '';
+      let i = 0;
+
+      function typeWriter() {
+        if (i < cleanText.length) {
+          displayed += cleanText.charAt(i);
+          bubble.innerHTML = displayed.replace(/\n/g, '<br>');
+          i++;
+          const shouldScroll = (els.chat.scrollHeight - els.chat.scrollTop - els.chat.clientHeight) < 180;
+          if (shouldScroll) {
+            els.chat.scrollTo(0, els.chat.scrollHeight);
           }
-          typeWriter();
+          setTimeout(typeWriter, 16);
         } else {
-          bubble.innerHTML = cleanText.replace(/\n/g, '<br>');
+          bubble.classList.remove('typing-cursor');
+          toolbar.style.opacity = '1';           // Show toolbar after streaming finishes
+          toolbar.classList.add('visible');
           MathJax.typesetPromise([bubble]).catch(err => console.warn(err));
         }
-        if (extra && extra.type === 'weather') {
-          const weatherCard = document.createElement('div');
-          weatherCard.className = 'weather-card';
-          weatherCard.innerHTML = `
-            <h4>${extra.city}, ${extra.country}</h4>
-            <div class="temp">${Math.round(extra.temp)}°C</div>
-            <div class="desc">${extra.description}</div>
-            <div class="details">
-              <div>Feels like: ${Math.round(extra.feels_like)}°C</div>
-              <div>Humidity: ${extra.humidity}%</div>
-              <div>Wind: ${extra.wind_speed} m/s</div>
-              <div>Pressure: ${extra.pressure} hPa</div>
-            </div>
-          `;
-          container.appendChild(weatherCard);
-        }
-      } else {
-        avatar.style.backgroundImage = els.avatar.style.backgroundImage;
-        const bubble = document.createElement('div');
-        bubble.className = 'msg-text';
-        bubble.innerText = text;
-        content.append(bubble, avatar);
       }
-      row.appendChild(content);
-      els.chat.appendChild(row);
-      els.chat.scrollTo(0, els.chat.scrollHeight);
-      if (shouldSave && currentUser && currentConversationId) {
-        saveMessageToConversation(text, role);
-      }
+      typeWriter();
+    } else {
+      bubble.innerHTML = cleanText.replace(/\n/g, '<br>');
+      MathJax.typesetPromise([bubble]).catch(err => console.warn(err));
+      toolbar.classList.add('visible');          // Show toolbar immediately for non-streaming
     }
+
+    // Weather card (if applicable)
+    if (extra && extra.type === 'weather') {
+      const weatherCard = document.createElement('div');
+      weatherCard.className = 'weather-card';
+      weatherCard.innerHTML = `
+        <h4>${extra.city}, ${extra.country}</h4>
+        <div class="temp">${Math.round(extra.temp)}°C</div>
+        <div class="desc">${extra.description}</div>
+        <div class="details">
+          <div>Feels like: ${Math.round(extra.feels_like)}°C</div>
+          <div>Humidity: ${extra.humidity}%</div>
+          <div>Wind: ${extra.wind_speed} m/s</div>
+          <div>Pressure: ${extra.pressure} hPa</div>
+        </div>
+      `;
+      container.appendChild(weatherCard);
+    }
+
+  } else {
+    // User message
+    avatar.style.backgroundImage = els.avatar.style.backgroundImage;
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-text';
+    bubble.innerText = text;
+    content.appendChild(bubble);
+    content.appendChild(avatar);
+  }
+
+  row.appendChild(content);
+  els.chat.appendChild(row);
+  els.chat.scrollTo(0, els.chat.scrollHeight);
+
+  if (shouldSave && currentUser && currentConversationId) {
+    saveMessageToConversation(text, role);
+  }
+}
     // ── Geocoding & Weather ─────────────────────────────────────────────
     async function geocodeLocation(location) {
       const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${MAPBOX_TOKEN}&limit=1`;
