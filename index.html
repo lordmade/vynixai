@@ -887,8 +887,8 @@
       });
     }
     
-    // New function to handle thumbs up/down feedback
-    function handleFeedback(type, btnElement) {
+    // New function to handle thumbs up/down feedback with Firebase storage
+    function handleFeedback(type, btnElement, messageId) {
       // Remove active class from both buttons in this toolbar
       const toolbar = btnElement.closest('.msg-toolbar');
       toolbar.querySelectorAll('.tool-btn').forEach(btn => {
@@ -901,10 +901,17 @@
         btnElement.classList.add('thumbs-down');
       }
       
-      // Here you can add Firebase saving logic for feedback
-      console.log(`Feedback: ${type} for message`);
+      // Store feedback in Firebase
+      if (currentUser && currentConversationId && messageId) {
+        database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}/messages/${messageId}/feedback`).set({
+          type: type,
+          timestamp: firebase.database.ServerValue.TIMESTAMP
+        });
+      }
       
-      // Optional: Show brief confirmation
+      console.log(`Feedback: ${type} for message ${messageId}`);
+      
+      // Show brief confirmation
       const icon = btnElement.querySelector('span');
       const originalIcon = icon.textContent;
       icon.textContent = 'check';
@@ -913,8 +920,8 @@
       }, 1500);
     }
     
-    function appendMessage(role, text, shouldSave = false, isStreaming = false, extra = null) {
-      const currentMsgId = `msg-${messageId++}`;
+    function appendMessage(role, text, shouldSave = false, isStreaming = false, extra = null, messageData = null) {
+      const currentMsgId = messageData ? messageData.id : `msg-${messageId++}`;
       const row = document.createElement('div');
       row.className = `message-row ${role}`;
       const content = document.createElement('div');
@@ -941,13 +948,22 @@
         const thumbsUpBtn = document.createElement('button');
         thumbsUpBtn.className = 'tool-btn';
         thumbsUpBtn.innerHTML = `<span class="material-symbols-rounded" style="font-size:16px">thumb_up</span>`;
-        thumbsUpBtn.onclick = () => handleFeedback('up', thumbsUpBtn);
+        thumbsUpBtn.onclick = () => handleFeedback('up', thumbsUpBtn, currentMsgId);
         
         // Thumbs down button
         const thumbsDownBtn = document.createElement('button');
         thumbsDownBtn.className = 'tool-btn';
         thumbsDownBtn.innerHTML = `<span class="material-symbols-rounded" style="font-size:16px">thumb_down</span>`;
-        thumbsDownBtn.onclick = () => handleFeedback('down', thumbsDownBtn);
+        thumbsDownBtn.onclick = () => handleFeedback('down', thumbsDownBtn, currentMsgId);
+        
+        // Restore feedback state if messageData exists
+        if (messageData && messageData.feedback) {
+          if (messageData.feedback.type === 'up') {
+            thumbsUpBtn.classList.add('active');
+          } else if (messageData.feedback.type === 'down') {
+            thumbsDownBtn.classList.add('active', 'thumbs-down');
+          }
+        }
         
         toolbar.appendChild(copyBtn);
         toolbar.appendChild(thumbsUpBtn);
@@ -1008,8 +1024,10 @@
       row.appendChild(content);
       els.chat.appendChild(row);
       els.chat.scrollTo(0, els.chat.scrollHeight);
+      
+      // Save message to Firebase if needed
       if (shouldSave && currentUser && currentConversationId) {
-        saveMessageToConversation(text, role);
+        saveMessageToConversation(text, role, currentMsgId);
       }
     }
     // ── Geocoding & Weather ─────────────────────────────────────────────
@@ -1049,10 +1067,12 @@
         title: "New Chat",
         preview: firstMsg.substring(0, 80),
         createdAt: firebase.database.ServerValue.TIMESTAMP,
-        lastUpdated: firebase.database.ServerValue.TIMESTAMP
+        lastUpdated: firebase.database.ServerValue.TIMESTAMP,
+        messageCount: 0
       });
       return convRef.key;
     }
+    
     async function generateConversationTitle(userMsg, aiResponse) {
       if (!XAI_API_KEY) return "Chat about " + userMsg.substring(0, 20) + "...";
       try {
@@ -1069,15 +1089,26 @@
         return data.choices?.[0]?.message?.content?.replace(/['"]+/g, '').trim() || "New Chat";
       } catch (e) { return "New Chat"; }
     }
-    function saveMessageToConversation(content, role) {
+    
+    function saveMessageToConversation(content, role, messageId) {
       if (!currentConversationId) return;
-      database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}/messages`).push().set({
-        role, content, timestamp: firebase.database.ServerValue.TIMESTAMP
+      
+      const messageRef = database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}/messages/${messageId}`);
+      messageRef.set({
+        role: role,
+        content: content,
+        timestamp: firebase.database.ServerValue.TIMESTAMP,
+        id: messageId
       });
-      database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({
-        lastUpdated: firebase.database.ServerValue.TIMESTAMP
+      
+      // Update conversation metadata
+      const convRef = database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`);
+      convRef.update({
+        lastUpdated: firebase.database.ServerValue.TIMESTAMP,
+        messageCount: firebase.database.ServerValue.increment(1)
       });
     }
+    
     function loadConversations() {
       if (!currentUser) return;
       const ref = database.ref(`users/${currentUser.uid}/conversations`);
@@ -1099,15 +1130,37 @@
         });
       });
     }
+    
     function loadChatFromHistory(chatId) {
       if (currentConversationId === chatId) return;
       resetChat();
       currentConversationId = chatId;
       activateChatMode();
       document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-      database.ref(`users/${currentUser.uid}/conversations/${chatId}/messages`).once('value', snap => {
-        snap.forEach(c => appendMessage(c.val().role, c.val().content, false));
+      
+      database.ref(`users/${currentUser.uid}/conversations/${chatId}/messages`).orderByChild('timestamp').once('value', snap => {
+        const messages = [];
+        snap.forEach(child => {
+          messages.push({ id: child.key, ...child.val() });
+        });
+        
+        messages.forEach(msg => {
+          if (msg.role === 'ai' && msg.content.includes('weather')) {
+            // Handle weather messages with special formatting
+            const weatherMatch = msg.content.match(/in ([^,]+), ([^:]+):/);
+            if (weatherMatch) {
+              appendMessage('ai', msg.content, false, false, {
+                type: 'weather',
+                city: weatherMatch[1],
+                country: weatherMatch[2]
+              }, msg);
+              return;
+            }
+          }
+          appendMessage(msg.role, msg.content, false, false, null, msg);
+        });
       });
+      
       closeAllOverlays();
     }
     // ── Send Message ────────────────────────────────────────────────────
