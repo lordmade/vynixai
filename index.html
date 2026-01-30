@@ -11,14 +11,36 @@
   <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded" rel="stylesheet"/>
   <script>
     MathJax = {
-      loader: { load: ['[tex]/mhchem'] },
+      loader: { 
+        load: ['[tex]/mhchem', 'ui/safe'] 
+      },
       tex: {
         inlineMath: [['$', '$'], ['\\(', '\\)']],
         displayMath: [['$$', '$$'], ['\\[', '\\]']],
-        packages: {'[+]': ['mhchem']}
+        packages: {'[+]': ['mhchem']},
+        processEscapes: true
       },
-      chtml: { linebreaks: { automatic: true } },
-      options: { ignoreHtmlClass: 'tex2jax_ignore', processHtmlClass: 'tex2jax_process' }
+      chtml: { 
+        linebreaks: { automatic: true },
+        displayAlign: 'left'
+      },
+      options: { 
+        ignoreHtmlClass: 'tex2jax_ignore', 
+        processHtmlClass: 'tex2jax_process',
+        renderActions: {
+          addMenu: [],
+          checkLoading: []
+        }
+      },
+      startup: {
+        pageReady: () => {
+          document.body.classList.add('mathjax-loading');
+          return MathJax.startup.defaultPageReady().then(() => {
+            document.body.classList.remove('mathjax-loading');
+            document.body.classList.add('mathjax-ready');
+          });
+        }
+      }
     };
   </script>
   <script id="MathJax-script" async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js"></script>
@@ -74,6 +96,48 @@
       display: flex;
       height: 100dvh;
     }
+    
+    /* MathJax Loading States - Prevents Raw LaTeX Flash */
+    .mathjax-loading .msg-text,
+    .mathjax-loading .ai-bubble-container {
+      opacity: 0;
+      visibility: hidden;
+    }
+    
+    .mathjax-ready .msg-text,
+    .mathjax-ready .ai-bubble-container {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.2s ease;
+    }
+    
+    .mathjax-processing {
+      opacity: 0 !important;
+      transition: opacity 0.1s;
+    }
+    
+    .mathjax-done {
+      opacity: 1 !important;
+      transition: opacity 0.2s ease;
+    }
+    
+    /* Ensure processed math is always visible */
+    .MathJax {
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+    
+    /* Hide incomplete renders */
+    mjx-container {
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    
+    mjx-container[display="true"],
+    mjx-container:not(:empty) {
+      opacity: 1;
+    }
+    
     .sidebar {
       background: var(--bg-sidebar);
       width: var(--sidebar-collapsed);
@@ -1782,6 +1846,24 @@
       return new Date(timestamp).toLocaleDateString();
     }
    
+    // ==================== SAFE MATHJAX TYPESETTING ====================
+    async function safeTypeset(element) {
+      if (!window.MathJax || !element) return;
+      
+      // Prevent raw LaTeX flash with CSS
+      element.classList.add('mathjax-processing');
+      
+      try {
+        await MathJax.typesetPromise([element]);
+        element.classList.remove('mathjax-processing');
+        element.classList.add('mathjax-done');
+      } catch (err) {
+        console.error('Typeset failed:', err);
+        element.classList.remove('mathjax-processing');
+        // Raw text remains as fallback
+      }
+    }
+   
     // ==================== MESSAGE RENDERING ====================
     function appendMessage(role, text, shouldSave = false, isStreaming = false, extra = null, opts = {}) {
       const currentMsgId = opts.id || `msg-${messageIdCounter++}`;
@@ -1802,6 +1884,9 @@
        
         const bubble = document.createElement('div');
         bubble.className = 'msg-text';
+        
+        // Add processing class to hide raw content initially
+        bubble.classList.add('mathjax-processing');
         
         // Process markdown if flagged
         if (opts.isMarkdown) {
@@ -1829,11 +1914,11 @@
         container.appendChild(toolbar);
         content.append(avatar, container);
         
-        // Typeset math
-        setTimeout(() => {
-          if (window.MathJax) MathJax.typesetPromise([bubble]);
+        // Typeset math with proper visibility handling
+        requestAnimationFrame(() => {
+          safeTypeset(bubble);
           if (window.hljs) hljs.highlightAll();
-        }, 100);
+        });
        
       } else {
         // User message
