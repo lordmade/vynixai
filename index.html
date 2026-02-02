@@ -43,6 +43,7 @@
       --header-height: 64px;
       --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
       --recording-red: #EA4335;
+      --thinking-bg: #E8F0FE;
     }
     * {
       margin: 0;
@@ -428,6 +429,85 @@
     .tool-btn.active { color: #4285F4; background: rgba(66, 133, 244, 0.1); }
     .tool-btn.active.thumbs-down { color: #D96570; background: rgba(217, 101, 112, 0.1); }
   
+    /* Thinking Indicator Styles */
+    .thinking-indicator {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 20px;
+      background: var(--thinking-bg);
+      border-radius: 20px;
+      max-width: 200px;
+      margin-bottom: 8px;
+    }
+    .thinking-dots {
+      display: flex;
+      gap: 4px;
+    }
+    .thinking-dot {
+      width: 8px;
+      height: 8px;
+      background: #4285F4;
+      border-radius: 50%;
+      animation: thinking-bounce 1.4s infinite ease-in-out both;
+    }
+    .thinking-dot:nth-child(1) { animation-delay: -0.32s; }
+    .thinking-dot:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes thinking-bounce {
+      0%, 80%, 100% { transform: scale(0); }
+      40% { transform: scale(1); }
+    }
+    .thinking-text {
+      font-size: 0.95rem;
+      color: #4285F4;
+      font-weight: 500;
+    }
+
+    /* Link Preview Styles */
+    .link-preview {
+      border: 1px solid #E1E5EA;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-top: 8px;
+      background: #FAFBFC;
+      max-width: 400px;
+    }
+    .link-preview-image {
+      width: 100%;
+      height: 160px;
+      object-fit: cover;
+      background: #E1E5EA;
+    }
+    .link-preview-content {
+      padding: 12px;
+    }
+    .link-preview-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text-main);
+      margin-bottom: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .link-preview-desc {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .link-preview-url {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+  
     .input-container {
       position: fixed;
       bottom: 0;
@@ -774,19 +854,10 @@
     };
   
     // >>> CLOUDINARY UNSIGNED UPLOAD CONFIGURATION <<<
-    // 1. Go to Cloudinary Dashboard → Settings → Upload → Upload presets
-    // 2. Create preset with "Signing Mode: UNSIGNED"
-    // 3. Copy Cloud Name (from dashboard top-right) and Preset name below
     const CLOUDINARY_CONFIG = {
-      cloudName: 'dqkujefxj', // ← Your cloud name (e.g., 'mycloud')
-      uploadPreset: 'banter_box' // ← Your unsigned upload preset (e.g., 'vynix_preset')
+      cloudName: 'dqkujefxj',
+      uploadPreset: 'banter_box'
     };
-    // Validate that user has configured Cloudinary
-    function validateCloudinaryConfig() {
-      if (!CLOUDINARY_CONFIG.cloudName || !CLOUDINARY_CONFIG.uploadPreset) {
-        throw new Error('Cloudinary not configured. Please set cloudName and uploadPreset in CLOUDINARY_CONFIG');
-      }
-    }
   
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
@@ -802,7 +873,7 @@
     let messageIdCounter = 0;
   
     // Media handling state
-    let pendingMedia = null; // { type: 'image'|'audio', file: Blob, previewUrl: string, transcript?: string }
+    let pendingMedia = null;
     let mediaRecorder = null;
     let audioChunks = [];
     let recordingTimer = null;
@@ -829,18 +900,34 @@
       micBtn: document.getElementById('micBtn')
     };
   
+    // ==================== URL DETECTION ====================
+    function containsUrl(text) {
+      const urlRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/gi;
+      return urlRegex.test(text);
+    }
+  
+    function extractUrls(text) {
+      const urlRegex = /(https?:\/\/[^\s]+)|(www\.[^\s]+)/gi;
+      return text.match(urlRegex) || [];
+    }
+  
+    function normalizeUrl(url) {
+      if (url.startsWith('www.')) return 'https://' + url;
+      return url;
+    }
+  
     // ==================== CLOUDINARY UNSIGNED UPLOAD ====================
     async function uploadToCloudinary(file, resourceType = 'auto') {
-      // Check that config is set
-      validateCloudinaryConfig();
+      if (!CLOUDINARY_CONFIG.cloudName || !CLOUDINARY_CONFIG.uploadPreset) {
+        throw new Error('Cloudinary not configured. Please set cloudName and uploadPreset');
+      }
      
       const formData = new FormData();
       formData.append('file', file);
       formData.append('upload_preset', CLOUDINARY_CONFIG.uploadPreset);
-      // NOTE: No API key, no signature, no timestamp needed for unsigned uploads!
      
       try {
-        // Fixed URL construction (no space in template literal)
+        // Fixed URL - removed the space that was causing issues
         const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/${resourceType}/upload`;
        
         const response = await fetch(url, {
@@ -858,11 +945,13 @@
         return {
           url: data.secure_url,
           publicId: data.public_id,
-          duration: data.duration // for audio/video
+          duration: data.duration,
+          format: data.format,
+          width: data.width,
+          height: data.height
         };
       } catch (error) {
         console.error('Cloudinary upload error:', error);
-        // Return null so caller can handle gracefully without breaking chat
         return null;
       }
     }
@@ -929,7 +1018,6 @@
           const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
           const previewUrl = URL.createObjectURL(audioBlob);
         
-          // Get transcript if available
           const transcript = els.input.value.trim();
         
           pendingMedia = {
@@ -940,14 +1028,11 @@
             duration: recordingSeconds
           };
         
-          // Visual feedback
           els.input.placeholder = "Voice message ready (add text if needed)...";
           els.micBtn.classList.add('recording-active');
         
-          // Stop recognition if active
           if (recognition) recognition.stop();
         
-          // Clear timer
           clearInterval(recordingTimer);
           recordingSeconds = 0;
           els.recordingIndicator.classList.remove('active');
@@ -956,17 +1041,14 @@
       
         mediaRecorder.start();
       
-        // UI Updates
         els.inputWrapper.classList.add('recording');
         els.recordingIndicator.classList.add('active');
         els.micBtn.classList.add('recording-active');
       
-        // Start timer
         recordingSeconds = 0;
         updateRecordingTimer();
         recordingTimer = setInterval(updateRecordingTimer, 1000);
       
-        // Start speech recognition simultaneously
         if (recognition) {
           els.input.value = '';
           recognition.start();
@@ -1002,7 +1084,6 @@
       const file = event.target.files[0];
       if (!file) return;
     
-      // Validate file size (max 10MB)
       if (file.size > 10 * 1024 * 1024) {
         alert('Image too large. Max 10MB allowed.');
         return;
@@ -1015,12 +1096,10 @@
         previewUrl: previewUrl
       };
     
-      // Show preview in input area
       showImagePreview(previewUrl);
     }
   
     function showImagePreview(url) {
-      // Remove existing preview
       const existing = document.querySelector('.image-preview-container');
       if (existing) existing.remove();
     
@@ -1046,6 +1125,37 @@
       document.getElementById('imageInput').value = '';
     }
   
+    // ==================== THINKING INDICATOR ====================
+    function showThinkingIndicator() {
+      const thinkingId = `thinking-${Date.now()}`;
+      const row = document.createElement('div');
+      row.className = 'message-row ai';
+      row.id = thinkingId;
+      row.innerHTML = `
+        <div class="message-content">
+          <div class="msg-avatar" style="background: linear-gradient(135deg,#4285F4,#D96570)"></div>
+          <div class="ai-bubble-container">
+            <div class="thinking-indicator">
+              <div class="thinking-dots">
+                <div class="thinking-dot"></div>
+                <div class="thinking-dot"></div>
+                <div class="thinking-dot"></div>
+              </div>
+              <span class="thinking-text">Analyzing...</span>
+            </div>
+          </div>
+        </div>
+      `;
+      els.chat.appendChild(row);
+      els.chat.scrollTo(0, els.chat.scrollHeight);
+      return thinkingId;
+    }
+  
+    function removeThinkingIndicator(id) {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    }
+  
     // ==================== MESSAGE HANDLING ====================
     async function handleSend() {
       if (!currentUser) {
@@ -1055,7 +1165,6 @@
     
       const text = els.input.value.trim();
     
-      // If we have pending media, upload it first
       if (pendingMedia) {
         await sendMediaMessage(text);
       } else if (text) {
@@ -1065,9 +1174,9 @@
   
     async function sendMediaMessage(text) {
       const { type, file, previewUrl, transcript, duration } = pendingMedia;
+      const thinkingId = showThinkingIndicator();
     
       try {
-        // Show local preview immediately
         activateChatMode();
         const tempId = `temp-${Date.now()}`;
       
@@ -1089,16 +1198,15 @@
         els.input.value = '';
         removePendingMedia();
       
-        // Upload to Cloudinary (unsigned - no API key needed)
+        // Upload to Cloudinary
         const uploadResult = await uploadToCloudinary(file, type === 'audio' ? 'video' : 'image');
        
-        // Handle upload failure gracefully
         if (!uploadResult) {
+          removeThinkingIndicator(thinkingId);
           appendMessage('ai', 'Failed to upload media. Please check your Cloudinary configuration and try again.', false);
           return;
         }
       
-        // Create conversation if needed
         if (!currentConversationId) {
           currentConversationId = createNewConversation(text || (type === 'image' ? 'Image upload' : 'Voice message'));
         }
@@ -1117,23 +1225,22 @@
       
         await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}/messages/${messageData.id}`).set(messageData);
       
-        // Update conversation metadata with media indicator
         await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({
           lastUpdated: firebase.database.ServerValue.TIMESTAMP,
           hasMedia: true,
           mediaType: type
         });
       
-        // If it's an image, send to AI vision model
+        // Process based on type
         if (type === 'image') {
-          await handleImageAnalysis(uploadResult.url, text);
+          await handleImageAnalysis(uploadResult.url, text, thinkingId);
         } else {
-          // For audio, use transcript if available, or ask user to clarify
           const query = text || transcript || "Please analyze this voice message";
-          await processAIResponse(query, uploadResult.url);
+          await processAIResponse(query, uploadResult.url, thinkingId);
         }
       
       } catch (error) {
+        removeThinkingIndicator(thinkingId);
         console.error('Send media error:', error);
         appendMessage('ai', `Error: ${error.message}`, false);
       }
@@ -1141,22 +1248,57 @@
   
     async function sendTextMessage(text) {
       activateChatMode();
+      const thinkingId = showThinkingIndicator();
     
       if (!currentConversationId) {
         currentConversationId = createNewConversation(text);
       }
     
+      // Check if text contains URLs
+      const hasUrl = containsUrl(text);
+      const urls = extractUrls(text);
+    
       appendMessage('user', text, true, false, null, { id: `msg-${messageIdCounter++}` });
       els.input.value = '';
       checkInput();
     
-      await processAIResponse(text);
+      // If contains image URLs, analyze them
+      if (hasUrl && urls.some(url => isImageUrl(url))) {
+        const imageUrls = urls.filter(url => isImageUrl(url)).map(normalizeUrl);
+        await analyzeImageUrls(imageUrls, text, thinkingId);
+      } else {
+        await processAIResponse(text, null, thinkingId);
+      }
     }
   
-    async function handleImageAnalysis(imageUrl, userText) {
-      const loading = showLoadingIndicator();
-    
+    function isImageUrl(url) {
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+      const lowerUrl = url.toLowerCase();
+      return imageExtensions.some(ext => lowerUrl.includes(ext)) || 
+             lowerUrl.includes('images.unsplash.com') ||
+             lowerUrl.includes('i.imgur.com') ||
+             lowerUrl.includes('cloudinary.com');
+    }
+  
+    async function analyzeImageUrls(urls, userText, thinkingId) {
       try {
+        const messages = [
+          {
+            role: "system",
+            content: "You are Vynix AI, an educational assistant. Analyze the provided images and give detailed educational explanations."
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userText || "Please analyze these images and explain what you see in an educational context." },
+              ...urls.map(url => ({
+                type: "image_url",
+                image_url: { url: url }
+              }))
+            ]
+          }
+        ];
+      
         const response = await fetch("https://api.x.ai/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -1165,37 +1307,78 @@
           },
           body: JSON.stringify({
             model: MODEL_ID,
-            messages: [
-              {
-                role: "system",
-                content: "You are Vynix AI, an educational assistant. Analyze images of homework, diagrams, or problems and provide detailed explanations."
-              },
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: userText || "What's in this image? Help me understand it." },
-                  { type: "image_url", image_url: { url: imageUrl } }
-                ]
-              }
-            ]
+            messages: messages
           })
         });
       
         const data = await response.json();
-        loading.remove();
+        removeThinkingIndicator(thinkingId);
+      
+        if (data.choices?.[0]?.message?.content) {
+          appendMessage('ai', data.choices[0].message.content, true, true, null, { 
+            id: `msg-${messageIdCounter++}`,
+            analyzedImages: urls 
+          });
+        
+          if (firstUserMessage) {
+            const title = await generateConversationTitle(firstUserMessage, data.choices[0].message.content);
+            await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({ title });
+            firstUserMessage = "";
+          }
+        }
+      } catch (error) {
+        removeThinkingIndicator(thinkingId);
+        appendMessage('ai', `Error analyzing images: ${error.message}`, false);
+      }
+    }
+  
+    async function handleImageAnalysis(imageUrl, userText, thinkingId) {
+      try {
+        const messages = [
+          {
+            role: "system",
+            content: "You are Vynix AI, an educational assistant. Analyze images of homework, diagrams, or problems and provide detailed explanations."
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userText || "What's in this image? Help me understand it." },
+              { type: "image_url", image_url: { url: imageUrl } }
+            ]
+          }
+        ];
+      
+        const response = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${XAI_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: MODEL_ID,
+            messages: messages
+          })
+        });
+      
+        const data = await response.json();
+        removeThinkingIndicator(thinkingId);
       
         if (data.choices?.[0]?.message?.content) {
           appendMessage('ai', data.choices[0].message.content, true, true, null, { id: `msg-${messageIdCounter++}` });
+        
+          if (firstUserMessage) {
+            const title = await generateConversationTitle(firstUserMessage, data.choices[0].message.content);
+            await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({ title });
+            firstUserMessage = "";
+          }
         }
       } catch (error) {
-        loading.remove();
+        removeThinkingIndicator(thinkingId);
         appendMessage('ai', `Error analyzing image: ${error.message}`, false);
       }
     }
   
-    async function processAIResponse(text, contextUrl = null) {
-      const loading = showLoadingIndicator();
-    
+    async function processAIResponse(text, contextUrl = null, thinkingId = null) {
       try {
         const messages = [{
           role: "system",
@@ -1225,13 +1408,12 @@
         });
       
         const data = await response.json();
-        loading.remove();
+        if (thinkingId) removeThinkingIndicator(thinkingId);
       
         if (data.choices?.[0]?.message?.content) {
           const aiText = data.choices[0].message.content;
-          appendMessage('ai', aiText, true, true);
+          appendMessage('ai', aiText, true, true, null, { id: `msg-${messageIdCounter++}` });
         
-          // Update conversation title if first message
           if (firstUserMessage) {
             const title = await generateConversationTitle(firstUserMessage, aiText);
             await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({ title });
@@ -1239,22 +1421,9 @@
           }
         }
       } catch (error) {
-        loading.remove();
+        if (thinkingId) removeThinkingIndicator(thinkingId);
         appendMessage('ai', `Sorry, I encountered an error: ${error.message}`, false);
       }
-    }
-  
-    function showLoadingIndicator() {
-      const loading = document.createElement('div');
-      loading.className = 'message-row ai';
-      loading.innerHTML = `
-        <div class="message-content">
-          <div class="msg-avatar" style="background: linear-gradient(135deg,#4285F4,#D96570)"></div>
-          <div class="msg-text" style="color:var(--text-muted);font-style:italic;">Thinking...</div>
-        </div>`;
-      els.chat.appendChild(loading);
-      els.chat.scrollTo(0, els.chat.scrollHeight);
-      return loading;
     }
   
     // ==================== UI FUNCTIONS ====================
@@ -1346,14 +1515,45 @@
         const bubble = document.createElement('div');
         bubble.className = 'msg-text';
       
-        // Handle media for AI responses (rare but possible)
-        if (extra?.type === 'image') {
-          const img = document.createElement('img');
-          img.src = extra.url;
-          img.style.maxWidth = '300px';
-          img.style.borderRadius = '12px';
-          img.onclick = () => window.open(extra.url, '_blank');
-          container.appendChild(img);
+        // Handle analyzed images display
+        if (messageData?.analyzedImages && messageData.analyzedImages.length > 0) {
+          const imagesContainer = document.createElement('div');
+          imagesContainer.style.display = 'flex';
+          imagesContainer.style.gap = '8px';
+          imagesContainer.style.flexWrap = 'wrap';
+          imagesContainer.style.marginBottom = '12px';
+          
+          messageData.analyzedImages.forEach(imgUrl => {
+            const imgWrapper = document.createElement('div');
+            imgWrapper.style.position = 'relative';
+            imgWrapper.style.borderRadius = '8px';
+            imgWrapper.style.overflow = 'hidden';
+            imgWrapper.style.maxWidth = '150px';
+            
+            const img = document.createElement('img');
+            img.src = imgUrl;
+            img.style.width = '100%';
+            img.style.height = '100px';
+            img.style.objectFit = 'cover';
+            img.style.cursor = 'pointer';
+            img.onclick = () => window.open(imgUrl, '_blank');
+            
+            const badge = document.createElement('div');
+            badge.style.position = 'absolute';
+            badge.style.top = '4px';
+            badge.style.right = '4px';
+            badge.style.background = 'rgba(66, 133, 244, 0.9)';
+            badge.style.color = 'white';
+            badge.style.padding = '2px 6px';
+            badge.style.borderRadius = '4px';
+            badge.style.fontSize = '0.7rem';
+            badge.innerHTML = '<span class="material-symbols-rounded" style="font-size:12px;vertical-align:middle;">link</span> URL';
+            
+            imgWrapper.appendChild(img);
+            imgWrapper.appendChild(badge);
+            imagesContainer.appendChild(imgWrapper);
+          });
+          container.appendChild(imagesContainer);
         }
       
         // Text content
@@ -1496,7 +1696,6 @@
         return;
       }
     
-      // Stop others
       if (existingAudio) {
         existingAudio.pause();
         existingAudio.remove();
@@ -1511,14 +1710,17 @@
       };
       audio.play();
       icon.textContent = 'pause';
-    
-      // Store reference to stop later
       btn.audioRef = audio;
     }
   
     function formatMessageText(text) {
-      // Escape HTML first
       let formatted = escapeHtml(text);
+    
+      // Convert URLs to clickable links
+      formatted = formatted.replace(
+        /(https?:\/\/[^\s<]+)/g, 
+        '<a href="$1" target="_blank" style="color:#4285F4;text-decoration:none;border-bottom:1px solid #4285F4;">$1</a>'
+      );
     
       // Basic markdown
       formatted = formatted
@@ -1578,7 +1780,6 @@
     }
   
     async function generateConversationTitle(userMsg, aiResponse) {
-      // Simple heuristic title generation
       if (userMsg.length < 30) return userMsg;
       if (userMsg.includes('solve') || userMsg.includes('equation')) return 'Math Problem';
       if (userMsg.includes('explain')) return userMsg.replace('explain', '').substring(0, 30) || 'Explanation';
@@ -1606,7 +1807,6 @@
     
       database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}/messages/${messageId}`).set(updates);
     
-      // Update conversation metadata
       const previewText = extra?.type === 'image' ? '📷 Image' :
                          extra?.type === 'audio' ? '🎤 Voice' :
                          content.substring(0, 60);
@@ -1632,7 +1832,6 @@
           item.className = `nav-item ${currentConversationId === chat.id ? 'active' : ''}`;
           item.onclick = () => loadChatFromHistory(chat.id);
         
-          // Media indicator in sidebar
           const mediaBadge = chat.hasMedia ?
             `<span class="media-indicator"><span class="material-symbols-rounded" style="font-size:12px">image</span> Media</span>` : '';
         
@@ -1723,7 +1922,6 @@
         XAI_API_KEY = remoteConfig.getValue('xai_api_key').asString();
       } catch (e) {
         console.warn("Remote config error, using fallback");
-        // Fallback for development
         XAI_API_KEY = "your-xai-api-key-here";
       }
     }
@@ -1744,7 +1942,6 @@
   
     els.scrollBtn.onclick = () => els.chat.scrollTo({ top: els.chat.scrollHeight, behavior: 'smooth' });
   
-    // Mobile keyboard handling
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', () => {
         const offset = window.innerHeight - window.visualViewport.height;
