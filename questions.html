@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   
-  <!-- Firebase (same versions as your main app) -->
+  <!-- Firebase Compat (same version as your main app) -->
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
@@ -30,7 +30,7 @@
     }
 
     * { margin:0; padding:0; box-sizing:border-box; }
-    html, body { height:100%; font-family:'Outfit', system-ui, sans-serif; background:var(--bg-body); color:var(--text-main); }
+    html, body { height:100%; font-family:'Outfit', system-ui, sans-serif; background:var(--bg-body); color:var(--text-main); overflow:hidden; }
 
     .top-bar {
       height: 64px;
@@ -98,6 +98,7 @@
       font-size: 0.97rem;
       line-height: 1.45;
       position: relative;
+      word-wrap: break-word;
     }
 
     .message-row.own .message-bubble {
@@ -153,6 +154,9 @@
       padding: 8px 4px;
       font-family: inherit;
       color: var(--text-main);
+      resize: none;
+      min-height: 20px;
+      max-height: 120px;
     }
 
     .send-btn {
@@ -194,7 +198,7 @@
       <span class="material-symbols-rounded">arrow_back</span>
     </button>
     <div class="title">Study Lounge</div>
-    <div style="width:40px;"></div> <!-- spacer -->
+    <div style="width:40px;"></div> <!-- spacer for balance -->
   </div>
 
   <div class="chat-container">
@@ -202,7 +206,7 @@
 
     <div class="input-area">
       <div class="input-wrapper">
-        <input type="text" id="messageInput" class="chat-input" placeholder="Type a message..." autocomplete="off" />
+        <textarea id="messageInput" class="chat-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
         <button class="send-btn" id="sendBtn" disabled>
           <span class="material-symbols-rounded">send</span>
         </button>
@@ -212,7 +216,7 @@
 
   <script>
     // ────────────────────────────────────────────────
-    //  Firebase Config (copy from your main app)
+    //  Firebase Config (same as your main app)
     // ────────────────────────────────────────────────
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -232,20 +236,98 @@
     const sendBtn    = document.getElementById('sendBtn');
 
     let currentUser = null;
+    let loaded = false;
+
+    // Auto-resize textarea
+    inputEl.addEventListener('input', function () {
+      this.style.height = 'auto';
+      this.style.height = (this.scrollHeight) + 'px';
+      sendBtn.disabled = this.value.trim().length === 0;
+    });
 
     // ────────────────────────────────────────────────
-    //  Auth state
+    //  Auth state → load messages
     // ────────────────────────────────────────────────
     auth.onAuthStateChanged(user => {
       if (!user) {
         alert("Please sign in to join the Study Lounge.");
-        window.location.href = "index.html"; // or your login page
+        window.location.href = "index.html";
         return;
       }
 
       currentUser = user;
-      loadMessages();
+      loadAllMessages();
     });
+
+    // ────────────────────────────────────────────────
+    //  Load history + listen for new messages
+    // ────────────────────────────────────────────────
+    function loadAllMessages() {
+      // 1. Load existing messages (history)
+      messagesRef
+        .orderByChild('timestamp')
+        .limitToLast(180)           // last ~180 messages — adjust as needed
+        .once('value')
+        .then(snapshot => {
+          messagesEl.innerHTML = ''; // clear
+          const msgs = [];
+
+          snapshot.forEach(child => {
+            const msg = child.val();
+            if (msg && msg.timestamp) {
+              msgs.push({ key: child.key, ...msg });
+            }
+          });
+
+          // Render all historical messages
+          msgs.forEach(msg => renderMessage(msg));
+
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+          loaded = true;
+        })
+        .catch(err => {
+          console.error("Failed to load history:", err);
+          messagesEl.innerHTML = '<div class="system-message">Could not load previous messages</div>';
+        });
+
+      // 2. Real-time listener for NEW messages only
+      messagesRef
+        .orderByChild('timestamp')
+        .limitToLast(1)
+        .on('child_added', snapshot => {
+          // Skip during initial load to prevent double rendering
+          if (!loaded) return;
+
+          const msg = snapshot.val();
+          if (msg && msg.timestamp) {
+            renderMessage({ key: snapshot.key, ...msg });
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        });
+    }
+
+    function renderMessage(msg) {
+      const isOwn = msg.uid === currentUser?.uid;
+
+      const row = document.createElement('div');
+      row.className = `message-row ${isOwn ? 'own' : 'other'}`;
+
+      const timeStr = formatTime(msg.timestamp);
+
+      row.innerHTML = `
+        ${!isOwn ? `
+          <div class="sender-name">${escapeHtml(msg.name || 'Student')}</div>
+        ` : ''}
+        <div class="message-bubble">
+          ${escapeHtml(msg.text || '')}
+        </div>
+        <div class="message-meta">
+          ${timeStr}${isOwn ? ' · You' : ''}
+        </div>
+      `;
+
+      messagesEl.appendChild(row);
+    }
 
     // ────────────────────────────────────────────────
     //  Send message
@@ -257,21 +339,24 @@
       const msg = {
         uid: currentUser.uid,
         name: currentUser.displayName || "Student",
-        photo: currentUser.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.displayName || "S")}&background=random`,
-        text: text,
+        photo: currentUser.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.displayName || "S")}&background=4285F4`,
+        text: text.substring(0, 2000), // basic length limit
         timestamp: firebase.database.ServerValue.TIMESTAMP
       };
 
-      messagesRef.push(msg);
-      inputEl.value = "";
-      sendBtn.disabled = true;
+      messagesRef.push(msg)
+        .then(() => {
+          inputEl.value = '';
+          inputEl.style.height = 'auto';
+          sendBtn.disabled = true;
+        })
+        .catch(err => {
+          console.error("Send failed:", err);
+          alert("Message could not be sent. Please try again.");
+        });
     }
 
     sendBtn.onclick = sendMessage;
-
-    inputEl.addEventListener('input', () => {
-      sendBtn.disabled = inputEl.value.trim().length === 0;
-    });
 
     inputEl.addEventListener('keypress', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -281,39 +366,8 @@
     });
 
     // ────────────────────────────────────────────────
-    //  Listen to new messages
+    //  Helpers
     // ────────────────────────────────────────────────
-    function loadMessages() {
-      messagesRef
-        .orderByChild('timestamp')
-        .limitToLast(120)   // last 120 messages — adjust as needed
-        .on('child_added', snapshot => {
-          const msg = snapshot.val();
-          if (!msg) return;
-
-          const isOwn = msg.uid === currentUser?.uid;
-
-          const row = document.createElement('div');
-          row.className = `message-row ${isOwn ? 'own' : 'other'}`;
-
-          row.innerHTML = `
-            ${!isOwn ? `
-              <div class="sender-name">${msg.name}</div>
-            ` : ''}
-            <div class="message-bubble">
-              ${escapeHtml(msg.text)}
-            </div>
-            <div class="message-meta">
-              ${formatTime(msg.timestamp)}
-            </div>
-          `;
-
-          messagesEl.appendChild(row);
-          messagesEl.scrollTop = messagesEl.scrollHeight;
-        });
-    }
-
-    // Helpers
     function escapeHtml(text) {
       const div = document.createElement('div');
       div.textContent = text;
@@ -323,10 +377,15 @@
     function formatTime(ts) {
       if (!ts) return '';
       const date = new Date(ts);
-      return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-    }
+      const today = new Date().toDateString();
+      const msgDay = date.toDateString();
 
-    // Optional: mark as read / typing indicator / online count can be added later
+      if (today === msgDay) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
+             ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
   </script>
 </body>
 </html>
