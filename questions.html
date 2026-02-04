@@ -8,14 +8,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded" rel="stylesheet"/>
   
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  
-  <!-- Firebase Compat (same version as your main app) -->
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
-
   <style>
     :root {
       --bg-body: #F0F4F9;
@@ -27,6 +19,7 @@
       --text-muted: #8E918F;
       --bubble-user: #D3E3FD;
       --bubble-other: #FFFFFF;
+      --new-msg-badge: #EA4335;
     }
 
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -60,11 +53,7 @@
     }
     .back-btn:hover { background: rgba(0,0,0,0.06); }
 
-    .title {
-      font-weight: 600;
-      font-size: 1.15rem;
-      flex: 1;
-    }
+    .title { font-weight:600; font-size:1.15rem; flex:1; }
 
     .chat-container {
       height: 100dvh;
@@ -80,6 +69,7 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      scroll-behavior: smooth;
     }
 
     .message-row {
@@ -97,7 +87,6 @@
       border-radius: 20px;
       font-size: 0.97rem;
       line-height: 1.45;
-      position: relative;
       word-wrap: break-word;
     }
 
@@ -175,19 +164,72 @@
     .send-btn:hover { background: var(--primary-dark); transform: scale(1.04); }
     .send-btn:disabled { opacity: 0.5; cursor: not-allowed; background: #9ab9f5; }
 
+    /* New messages badge */
+    .new-messages-badge {
+      position: fixed;
+      bottom: 90px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--new-msg-badge);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      box-shadow: 0 4px 16px rgba(234,67,53,0.3);
+      cursor: pointer;
+      z-index: 95;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+
+    .new-messages-badge.visible {
+      display: flex;
+    }
+
+    .new-messages-badge:hover {
+      background: #d93025;
+      transform: translateX(-50%) scale(1.04);
+    }
+
+    /* Typing indicator */
+    .typing-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-style: italic;
+      margin: 8px 0;
+    }
+
+    .typing-dots {
+      display: flex;
+      gap: 4px;
+    }
+
+    .typing-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      animation: typingBounce 1.4s infinite ease-in-out both;
+    }
+
+    .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+    .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+    @keyframes typingBounce {
+      0%, 80%, 100% { transform: scale(0); }
+      40% { transform: scale(1); }
+    }
+
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(8px); }
       to   { opacity: 1; transform: translateY(0); }
-    }
-
-    .system-message {
-      align-self: center;
-      background: rgba(66,133,244,0.08);
-      color: #3367D6;
-      padding: 8px 16px;
-      border-radius: 12px;
-      font-size: 0.85rem;
-      margin: 12px 0;
     }
   </style>
 </head>
@@ -198,11 +240,16 @@
       <span class="material-symbols-rounded">arrow_back</span>
     </button>
     <div class="title">Study Lounge</div>
-    <div style="width:40px;"></div> <!-- spacer for balance -->
+    <div style="width:40px;"></div>
   </div>
 
   <div class="chat-container">
     <div class="messages" id="messages"></div>
+
+    <div class="new-messages-badge" id="newMsgBadge" onclick="scrollToBottom()">
+      <span class="material-symbols-rounded" style="font-size:18px;">arrow_downward</span>
+      New messages
+    </div>
 
     <div class="input-area">
       <div class="input-wrapper">
@@ -216,7 +263,7 @@
 
   <script>
     // ────────────────────────────────────────────────
-    //  Firebase Config (same as your main app)
+    //  Firebase Config
     // ────────────────────────────────────────────────
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -231,22 +278,42 @@
     const database = firebase.database();
 
     const messagesRef = database.ref('group-chat/messages');
-    const messagesEl = document.getElementById('messages');
-    const inputEl    = document.getElementById('messageInput');
-    const sendBtn    = document.getElementById('sendBtn');
+    const typingRef   = database.ref('group-chat/typing');
+
+    const messagesEl  = document.getElementById('messages');
+    const inputEl     = document.getElementById('messageInput');
+    const sendBtn     = document.getElementById('sendBtn');
+    const newMsgBadge = document.getElementById('newMsgBadge');
 
     let currentUser = null;
     let loaded = false;
+    let lastMessageCount = 0;
+    let isAtBottom = true;
+    let typingTimeout = null;
 
     // Auto-resize textarea
     inputEl.addEventListener('input', function () {
       this.style.height = 'auto';
       this.style.height = (this.scrollHeight) + 'px';
-      sendBtn.disabled = this.value.trim().length === 0;
+
+      const text = this.value.trim();
+      sendBtn.disabled = text.length === 0;
+
+      // Update typing status
+      if (text.length > 0) {
+        typingRef.child(currentUser.uid).set(true);
+        if (typingTimeout) clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+          typingRef.child(currentUser.uid).remove();
+        }, 6000); // disappear after 6s inactivity
+      } else {
+        typingRef.child(currentUser.uid).remove();
+        if (typingTimeout) clearTimeout(typingTimeout);
+      }
     });
 
     // ────────────────────────────────────────────────
-    //  Auth state → load messages
+    //  Auth → load messages + setup listeners
     // ────────────────────────────────────────────────
     auth.onAuthStateChanged(user => {
       if (!user) {
@@ -256,52 +323,59 @@
       }
 
       currentUser = user;
+
+      // Remove typing status when user leaves
+      window.addEventListener('beforeunload', () => {
+        typingRef.child(currentUser.uid).remove();
+      });
+
       loadAllMessages();
+      listenForTyping();
     });
 
     // ────────────────────────────────────────────────
-    //  Load history + listen for new messages
+    //  Load history + real-time new messages
     // ────────────────────────────────────────────────
     function loadAllMessages() {
-      // 1. Load existing messages (history)
       messagesRef
         .orderByChild('timestamp')
-        .limitToLast(180)           // last ~180 messages — adjust as needed
+        .limitToLast(180)
         .once('value')
         .then(snapshot => {
-          messagesEl.innerHTML = ''; // clear
+          messagesEl.innerHTML = '';
           const msgs = [];
 
           snapshot.forEach(child => {
             const msg = child.val();
-            if (msg && msg.timestamp) {
-              msgs.push({ key: child.key, ...msg });
-            }
+            if (msg && msg.timestamp) msgs.push({ key: child.key, ...msg });
           });
 
-          // Render all historical messages
           msgs.forEach(msg => renderMessage(msg));
 
-          messagesEl.scrollTop = messagesEl.scrollHeight;
+          lastMessageCount = msgs.length;
+          scrollToBottom(true);
           loaded = true;
         })
-        .catch(err => {
-          console.error("Failed to load history:", err);
-          messagesEl.innerHTML = '<div class="system-message">Could not load previous messages</div>';
-        });
+        .catch(err => console.error("History load failed:", err));
 
-      // 2. Real-time listener for NEW messages only
+      // Real-time new messages
       messagesRef
         .orderByChild('timestamp')
         .limitToLast(1)
         .on('child_added', snapshot => {
-          // Skip during initial load to prevent double rendering
           if (!loaded) return;
 
           const msg = snapshot.val();
           if (msg && msg.timestamp) {
             renderMessage({ key: snapshot.key, ...msg });
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+
+            // Check if user is scrolled up
+            const wasAtBottom = isUserAtBottom();
+            if (!wasAtBottom) {
+              showNewMessagesBadge();
+            } else {
+              scrollToBottom();
+            }
           }
         });
     }
@@ -312,22 +386,85 @@
       const row = document.createElement('div');
       row.className = `message-row ${isOwn ? 'own' : 'other'}`;
 
-      const timeStr = formatTime(msg.timestamp);
-
       row.innerHTML = `
-        ${!isOwn ? `
-          <div class="sender-name">${escapeHtml(msg.name || 'Student')}</div>
-        ` : ''}
+        ${!isOwn ? `<div class="sender-name">${escapeHtml(msg.name || 'Student')}</div>` : ''}
         <div class="message-bubble">
           ${escapeHtml(msg.text || '')}
         </div>
         <div class="message-meta">
-          ${timeStr}${isOwn ? ' · You' : ''}
+          ${formatTime(msg.timestamp)}${isOwn ? ' · You' : ''}
         </div>
       `;
 
       messagesEl.appendChild(row);
     }
+
+    // ────────────────────────────────────────────────
+    //  Typing indicator
+    // ────────────────────────────────────────────────
+    function listenForTyping() {
+      const typingContainer = document.createElement('div');
+      typingContainer.id = 'typingIndicator';
+      typingContainer.className = 'typing-indicator';
+      typingContainer.style.display = 'none';
+      messagesEl.appendChild(typingContainer);
+
+      typingRef.on('value', snapshot => {
+        const typingUsers = [];
+        snapshot.forEach(child => {
+          if (child.val() === true && child.key !== currentUser.uid) {
+            typingUsers.push(child.key);
+          }
+        });
+
+        if (typingUsers.length > 0) {
+          typingContainer.innerHTML = `
+            <div>Someone is typing</div>
+            <div class="typing-dots">
+              <div class="typing-dot"></div>
+              <div class="typing-dot"></div>
+              <div class="typing-dot"></div>
+            </div>
+          `;
+          typingContainer.style.display = 'flex';
+          scrollToBottom();
+        } else {
+          typingContainer.style.display = 'none';
+        }
+      });
+    }
+
+    // ────────────────────────────────────────────────
+    //  New messages badge & scroll logic
+    // ────────────────────────────────────────────────
+    function isUserAtBottom() {
+      const threshold = 100; // pixels from bottom
+      return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+    }
+
+    function scrollToBottom(force = false) {
+      if (force || isUserAtBottom()) {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        hideNewMessagesBadge();
+      }
+    }
+
+    function showNewMessagesBadge() {
+      newMsgBadge.classList.add('visible');
+    }
+
+    function hideNewMessagesBadge() {
+      newMsgBadge.classList.remove('visible');
+    }
+
+    messagesEl.addEventListener('scroll', () => {
+      isAtBottom = isUserAtBottom();
+      if (isAtBottom) {
+        hideNewMessagesBadge();
+      }
+    });
+
+    newMsgBadge.onclick = () => scrollToBottom(true);
 
     // ────────────────────────────────────────────────
     //  Send message
@@ -339,8 +476,7 @@
       const msg = {
         uid: currentUser.uid,
         name: currentUser.displayName || "Student",
-        photo: currentUser.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.displayName || "S")}&background=4285F4`,
-        text: text.substring(0, 2000), // basic length limit
+        text: text.substring(0, 2000),
         timestamp: firebase.database.ServerValue.TIMESTAMP
       };
 
@@ -349,11 +485,9 @@
           inputEl.value = '';
           inputEl.style.height = 'auto';
           sendBtn.disabled = true;
+          typingRef.child(currentUser.uid).remove();
         })
-        .catch(err => {
-          console.error("Send failed:", err);
-          alert("Message could not be sent. Please try again.");
-        });
+        .catch(err => console.error("Send failed:", err));
     }
 
     sendBtn.onclick = sendMessage;
@@ -378,13 +512,11 @@
       if (!ts) return '';
       const date = new Date(ts);
       const today = new Date().toDateString();
-      const msgDay = date.toDateString();
-
-      if (today === msgDay) {
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (date.toDateString() === today) {
+        return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
       }
-      return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
-             ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return date.toLocaleDateString([], {month:'short', day:'numeric'}) + 
+             ' ' + date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     }
   </script>
 </body>
