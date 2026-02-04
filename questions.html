@@ -23,6 +23,7 @@
       --text-muted: #8E918F;
       --bubble-user: #D3E3FD;
       --bubble-other: #FFFFFF;
+      --online: #34A853;
     }
 
     * { margin:0; padding:0; box-sizing:border-box; }
@@ -61,11 +62,10 @@
     .title { font-weight: 600; font-size: 1.1rem; line-height: 1.2; }
     .subtitle { font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
 
-    /* Green dot for connected status */
     .status-dot {
       width: 8px; height: 8px; border-radius: 50%; background: #ccc; transition: background 0.3s;
     }
-    .status-dot.connected { background: #34A853; }
+    .status-dot.connected { background: var(--online); }
 
     .nav-right { display: flex; align-items: center; gap: 16px; }
 
@@ -92,7 +92,6 @@
       border-radius: 12px;
     }
 
-    /* ─── Current User Profile ─── */
     .current-user-profile {
       width: 36px; height: 36px;
       border-radius: 50%;
@@ -119,7 +118,7 @@
     .messages {
       flex: 1;
       overflow-y: auto;
-      padding: 20px 16px 40px;
+      padding: 20px 16px 100px;
       display: flex;
       flex-direction: column;
       gap: 16px;
@@ -214,8 +213,10 @@
     .typing-text { font-size: 0.75rem; color: var(--text-secondary); font-weight: 500; }
 
     .input-area {
-      position: sticky;
+      position: fixed;
       bottom: 0;
+      left: 0;
+      right: 0;
       background: var(--bg-surface);
       border-top: 1px solid rgba(0,0,0,0.08);
       padding: 12px 16px;
@@ -341,45 +342,48 @@
 
   <script>
     // ────────────────────────────────────────────────
-    //  Firebase Config - FIXED: Removed trailing space in databaseURL
+    //  Firebase Config - EXACTLY like Vynix Chat
     // ────────────────────────────────────────────────
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
+      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com",
       projectId: "fire-b-a8878",
-      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com", // ✅ FIXED: Removed space
+      storageBucket: "fire-b-a8878.firebasestorage.app",
+      messagingSenderId: "658673187627",
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
-    const database = firebase.database();
+    const db = firebase.database();
 
-    // Refs
-    const messagesRef = database.ref('group-chat/messages');
-    const presenceRef = database.ref('group-chat/presence');
-    const typingRef   = database.ref('group-chat/typing');
-    const connectedRef = database.ref('.info/connected');
+    // Refs - Using same pattern as Vynix Chat
+    const messagesRef = db.ref('study-lounge/messages');
+    const presenceRef = db.ref('study-lounge/presence');
+    const typingRef = db.ref('study-lounge/typing');
+    const connectedRef = db.ref('.info/connected');
 
     // Elements
     const messagesEl = document.getElementById('messages');
-    const inputEl    = document.getElementById('messageInput');
-    const sendBtn    = document.getElementById('sendBtn');
+    const inputEl = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
     const skeletonEl = document.getElementById('skeletonLoader');
     
-    const headerStack   = document.getElementById('headerStack');
-    const avatarListEl  = document.getElementById('avatarList');
+    const headerStack = document.getElementById('headerStack');
+    const avatarListEl = document.getElementById('avatarList');
     const onlineCountEl = document.getElementById('onlineCount');
-    const statusTextEl  = document.getElementById('statusText');
-    const statusDotEl   = document.getElementById('statusDot');
-    const myAvatarEl    = document.getElementById('myAvatar');
+    const statusTextEl = document.getElementById('statusText');
+    const statusDotEl = document.getElementById('statusDot');
+    const myAvatarEl = document.getElementById('myAvatar');
 
     const typingIndicatorEl = document.getElementById('typingIndicator');
-    const typingLabelEl     = document.getElementById('typingLabel');
+    const typingLabelEl = document.getElementById('typingLabel');
 
     let currentUser = null;
     let typingTimeout = null;
     let initialLoadDone = false;
+    let processedMessageKeys = new Set();
 
     // Auto-resize textarea
     inputEl.addEventListener('input', function () {
@@ -390,21 +394,17 @@
     });
 
     // ────────────────────────────────────────────────
-    //  Auth & Init - FIXED: Added error handling and logging
+    //  Auth & Init - EXACTLY like Vynix Chat
     // ────────────────────────────────────────────────
     auth.onAuthStateChanged(user => {
-      console.log("Auth state changed:", user ? `User: ${user.uid}` : "No user");
-      
       if (!user) {
-        console.log("Redirecting to index.html - no user");
         window.location.href = "index.html";
         return;
       }
       
       currentUser = user;
-      console.log("Current user:", currentUser.uid, currentUser.displayName);
+      console.log("User authenticated:", user.uid);
       
-      // FIXED: Removed space in avatar URL
       const photoURL = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName||'U')}&background=4285F4&color=fff`;
       myAvatarEl.src = photoURL;
 
@@ -412,40 +412,70 @@
       setupPresence(user);
       loadMessages();
       setupTypingListener();
-    }, error => {
-      console.error("Auth state error:", error);
-      statusTextEl.innerText = "Auth Error";
     });
 
     // ────────────────────────────────────────────────
-    //  Connection Monitor - FIXED: Better error handling
+    //  Connection Monitor
     // ────────────────────────────────────────────────
     function setupConnectionMonitor() {
       connectedRef.on('value', (snap) => {
-        const isConnected = snap.val();
-        console.log("Firebase connection state:", isConnected);
-        
-        if (isConnected === true) {
+        if (snap.val() === true) {
           statusDotEl.classList.add('connected');
           statusTextEl.innerText = "Online";
         } else {
           statusDotEl.classList.remove('connected');
           statusTextEl.innerText = "Connecting...";
         }
-      }, (error) => {
-        console.error("Connection monitor error:", error);
-        statusTextEl.innerText = "Error";
       });
     }
 
     // ────────────────────────────────────────────────
-    //  Messaging Logic - FIXED: Better error handling and logging
+    //  Messaging Logic - EXACTLY like Vynix Chat pattern
     // ────────────────────────────────────────────────
     function loadMessages() {
-      console.log("Loading messages...");
+      console.log("Loading messages from Firebase...");
       
-      messagesRef.orderByChild('timestamp').limitToLast(100).on('child_added', snapshot => {
-        console.log("Message received:", snapshot.key);
+      // Clear existing messages first
+      messagesEl.innerHTML = '';
+      processedMessageKeys.clear();
+
+      // Load existing messages - EXACTLY like Vynix Chat
+      messagesRef.limitToLast(100).once('value', (snapshot) => {
+        console.log("Initial load complete, messages exist:", snapshot.exists());
+        
+        if (!initialLoadDone) {
+          initialLoadDone = true;
+          skeletonEl.style.display = 'none';
+          messagesEl.classList.add('loaded');
+        }
+
+        if (snapshot.exists()) {
+          const messages = [];
+          snapshot.forEach((child) => {
+            const msg = child.val();
+            msg.key = child.key;
+            messages.push(msg);
+          });
+          
+          // Sort by timestamp
+          messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+          
+          messages.forEach((msg) => {
+            processedMessageKeys.add(msg.key);
+            renderMessage(msg);
+          });
+          
+          scrollToBottom();
+        }
+      }).catch((error) => {
+        console.error("Error loading messages:", error);
+        skeletonEl.style.display = 'none';
+        messagesEl.classList.add('loaded');
+      });
+
+      // Listen for new messages - EXACTLY like Vynix Chat child_added pattern
+      messagesRef.limitToLast(100).on('child_added', (snapshot) => {
+        console.log("New message received:", snapshot.key);
         
         if (!initialLoadDone) {
           initialLoadDone = true;
@@ -454,28 +484,21 @@
         }
 
         const msg = snapshot.val();
-        if (msg) renderMessage(msg);
+        if (!msg) return;
         
-        requestAnimationFrame(() => {
-          messagesEl.scrollTop = messagesEl.scrollHeight;
-        });
+        // Skip if already rendered
+        if (processedMessageKeys.has(snapshot.key)) return;
+        
+        processedMessageKeys.add(snapshot.key);
+        renderMessage(msg);
+        scrollToBottom();
       }, (error) => {
-        console.error("Error loading messages:", error);
-        statusTextEl.innerText = "Load Error";
-        alert("Could not load messages. Check console for details.");
-        
-        // Hide skeleton on error too
-        if (!initialLoadDone) {
-          initialLoadDone = true;
-          skeletonEl.style.display = 'none';
-          messagesEl.classList.add('loaded');
-        }
+        console.error("Error in child_added listener:", error);
       });
 
       // Fail-safe timeout
       setTimeout(() => {
         if (!initialLoadDone) {
-          console.log("Forcing skeleton hide after timeout");
           initialLoadDone = true;
           skeletonEl.style.display = 'none';
           messagesEl.classList.add('loaded');
@@ -508,21 +531,26 @@
       messagesEl.appendChild(row);
     }
 
+    function scrollToBottom() {
+      requestAnimationFrame(() => {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      });
+    }
+
+    // ────────────────────────────────────────────────
+    //  Send Message - EXACTLY like Vynix Chat pattern
+    // ────────────────────────────────────────────────
     function sendMessage() {
       const text = inputEl.value.trim();
-      if (!text || !currentUser) {
-        console.log("Cannot send - empty text or no user");
-        return;
-      }
+      if (!text || !currentUser) return;
 
       console.log("Sending message...");
-      
+
       // Clear input immediately (optimistic UI)
       inputEl.value = '';
       inputEl.style.height = 'auto';
       sendBtn.disabled = true;
 
-      // FIXED: Removed space in avatar URL
       const photoURL = currentUser.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.displayName||'U')}&background=4285F4&color=fff`;
 
       const messageData = {
@@ -533,55 +561,47 @@
         timestamp: firebase.database.ServerValue.TIMESTAMP
       };
 
-      console.log("Pushing message:", messageData);
+      console.log("Pushing message to Firebase:", messageData);
 
+      // EXACTLY like Vynix Chat - use push() with then/catch
       messagesRef.push(messageData)
-      .then((ref) => {
-        console.log("✅ Message sent successfully, key:", ref.key);
-        typingRef.child(currentUser.uid).remove();
-        clearTimeout(typingTimeout);
-      })
-      .catch((error) => {
-        console.error("❌ Write failed:", error);
-        alert("Message failed to send! Error: " + error.message);
-        // Restore text so user can retry
-        inputEl.value = text;
-        sendBtn.disabled = false;
-      });
+        .then((ref) => {
+          console.log("✅ Message sent successfully, key:", ref.key);
+          // Remove typing status
+          typingRef.child(currentUser.uid).remove();
+          clearTimeout(typingTimeout);
+        })
+        .catch((error) => {
+          console.error("❌ Write failed:", error);
+          alert("Message failed to send! Error: " + error.message);
+          // Restore text so user can retry
+          inputEl.value = text;
+          sendBtn.disabled = false;
+        });
     }
 
     // ────────────────────────────────────────────────
-    //  Presence & Typing - FIXED: Better error handling
+    //  Presence & Typing - EXACTLY like Vynix Chat
     // ────────────────────────────────────────────────
     function setupPresence(user) {
       const userPresenceRef = presenceRef.child(user.uid);
-      // FIXED: Removed space in avatar URL
       const photoURL = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName||'U')}&background=4285F4&color=fff`;
 
       connectedRef.on('value', (snap) => {
         if (snap.val() === true) {
-          console.log("Setting presence for user:", user.uid);
           userPresenceRef.set({
             name: user.displayName || "Student",
             photo: photoURL,
             onlineAt: firebase.database.ServerValue.TIMESTAMP
-          })
-          .then(() => console.log("Presence set"))
-          .catch(err => console.error("Presence set error:", err));
-          
-          userPresenceRef.onDisconnect().remove()
-            .then(() => console.log("OnDisconnect configured"))
-            .catch(err => console.error("OnDisconnect error:", err));
+          });
+          userPresenceRef.onDisconnect().remove();
         }
       });
 
       presenceRef.on('value', (snap) => {
         const users = snap.val() || {};
         const userList = Object.values(users);
-        console.log("Presence update, users online:", userList.length);
         updateHeaderAvatars(userList);
-      }, (error) => {
-        console.error("Presence listener error:", error);
       });
     }
 
@@ -600,7 +620,6 @@
         img.src = u.photo;
         img.className = 'header-avatar';
         img.onerror = () => {
-          // Fallback if image fails to load
           img.src = `https://ui-avatars.com/api/?name=U&background=4285F4&color=fff`;
         };
         avatarListEl.appendChild(img);
@@ -613,12 +632,11 @@
       typingRef.child(currentUser.uid).set({
         name: currentUser.displayName || "Someone",
         timestamp: firebase.database.ServerValue.TIMESTAMP
-      }).catch(err => console.error("Typing set error:", err));
+      });
 
       clearTimeout(typingTimeout);
       typingTimeout = setTimeout(() => {
-        typingRef.child(currentUser.uid).remove()
-          .catch(err => console.error("Typing remove error:", err));
+        typingRef.child(currentUser.uid).remove();
       }, 3000);
     }
 
@@ -638,12 +656,10 @@
             ? `${typers[0]} is typing...` 
             : `Multiple people typing...`;
           
-          messagesEl.scrollTop = messagesEl.scrollHeight;
+          scrollToBottom();
         } else {
           typingIndicatorEl.style.display = 'none';
         }
-      }, (error) => {
-        console.error("Typing listener error:", error);
       });
     }
 
