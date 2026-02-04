@@ -939,7 +939,7 @@
   <div style="margin-top: auto;">
     <div class="nav-item" id="logoutBtn" style="display:none;" onclick="handleSignOut()">
       <span class="material-symbols-rounded">logout</span>
-      <span class="nav-label">Sign out.</span>
+      <span class="nav-label">Sign out</span>
     </div>
   </div>
 </aside>
@@ -1252,123 +1252,6 @@
       recordingTimer: document.getElementById('recordingTimer'),
       micBtn: document.getElementById('micBtn')
     };
- 
-    // ==================== USER PROFILE & PRESENCE MANAGEMENT ====================
-    async function initializeUserProfile(user) {
-      if (!user) return;
-      
-      const userRef = database.ref(`users/${user.uid}`);
-      
-      try {
-        const snapshot = await userRef.once('value');
-        
-        if (!snapshot.exists()) {
-          // Create new user record for dashboard
-          await userRef.set({
-            displayName: user.displayName || 'Anonymous',
-            email: user.email || '',
-            photoURL: user.photoURL || '',
-            createdAt: firebase.database.ServerValue.TIMESTAMP,
-            lastActive: firebase.database.ServerValue.TIMESTAMP,
-            blocked: false,
-            usage: {
-              total: {
-                promptCount: 0,
-                totalTokens: 0,
-                estimatedTokens: 0,
-                lastUpdated: firebase.database.ServerValue.TIMESTAMP
-              }
-            }
-          });
-          console.log('Created new user profile for dashboard');
-        } else {
-          // Update existing user
-          await userRef.update({
-            lastActive: firebase.database.ServerValue.TIMESTAMP,
-            displayName: user.displayName || snapshot.val().displayName,
-            email: user.email || snapshot.val().email,
-            photoURL: user.photoURL || snapshot.val().photoURL
-          });
-        }
-      } catch (error) {
-        console.error('Error initializing user profile:', error);
-      }
-    }
-
-    function initPresence(user) {
-      if (!user) return;
-      
-      const userStatusRef = database.ref(`presence/${user.uid}`);
-      const connectedRef = database.ref('.info/connected');
-      
-      connectedRef.on('value', (snap) => {
-        if (snap.val() === true) {
-          userStatusRef.set({
-            online: true,
-            lastActive: firebase.database.ServerValue.TIMESTAMP
-          });
-          
-          userStatusRef.onDisconnect().set({
-            online: false,
-            lastActive: firebase.database.ServerValue.TIMESTAMP
-          });
-        }
-      });
-      
-      // Update last active every minute while user is active
-      setInterval(() => {
-        if (currentUser) {
-          userStatusRef.update({
-            lastActive: firebase.database.ServerValue.TIMESTAMP
-          });
-          // Also update user profile lastActive
-          database.ref(`users/${currentUser.uid}`).update({
-            lastActive: firebase.database.ServerValue.TIMESTAMP
-          });
-        }
-      }, 60000);
-    }
-
-    async function trackUsage(promptText, responseText) {
-      if (!currentUser) return;
-      
-      const userRef = database.ref(`users/${currentUser.uid}`);
-      const today = new Date().toISOString().split('T')[0];
-      
-      // Estimate tokens (rough approximation: 1 token ≈ 4 characters)
-      const promptTokens = Math.ceil(promptText.length / 4);
-      const responseTokens = Math.ceil(responseText.length / 4);
-      const totalTokens = promptTokens + responseTokens;
-      
-      try {
-        const updates = {};
-        updates['lastActive'] = firebase.database.ServerValue.TIMESTAMP;
-        updates['usage/total/promptCount'] = firebase.database.ServerValue.increment(1);
-        updates['usage/total/totalTokens'] = firebase.database.ServerValue.increment(totalTokens);
-        updates['usage/total/estimatedTokens'] = firebase.database.ServerValue.increment(totalTokens);
-        updates['usage/total/lastUpdated'] = firebase.database.ServerValue.TIMESTAMP;
-        
-        // Track daily stats
-        updates[`usage/daily/${today}/promptCount`] = firebase.database.ServerValue.increment(1);
-        updates[`usage/daily/${today}/tokens`] = firebase.database.ServerValue.increment(totalTokens);
-        
-        await userRef.update(updates);
-      } catch (error) {
-        console.error('Error tracking usage:', error);
-      }
-    }
-
-    function isUserBlocked(callback) {
-      if (!currentUser) {
-        callback(false);
-        return;
-      }
-      
-      database.ref(`users/${currentUser.uid}/blocked`).once('value', (snapshot) => {
-        const blocked = snapshot.val() === true;
-        callback(blocked);
-      });
-    }
  
     // ==================== URL DETECTION ====================
     function containsUrl(text) {
@@ -1784,18 +1667,13 @@
         removeThinkingIndicator(thinkingId);
      
         if (data.choices?.[0]?.message?.content) {
-          const aiText = data.choices[0].message.content;
-          
-          // Track usage
-          await trackUsage(userText, aiText);
-          
-          appendMessage('ai', aiText, true, true, null, {
+          appendMessage('ai', data.choices[0].message.content, true, true, null, {
             id: `msg-${messageIdCounter++}`,
             analyzedImages: urls
           });
        
           if (firstUserMessage) {
-            const title = await generateConversationTitle(firstUserMessage, aiText);
+            const title = await generateConversationTitle(firstUserMessage, data.choices[0].message.content);
             await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({ title });
             firstUserMessage = "";
           }
@@ -1838,15 +1716,10 @@
         removeThinkingIndicator(thinkingId);
      
         if (data.choices?.[0]?.message?.content) {
-          const aiText = data.choices[0].message.content;
-          
-          // Track usage
-          await trackUsage(userText || "Image analysis", aiText);
-          
-          appendMessage('ai', aiText, true, true, null, { id: `msg-${messageIdCounter++}` });
+          appendMessage('ai', data.choices[0].message.content, true, true, null, { id: `msg-${messageIdCounter++}` });
        
           if (firstUserMessage) {
-            const title = await generateConversationTitle(firstUserMessage, aiText);
+            const title = await generateConversationTitle(firstUserMessage, data.choices[0].message.content);
             await database.ref(`users/${currentUser.uid}/conversations/${currentConversationId}`).update({ title });
             firstUserMessage = "";
           }
@@ -1891,10 +1764,6 @@
      
         if (data.choices?.[0]?.message?.content) {
           const aiText = data.choices[0].message.content;
-          
-          // Track usage for dashboard
-          await trackUsage(text, aiText);
-          
           appendMessage('ai', aiText, true, true, null, { id: `msg-${messageIdCounter++}` });
        
           if (firstUserMessage) {
@@ -2372,43 +2241,21 @@
     };
  
     function handleSignOut() {
-      // Set offline status before signing out
-      if (currentUser) {
-        database.ref(`presence/${currentUser.uid}`).set({
-          online: false,
-          lastActive: firebase.database.ServerValue.TIMESTAMP
-        });
-      }
       auth.signOut().then(() => window.location.reload());
     }
  
     auth.onAuthStateChanged(user => {
       currentUser = user;
       if (user) {
-        // Check if user is blocked
-        isUserBlocked((blocked) => {
-          if (blocked) {
-            alert('Your account has been blocked. Please contact support.');
-            auth.signOut();
-            return;
-          }
-          
-          // Initialize user profile for dashboard
-          initializeUserProfile(user);
-          
-          // Initialize presence tracking
-          initPresence(user);
-          
-          els.centerLoginBtn.classList.remove('visible');
-          els.avatar.style.backgroundImage = `url(${user.photoURL})`;
-          els.greeting.innerText = `Hello, ${user.displayName?.split(' ')[0] || 'Student'}`;
-          document.getElementById('logoutBtn').style.display = 'flex';
-          els.input.placeholder = "Ask anything...";
-          els.inputWrapper.classList.remove('disabled');
-          loadConversations();
-          initConfig();
-          initSpeechRecognition();
-        });
+        els.centerLoginBtn.classList.remove('visible');
+        els.avatar.style.backgroundImage = `url(${user.photoURL})`;
+        els.greeting.innerText = `Hello, ${user.displayName?.split(' ')[0] || 'Student'}`;
+        document.getElementById('logoutBtn').style.display = 'flex';
+        els.input.placeholder = "Ask anything...";
+        els.inputWrapper.classList.remove('disabled');
+        loadConversations();
+        initConfig();
+        initSpeechRecognition();
       } else {
         els.centerLoginBtn.classList.add('visible');
         els.avatar.style.backgroundImage = "url('https://ui-avatars.com/api/?name=Guest&background=random')";
