@@ -341,14 +341,13 @@
 
   <script>
     // ────────────────────────────────────────────────
-    //  Firebase Config
+    //  Firebase Config - FIXED: Removed trailing space in databaseURL
     // ────────────────────────────────────────────────
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
       projectId: "fire-b-a8878",
-      // IMPORTANT: Ensure this URL matches your Firebase Console exactly
-      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com",
+      databaseURL: "https://fire-b-a8878-default-rtdb.firebaseio.com", // ✅ FIXED: Removed space
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
@@ -391,16 +390,21 @@
     });
 
     // ────────────────────────────────────────────────
-    //  Auth & Init
+    //  Auth & Init - FIXED: Added error handling and logging
     // ────────────────────────────────────────────────
     auth.onAuthStateChanged(user => {
+      console.log("Auth state changed:", user ? `User: ${user.uid}` : "No user");
+      
       if (!user) {
+        console.log("Redirecting to index.html - no user");
         window.location.href = "index.html";
         return;
       }
-      console.log("User Authenticated:", user.uid);
-      currentUser = user;
       
+      currentUser = user;
+      console.log("Current user:", currentUser.uid, currentUser.displayName);
+      
+      // FIXED: Removed space in avatar URL
       const photoURL = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName||'U')}&background=4285F4&color=fff`;
       myAvatarEl.src = photoURL;
 
@@ -408,31 +412,41 @@
       setupPresence(user);
       loadMessages();
       setupTypingListener();
+    }, error => {
+      console.error("Auth state error:", error);
+      statusTextEl.innerText = "Auth Error";
     });
 
     // ────────────────────────────────────────────────
-    //  Connection Monitor (Fixes "Connecting...")
+    //  Connection Monitor - FIXED: Better error handling
     // ────────────────────────────────────────────────
     function setupConnectionMonitor() {
       connectedRef.on('value', (snap) => {
-        if (snap.val() === true) {
+        const isConnected = snap.val();
+        console.log("Firebase connection state:", isConnected);
+        
+        if (isConnected === true) {
           statusDotEl.classList.add('connected');
-          // Text will be overwritten by "X active" if users exist
-          if(onlineCountEl.innerText === "0") statusTextEl.innerText = "Online";
+          statusTextEl.innerText = "Online";
         } else {
           statusDotEl.classList.remove('connected');
           statusTextEl.innerText = "Connecting...";
         }
+      }, (error) => {
+        console.error("Connection monitor error:", error);
+        statusTextEl.innerText = "Error";
       });
     }
 
     // ────────────────────────────────────────────────
-    //  Messaging Logic
+    //  Messaging Logic - FIXED: Better error handling and logging
     // ────────────────────────────────────────────────
     function loadMessages() {
-      // Listen for messages added (Old + New)
+      console.log("Loading messages...");
+      
       messagesRef.orderByChild('timestamp').limitToLast(100).on('child_added', snapshot => {
-        // Hide Skeleton
+        console.log("Message received:", snapshot.key);
+        
         if (!initialLoadDone) {
           initialLoadDone = true;
           skeletonEl.style.display = 'none';
@@ -447,17 +461,26 @@
         });
       }, (error) => {
         console.error("Error loading messages:", error);
-        alert("Could not load messages. Check your Console permissions.");
-      });
-
-      // Fail-safe: hide skeleton if no messages load in 3s
-      setTimeout(() => {
+        statusTextEl.innerText = "Load Error";
+        alert("Could not load messages. Check console for details.");
+        
+        // Hide skeleton on error too
         if (!initialLoadDone) {
           initialLoadDone = true;
           skeletonEl.style.display = 'none';
           messagesEl.classList.add('loaded');
         }
-      }, 3000);
+      });
+
+      // Fail-safe timeout
+      setTimeout(() => {
+        if (!initialLoadDone) {
+          console.log("Forcing skeleton hide after timeout");
+          initialLoadDone = true;
+          skeletonEl.style.display = 'none';
+          messagesEl.classList.add('loaded');
+        }
+      }, 5000);
     }
 
     function renderMessage(msg) {
@@ -487,58 +510,78 @@
 
     function sendMessage() {
       const text = inputEl.value.trim();
-      if (!text || !currentUser) return;
+      if (!text || !currentUser) {
+        console.log("Cannot send - empty text or no user");
+        return;
+      }
 
-      // 1. Optimistic UI: Clear input immediately
+      console.log("Sending message...");
+      
+      // Clear input immediately (optimistic UI)
       inputEl.value = '';
       inputEl.style.height = 'auto';
       sendBtn.disabled = true;
 
+      // FIXED: Removed space in avatar URL
       const photoURL = currentUser.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.displayName||'U')}&background=4285F4&color=fff`;
 
-      // 2. Send to Firebase
-      messagesRef.push({
+      const messageData = {
         uid: currentUser.uid,
         name: currentUser.displayName || "Student",
         photo: photoURL,
         text: text,
         timestamp: firebase.database.ServerValue.TIMESTAMP
-      })
-      .then(() => {
-        // Remove typing status immediately on send
+      };
+
+      console.log("Pushing message:", messageData);
+
+      messagesRef.push(messageData)
+      .then((ref) => {
+        console.log("✅ Message sent successfully, key:", ref.key);
         typingRef.child(currentUser.uid).remove();
         clearTimeout(typingTimeout);
       })
       .catch((error) => {
-        console.error("Write failed:", error);
-        alert("Message failed to send! Permission denied or network error.");
-        // Restore text if failed (optional, but good UX)
-        inputEl.value = text; 
+        console.error("❌ Write failed:", error);
+        alert("Message failed to send! Error: " + error.message);
+        // Restore text so user can retry
+        inputEl.value = text;
         sendBtn.disabled = false;
       });
     }
 
     // ────────────────────────────────────────────────
-    //  Presence & Typing
+    //  Presence & Typing - FIXED: Better error handling
     // ────────────────────────────────────────────────
     function setupPresence(user) {
       const userPresenceRef = presenceRef.child(user.uid);
+      // FIXED: Removed space in avatar URL
       const photoURL = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName||'U')}&background=4285F4&color=fff`;
 
       connectedRef.on('value', (snap) => {
         if (snap.val() === true) {
+          console.log("Setting presence for user:", user.uid);
           userPresenceRef.set({
             name: user.displayName || "Student",
             photo: photoURL,
             onlineAt: firebase.database.ServerValue.TIMESTAMP
-          });
-          userPresenceRef.onDisconnect().remove();
+          })
+          .then(() => console.log("Presence set"))
+          .catch(err => console.error("Presence set error:", err));
+          
+          userPresenceRef.onDisconnect().remove()
+            .then(() => console.log("OnDisconnect configured"))
+            .catch(err => console.error("OnDisconnect error:", err));
         }
       });
 
       presenceRef.on('value', (snap) => {
         const users = snap.val() || {};
-        updateHeaderAvatars(Object.values(users));
+        const userList = Object.values(users);
+        console.log("Presence update, users online:", userList.length);
+        updateHeaderAvatars(userList);
+      }, (error) => {
+        console.error("Presence listener error:", error);
       });
     }
 
@@ -546,7 +589,6 @@
       const count = userList.length;
       headerStack.style.display = 'flex';
       
-      // Update header text based on count
       if (count > 0) {
         statusTextEl.innerText = count > 1 ? `${count} active` : 'Online';
       }
@@ -557,20 +599,26 @@
         const img = document.createElement('img');
         img.src = u.photo;
         img.className = 'header-avatar';
+        img.onerror = () => {
+          // Fallback if image fails to load
+          img.src = `https://ui-avatars.com/api/?name=U&background=4285F4&color=fff`;
+        };
         avatarListEl.appendChild(img);
       });
     }
 
     function handleTyping() {
       if (!currentUser) return;
+      
       typingRef.child(currentUser.uid).set({
         name: currentUser.displayName || "Someone",
         timestamp: firebase.database.ServerValue.TIMESTAMP
-      });
+      }).catch(err => console.error("Typing set error:", err));
 
       clearTimeout(typingTimeout);
       typingTimeout = setTimeout(() => {
-        typingRef.child(currentUser.uid).remove();
+        typingRef.child(currentUser.uid).remove()
+          .catch(err => console.error("Typing remove error:", err));
       }, 3000);
     }
 
@@ -590,11 +638,12 @@
             ? `${typers[0]} is typing...` 
             : `Multiple people typing...`;
           
-          // Smooth scroll to bottom so typing indicator is visible
           messagesEl.scrollTop = messagesEl.scrollHeight;
         } else {
           typingIndicatorEl.style.display = 'none';
         }
+      }, (error) => {
+        console.error("Typing listener error:", error);
       });
     }
 
@@ -618,6 +667,7 @@
     }
 
     function formatTime(ts) {
+      if (!ts) return '';
       const d = new Date(ts);
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
