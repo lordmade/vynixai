@@ -53,6 +53,21 @@
             padding: 0;
             font-family: 'Plus Jakarta Sans', sans-serif;
             -webkit-tap-highlight-color: transparent;
+            /* PREVENT HIGHLIGHT ON LONG PRESS - APPLIED EVERYWHERE */
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+
+        /* Allow text selection only in specific elements if needed */
+        input, textarea {
+            -webkit-user-select: text;
+            -moz-user-select: text;
+            -ms-user-select: text;
+            user-select: text;
         }
 
         body {
@@ -121,11 +136,17 @@
 
         /* Quiz UI */
         .question { background: var(--bg-card); padding: 20px; border-radius: 16px; margin-bottom: 16px; border: 1px solid var(--border-light); }
+        .question.answered { opacity: 0.7; }
         .question-text { font-size: 16px; font-weight: 600; margin-bottom: 16px; line-height: 1.6; }
         .option { display: flex; align-items: center; gap: 12px; padding: 14px; border: 2px solid var(--border-light); border-radius: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
+        .option:hover:not(.disabled) { border-color: var(--primary-light); }
         .option.selected { border-color: var(--primary); background: var(--primary-light); }
+        .option.disabled { cursor: not-allowed; opacity: 0.6; }
+        .option.correct { border-color: var(--success); background: rgba(16, 185, 129, 0.1); }
+        .option.wrong { border-color: var(--danger); background: rgba(239, 68, 68, 0.1); }
 
         .btn-primary { width: 100%; padding: 16px; background: var(--primary); color: white; border: none; border-radius: 14px; font-weight: 700; font-size: 16px; margin-top: 10px; cursor: pointer; }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
         .hidden { display: none !important; }
         .fade-in { animation: fadeIn 0.4s ease-in; }
@@ -228,7 +249,8 @@
         let currentSubject = null;
         let questions = [];
         let userAnswers = {};
-        let quizListener = null; // To store the real-time listener
+        let answeredQuestions = new Set(); // Track which questions have been answered
+        let quizListener = null;
 
         const fallbackQuestions = {
             maths: [{ id: 'm1', text: 'Solve \\(2x = 10\\)', options: ['2','5','10','8'], correct: '5' }],
@@ -258,26 +280,22 @@
             }, 800);
         }
 
-        // REAL-TIME LISTENING STARTS HERE
         function loadQuiz(subject) {
             currentSubject = subject;
-            userAnswers = {}; 
+            userAnswers = {};
+            answeredQuestions = new Set(); // Reset answered questions
             
-            // Clean up old listener if it exists
             if (quizListener) db.ref(`quiz/subjects/${currentSubject}/questions`).off('value', quizListener);
 
-            // UI Setup
             document.getElementById('dashboardView').classList.add('hidden');
             document.getElementById('skeletonView').classList.remove('hidden');
             document.getElementById('progressBarContainer').classList.remove('hidden');
             document.getElementById('headerTitle').innerText = subject.replace('_', ' ').toUpperCase();
 
-            // Set up the Real-Time Listener
             const qRef = db.ref(`quiz/subjects/${subject}/questions`);
             quizListener = qRef.on('value', snap => {
                 const data = snap.val();
                 
-                // If data is found on server, use it. Otherwise, use fallback.
                 if (data) {
                     questions = Array.isArray(data) ? data : Object.values(data);
                 } else {
@@ -286,13 +304,11 @@
 
                 renderQuestions();
                 
-                // Switch from Skeleton to Quiz
                 document.getElementById('skeletonView').classList.add('hidden');
                 document.getElementById('quizView').classList.remove('hidden');
                 updateProgressBar();
             }, error => {
                 console.error("Real-time listener failed", error);
-                // If blocked by rules or network, use fallback immediately
                 questions = fallbackQuestions[subject];
                 renderQuestions();
                 document.getElementById('skeletonView').classList.add('hidden');
@@ -306,11 +322,27 @@
             questions.forEach((q, index) => {
                 const qDiv = document.createElement('div');
                 qDiv.className = 'question';
+                qDiv.id = `question-${q.id}`;
+                
+                // Check if this question was already answered (for re-renders)
+                if (answeredQuestions.has(q.id)) {
+                    qDiv.classList.add('answered');
+                }
+                
                 let html = `<div class="question-text">${index + 1}. ${q.text}</div>`;
                 q.options.forEach(opt => {
-                    const isSelected = userAnswers[q.id] === opt ? 'selected' : '';
+                    const isSelected = userAnswers[q.id] === opt;
+                    const isAnswered = answeredQuestions.has(q.id);
                     const safeOpt = opt.replace(/"/g, '&quot;');
-                    html += `<div class="option ${isSelected}" onclick="selectOption('${q.id}', '${safeOpt}', this)">${opt}</div>`;
+                    
+                    let optionClass = 'option';
+                    if (isSelected) optionClass += ' selected';
+                    if (isAnswered) optionClass += ' disabled';
+                    
+                    // Add click handler only if not answered
+                    const clickHandler = isAnswered ? '' : `onclick="selectOption('${q.id}', '${safeOpt}', this)"`;
+                    
+                    html += `<div class="${optionClass}" ${clickHandler}>${opt}</div>`;
                 });
                 qDiv.innerHTML = html;
                 container.appendChild(qDiv);
@@ -319,10 +351,29 @@
         }
 
         function selectOption(qId, answer, element) {
+            // Prevent answering if already answered
+            if (answeredQuestions.has(qId)) {
+                return;
+            }
+
             userAnswers[qId] = answer;
+            answeredQuestions.add(qId); // Mark as answered immediately
+            
+            // Find the question container
+            const qDiv = document.getElementById(`question-${qId}`);
+            if (qDiv) {
+                qDiv.classList.add('answered');
+            }
+
+            // Update visual state
             const siblings = element.parentElement.getElementsByClassName('option');
-            for(let sib of siblings) sib.classList.remove('selected');
+            for(let sib of siblings) {
+                sib.classList.remove('selected');
+                sib.classList.add('disabled'); // Disable all options
+                sib.removeAttribute('onclick'); // Remove click handlers
+            }
             element.classList.add('selected');
+            
             updateProgressBar();
         }
 
@@ -339,7 +390,6 @@
             location.reload();
         }
 
-        // Submission Logic
         function trySubmitQuiz() {
             if (Object.keys(userAnswers).length < questions.length) showModal(finalizeSubmit);
             else finalizeSubmit();
@@ -363,7 +413,6 @@
             document.getElementById('resultMsg').innerText = `Correct: ${score} / ${questions.length}`;
         }
 
-        // Modal Helpers
         function showToast(m) { const t = document.getElementById('toast'); t.innerText=m; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),3000); }
         function showModal(cb) { 
             const m = document.getElementById('confirmModal'); m.classList.add('active');
