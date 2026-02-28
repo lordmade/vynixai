@@ -10,7 +10,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded" rel="stylesheet"/>
 
-  <!-- ✅ FIX 1: Use latest Firebase SDK (v10.x compat build) via CDN -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
@@ -437,7 +436,9 @@
       <span class="material-symbols-rounded" style="color:var(--text-muted);">search</span>
       <input type="text" placeholder="Search users..." id="searchUsers" oninput="filterUsers(this.value)" style="border:none; background:transparent; outline:none; flex:1; font-size:1rem;">
     </div>
-    <div class="users-list" id="usersList"></div>
+    <div class="users-list" id="usersList">
+      <!-- Shimmer items will be inserted here -->
+    </div>
   </div>
 
   <!-- Main App -->
@@ -456,6 +457,7 @@
         </div>
       </div>
       <div id="conversationsList">
+        <!-- Shimmer items -->
         <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
         <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
         <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
@@ -506,12 +508,6 @@
   </button>
 
   <script>
-    // ============================================================
-    // ✅ FIX: Using Firebase v10 Compat SDK (loaded via <script> tags above)
-    // This eliminates the ES module race condition from the original code
-    // where `window.FB` could be undefined when the regular script ran.
-    // ============================================================
-
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -520,14 +516,10 @@
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
-    // ✅ FIX: Initialize Firebase directly — no more module/event dance
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
     const db = firebase.database();
 
-    // ============================================================
-    // Global State
-    // ============================================================
     let currentUser = null;
     let currentUserData = null;
     let currentChatId = null;
@@ -542,18 +534,37 @@
     let deferredPrompt = null;
     let pendingAvatarUrl = null;
     let conversationsListenerRef = null;
+    let isLoadingConversations = false;
+    let isLoadingUsers = false;
 
     const CLOUDINARY_CLOUD = 'dqkujefxj';
     const CLOUDINARY_PRESET = 'banter_box';
 
-    // ============================================================
-    // ✅ FIX: Auth state listener — runs as soon as script loads
-    // ============================================================
+    // Show shimmer helper
+    function showConversationsShimmer() {
+      document.getElementById('conversationsList').innerHTML = `
+        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+      `;
+    }
+
+    function showUsersShimmer() {
+      document.getElementById('usersList').innerHTML = `
+        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+      `;
+    }
+
     auth.onAuthStateChanged(async (user) => {
       console.log('Auth state changed:', user ? user.uid : 'signed out');
       if (user) {
         currentUser = user;
         document.getElementById('authOverlay').classList.remove('active');
+        
+        // Show shimmer while loading
+        showConversationsShimmer();
 
         try {
           await initRemoteConfig();
@@ -562,13 +573,12 @@
         }
 
         await loadUserData(user.uid);
-        setupProfile(user);
+        // setupProfile is now called inside loadUserData after data is loaded
         loadConversations();
       } else {
         currentUser = null;
         currentUserData = null;
 
-        // Detach any listeners
         if (conversationsListenerRef) {
           conversationsListenerRef.off();
           conversationsListenerRef = null;
@@ -584,9 +594,6 @@
       }
     });
 
-    // ============================================================
-    // Remote Config
-    // ============================================================
     async function initRemoteConfig() {
       const remoteConfig = firebase.remoteConfig();
       remoteConfig.settings.minimumFetchIntervalMillis = 3600000;
@@ -595,9 +602,6 @@
       console.log('Remote config loaded');
     }
 
-    // ============================================================
-    // User Data
-    // ============================================================
     async function loadUserData(uid) {
       try {
         const snap = await db.ref(`users/${uid}`).once('value');
@@ -622,10 +626,11 @@
           console.log('New user record created');
         }
 
+        // ✅ FIX: Setup profile AFTER currentUserData is set
+        setupProfile(currentUser);
+
         // Mark online
         await db.ref(`users/${uid}`).update({ online: true, lastSeen: Date.now() });
-
-        // ✅ FIX: onDisconnect via compat SDK
         db.ref(`users/${uid}`).onDisconnect().update({ online: false, lastSeen: Date.now() });
 
       } catch (err) {
@@ -635,8 +640,10 @@
     }
 
     function setupProfile(user) {
+      // ✅ FIX: Use currentUserData which is now guaranteed to be set
       const photo = currentUserData?.photoURL || user.photoURL ||
         `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUserData?.displayName || user.displayName || 'User')}&background=FFD93D&color=1A1A1A`;
+      
       document.getElementById('profileAvatarImg').src = photo;
       document.getElementById('profileName').value = currentUserData?.displayName || user.displayName || '';
       document.getElementById('profileUsername').value = currentUserData?.username || '';
@@ -644,9 +651,6 @@
       document.getElementById('profileBio').value = currentUserData?.bio || '';
     }
 
-    // ============================================================
-    // Auth
-    // ============================================================
     async function signInWithGoogle() {
       const btn = document.getElementById('googleSignInBtn');
       btn.disabled = true;
@@ -662,14 +666,21 @@
       }
     }
 
-    // ============================================================
-    // Profile
-    // ============================================================
     function openProfile() {
-      if (!currentUser) { document.getElementById('authOverlay').classList.add('active'); return; }
+      if (!currentUser) { 
+        document.getElementById('authOverlay').classList.add('active'); 
+        return; 
+      }
+      
+      // ✅ FIX: Refresh profile data before opening to ensure it's up to date
+      if (currentUserData) {
+        setupProfile(currentUser);
+      }
+      
       pendingAvatarUrl = null;
       document.getElementById('profileSlide').classList.add('active');
     }
+    
     function closeProfile() {
       document.getElementById('profileSlide').classList.remove('active');
       pendingAvatarUrl = null;
@@ -714,7 +725,10 @@
 
         await db.ref(`users/${currentUser.uid}`).update(updates);
         await currentUser.updateProfile({ displayName: name, photoURL: updates.photoURL || currentUser.photoURL });
+        
+        // ✅ FIX: Update currentUserData immediately so UI reflects changes
         currentUserData = { ...currentUserData, ...updates };
+        
         showToast('Profile saved!');
         closeProfile();
       } catch(err) {
@@ -726,14 +740,12 @@
       }
     }
 
-    // ============================================================
-    // ✅ FIX: Conversations — using compat `.on('value')` which is reliable
-    // ============================================================
     function loadConversations() {
-      if (!currentUser) return;
+      if (!currentUser || isLoadingConversations) return;
+      
+      isLoadingConversations = true;
       console.log('Loading conversations for:', currentUser.uid);
 
-      // Detach previous listener
       if (conversationsListenerRef) {
         conversationsListenerRef.off('value');
       }
@@ -746,6 +758,7 @@
 
         if (!snapshot.exists()) {
           renderConversations();
+          isLoadingConversations = false;
           return;
         }
 
@@ -753,15 +766,10 @@
         const chatIds = Object.keys(chatData);
         console.log('Found', chatIds.length, 'chats');
 
-        // ✅ FIX: Fetch all participant user data in parallel
         const promises = chatIds.map(async (chatId) => {
           const chat = chatData[chatId];
-
-          // ✅ FIX: Handle both array and object formats for participants
           let participants = chat.participants;
           if (!participants) return null;
-
-          // Convert object {0: uid1, 1: uid2} to array if needed
           if (!Array.isArray(participants)) {
             participants = Object.values(participants);
           }
@@ -800,8 +808,10 @@
 
         console.log('Rendered', conversations.length, 'conversations');
         renderConversations();
+        isLoadingConversations = false;
       }, (error) => {
         console.error('Conversations listener error:', error.code, error.message);
+        isLoadingConversations = false;
         document.getElementById('conversationsList').innerHTML = `
           <div class="empty-state">
             <div class="empty-icon">⚠️</div>
@@ -849,26 +859,30 @@
       }).join('');
     }
 
-    // ============================================================
-    // Discover Users Sheet
-    // ============================================================
     function openUsersSheet() {
-      if (!currentUser) { document.getElementById('authOverlay').classList.add('active'); return; }
+      if (!currentUser) { 
+        document.getElementById('authOverlay').classList.add('active'); 
+        return; 
+      }
+      
       document.getElementById('usersSheetOverlay').classList.add('active');
       document.getElementById('usersSheet').classList.add('active');
       document.getElementById('searchUsers').value = '';
-      document.getElementById('usersList').innerHTML = `
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-      `;
+      
+      // ✅ FIX: Show shimmer immediately when opening
+      showUsersShimmer();
       loadAllUsers();
     }
+    
     function closeUsersSheet() {
       document.getElementById('usersSheetOverlay').classList.remove('active');
       document.getElementById('usersSheet').classList.remove('active');
     }
 
     async function loadAllUsers() {
+      if (isLoadingUsers) return;
+      isLoadingUsers = true;
+      
       try {
         const friendsSnap = await db.ref(`userChats/${currentUser.uid}`).once('value');
         const existingChatUsers = new Set();
@@ -910,6 +924,8 @@
             <button onclick="loadAllUsers()" style="margin-top:16px; padding:8px 16px; background:var(--primary-indigo); color:white; border:none; border-radius:8px; cursor:pointer;">Retry</button>
           </div>
         `;
+      } finally {
+        isLoadingUsers = false;
       }
     }
 
@@ -959,7 +975,6 @@
       }
 
       try {
-        // ✅ FIX: Use push to generate a unique chat ID
         const chatRef = db.ref('chats').push();
         const chatId = chatRef.key;
 
@@ -971,7 +986,6 @@
           unreadCount: 0
         };
 
-        // Write to both users' chat lists atomically
         const updates = {};
         updates[`userChats/${currentUser.uid}/${chatId}`] = chatData;
         updates[`userChats/${userId}/${chatId}`] = { ...chatData, unreadCount: 0 };
@@ -980,7 +994,6 @@
         closeUsersSheet();
         showToast('Chat started!');
 
-        // Open immediately — don't wait for listener
         currentChatUser = { id: userId, name: user.name, avatar: user.avatar, verified: user.verified };
         await openChatDirect(chatId, userId, user);
 
@@ -990,9 +1003,6 @@
       }
     }
 
-    // ============================================================
-    // Chat
-    // ============================================================
     async function openChat(chatId, userId) {
       try {
         const userSnap = await db.ref(`users/${userId}`).once('value');
@@ -1014,10 +1024,8 @@
       currentChatId = chatId;
       currentChatUser = user;
 
-      // Reset unread
       await db.ref(`userChats/${currentUser.uid}/${chatId}`).update({ unreadCount: 0 });
 
-      // Show chat UI
       document.getElementById('conversationsView').style.display = 'none';
       document.getElementById('chatArea').classList.add('active');
       document.getElementById('fab').style.display = 'none';
@@ -1025,12 +1033,10 @@
       document.getElementById('chatAvatar').src = user.avatar;
       document.getElementById('chatMessages').innerHTML = '';
 
-      // Load AI toggle state
       const aiSnap = await db.ref(`userChats/${currentUser.uid}/${chatId}/aiEnabled`).once('value');
       aiEnabled = aiSnap.val() === true;
       updateAIToggle();
 
-      // Online status listener
       if (onlineStatusListener) onlineStatusListener.off('value');
       onlineStatusListener = db.ref(`users/${userId}`);
       onlineStatusListener.on('value', (snap) => {
@@ -1076,7 +1082,6 @@
       text.textContent = aiEnabled ? 'AI On' : 'AI Off';
     }
 
-    // ✅ FIX: Use onChildAdded correctly with compat SDK
     function loadMessages(chatId) {
       const container = document.getElementById('chatMessages');
       container.innerHTML = '';
@@ -1090,7 +1095,6 @@
         if (!msg) return;
         renderMessage(msg);
 
-        // AI auto-reply
         if (aiEnabled && msg.senderId === currentChatUser?.id && !msg.aiReplied) {
           setTimeout(() => generateAIReply(msg.text, snapshot.key), 1200);
         }
@@ -1158,7 +1162,6 @@
         };
         await db.ref(`userChats/${currentUser.uid}/${currentChatId}`).update(updateData);
 
-        // Update other user's chat entry with incremented unread count
         const otherRef = db.ref(`userChats/${currentChatUser.id}/${currentChatId}`);
         const otherSnap = await otherRef.once('value');
         const currentUnread = otherSnap.exists() ? (otherSnap.val().unreadCount || 0) : 0;
@@ -1172,7 +1175,6 @@
     async function generateAIReply(userText, originalKey) {
       if (!XAI_API_KEY || !currentChatId) return;
 
-      // Mark as replied to prevent duplicate AI responses
       await db.ref(`messages/${currentChatId}/${originalKey}`).update({ aiReplied: true });
 
       showTypingIndicator();
@@ -1249,9 +1251,6 @@
       e.target.value = '';
     }
 
-    // ============================================================
-    // Utilities
-    // ============================================================
     function autoResize(textarea) {
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(textarea.scrollHeight, 100) + 'px';
@@ -1316,7 +1315,6 @@
       return div.innerHTML;
     }
 
-    // PWA
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       deferredPrompt = e;
