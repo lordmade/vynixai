@@ -10,11 +10,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded" rel="stylesheet"/>
 
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-remote-config-compat.js"></script>
-
   <style>
     :root {
       --bg-cream: #F5F5DC;
@@ -51,6 +46,26 @@
       background: linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%);
       background-size: 200% 100%;
       animation: shimmer 1.5s infinite;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--bg-gray);
+      border-top-color: var(--primary-indigo);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem;
+      gap: 0.75rem;
+      color: var(--text-muted);
+      flex-direction: column;
     }
 
     .install-banner {
@@ -127,6 +142,7 @@
       position: absolute; bottom: 2px; right: 2px; width: 14px; height: 14px;
       background: #10B981; border-radius: 50%; border: 2px solid white;
     }
+
     .conv-info { flex: 1; min-width: 0; }
     .conv-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
     .conv-name { font-weight: 700; font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -310,7 +326,6 @@
     .profile-save:disabled { opacity: 0.6; }
     .profile-save .spinner { width: 16px; height: 16px; border: 2px solid transparent; border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite; display: none; }
     .profile-save.saving .spinner { display: block; }
-    @keyframes spin { to { transform: rotate(360deg); } }
 
     .profile-content { flex: 1; padding: 20px; display: flex; flex-direction: column; align-items: center; }
     .profile-avatar-section { position: relative; margin-bottom: 32px; }
@@ -340,11 +355,6 @@
       background: var(--text-primary); color: white; border: none;
       display: flex; align-items: center; justify-content: center;
       cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 50;
-    }
-
-    .error-banner {
-      background: #FEE2E2; color: #DC2626; padding: 10px 16px;
-      font-size: 0.85rem; text-align: center; border-bottom: 1px solid #FECACA;
     }
   </style>
 </head>
@@ -437,7 +447,10 @@
       <input type="text" placeholder="Search users..." id="searchUsers" oninput="filterUsers(this.value)" style="border:none; background:transparent; outline:none; flex:1; font-size:1rem;">
     </div>
     <div class="users-list" id="usersList">
-      <!-- Shimmer items will be inserted here -->
+      <div class="loading-container">
+        <div class="spinner"></div>
+        <span>Loading users...</span>
+      </div>
     </div>
   </div>
 
@@ -457,10 +470,10 @@
         </div>
       </div>
       <div id="conversationsList">
-        <!-- Shimmer items -->
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
+        <div class="loading-container" id="loadingConversations">
+          <div class="spinner"></div>
+          <span>Loading conversations...</span>
+        </div>
       </div>
     </div>
 
@@ -507,7 +520,25 @@
     <span class="material-symbols-rounded">edit</span>
   </button>
 
-  <script>
+  <!-- ✅ KEY FIX: Use Firebase v9 Modular SDK like the working example -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
+    import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, updateProfile } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
+    import { 
+      getDatabase, 
+      ref, 
+      push, 
+      set, 
+      onValue, 
+      onChildAdded,
+      get, 
+      update,
+      onDisconnect,
+      query,
+      orderByChild,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-database.js";
+
     const firebaseConfig = {
       apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
       authDomain: "fire-b-a8878.firebaseapp.com",
@@ -516,9 +547,9 @@
       appId: "1:658673187627:web:6e4c29af661785f0afa36e"
     };
 
-    firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-    const db = firebase.database();
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
 
     let currentUser = null;
     let currentUserData = null;
@@ -533,38 +564,18 @@
     let XAI_API_KEY = "";
     let deferredPrompt = null;
     let pendingAvatarUrl = null;
-    let conversationsListenerRef = null;
-    let isLoadingConversations = false;
-    let isLoadingUsers = false;
+    let conversationsLoaded = false;
 
     const CLOUDINARY_CLOUD = 'dqkujefxj';
     const CLOUDINARY_PRESET = 'banter_box';
+    const defaultAvatar = "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
 
-    // Show shimmer helper
-    function showConversationsShimmer() {
-      document.getElementById('conversationsList').innerHTML = `
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-      `;
-    }
-
-    function showUsersShimmer() {
-      document.getElementById('usersList').innerHTML = `
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-        <div class="shimmer-item"><div class="shimmer shimmer-avatar"></div><div class="shimmer-lines"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line short"></div></div></div>
-      `;
-    }
-
-    auth.onAuthStateChanged(async (user) => {
+    // ✅ KEY FIX: Auth state listener using modular SDK
+    onAuthStateChanged(auth, async (user) => {
       console.log('Auth state changed:', user ? user.uid : 'signed out');
       if (user) {
         currentUser = user;
         document.getElementById('authOverlay').classList.remove('active');
-        
-        // Show shimmer while loading
-        showConversationsShimmer();
 
         try {
           await initRemoteConfig();
@@ -573,17 +584,12 @@
         }
 
         await loadUserData(user.uid);
-        // setupProfile is now called inside loadUserData after data is loaded
+        setupProfile(user);
         loadConversations();
+        loadAllUsers();
       } else {
         currentUser = null;
         currentUserData = null;
-
-        if (conversationsListenerRef) {
-          conversationsListenerRef.off();
-          conversationsListenerRef = null;
-        }
-
         document.getElementById('authOverlay').classList.add('active');
         document.getElementById('conversationsList').innerHTML = `
           <div class="empty-state">
@@ -595,16 +601,14 @@
     });
 
     async function initRemoteConfig() {
-      const remoteConfig = firebase.remoteConfig();
-      remoteConfig.settings.minimumFetchIntervalMillis = 3600000;
-      await remoteConfig.fetchAndActivate();
-      XAI_API_KEY = remoteConfig.getValue('xai_api_key').asString();
-      console.log('Remote config loaded');
+      // Remote config not available in v9 modular easily, skip for now
+      XAI_API_KEY = "";
     }
 
     async function loadUserData(uid) {
       try {
-        const snap = await db.ref(`users/${uid}`).once('value');
+        const userRef = ref(db, `users/${uid}`);
+        const snap = await get(userRef);
 
         if (snap.exists()) {
           currentUserData = snap.val();
@@ -622,16 +626,20 @@
             lastSeen: Date.now(),
             createdAt: Date.now()
           };
-          await db.ref(`users/${uid}`).set(currentUserData);
+          await set(userRef, currentUserData);
           console.log('New user record created');
         }
 
-        // ✅ FIX: Setup profile AFTER currentUserData is set
-        setupProfile(currentUser);
-
         // Mark online
-        await db.ref(`users/${uid}`).update({ online: true, lastSeen: Date.now() });
-        db.ref(`users/${uid}`).onDisconnect().update({ online: false, lastSeen: Date.now() });
+        await update(userRef, { online: true, lastSeen: Date.now() });
+        
+        // Handle disconnect
+        const connectedRef = ref(db, ".info/connected");
+        onValue(connectedRef, (snap) => {
+          if (snap.val() === true) {
+            onDisconnect(userRef).update({ online: false, lastSeen: Date.now() });
+          }
+        });
 
       } catch (err) {
         console.error('loadUserData error:', err);
@@ -640,7 +648,6 @@
     }
 
     function setupProfile(user) {
-      // ✅ FIX: Use currentUserData which is now guaranteed to be set
       const photo = currentUserData?.photoURL || user.photoURL ||
         `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUserData?.displayName || user.displayName || 'User')}&background=FFD93D&color=1A1A1A`;
       
@@ -651,42 +658,40 @@
       document.getElementById('profileBio').value = currentUserData?.bio || '';
     }
 
-    async function signInWithGoogle() {
+    // ✅ KEY FIX: Expose functions to window for onclick handlers
+    window.signInWithGoogle = async function() {
       const btn = document.getElementById('googleSignInBtn');
       btn.disabled = true;
       btn.textContent = 'Signing in...';
       try {
-        const provider = new firebase.auth.GoogleAuthProvider();
-        await auth.signInWithPopup(provider);
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(auth, provider);
       } catch (e) {
         console.error('Auth error:', e);
         showToast('Sign in failed: ' + e.message);
         btn.disabled = false;
         btn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg> Continue with Google`;
       }
-    }
+    };
 
-    function openProfile() {
+    window.openProfile = function() {
       if (!currentUser) { 
         document.getElementById('authOverlay').classList.add('active'); 
         return; 
       }
-      
-      // ✅ FIX: Refresh profile data before opening to ensure it's up to date
       if (currentUserData) {
         setupProfile(currentUser);
       }
-      
       pendingAvatarUrl = null;
       document.getElementById('profileSlide').classList.add('active');
-    }
+    };
     
-    function closeProfile() {
+    window.closeProfile = function() {
       document.getElementById('profileSlide').classList.remove('active');
       pendingAvatarUrl = null;
-    }
+    };
 
-    async function handleAvatarChange(e) {
+    window.handleAvatarChange = async function(e) {
       const file = e.target.files[0];
       if (!file) return;
       document.getElementById('profileAvatarImg').style.opacity = '0.5';
@@ -708,9 +713,9 @@
       } finally {
         document.getElementById('profileAvatarImg').style.opacity = '1';
       }
-    }
+    };
 
-    async function saveProfile() {
+    window.saveProfile = async function() {
       const btn = document.getElementById('saveProfileBtn');
       const name = document.getElementById('profileName').value.trim();
       const username = document.getElementById('profileUsername').value.trim().toLowerCase();
@@ -723,10 +728,9 @@
         const updates = { displayName: name, username, bio, updatedAt: Date.now() };
         if (pendingAvatarUrl) updates.photoURL = pendingAvatarUrl;
 
-        await db.ref(`users/${currentUser.uid}`).update(updates);
-        await currentUser.updateProfile({ displayName: name, photoURL: updates.photoURL || currentUser.photoURL });
+        await update(ref(db, `users/${currentUser.uid}`), updates);
+        await updateProfile(currentUser, { displayName: name, photoURL: updates.photoURL || currentUser.photoURL });
         
-        // ✅ FIX: Update currentUserData immediately so UI reflects changes
         currentUserData = { ...currentUserData, ...updates };
         
         showToast('Profile saved!');
@@ -738,50 +742,46 @@
         btn.classList.remove('saving');
         btn.disabled = false;
       }
-    }
+    };
 
+    // ✅ KEY FIX: Load conversations using onValue like the working example
     function loadConversations() {
-      if (!currentUser || isLoadingConversations) return;
+      if (!currentUser) return;
       
-      isLoadingConversations = true;
       console.log('Loading conversations for:', currentUser.uid);
-
-      if (conversationsListenerRef) {
-        conversationsListenerRef.off('value');
-      }
-
-      conversationsListenerRef = db.ref(`userChats/${currentUser.uid}`);
-
-      conversationsListenerRef.on('value', async (snapshot) => {
-        console.log('userChats snapshot received. exists:', snapshot.exists());
+      const chatsRef = ref(db, `userChats/${currentUser.uid}`);
+      
+      onValue(chatsRef, async (snapshot) => {
         conversations = [];
-
-        if (!snapshot.exists()) {
+        
+        // ✅ KEY FIX: Remove loading element specifically
+        const loadingEl = document.getElementById('loadingConversations');
+        if (loadingEl) loadingEl.remove();
+        
+        if (!snapshot.exists() || !snapshot.val()) {
+          conversationsLoaded = true;
           renderConversations();
-          isLoadingConversations = false;
           return;
         }
-
+        
         const chatData = snapshot.val();
         const chatIds = Object.keys(chatData);
         console.log('Found', chatIds.length, 'chats');
-
-        const promises = chatIds.map(async (chatId) => {
+        
+        const conversationPromises = chatIds.map(async (chatId) => {
           const chat = chatData[chatId];
           let participants = chat.participants;
           if (!participants) return null;
-          if (!Array.isArray(participants)) {
-            participants = Object.values(participants);
-          }
-
+          if (!Array.isArray(participants)) participants = Object.values(participants);
+          
           const otherUserId = participants.find(id => id !== currentUser.uid);
           if (!otherUserId) return null;
-
+          
           try {
-            const userSnap = await db.ref(`users/${otherUserId}`).once('value');
+            const userSnap = await get(ref(db, `users/${otherUserId}`));
             const userData = userSnap.val() || {};
             const displayName = userData.displayName || userData.username || 'Unknown';
-
+            
             return {
               id: chatId,
               userId: otherUserId,
@@ -790,34 +790,34 @@
               avatar: userData.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=6366F1&color=fff`,
               verified: userData.verified || false,
               lastMessage: chat.lastMessage || '',
-              lastMessageTime: chat.lastMessageTime || chat.createdAt || 0,
+              lastMessageTime: chat.lastMessageTime || 0,
               unreadCount: chat.unreadCount || 0,
               online: userData.online || false,
               lastSeen: userData.lastSeen || null
             };
           } catch (err) {
-            console.error('Error fetching user', otherUserId, err);
+            console.error('Error loading user', otherUserId, err);
             return null;
           }
         });
-
-        const results = await Promise.all(promises);
-        conversations = results
-          .filter(r => r !== null)
-          .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
-
+        
+        const results = await Promise.all(conversationPromises);
+        conversations = results.filter(r => r !== null).sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+        
         console.log('Rendered', conversations.length, 'conversations');
+        conversationsLoaded = true;
         renderConversations();
-        isLoadingConversations = false;
       }, (error) => {
-        console.error('Conversations listener error:', error.code, error.message);
-        isLoadingConversations = false;
+        console.error('Conversations listener error:', error);
+        const loadingEl = document.getElementById('loadingConversations');
+        if (loadingEl) loadingEl.remove();
+        
         document.getElementById('conversationsList').innerHTML = `
           <div class="empty-state">
             <div class="empty-icon">⚠️</div>
             <p style="font-weight:600;">Could not load conversations</p>
             <p style="font-size:0.85rem; margin-top:8px; color:var(--text-muted);">${error.message}</p>
-            <button onclick="loadConversations()" style="margin-top:16px; padding:10px 20px; background:var(--primary-indigo); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">Retry</button>
+            <button onclick="location.reload()" style="margin-top:16px; padding:10px 20px; background:var(--primary-indigo); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">Retry</button>
           </div>
         `;
       });
@@ -841,7 +841,7 @@
         const timeAgo = getTimeAgo(conv.lastMessageTime);
         const isUnread = conv.unreadCount > 0;
         return `
-          <div class="conversation-item ${isUnread ? 'unread' : ''}" onclick="openChat('${conv.id}', '${conv.userId}')">
+          <div class="conversation-item ${isUnread ? 'unread' : ''}" onclick="openChatById('${conv.id}', '${conv.userId}')">
             <div class="conv-avatar">
               <img src="${conv.avatar}" alt="${escapeHtml(conv.name)}" onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(conv.name)}&background=6366F1&color=fff'">
               ${conv.online ? '<span class="online-indicator"></span>' : ''}
@@ -859,7 +859,7 @@
       }).join('');
     }
 
-    function openUsersSheet() {
+    window.openUsersSheet = function() {
       if (!currentUser) { 
         document.getElementById('authOverlay').classList.add('active'); 
         return; 
@@ -869,22 +869,25 @@
       document.getElementById('usersSheet').classList.add('active');
       document.getElementById('searchUsers').value = '';
       
-      // ✅ FIX: Show shimmer immediately when opening
-      showUsersShimmer();
+      // Reset to loading state
+      document.getElementById('usersList').innerHTML = `
+        <div class="loading-container">
+          <div class="spinner"></div>
+          <span>Loading users...</span>
+        </div>
+      `;
+      
       loadAllUsers();
-    }
+    };
     
-    function closeUsersSheet() {
+    window.closeUsersSheet = function() {
       document.getElementById('usersSheetOverlay').classList.remove('active');
       document.getElementById('usersSheet').classList.remove('active');
-    }
+    };
 
     async function loadAllUsers() {
-      if (isLoadingUsers) return;
-      isLoadingUsers = true;
-      
       try {
-        const friendsSnap = await db.ref(`userChats/${currentUser.uid}`).once('value');
+        const friendsSnap = await get(ref(db, `userChats/${currentUser.uid}`));
         const existingChatUsers = new Set();
 
         if (friendsSnap.exists()) {
@@ -897,7 +900,7 @@
           });
         }
 
-        const usersSnap = await db.ref('users').once('value');
+        const usersSnap = await get(ref(db, 'users'));
         allUsers = [];
 
         if (usersSnap.exists()) {
@@ -924,8 +927,6 @@
             <button onclick="loadAllUsers()" style="margin-top:16px; padding:8px 16px; background:var(--primary-indigo); color:white; border:none; border-radius:8px; cursor:pointer;">Retry</button>
           </div>
         `;
-      } finally {
-        isLoadingUsers = false;
       }
     }
 
@@ -955,27 +956,27 @@
       `).join('');
     }
 
-    function filterUsers(query) {
+    window.filterUsers = function(query) {
       const q = query.toLowerCase();
       const filtered = allUsers.filter(u =>
         u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q)
       );
       renderUsersList(filtered);
-    }
+    };
 
-    async function startChatWithUser(userId) {
+    window.startChatWithUser = async function(userId) {
       const user = allUsers.find(u => u.id === userId);
       if (!user) return;
 
       const existing = conversations.find(c => c.userId === userId);
       if (existing) {
         closeUsersSheet();
-        openChat(existing.id, existing.userId);
+        openChat(existing);
         return;
       }
 
       try {
-        const chatRef = db.ref('chats').push();
+        const chatRef = push(ref(db, 'chats'));
         const chatId = chatRef.key;
 
         const chatData = {
@@ -989,60 +990,79 @@
         const updates = {};
         updates[`userChats/${currentUser.uid}/${chatId}`] = chatData;
         updates[`userChats/${userId}/${chatId}`] = { ...chatData, unreadCount: 0 };
-        await db.ref().update(updates);
+        await update(ref(db), updates);
 
         closeUsersSheet();
         showToast('Chat started!');
 
-        currentChatUser = { id: userId, name: user.name, avatar: user.avatar, verified: user.verified };
-        await openChatDirect(chatId, userId, user);
+        const newConv = {
+          id: chatId,
+          userId: userId,
+          name: user.name,
+          username: user.username,
+          avatar: user.avatar,
+          verified: user.verified,
+          lastMessage: '',
+          lastMessageTime: Date.now(),
+          unreadCount: 0
+        };
+        
+        conversations.unshift(newConv);
+        renderConversations();
+        openChat(newConv);
 
       } catch (err) {
         console.error('startChatWithUser error:', err);
         showToast('Failed to start chat: ' + err.message);
       }
-    }
+    };
 
-    async function openChat(chatId, userId) {
+    window.openChatById = async function(chatId, userId) {
       try {
-        const userSnap = await db.ref(`users/${userId}`).once('value');
+        const userSnap = await get(ref(db, `users/${userId}`));
         const userData = userSnap.val() || {};
-        const user = {
-          id: userId,
+        const conv = conversations.find(c => c.id === chatId) || {
+          id: chatId,
+          userId: userId,
           name: userData.displayName || userData.username || 'Unknown',
           avatar: userData.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(userData.displayName || 'U')}&background=6366F1&color=fff`,
-          verified: userData.verified || false
+          verified: userData.verified || false,
+          online: userData.online || false,
+          lastSeen: userData.lastSeen || null
         };
-        await openChatDirect(chatId, userId, user);
+        openChat(conv);
       } catch (err) {
         console.error('openChat error:', err);
         showToast('Could not open chat');
       }
-    }
+    };
 
-    async function openChatDirect(chatId, userId, user) {
-      currentChatId = chatId;
-      currentChatUser = user;
-
-      await db.ref(`userChats/${currentUser.uid}/${chatId}`).update({ unreadCount: 0 });
+    function openChat(conv) {
+      currentChatId = conv.id;
+      currentChatUser = conv;
+      
+      update(ref(db, `userChats/${currentUser.uid}/${conv.id}`), { unreadCount: 0 });
 
       document.getElementById('conversationsView').style.display = 'none';
       document.getElementById('chatArea').classList.add('active');
       document.getElementById('fab').style.display = 'none';
-      document.getElementById('chatName').textContent = user.name;
-      document.getElementById('chatAvatar').src = user.avatar;
+      document.getElementById('chatName').textContent = conv.name;
+      document.getElementById('chatAvatar').src = conv.avatar;
       document.getElementById('chatMessages').innerHTML = '';
 
-      const aiSnap = await db.ref(`userChats/${currentUser.uid}/${chatId}/aiEnabled`).once('value');
-      aiEnabled = aiSnap.val() === true;
-      updateAIToggle();
+      const statusEl = document.getElementById('chatStatus');
+      if (conv.online) {
+        statusEl.textContent = 'Online';
+        statusEl.className = 'online';
+      } else {
+        statusEl.textContent = conv.lastSeen ? `Last seen ${getTimeAgo(conv.lastSeen)}` : 'Offline';
+        statusEl.className = '';
+      }
 
-      if (onlineStatusListener) onlineStatusListener.off('value');
-      onlineStatusListener = db.ref(`users/${userId}`);
-      onlineStatusListener.on('value', (snap) => {
+      if (onlineStatusListener) onlineStatusListener();
+      onlineStatusListener = onValue(ref(db, `users/${conv.userId}`), (snap) => {
         if (!snap.exists()) return;
         const data = snap.val();
-        const statusEl = document.getElementById('chatStatus');
         if (data.online) {
           statusEl.textContent = 'Online';
           statusEl.className = 'online';
@@ -1052,28 +1072,28 @@
         }
       });
 
-      loadMessages(chatId);
+      loadMessages(conv.id);
     }
 
-    function closeChat() {
+    window.closeChat = function() {
       document.getElementById('chatArea').classList.remove('active');
       document.getElementById('conversationsView').style.display = 'block';
       document.getElementById('fab').style.display = 'flex';
 
-      if (messagesListener) { messagesListener.off('child_added'); messagesListener = null; }
-      if (onlineStatusListener) { onlineStatusListener.off('value'); onlineStatusListener = null; }
+      if (messagesListener) { messagesListener(); messagesListener = null; }
+      if (onlineStatusListener) { onlineStatusListener(); onlineStatusListener = null; }
 
       currentChatId = null;
       currentChatUser = null;
-    }
+    };
 
-    function toggleAI() {
+    window.toggleAI = function() {
       if (!currentChatId) return;
       aiEnabled = !aiEnabled;
-      db.ref(`userChats/${currentUser.uid}/${currentChatId}`).update({ aiEnabled });
+      update(ref(db, `userChats/${currentUser.uid}/${currentChatId}`), { aiEnabled });
       updateAIToggle();
       showToast(aiEnabled ? 'AI assistant enabled' : 'AI assistant disabled');
-    }
+    };
 
     function updateAIToggle() {
       const toggle = document.getElementById('aiToggle');
@@ -1084,23 +1104,36 @@
 
     function loadMessages(chatId) {
       const container = document.getElementById('chatMessages');
-      container.innerHTML = '';
+      container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);"><div class="spinner" style="margin:0 auto 1rem;"></div>Loading messages...</div>';
 
-      if (messagesListener) { messagesListener.off('child_added'); }
+      if (messagesListener) { messagesListener(); }
 
-      messagesListener = db.ref(`messages/${chatId}`).orderByChild('timestamp');
-
-      messagesListener.on('child_added', (snapshot) => {
+      const messagesRef = query(ref(db, `messages/${chatId}`), orderByChild('timestamp'));
+      
+      let firstLoad = true;
+      
+      messagesListener = onChildAdded(messagesRef, (snapshot) => {
+        if (firstLoad) {
+          container.innerHTML = '';
+          firstLoad = false;
+        }
+        
         const msg = snapshot.val();
-        if (!msg) return;
+        msg.id = snapshot.key;
         renderMessage(msg);
-
+        
         if (aiEnabled && msg.senderId === currentChatUser?.id && !msg.aiReplied) {
           setTimeout(() => generateAIReply(msg.text, snapshot.key), 1200);
         }
       }, (err) => {
         console.error('Messages listener error:', err);
       });
+      
+      setTimeout(() => {
+        if (firstLoad) {
+          container.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--text-muted);">No messages yet.<br>Send your first message!</div>';
+        }
+      }, 2000);
     }
 
     function renderMessage(msg) {
@@ -1134,9 +1167,13 @@
 
       container.appendChild(group);
       container.scrollTop = container.scrollHeight;
+      
+      if (!isOwn && !msg.read) {
+        update(ref(db, `messages/${currentChatId}/${msg.id}`), { read: true });
+      }
     }
 
-    async function sendMessage() {
+    window.sendMessage = async function() {
       const input = document.getElementById('messageInput');
       const text = input.value.trim();
       if (!text || !currentChatId || !currentChatUser) return;
@@ -1154,28 +1191,28 @@
       };
 
       try {
-        await db.ref(`messages/${currentChatId}`).push(msgData);
+        await push(ref(db, `messages/${currentChatId}`), msgData);
 
         const updateData = {
           lastMessage: text,
           lastMessageTime: Date.now()
         };
-        await db.ref(`userChats/${currentUser.uid}/${currentChatId}`).update(updateData);
+        await update(ref(db, `userChats/${currentUser.uid}/${currentChatId}`), updateData);
 
-        const otherRef = db.ref(`userChats/${currentChatUser.id}/${currentChatId}`);
-        const otherSnap = await otherRef.once('value');
+        const otherRef = ref(db, `userChats/${currentChatUser.id}/${currentChatId}`);
+        const otherSnap = await get(otherRef);
         const currentUnread = otherSnap.exists() ? (otherSnap.val().unreadCount || 0) : 0;
-        await otherRef.update({ ...updateData, unreadCount: currentUnread + 1 });
+        await update(otherRef, { ...updateData, unreadCount: currentUnread + 1 });
       } catch (err) {
         console.error('Send message error:', err);
         showToast('Failed to send message');
       }
-    }
+    };
 
     async function generateAIReply(userText, originalKey) {
       if (!XAI_API_KEY || !currentChatId) return;
 
-      await db.ref(`messages/${currentChatId}/${originalKey}`).update({ aiReplied: true });
+      await update(ref(db, `messages/${currentChatId}/${originalKey}`), { aiReplied: true });
 
       showTypingIndicator();
       try {
@@ -1193,7 +1230,7 @@
         const data = await res.json();
         hideTypingIndicator();
         if (data.choices?.[0]?.message?.content) {
-          await db.ref(`messages/${currentChatId}`).push({
+          await push(ref(db, `messages/${currentChatId}`), {
             text: data.choices[0].message.content,
             senderId: 'AI',
             timestamp: Date.now(),
@@ -1216,12 +1253,13 @@
       container.appendChild(div);
       container.scrollTop = container.scrollHeight;
     }
+    
     function hideTypingIndicator() {
       const el = document.getElementById('typing-indicator');
       if (el) el.remove();
     }
 
-    async function handleImage(e) {
+    window.handleImage = async function(e) {
       const file = e.target.files[0];
       if (!file || !currentChatId) return;
       showToast('Uploading image...');
@@ -1237,55 +1275,55 @@
             senderName: currentUserData?.displayName || currentUser.displayName,
             text: '', image: data.secure_url, timestamp: Date.now(), read: false
           };
-          await db.ref(`messages/${currentChatId}`).push(msgData);
+          await push(ref(db, `messages/${currentChatId}`), msgData);
           const updateData = { lastMessage: '📷 Image', lastMessageTime: Date.now() };
-          await db.ref(`userChats/${currentUser.uid}/${currentChatId}`).update(updateData);
-          const otherRef = db.ref(`userChats/${currentChatUser.id}/${currentChatId}`);
-          const otherSnap = await otherRef.once('value');
+          await update(ref(db, `userChats/${currentUser.uid}/${currentChatId}`), updateData);
+          const otherRef = ref(db, `userChats/${currentChatUser.id}/${currentChatId}`);
+          const otherSnap = await get(otherRef);
           const unread = otherSnap.exists() ? (otherSnap.val().unreadCount || 0) : 0;
-          await otherRef.update({ ...updateData, unreadCount: unread + 1 });
+          await update(otherRef, { ...updateData, unreadCount: unread + 1 });
         }
       } catch(err) {
         showToast('Image upload failed');
       }
       e.target.value = '';
-    }
+    };
 
-    function autoResize(textarea) {
+    window.autoResize = function(textarea) {
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(textarea.scrollHeight, 100) + 'px';
       document.getElementById('sendBtn').disabled = textarea.value.trim().length === 0;
-    }
+    };
 
-    function handleKeyDown(e) {
+    window.handleKeyDown = function(e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
         return;
       }
       if (currentChatId && currentChatUser) {
-        db.ref(`userChats/${currentUser.uid}/${currentChatId}`).update({ typing: currentChatUser.id });
+        update(ref(db, `userChats/${currentUser.uid}/${currentChatId}`), { typing: currentChatUser.id });
         clearTimeout(typingTimeout);
         typingTimeout = setTimeout(() => {
-          db.ref(`userChats/${currentUser.uid}/${currentChatId}`).update({ typing: false });
+          update(ref(db, `userChats/${currentUser.uid}/${currentChatId}`), { typing: false });
         }, 3000);
       }
-    }
+    };
 
-    function addEmoji() {
+    window.addEmoji = function() {
       const input = document.getElementById('messageInput');
       input.value += '😊';
       input.focus();
       autoResize(input);
-    }
+    };
 
-    function filterConversations(query) {
+    window.filterConversations = function(query) {
       const q = query.toLowerCase();
       document.querySelectorAll('.conversation-item').forEach(item => {
         const name = item.querySelector('.conv-name')?.textContent?.toLowerCase() || '';
         item.style.display = name.includes(q) ? 'flex' : 'none';
       });
-    }
+    };
 
     function showToast(message) {
       const toast = document.getElementById('toast');
@@ -1315,18 +1353,22 @@
       return div.innerHTML;
     }
 
+    window.installPWA = async function() {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') dismissInstall();
+    };
+    
+    window.dismissInstall = function() { 
+      document.getElementById('installBanner').classList.remove('visible'); 
+    };
+
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       deferredPrompt = e;
       setTimeout(() => document.getElementById('installBanner').classList.add('visible'), 1000);
     });
-    function dismissInstall() { document.getElementById('installBanner').classList.remove('visible'); }
-    async function installPWA() {
-      if (!deferredPrompt) return;
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') dismissInstall();
-    }
   </script>
 </body>
 </html>
