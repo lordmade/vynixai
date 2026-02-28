@@ -520,7 +520,6 @@
     <span class="material-symbols-rounded">edit</span>
   </button>
 
-  <!-- ✅ KEY FIX: Use Firebase v9 Modular SDK like the working example -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
     import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, updateProfile } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
@@ -565,17 +564,24 @@
     let deferredPrompt = null;
     let pendingAvatarUrl = null;
     let conversationsLoaded = false;
+    let isLoadingUserData = false;
 
     const CLOUDINARY_CLOUD = 'dqkujefxj';
     const CLOUDINARY_PRESET = 'banter_box';
     const defaultAvatar = "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
 
-    // ✅ KEY FIX: Auth state listener using modular SDK
     onAuthStateChanged(auth, async (user) => {
       console.log('Auth state changed:', user ? user.uid : 'signed out');
       if (user) {
         currentUser = user;
         document.getElementById('authOverlay').classList.remove('active');
+
+        document.getElementById('conversationsList').innerHTML = `
+          <div class="loading-container" id="loadingConversations">
+            <div class="spinner"></div>
+            <span>Loading your profile...</span>
+          </div>
+        `;
 
         try {
           await initRemoteConfig();
@@ -583,10 +589,24 @@
           console.warn('Remote config skipped:', e.message);
         }
 
-        await loadUserData(user.uid);
-        setupProfile(user);
-        loadConversations();
-        loadAllUsers();
+        isLoadingUserData = true;
+        try {
+          await loadUserData(user.uid);
+          loadConversations();
+          loadAllUsers();
+        } catch (err) {
+          console.error('Failed to load user data:', err);
+          showToast('Error loading profile. Please refresh.');
+          document.getElementById('conversationsList').innerHTML = `
+            <div class="empty-state">
+              <div class="empty-icon">⚠️</div>
+              <p style="font-weight:600;">Error loading profile</p>
+              <button onclick="location.reload()" style="margin-top:16px; padding:10px 20px; background:var(--primary-indigo); color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">Retry</button>
+            </div>
+          `;
+        } finally {
+          isLoadingUserData = false;
+        }
       } else {
         currentUser = null;
         currentUserData = null;
@@ -601,7 +621,6 @@
     });
 
     async function initRemoteConfig() {
-      // Remote config not available in v9 modular easily, skip for now
       XAI_API_KEY = "";
     }
 
@@ -614,7 +633,6 @@
           currentUserData = snap.val();
           console.log('User data loaded:', currentUserData.displayName);
         } else {
-          // New user — create record
           currentUserData = {
             email: currentUser.email || '',
             displayName: currentUser.displayName || 'User',
@@ -630,10 +648,8 @@
           console.log('New user record created');
         }
 
-        // Mark online
-        await update(userRef, { online: true, lastSeen: Date.now() });
+        update(userRef, { online: true, lastSeen: Date.now() }).catch(console.error);
         
-        // Handle disconnect
         const connectedRef = ref(db, ".info/connected");
         onValue(connectedRef, (snap) => {
           if (snap.val() === true) {
@@ -643,7 +659,7 @@
 
       } catch (err) {
         console.error('loadUserData error:', err);
-        showToast('Error loading profile');
+        throw err;
       }
     }
 
@@ -658,7 +674,6 @@
       document.getElementById('profileBio').value = currentUserData?.bio || '';
     }
 
-    // ✅ KEY FIX: Expose functions to window for onclick handlers
     window.signInWithGoogle = async function() {
       const btn = document.getElementById('googleSignInBtn');
       btn.disabled = true;
@@ -679,9 +694,13 @@
         document.getElementById('authOverlay').classList.add('active'); 
         return; 
       }
-      if (currentUserData) {
-        setupProfile(currentUser);
+      
+      if (isLoadingUserData || !currentUserData) {
+        showToast('Loading profile... please wait');
+        return;
       }
+      
+      setupProfile(currentUser);
       pendingAvatarUrl = null;
       document.getElementById('profileSlide').classList.add('active');
     };
@@ -744,7 +763,6 @@
       }
     };
 
-    // ✅ KEY FIX: Load conversations using onValue like the working example
     function loadConversations() {
       if (!currentUser) return;
       
@@ -754,7 +772,6 @@
       onValue(chatsRef, async (snapshot) => {
         conversations = [];
         
-        // ✅ KEY FIX: Remove loading element specifically
         const loadingEl = document.getElementById('loadingConversations');
         if (loadingEl) loadingEl.remove();
         
@@ -869,7 +886,6 @@
       document.getElementById('usersSheet').classList.add('active');
       document.getElementById('searchUsers').value = '';
       
-      // Reset to loading state
       document.getElementById('usersList').innerHTML = `
         <div class="loading-container">
           <div class="spinner"></div>
