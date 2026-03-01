@@ -541,6 +541,10 @@
       text-align: center;
       margin-bottom: 24px;
       box-shadow: var(--shadow);
+      cursor: pointer;
+    }
+    .user-id-display:active {
+      transform: scale(0.98);
     }
     .user-id-label {
       font-size: 0.875rem;
@@ -786,7 +790,7 @@
       <h1 class="onboarding-title">Create Your Profile</h1>
       <p class="onboarding-subtitle">Set up your account to start chatting</p>
       
-      <div class="user-id-display">
+      <div class="user-id-display" onclick="copyTempUserId()">
         <div class="user-id-label">Your Verlinks ID</div>
         <div class="user-id-value" id="onboardingUserId">------</div>
         <div class="user-id-hint">
@@ -917,7 +921,7 @@
       <div id="conversationsList">
         <div class="loading-container" id="loadingConversations">
           <div class="spinner"></div>
-          <span>Loading conversations...</span>
+          <span>Loading...</span>
         </div>
       </div>
     </div>
@@ -1011,8 +1015,6 @@
     let isLoadingUserData = false;
     let tempUserId = null;
     let tempAvatarUrl = null;
-    let tempEmail = null;
-    let tempPassword = null;
     let tempName = null;
 
     const CLOUDINARY_CLOUD = 'dqkujefxj';
@@ -1035,10 +1037,16 @@
       let attempts = 0;
       
       while (!isUnique && attempts < 10) {
-        const snapshot = await get(ref(db, `userIds/${userId}`));
-        if (!snapshot.exists()) {
-          isUnique = true;
-        } else {
+        try {
+          const snapshot = await get(ref(db, `userIds/${userId}`));
+          if (!snapshot.exists()) {
+            isUnique = true;
+          } else {
+            userId = generateUserId();
+            attempts++;
+          }
+        } catch (err) {
+          console.error('Error checking userId uniqueness:', err);
           userId = generateUserId();
           attempts++;
         }
@@ -1108,15 +1116,14 @@
             return;
           }
           
-          tempEmail = email;
-          tempPassword = password;
           tempName = name;
           
           const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-          await updateProfile(userCredential.user, { displayName: name });
+          console.log('User created:', userCredential.user.uid);
           
         } else {
-          await signInWithEmailAndPassword(auth, email, password);
+          const userCredential = await signInWithEmailAndPassword(auth, email, password);
+          console.log('User signed in:', userCredential.user.uid);
         }
       } catch (err) {
         console.error('Auth error:', err);
@@ -1126,6 +1133,7 @@
         if (err.code === 'auth/email-already-in-use') message = 'Email already registered';
         if (err.code === 'auth/invalid-email') message = 'Invalid email address';
         if (err.code === 'auth/weak-password') message = 'Password should be at least 6 characters';
+        if (err.code === 'auth/invalid-credential') message = 'Invalid email or password';
         showToast(message);
         btn.classList.remove('loading');
         btn.disabled = false;
@@ -1144,13 +1152,18 @@
 
     onAuthStateChanged(auth, async (user) => {
       console.log('Auth state changed:', user ? user.uid : 'signed out');
+      
       if (user) {
         currentUser = user;
+        
+        // Reset auth UI
         document.getElementById('authOverlay').classList.remove('active');
         document.getElementById('authBtn').classList.remove('loading');
         document.getElementById('authBtn').disabled = false;
         document.getElementById('authForm').reset();
+        switchTab('signin');
 
+        // Show loading state
         document.getElementById('conversationsList').innerHTML = `
           <div class="loading-container" id="loadingConversations">
             <div class="spinner"></div>
@@ -1159,28 +1172,36 @@
         `;
 
         try {
-          await initRemoteConfig();
-        } catch(e) {
-          console.warn('Remote config skipped:', e.message);
-        }
-
-        isLoadingUserData = true;
-        try {
-          const userExists = await checkUserExists(user.uid);
-          if (!userExists) {
+          // Check if user exists in database
+          const userRef = ref(db, `users/${user.uid}`);
+          const userSnap = await get(userRef);
+          
+          if (!userSnap.exists()) {
+            // New user - show onboarding
+            console.log('New user, showing onboarding');
             await showOnboarding(user.uid);
           } else {
-            await loadUserData(user.uid);
+            // Existing user - load data
+            console.log('Existing user, loading data');
+            currentUserData = userSnap.val();
             updateHeaderUserId();
+            setupOnlineStatus();
             loadConversations();
           }
         } catch (err) {
-          console.error('Failed to load user data:', err);
-          showToast('Error loading profile. Please refresh.');
-        } finally {
-          isLoadingUserData = false;
+          console.error('Error in auth state handler:', err);
+          showToast('Error: ' + err.message);
+          document.getElementById('conversationsList').innerHTML = `
+            <div class="empty-state">
+              <div class="empty-icon">⚠️</div>
+              <p style="font-weight:600;">Error loading profile</p>
+              <p style="font-size:0.85rem; margin-top:8px;">${err.message}</p>
+              <button onclick="location.reload()" style="margin-top:16px; padding:10px 20px; background:var(--primary-indigo); color:white; border:none; border-radius:8px; cursor:pointer;">Retry</button>
+            </div>
+          `;
         }
       } else {
+        // User signed out
         currentUser = null;
         currentUserData = null;
         document.getElementById('authOverlay').classList.add('active');
@@ -1193,27 +1214,39 @@
       }
     });
 
-    async function initRemoteConfig() {
-      XAI_API_KEY = "";
-    }
-
-    async function checkUserExists(uid) {
-      const snap = await get(ref(db, `users/${uid}`));
-      return snap.exists();
-    }
-
     async function showOnboarding(uid) {
-      tempUserId = await generateUniqueUserId();
-      document.getElementById('onboardingUserId').textContent = tempUserId;
-      
-      const defaultPhoto = `https://ui-avatars.com/api/?name=${encodeURIComponent(tempName || 'User')}&background=FFD93D&color=1A1A1A&size=128`;
-      document.getElementById('onboardingAvatarImg').src = defaultPhoto;
-      tempAvatarUrl = null;
-      
-      document.getElementById('onboardingName').value = tempName || '';
-      
-      document.getElementById('onboardingOverlay').classList.add('active');
+      try {
+        tempUserId = await generateUniqueUserId();
+        document.getElementById('onboardingUserId').textContent = tempUserId;
+        
+        const defaultPhoto = `https://ui-avatars.com/api/?name=${encodeURIComponent(tempName || 'User')}&background=FFD93D&color=1A1A1A&size=128`;
+        document.getElementById('onboardingAvatarImg').src = defaultPhoto;
+        tempAvatarUrl = null;
+        
+        document.getElementById('onboardingName').value = tempName || '';
+        
+        document.getElementById('onboardingOverlay').classList.add('active');
+      } catch (err) {
+        console.error('Error in onboarding:', err);
+        showToast('Error starting onboarding: ' + err.message);
+      }
     }
+
+    window.copyTempUserId = function() {
+      if (!tempUserId) return;
+      
+      navigator.clipboard.writeText(tempUserId).then(() => {
+        showToast('ID copied to clipboard!');
+      }).catch(() => {
+        const textArea = document.createElement('textarea');
+        textArea.value = tempUserId;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        showToast('ID copied!');
+      });
+    };
 
     window.handleOnboardingAvatar = async function(e) {
       const file = e.target.files[0];
@@ -1261,7 +1294,7 @@
 
       try {
         currentUserData = {
-          email: currentUser.email || tempEmail || '',
+          email: currentUser.email || '',
           displayName: name,
           userId: tempUserId,
           photoURL: tempAvatarUrl || '',
@@ -1272,17 +1305,23 @@
           createdAt: Date.now()
         };
 
+        // Create user record and userId mapping
         const updates = {};
         updates[`users/${currentUser.uid}`] = currentUserData;
         updates[`userIds/${tempUserId}`] = currentUser.uid;
         
         await update(ref(db), updates);
-        await updateProfile(currentUser, { displayName: name, photoURL: tempAvatarUrl });
+        
+        // Update auth profile
+        await updateProfile(currentUser, { 
+          displayName: name, 
+          photoURL: tempAvatarUrl || null 
+        });
 
-        tempEmail = null;
-        tempPassword = null;
+        // Clear temp data
         tempName = null;
 
+        // Hide onboarding and show app
         document.getElementById('onboardingOverlay').classList.remove('active');
         updateHeaderUserId();
         setupOnlineStatus();
@@ -1298,27 +1337,15 @@
       }
     };
 
-    async function loadUserData(uid) {
-      try {
-        const userRef = ref(db, `users/${uid}`);
-        const snap = await get(userRef);
-
-        if (snap.exists()) {
-          currentUserData = snap.val();
-          console.log('User data loaded:', currentUserData.displayName, 'ID:', currentUserData.userId);
-        }
-
-        setupOnlineStatus();
-      } catch (err) {
-        console.error('loadUserData error:', err);
-        throw err;
-      }
-    }
-
     function setupOnlineStatus() {
+      if (!currentUser) return;
+      
       const userRef = ref(db, `users/${currentUser.uid}`);
+      
+      // Set online
       update(userRef, { online: true, lastSeen: Date.now() }).catch(console.error);
       
+      // Setup disconnect handler
       const connectedRef = ref(db, ".info/connected");
       onValue(connectedRef, (snap) => {
         if (snap.val() === true) {
@@ -1330,7 +1357,8 @@
     function updateHeaderUserId() {
       if (currentUserData?.userId) {
         document.getElementById('headerUserId').textContent = currentUserData.userId;
-        document.getElementById('profileUserId').textContent = currentUserData.userId;
+        const profileUserId = document.getElementById('profileUserId');
+        if (profileUserId) profileUserId.textContent = currentUserData.userId;
       }
     }
 
@@ -1351,6 +1379,8 @@
     };
 
     window.shareUserId = async function() {
+      if (!currentUserData?.userId) return;
+      
       const shareData = {
         title: 'Add me on Verlinks',
         text: `Add me on Verlinks! My ID is: ${currentUserData.userId}`,
@@ -1383,7 +1413,7 @@
         return; 
       }
       
-      if (isLoadingUserData || !currentUserData) {
+      if (!currentUserData) {
         showToast('Loading profile... please wait');
         return;
       }
@@ -1401,12 +1431,17 @@
     window.handleAvatarChange = async function(e) {
       const file = e.target.files[0];
       if (!file) return;
+      
       document.getElementById('profileAvatarImg').style.opacity = '0.5';
       const formData = new FormData();
       formData.append('file', file);
       formData.append('upload_preset', CLOUDINARY_PRESET);
+      
       try {
-        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: 'POST', body: formData });
+        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { 
+          method: 'POST', 
+          body: formData 
+        });
         const data = await res.json();
         if (data.secure_url) {
           pendingAvatarUrl = data.secure_url;
@@ -1426,16 +1461,29 @@
       const btn = document.getElementById('saveProfileBtn');
       const name = document.getElementById('profileName').value.trim();
       const bio = document.getElementById('profileBio').value.trim();
-      if (!name) { showToast('Name is required'); return; }
+      
+      if (!name) { 
+        showToast('Name is required'); 
+        return; 
+      }
 
       btn.classList.add('saving');
       btn.disabled = true;
+      
       try {
-        const updates = { displayName: name, bio, updatedAt: Date.now() };
+        const updates = { 
+          displayName: name, 
+          bio, 
+          updatedAt: Date.now() 
+        };
+        
         if (pendingAvatarUrl) updates.photoURL = pendingAvatarUrl;
 
         await update(ref(db, `users/${currentUser.uid}`), updates);
-        await updateProfile(currentUser, { displayName: name, photoURL: updates.photoURL || currentUser.photoURL });
+        await updateProfile(currentUser, { 
+          displayName: name, 
+          photoURL: updates.photoURL || currentUser.photoURL 
+        });
         
         currentUserData = { ...currentUserData, ...updates };
         
@@ -1477,7 +1525,7 @@
         return;
       }
       
-      if (friendId === currentUserData.userId) {
+      if (friendId === currentUserData?.userId) {
         showToast("That's your own ID!");
         return;
       }
@@ -1528,7 +1576,7 @@
 
         const updates = {};
         updates[`userChats/${currentUser.uid}/${chatId}`] = chatData;
-        updates[`userChats/${friendUid}/${chatId}`] = { ...chatData, unreadCount: 0 };
+        updates[`userIds/${friendUid}/${chatId}`] = { ...chatData, unreadCount: 0 };
         await update(ref(db), updates);
 
         closeAddFriend();
