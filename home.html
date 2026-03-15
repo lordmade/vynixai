@@ -3493,23 +3493,7 @@ async function loadMorePosts() {
 }
   
    // Initial Load - Only load first batch
-async function loadInitialPosts() {
-  feedStream.innerHTML = '';
-  displayedPosts = [];
-  currentPage = 0;
-  hasMorePosts = true;
-  feedEndMessage.classList.remove('show');
-  // Show skeleton loaders immediately
-  showSkeletonLoaders(POSTS_PER_PAGE);
-  try {
-    // Wait for allPosts to be populated
-    if (allPosts.length === 0) {
-      await new Promise(resolve => {
-        const checkPosts = setInterval(() => {
-          if (allPosts.length > 0) {
-            clearInterval(checkPosts);
-            resolve();
-          }
+
         }, 100);
       
         // Timeout after 5 seconds
@@ -3744,7 +3728,8 @@ async function loadInitialPosts() {
        loadUnreadMessages();
      
        // Start initial load
-       loadInitialPosts();
+       // Start initialization with shimmer
+      initializeFeed();
      
      } catch (error) {
        console.error("Profile load error:", error);
@@ -3780,7 +3765,8 @@ async function loadInitialPosts() {
      currentPage = 0;
      hasMorePosts = true;
      feedEndMessage.classList.remove('show');
-     loadInitialPosts();
+     // Start initialization with shimmer
+      initializeFeed();
    }
    function loadNotifications() {
      if (!currentUser) return;
@@ -4327,61 +4313,213 @@ async function loadInitialPosts() {
    });
   
 // ============================================
-// FIXED: Listen for new posts in real-time - NEWEST FIRST
+// FIXED: Load posts with shimmer first, then infinite scroll
 // ============================================
-const postsRef = ref(db, 'posts');
-const postsQuery = query(postsRef, orderByChild('timestamp'));
-onChildAdded(postsQuery, async (snapshot) => {
- const postData = snapshot.val();
- const postKey = snapshot.key;
- // Check if post already exists in our array
- const existingIndex = allPosts.findIndex(p => p.key === postKey);
- if (existingIndex === -1) {
-   // Add to beginning of allPosts (newest first)
-   allPosts.unshift({ key: postKey, data: postData });
- 
-   // Only render if we're on the first page and not searching
-   if (currentPage === 0 && !searchInput.value && !isLoadingMore) {
-     // Check if post matches current feed mode
-     const shouldShow = feedMode === 'latest' ||
+
+// Initial load - fetch first batch with shimmer, then set up listeners
+async function initializeFeed() {
+  // Show shimmer immediately
+  const shimmerOverlay = document.getElementById('shimmer-overlay');
+  if (shimmerOverlay) {
+    shimmerOverlay.classList.remove('hidden');
+  }
+
+  try {
+    // One-time fetch for initial posts (respects tab mode)
+    await loadInitialBatch();
+
+    // Hide shimmer after initial load
+    if (shimmerOverlay) {
+      shimmerOverlay.classList.add('hidden');
+      // Reveal animation
+      document.querySelectorAll('.feed-header, .tweet-box, .post').forEach((el, index) => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(20px)';
+        setTimeout(() => {
+          el.classList.add('content-reveal');
+          el.style.opacity = '';
+          el.style.transform = '';
+        }, index * 100);
+      });
+    }
+
+    // Set up real-time listener ONLY for new posts (after initial load)
+    setupRealtimeListener();
+
+    // Initialize infinite scroll
+    initInfiniteScroll();
+
+  } catch (err) {
+    console.error("Initial load failed:", err);
+    showToast("Failed to load posts", "error");
+    if (shimmerOverlay) shimmerOverlay.classList.add('hidden');
+  }
+}
+
+// Load initial batch (one-time fetch)
+async function loadInitialBatch() {
+  const postsRef = ref(db, 'posts');
+  const postsQuery = query(postsRef, orderByChild('timestamp'), limitToLast(POSTS_PER_PAGE));
+
+  const snapshot = await get(postsQuery);
+
+  if (snapshot.exists()) {
+    const posts = [];
+    snapshot.forEach(childSnap => {
+      posts.unshift({
+        key: childSnap.key,
+        data: childSnap.val()
+      });
+    });
+
+    // Filter based on feed mode
+    const filteredPosts = posts.filter(post => {
+      if (feedMode === 'forYou') {
+        return post.data.uid === currentUser?.uid || followingList.has(post.data.uid);
+      }
+      return true;
+    });
+
+    // Render initial batch
+    feedStream.innerHTML = '';
+    displayedPosts = [];
+
+    for (const post of filteredPosts.slice(0, POSTS_PER_PAGE)) {
+      await renderPost(post.key, post.data, '', false);
+      displayedPosts.push(post);
+      allPosts.push(post);
+    }
+
+    feather.replace();
+    initializeVideoControls();
+    initializeCarousels();
+    initVideoObserver();
+  }
+}
+
+// Real-time listener for NEW posts only (prepends to top)
+function setupRealtimeListener() {
+  const postsRef = ref(db, 'posts');
+  const postsQuery = query(postsRef, orderByChild('timestamp'), limitToLast(5));
+
+  onChildAdded(postsQuery, async (snapshot) => {
+    const postKey = snapshot.key;
+    const postData = snapshot.val();
+
+    // Skip if already displayed
+    if (displayedPosts.some(p => p.key === postKey)) return;
+    if (allPosts.some(p => p.key === postKey)) return;
+
+    // Add to allPosts
+    allPosts.unshift({ key: postKey, data: postData });
+
+    // Check if should show based on feed mode
+    const shouldShow = feedMode === 'latest' || 
                        (feedMode === 'forYou' && shouldShowInForYou(postData));
-    
-     if (shouldShow) {
-       await renderPost(postKey, postData, '', true); // true = prepend to top
-       displayedPosts.unshift({ key: postKey, data: postData });
-       feather.replace();
-       initializeVideoControls();
-       initializeCarousels();
-       initVideoObserver();
-     }
-   }
- }
-});
+
+    if (shouldShow) {
+      // Prepend to feed
+      await renderPost(postKey, postData, '', true);
+      displayedPosts.unshift({ key: postKey, data: postData });
+      feather.replace();
+      initializeVideoControls();
+      initializeCarousels();
+      initVideoObserver();
+    }
+  });
+}
+
 // Helper function to determine if post should show in "For You" feed
 function shouldShowInForYou(post) {
- // In For You mode, only show posts from followed users or self
- if (!currentUser) return false;
- return post.uid === currentUser.uid || followingList.has(post.uid);
+  if (!currentUser) return false;
+  return post.uid === currentUser.uid || followingList.has(post.uid);
 }
-// ============================================
-// FIXED: Listen for post updates - MAINTAINS NEWEST FIRST ORDER
-// ============================================
-onValue(postsQuery, (snapshot) => {
- const newAllPosts = [];
- snapshot.forEach(childSnap => {
-   newAllPosts.unshift({ // Unshift instead of push, so newest are first
-     key: childSnap.key,
-     data: childSnap.val()
-   });
- });
- allPosts = newAllPosts;
- // If feed is empty, load initial posts
- if (displayedPosts.length === 0 && allPosts.length > 0) {
-   loadInitialPosts();
- }
-});
-  
-   function getTimeAgo(timestamp) {
+
+// Load more posts (infinite scroll)
+async function loadMorePosts() {
+  if (isLoadingMore || !hasMorePosts) return;
+  isLoadingMore = true;
+  infiniteLoader.classList.remove('hidden');
+
+  try {
+    // Get the oldest post timestamp for pagination
+    const oldestPost = displayedPosts[displayedPosts.length - 1];
+    if (!oldestPost) {
+      hasMorePosts = false;
+      infiniteLoader.classList.add('hidden');
+      return;
+    }
+
+    // Query for older posts
+    const postsRef = ref(db, 'posts');
+    const postsQuery = query(
+      postsRef, 
+      orderByChild('timestamp'), 
+      endBefore(oldestPost.data.timestamp), 
+      limitToLast(POSTS_PER_PAGE)
+    );
+
+    const snapshot = await get(postsQuery);
+
+    if (!snapshot.exists()) {
+      hasMorePosts = false;
+      feedEndMessage.classList.add('show');
+      infiniteLoader.classList.add('hidden');
+      return;
+    }
+
+    const newPosts = [];
+    snapshot.forEach(childSnap => {
+      const post = { key: childSnap.key, data: childSnap.val() };
+      // Skip if already displayed
+      if (!displayedPosts.some(p => p.key === post.key)) {
+        newPosts.unshift(post);
+      }
+    });
+
+    if (newPosts.length === 0) {
+      hasMorePosts = false;
+      feedEndMessage.classList.add('show');
+      infiniteLoader.classList.add('hidden');
+      return;
+    }
+
+    // Filter based on feed mode
+    const filteredPosts = newPosts.filter(post => {
+      if (feedMode === 'forYou') {
+        return post.data.uid === currentUser?.uid || followingList.has(post.data.uid);
+      }
+      return true;
+    });
+
+    // Render new posts (append to bottom)
+    for (const post of filteredPosts) {
+      await renderPost(post.key, post.data, '', false);
+      displayedPosts.push(post);
+      if (!allPosts.some(p => p.key === post.key)) {
+        allPosts.push(post);
+      }
+    }
+
+    if (filteredPosts.length < POSTS_PER_PAGE) {
+      hasMorePosts = false;
+      feedEndMessage.classList.add('show');
+    }
+
+    feather.replace();
+    initializeVideoControls();
+    initializeCarousels();
+    initVideoObserver();
+
+  } catch (err) {
+    console.error("Error loading more posts:", err);
+  } finally {
+    isLoadingMore = false;
+    infiniteLoader.classList.add('hidden');
+  }
+}
+
+function getTimeAgo(timestamp) {
      if (!timestamp) return '';
      const diff = Math.floor((Date.now() - timestamp) / 1000);
      if (diff < 60) return 'now';
