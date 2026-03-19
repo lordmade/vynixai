@@ -949,6 +949,7 @@
     let currentVideoElement = null;
     let loadedPostIds = new Set();
     let postsListenerAttached = false;
+    // infinite scroll state initialised in loadPosts()
 
     async function uploadToCloudinary(file, folder = 'posts') {
         const formData = new FormData();
@@ -1029,89 +1030,145 @@
         }
     }
 
-    // ── FIXED: loadPosts uses plain ref(db, 'posts') — no orderByChild, no index needed ──
+    // ── INFINITE SCROLL ──
+    // Strategy: fetch ALL post keys+timestamps once (lightweight), sort them,
+    // then page through them in chunks of PAGE_SIZE, fetching full data on demand.
+    // A sentinel div at the bottom is watched by IntersectionObserver to trigger next page.
+
+    const PAGE_SIZE = 10;
+    let allPostKeys = [];       // [{id, timestamp}] sorted newest-first
+    let pageIndex = 0;          // how many pages we've rendered
+    let isLoadingPage = false;
+    let hasMorePages = true;
+    let scrollObserver = null;
+
     async function loadPosts() {
         const feed = document.getElementById('feed');
-        const loadingMore = document.getElementById('loading-more');
+        feed.innerHTML = '';
 
         try {
-            loadingMore.classList.add('active');
-
+            // Fetch all posts (keys + timestamps only via shallow-ish read)
             const snapshot = await get(ref(db, 'posts'));
-
-            feed.innerHTML = '';
 
             if (!snapshot.exists()) {
                 feed.innerHTML = '<div class="empty-state">No posts yet. Be the first to post!</div>';
-                loadingMore.classList.remove('active');
                 setupPostsListeners();
                 return;
             }
 
-            const posts = [];
+            // Build sorted index
+            allPostKeys = [];
             snapshot.forEach(child => {
-                posts.push({ id: child.key, ...child.val() });
+                allPostKeys.push({ id: child.key, timestamp: child.val().timestamp || 0 });
             });
+            allPostKeys.sort((a, b) => b.timestamp - a.timestamp);
 
-            // Sort newest first in JS — no Firebase index required
-            posts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            hasMorePages = allPostKeys.length > 0;
 
-            // Cap at 50
-            const limited = posts.slice(0, 50);
+            // Load first page
+            await loadNextPage();
 
-            // Fetch user data for each post
-            for (const post of limited) {
-                if (loadedPostIds.has(post.id)) continue;
-                loadedPostIds.add(post.id);
-                try {
-                    const userSnap = await get(ref(db, `users/${post.uid}`));
-                    post.user = userSnap.val() || {};
-                    post.isVerified = post.user.verified || false;
-                } catch {
-                    post.user = {};
-                    post.isVerified = false;
-                }
-            }
+            // Setup IntersectionObserver sentinel
+            setupScrollObserver();
 
-            const processedPosts = applyFeedAlgorithm(limited);
-            for (const post of processedPosts) {
-                renderPost(post);
-            }
+            // Setup real-time listeners for new/changed/deleted posts
+            setupPostsListeners();
 
         } catch (error) {
             console.error('Error loading posts:', error);
             feed.innerHTML = '<div class="empty-state">Error loading posts. Please refresh.</div>';
-        } finally {
-            loadingMore.classList.remove('active');
-            setupPostsListeners();
         }
     }
 
-    function applyFeedAlgorithm(posts) {
-        posts.forEach(post => {
-            const hoursOld = (Date.now() - (post.timestamp || 0)) / (1000 * 60 * 60);
-            let timeScore = Math.max(0, 100 - hoursOld);
-            if (hoursOld < 24) timeScore += 50;
-            const verifiedScore = post.isVerified ? 30 : 0;
-            const randomScore = Math.random() * 20;
-            post.feedScore = timeScore + verifiedScore + randomScore;
-        });
-        return posts.sort((a, b) => b.feedScore - a.feedScore);
+    async function loadNextPage() {
+        if (isLoadingPage || !hasMorePages) return;
+        isLoadingPage = true;
+
+        const loadingMore = document.getElementById('loading-more');
+        loadingMore.classList.add('active');
+
+        try {
+            const start = pageIndex * PAGE_SIZE;
+            const slice = allPostKeys.slice(start, start + PAGE_SIZE);
+
+            if (slice.length === 0) {
+                hasMorePages = false;
+                return;
+            }
+
+            for (const { id } of slice) {
+                if (loadedPostIds.has(id)) continue;
+                loadedPostIds.add(id);
+
+                try {
+                    const postSnap = await get(ref(db, `posts/${id}`));
+                    if (!postSnap.exists()) continue;
+
+                    const post = { id, ...postSnap.val() };
+
+                    const userSnap = await get(ref(db, `users/${post.uid}`));
+                    post.user = userSnap.val() || {};
+                    post.isVerified = post.user.verified || false;
+
+                    renderPost(post);
+                } catch {
+                    // skip bad post
+                }
+            }
+
+            pageIndex++;
+            hasMorePages = pageIndex * PAGE_SIZE < allPostKeys.length;
+
+        } finally {
+            isLoadingPage = false;
+            document.getElementById('loading-more').classList.remove('active');
+
+            // If no more pages, remove sentinel
+            if (!hasMorePages) {
+                const sentinel = document.getElementById('scroll-sentinel');
+                if (sentinel) sentinel.remove();
+            }
+        }
     }
 
-    // ── FIXED: setupPostsListeners uses plain ref — no orderByChild, no index needed ──
+    function setupScrollObserver() {
+        // Remove old sentinel if any
+        const old = document.getElementById('scroll-sentinel');
+        if (old) old.remove();
+
+        if (!hasMorePages) return;
+
+        // Add sentinel div just before the loading-more spinner
+        const sentinel = document.createElement('div');
+        sentinel.id = 'scroll-sentinel';
+        sentinel.style.height = '1px';
+        document.getElementById('loading-more').before(sentinel);
+
+        scrollObserver = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting) {
+                loadNextPage();
+            }
+        }, { rootMargin: '200px' });
+
+        scrollObserver.observe(sentinel);
+    }
+
     function setupPostsListeners() {
         if (postsListenerAttached) return;
         postsListenerAttached = true;
 
         const postsRef = ref(db, 'posts');
 
+        // Only prepend truly new posts (not in our index yet)
         onChildAdded(postsRef, async (snapshot) => {
             const postId = snapshot.key;
             if (loadedPostIds.has(postId)) return;
 
             const post = { id: postId, ...snapshot.val() };
             loadedPostIds.add(postId);
+
+            // Also add to our sorted index at the front
+            allPostKeys.unshift({ id: postId, timestamp: post.timestamp || 0 });
 
             try {
                 const userSnap = await get(ref(db, `users/${post.uid}`));
@@ -1132,6 +1189,7 @@
         onChildRemoved(postsRef, (snapshot) => {
             const el = document.getElementById(`post-${snapshot.key}`);
             if (el) el.remove();
+            allPostKeys = allPostKeys.filter(p => p.id !== snapshot.key);
         });
     }
 
