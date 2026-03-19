@@ -11,21 +11,19 @@ const firebaseConfig = {
     messagingSenderId: "658673187627",
     appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
-const CLOUD_NAME = "dqkujefxj", UPLOAD_PRESET = "banter_box";
+const CLOUD_NAME = "dqkujefxj", UPLOAD_PRESET = "banter_box", DEFAULT_AVG = "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
 
 const app = initializeApp(firebaseConfig), auth = getAuth(app), db = getDatabase(app);
 let currentUser = null;
 
-// --- UI Helpers ---
-const toggleSheet = (id, overlay, state) => {
-    document.getElementById(id).classList.toggle('active', state);
-    document.getElementById(overlay).style.display = state ? 'block' : 'none';
+// --- Time Format ---
+const timeAgo = (ts) => {
+    const s = Math.floor((new Date() - new Date(ts)) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s/60) + "m";
+    if (s < 86400) return Math.floor(s/3600) + "h";
+    return Math.floor(s/86400) + "d";
 };
-
-document.getElementById('open-auth-sheet').onclick = () => toggleSheet('auth-sheet', 'auth-overlay', true);
-document.getElementById('auth-overlay').onclick = () => toggleSheet('auth-sheet', 'auth-overlay', false);
-document.getElementById('nav-add').onclick = () => toggleSheet('upload-sheet', 'upload-overlay', true);
-document.getElementById('upload-overlay').onclick = () => toggleSheet('upload-sheet', 'upload-overlay', false);
 
 // --- Auth Handling ---
 onAuthStateChanged(auth, async (user) => {
@@ -33,113 +31,146 @@ onAuthStateChanged(auth, async (user) => {
         currentUser = user;
         const userRef = ref(db, `users/${user.uid}`);
         const snap = await get(userRef);
-        if (!snap.exists()) await set(userRef, { username: user.email.split('@')[0], photoURL: "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png" });
+        if (!snap.exists()) await set(userRef, { username: user.email.split('@')[0], photoURL: DEFAULT_AVG });
         document.getElementById('auth-screen').style.display = 'none';
-        document.getElementById('main-app').style.display = 'flex';
+        document.getElementById('main-app').style.display = 'block';
         loadFeed();
     } else {
-        document.getElementById('auth-screen').style.display = 'block';
+        document.getElementById('auth-screen').style.display = 'flex';
         document.getElementById('main-app').style.display = 'none';
     }
     lucide.createIcons();
 });
 
-// --- Sequential Multi-Media Upload ---
+// --- View Navigation ---
+const showView = (id) => {
+    document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+    document.getElementById(id).style.display = 'block';
+};
+document.getElementById('nav-home').onclick = () => showView('feed-view');
+document.getElementById('nav-search').onclick = () => showView('search-view');
+document.getElementById('nav-profile').onclick = () => { showView('profile-view'); loadUserProfile(); };
+
+// --- Search Logic ---
+document.getElementById('search-input').oninput = async (e) => {
+    const term = e.target.value.toLowerCase();
+    const results = document.getElementById('search-results');
+    if (!term) return results.innerHTML = "";
+    
+    const usersSnap = await get(ref(db, 'users'));
+    results.innerHTML = "";
+    Object.values(usersSnap.val()).forEach(u => {
+        if (u.username.toLowerCase().includes(term)) {
+            results.innerHTML += `
+                <div class="search-item">
+                    <img src="${u.photoURL || DEFAULT_AVG}" class="avatar">
+                    <span class="username">${u.username}</span>
+                </div>`;
+        }
+    });
+};
+
+// --- Upload Post ---
+const modal = document.getElementById('upload-modal');
+document.getElementById('add-post-btn').onclick = () => modal.style.display = 'block';
+document.getElementById('close-modal').onclick = () => modal.style.display = 'none';
+
 document.getElementById('upload-form').onsubmit = async (e) => {
     e.preventDefault();
-    const btn = document.getElementById('submit-post-btn'), status = document.getElementById('upload-status');
-    const files = document.getElementById('media-files').files;
+    const btn = document.getElementById('submit-post-btn');
     btn.disabled = true;
+    
+    const formData = new FormData();
+    formData.append("file", document.getElementById('image-file').files[0]);
+    formData.append("upload_preset", UPLOAD_PRESET);
 
-    const uploadedMedia = [];
-    for (let i = 0; i < files.length; i++) {
-        status.innerText = `Uploading ${i+1}/${files.length}...`;
-        const formData = new FormData();
-        formData.append("file", files[i]);
-        formData.append("upload_preset", UPLOAD_PRESET);
-        
-        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/upload`, { method: "POST", body: formData });
-        const data = await res.json();
-        uploadedMedia.push({ url: data.secure_url, type: files[i].type.startsWith('video') ? 'video' : 'image' });
-    }
-
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: "POST", body: formData });
+    const imgData = await res.json();
     const userSnap = await get(ref(db, `users/${currentUser.uid}`));
+
     await set(push(ref(db, 'posts')), {
         authorId: currentUser.uid,
         username: userSnap.val().username,
         avatar: userSnap.val().photoURL,
-        media: uploadedMedia,
+        imageUrl: imgData.secure_url,
         caption: document.getElementById('caption').value,
         timestamp: Date.now()
     });
 
-    toggleSheet('upload-sheet', 'upload-overlay', false);
+    modal.style.display = 'none';
     document.getElementById('upload-form').reset();
-    btn.disabled = false; status.innerText = "";
+    btn.disabled = false;
 };
 
-// --- Render Carousel Feed ---
+// --- Load Feed ---
 function loadFeed() {
     onValue(ref(db, 'posts'), (snap) => {
         const feed = document.getElementById('feed');
         feed.innerHTML = "";
         const data = snap.val();
-        if (!data) return;
+        if(!data) return;
 
-        Object.keys(data).reverse().forEach(postId => {
-            const p = data[postId];
-            let mediaHTML = `<div class="carousel">`;
-            p.media.forEach(m => {
-                mediaHTML += (m.type === 'video') 
-                    ? `<video src="${m.url}" class="carousel-item" loop muted autoplay playsinline></video>`
-                    : `<img src="${m.url}" class="carousel-item">`;
-            });
-            mediaHTML += `</div>`;
-
+        Object.keys(data).reverse().forEach(id => {
+            const p = data[id];
+            const likesCount = p.likes ? Object.keys(p.likes).length : 0;
+            const isLiked = p.likes && p.likes[currentUser.uid] ? 'liked-anim' : '';
+            
             feed.innerHTML += `
                 <div class="post-card">
                     <div class="post-header">
                         <img src="${p.avatar}" class="avatar">
                         <div class="header-text">
-                            <span class="username">${p.username}</span>
-                            <div class="post-caption">${p.caption}</div>
+                            <div class="username-row">
+                                <span class="username">${p.username}</span>
+                                <span class="timestamp">• ${timeAgo(p.timestamp)}</span>
+                            </div>
+                            <div class="post-caption-top">${p.caption}</div>
                         </div>
                     </div>
-                    ${mediaHTML}
+                    <img src="${p.imageUrl}" class="post-img">
                     <div class="post-actions">
-                        <i data-lucide="heart" onclick="toggleLike('${postId}', this)"></i>
+                        <i data-lucide="heart" class="${isLiked}" onclick="toggleLike('${id}', this)"></i>
                         <i data-lucide="message-circle"></i>
                     </div>
+                    <div class="likes-count">${likesCount} likes</div>
                 </div>`;
         });
         lucide.createIcons();
     });
 }
 
-// --- Auth Toggle & Action ---
-let isLogin = true;
-document.getElementById('toggle-auth').onclick = () => {
-    isLogin = !isLogin;
-    document.getElementById('auth-title').innerText = isLogin ? "Welcome Back" : "Create Account";
-    document.getElementById('auth-btn').innerText = isLogin ? "Log In" : "Sign Up";
-    document.getElementById('toggle-auth').innerHTML = isLogin ? "New here? <b>Create Account</b>" : "Have an account? <b>Log In</b>";
+window.toggleLike = async (id, el) => {
+    const likeRef = ref(db, `posts/${id}/likes/${currentUser.uid}`);
+    const snap = await get(likeRef);
+    
+    if (snap.exists()) {
+        await set(likeRef, null);
+        el.classList.remove('liked-anim');
+    } else {
+        await set(likeRef, true);
+        el.classList.add('liked-anim');
+    }
 };
+
+async function loadUserProfile() {
+    const userSnap = await get(ref(db, `users/${currentUser.uid}`));
+    document.getElementById('user-profile-img').src = userSnap.val().photoURL;
+    document.getElementById('user-profile-name').innerText = userSnap.val().username;
+
+    onValue(ref(db, 'posts'), (snap) => {
+        const grid = document.getElementById('user-posts-grid');
+        grid.innerHTML = "";
+        const data = snap.val();
+        if(!data) return;
+        Object.values(data).filter(p => p.authorId === currentUser.uid).reverse().forEach(p => {
+            grid.innerHTML += `<img src="${p.imageUrl}">`;
+        });
+    });
+}
 
 document.getElementById('auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const email = document.getElementById('email').value, pass = document.getElementById('password').value;
-    try { isLogin ? await signInWithEmailAndPassword(auth, email, pass) : await createUserWithEmailAndPassword(auth, email, pass); } 
-    catch(err) { alert(err.message); }
+    try { await signInWithEmailAndPassword(auth, email, pass); } catch(e) { await createUserWithEmailAndPassword(auth, email, pass); }
 };
-
 document.getElementById('logout-btn').onclick = () => signOut(auth);
-
-// View Switchers
-document.getElementById('nav-home').onclick = () => { document.querySelectorAll('.view').forEach(v => v.style.display = 'none'); document.getElementById('feed-view').style.display = 'block'; };
-document.getElementById('nav-profile').onclick = () => { document.querySelectorAll('.view').forEach(v => v.style.display = 'none'); document.getElementById('profile-view').style.display = 'block'; loadUserProfile(); };
-
-window.toggleLike = async (id, el) => {
-    const r = ref(db, `posts/${id}/likes/${currentUser.uid}`);
-    const s = await get(r);
-    await set(r, s.exists() ? null : true);
-};
