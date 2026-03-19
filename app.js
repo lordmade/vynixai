@@ -21,6 +21,7 @@ const DEFAULT_AVATAR = "https://abs.twimg.com/sticky/default_profile_images/defa
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
+
 let currentUser = null;
 let currentUsername = null;
 let currentAvatar = null;
@@ -46,14 +47,11 @@ const escapeHtml = (text) => {
 const showToast = (message, duration = 3000) => {
     const existing = document.querySelector('.toast');
     if (existing) existing.remove();
-    
     const toast = document.createElement('div');
     toast.className = 'toast';
     toast.textContent = message;
     document.body.appendChild(toast);
-    
     requestAnimationFrame(() => toast.classList.add('show'));
-    
     setTimeout(() => {
         toast.classList.remove('show');
         setTimeout(() => toast.remove(), 300);
@@ -69,15 +67,12 @@ const setLoading = (btn, isLoading, text = 'Loading...') => {
 onAuthStateChanged(auth, async (user) => {
     if (user) {
         currentUser = user;
-        
-        // Get or create user data
         const userRef = ref(db, `users/${user.uid}`);
         const snap = await get(userRef);
-        
         if (!snap.exists()) {
             const username = user.email.split('@')[0];
-            await set(userRef, { 
-                username: username, 
+            await set(userRef, {
+                username: username,
                 photoURL: DEFAULT_AVATAR,
                 email: user.email,
                 createdAt: Date.now()
@@ -89,12 +84,8 @@ onAuthStateChanged(auth, async (user) => {
             currentUsername = data.username;
             currentAvatar = data.photoURL || DEFAULT_AVATAR;
         }
-        
-        // Show main app
         document.getElementById('auth-screen').style.display = 'none';
         document.getElementById('main-app').style.display = 'block';
-        
-        // Initialize
         showView('feed-view');
         loadFeed();
         lucide.createIcons();
@@ -102,31 +93,24 @@ onAuthStateChanged(auth, async (user) => {
         currentUser = null;
         currentUsername = null;
         currentAvatar = null;
-        
-        // Cleanup listeners
         if (feedUnsubscribe) feedUnsubscribe();
         if (profileUnsubscribe) profileUnsubscribe();
-        
-        // Show auth screen
         document.getElementById('auth-screen').style.display = 'flex';
         document.getElementById('main-app').style.display = 'none';
         lucide.createIcons();
     }
 });
 
-// Auth form handling
+// Auth form handling (unchanged)
 document.getElementById('auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const btn = document.getElementById('auth-btn');
     const errorMsg = document.getElementById('auth-error');
-    
     const email = document.getElementById('email').value.trim();
     const password = document.getElementById('password').value;
     const isSignUp = btn.textContent === 'Sign Up';
-    
     setLoading(btn, true);
     errorMsg.textContent = '';
-    
     try {
         if (isSignUp) {
             await createUserWithEmailAndPassword(auth, email, password);
@@ -147,19 +131,16 @@ document.getElementById('auth-form').onsubmit = async (e) => {
     }
 };
 
-// Toggle auth mode
 document.getElementById('toggle-auth').onclick = () => {
     const btn = document.getElementById('auth-btn');
     const toggle = document.getElementById('toggle-auth');
     const isSignUp = btn.textContent === 'Log In';
-    
     btn.textContent = isSignUp ? 'Sign Up' : 'Log In';
-    toggle.innerHTML = isSignUp 
-        ? 'Already have an account? <b>Log in</b>' 
+    toggle.innerHTML = isSignUp
+        ? 'Already have an account? <b>Log in</b>'
         : 'Don\'t have an account? <b>Sign up</b>';
 };
 
-// Logout
 document.getElementById('logout-btn').onclick = () => {
     signOut(auth);
     showToast('Logged out successfully');
@@ -167,32 +148,22 @@ document.getElementById('logout-btn').onclick = () => {
 
 // ==================== NAVIGATION ====================
 const showView = (viewId) => {
-    // Hide all views
     document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
-    
-    // Show selected view
     document.getElementById(viewId).style.display = 'block';
-    
-    // Update nav icons
     document.querySelectorAll('.bottom-nav i').forEach(icon => {
         icon.classList.remove('nav-active');
         icon.style.color = 'var(--text-grey)';
     });
-    
-    // Set active nav icon
     const activeMap = {
         'feed-view': 'nav-home',
         'search-view': 'nav-search',
         'profile-view': 'nav-profile'
     };
-    
     const activeIcon = document.getElementById(activeMap[viewId]);
     if (activeIcon) {
         activeIcon.classList.add('nav-active');
         activeIcon.style.color = 'var(--text-main)';
     }
-    
-    // Cleanup listeners when leaving views
     if (viewId !== 'feed-view' && feedUnsubscribe) {
         feedUnsubscribe();
         feedUnsubscribe = null;
@@ -201,11 +172,8 @@ const showView = (viewId) => {
         profileUnsubscribe();
         profileUnsubscribe = null;
     }
-    
-    // Load view data
     if (viewId === 'feed-view') loadFeed();
     if (viewId === 'profile-view') loadUserProfile();
-    
     lucide.createIcons();
 };
 
@@ -217,28 +185,23 @@ document.getElementById('nav-profile').onclick = () => showView('profile-view');
 function loadFeed() {
     const feed = document.getElementById('feed');
     const empty = document.getElementById('feed-empty');
-    
-    // Cleanup existing listener
     if (feedUnsubscribe) feedUnsubscribe();
-    
     feedUnsubscribe = onValue(ref(db, 'posts'), (snap) => {
         feed.innerHTML = '';
         const data = snap.val();
-        
         if (!data) {
             empty.style.display = 'block';
             return;
         }
-        
         empty.style.display = 'none';
         const posts = Object.entries(data).reverse();
-        
         posts.forEach(([id, post]) => {
             const likesCount = post.likes ? Object.keys(post.likes).length : 0;
-            const isLiked = post.likes && post.likes[currentUser.uid];
+            const isLiked = post.likes && post.likes[currentUser?.uid];
             const comments = post.comments ? Object.values(post.comments) : [];
             const commentsCount = comments.length;
-            
+            const isVideo = post.imageUrl?.match(/\.(mp4|webm|mov|avi)$/i) || false;
+
             const postEl = document.createElement('div');
             postEl.className = 'post-card';
             postEl.innerHTML = `
@@ -252,7 +215,11 @@ function loadFeed() {
                         <div class="post-caption-top">${escapeHtml(post.caption || '')}</div>
                     </div>
                 </div>
-                <img src="${escapeHtml(post.imageUrl)}" class="post-img" alt="Post" onclick="openLightbox('${escapeHtml(post.imageUrl)}')">
+                ${isVideo ? `
+                    <video src="${escapeHtml(post.imageUrl)}" class="post-video" controls preload="metadata" onclick="openLightbox('${escapeHtml(post.imageUrl)}', true)"></video>
+                ` : `
+                    <img src="${escapeHtml(post.imageUrl)}" class="post-img" alt="Post" onclick="openLightbox('${escapeHtml(post.imageUrl)}', false)">
+                `}
                 <div class="post-actions">
                     <i data-lucide="heart" class="${isLiked ? 'liked-anim' : ''}" onclick="toggleLike('${id}', this)" style="${isLiked ? 'color: #ed4956; fill: #ed4956;' : ''}"></i>
                     <i data-lucide="message-circle" onclick="focusComment('${id}')"></i>
@@ -284,18 +251,15 @@ function loadFeed() {
             `;
             feed.appendChild(postEl);
         });
-        
         lucide.createIcons();
     });
 }
 
-// ==================== LIKES ====================
+// ==================== LIKES / COMMENTS / SEARCH / PROFILE (unchanged) ====================
 window.toggleLike = async (postId, el) => {
     if (!currentUser) return;
-    
     const likeRef = ref(db, `posts/${postId}/likes/${currentUser.uid}`);
     const snap = await get(likeRef);
-    
     try {
         if (snap.exists()) {
             await remove(likeRef);
@@ -313,18 +277,13 @@ window.toggleLike = async (postId, el) => {
     }
 };
 
-// ==================== COMMENTS ====================
 window.addComment = async (postId) => {
     if (!currentUser) return;
-    
     const input = document.getElementById(`comment-${postId}`);
     const submitBtn = document.getElementById(`submit-comment-${postId}`);
     const text = input.value.trim();
-    
     if (!text) return;
-    
     submitBtn.disabled = true;
-    
     try {
         await push(ref(db, `posts/${postId}/comments`), {
             username: currentUsername,
@@ -346,35 +305,27 @@ window.focusComment = (postId) => {
 };
 
 window.viewAllComments = (postId) => {
-    // Could open a modal with all comments
     showToast('Comments modal coming soon');
 };
 
-// ==================== SEARCH ====================
 const searchInput = document.getElementById('search-input');
 const searchResults = document.getElementById('search-results');
 const searchEmpty = document.getElementById('search-empty');
 
 searchInput.oninput = async (e) => {
     const term = e.target.value.toLowerCase().trim();
-    
     if (!term) {
         searchResults.innerHTML = '';
         searchEmpty.style.display = 'block';
         return;
     }
-    
     searchEmpty.style.display = 'none';
-    
     try {
         const usersSnap = await get(ref(db, 'users'));
         searchResults.innerHTML = '';
-        
         if (!usersSnap.exists()) return;
-        
         const users = Object.entries(usersSnap.val());
         let found = false;
-        
         users.forEach(([uid, user]) => {
             if (user.username.toLowerCase().includes(term) && uid !== currentUser?.uid) {
                 found = true;
@@ -388,7 +339,6 @@ searchInput.oninput = async (e) => {
                 searchResults.appendChild(item);
             }
         });
-        
         if (!found) {
             searchResults.innerHTML = '<div class="empty-state"><p>No users found</p></div>';
         }
@@ -401,54 +351,46 @@ window.viewUserProfile = (userId) => {
     showToast('User profiles coming soon');
 };
 
-// ==================== PROFILE ====================
 async function loadUserProfile() {
     if (!currentUser) return;
-    
-    // Cleanup existing listener
     if (profileUnsubscribe) profileUnsubscribe();
-    
-    // Load user info
     document.getElementById('user-profile-img').src = currentAvatar;
     document.getElementById('user-profile-name').textContent = currentUsername;
-    
-    // Load posts
     const grid = document.getElementById('user-posts-grid');
     const empty = document.getElementById('profile-empty');
-    
     profileUnsubscribe = onValue(ref(db, 'posts'), (snap) => {
         grid.innerHTML = '';
         const data = snap.val();
-        
         if (!data) {
             empty.style.display = 'block';
             document.getElementById('posts-count').textContent = '0';
             return;
         }
-        
         const userPosts = Object.values(data).filter(p => p.authorId === currentUser.uid).reverse();
-        
         document.getElementById('posts-count').textContent = userPosts.length;
-        
         if (userPosts.length === 0) {
             empty.style.display = 'block';
         } else {
             empty.style.display = 'none';
             userPosts.forEach(post => {
-                const img = document.createElement('img');
-                img.src = post.imageUrl;
-                img.alt = 'Post';
-                img.onclick = () => openLightbox(post.imageUrl);
-                grid.appendChild(img);
+                const isVideo = post.imageUrl?.match(/\.(mp4|webm|mov|avi)$/i) || false;
+                const media = isVideo
+                    ? `<video src="${post.imageUrl}" style="width:100%;height:100%;object-fit:cover;" muted></video>`
+                    : `<img src="${post.imageUrl}" alt="Post" style="width:100%;height:100%;object-fit:cover;">`;
+                const el = document.createElement('div');
+                el.innerHTML = media;
+                el.querySelector(isVideo ? 'video' : 'img').onclick = () => openLightbox(post.imageUrl, isVideo);
+                grid.appendChild(el);
             });
         }
     });
 }
 
-// ==================== BOTTOM SHEET MODAL ====================
+// ==================== BOTTOM SHEET MODAL - VIDEO SUPPORT ====================
 const modal = document.getElementById('upload-modal');
 const previewContainer = document.getElementById('preview-container');
 const previewImg = document.getElementById('preview-img');
+const previewVideo = document.getElementById('preview-video');
 const imageInput = document.getElementById('image-file');
 const changeImageBtn = document.getElementById('change-image');
 const captionInput = document.getElementById('caption');
@@ -457,14 +399,12 @@ const uploadLoading = document.getElementById('upload-loading');
 const submitBtn = document.getElementById('submit-post-btn');
 const dragHandle = document.getElementById('modal-drag-handle');
 
-// Open modal
 document.getElementById('add-post-btn').onclick = () => {
     modal.style.display = 'flex';
     requestAnimationFrame(() => modal.classList.add('active'));
     loadCurrentUserInfo();
 };
 
-// Close modal
 function closeModal() {
     modal.classList.remove('active');
     setTimeout(() => {
@@ -475,14 +415,11 @@ function closeModal() {
 
 document.getElementById('close-modal').onclick = closeModal;
 
-// Close on backdrop click
 modal.onclick = (e) => {
     if (e.target === modal) closeModal();
 };
 
-// Drag to dismiss
 let startY = 0, currentY = 0, isDragging = false;
-
 dragHandle.addEventListener('touchstart', handleDragStart, { passive: true });
 dragHandle.addEventListener('touchmove', handleDragMove, { passive: true });
 dragHandle.addEventListener('touchend', handleDragEnd);
@@ -510,7 +447,6 @@ function handleDragEnd() {
     isDragging = false;
     const diff = currentY - startY;
     modal.querySelector('.modal-content').style.transition = 'transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)';
-    
     if (diff > 100) {
         closeModal();
     } else {
@@ -518,49 +454,58 @@ function handleDragEnd() {
     }
 }
 
-// Image preview
+// ── VIDEO + IMAGE PREVIEW ────────────────────────────────────────────────
 imageInput.onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
-    if (file.size > 10 * 1024 * 1024) {
-        showToast('Image must be less than 10MB');
+
+    // Optional: stricter size limit for videos
+    if (file.size > 30 * 1024 * 1024) {
+        showToast('File must be less than 30MB');
         return;
     }
-    
+
+    const isVideoFile = file.type.startsWith('video/');
+
     const reader = new FileReader();
-    reader.onload = (e) => {
-        previewImg.src = e.target.result;
+    reader.onload = (ev) => {
+        if (isVideoFile) {
+            previewVideo.src = ev.target.result;
+            previewVideo.style.display = 'block';
+            previewImg.style.display = 'none';
+        } else {
+            previewImg.src = ev.target.result;
+            previewImg.style.display = 'block';
+            previewVideo.style.display = 'none';
+        }
         previewContainer.classList.add('has-image');
     };
     reader.readAsDataURL(file);
 };
 
-// Change image
 changeImageBtn.onclick = () => imageInput.click();
 
-// Character count
 captionInput.oninput = () => {
     const count = captionInput.value.length;
     charCount.textContent = `${count}/2200`;
-    
     charCount.classList.remove('warning', 'error');
     if (count > 2000) charCount.classList.add('error');
     else if (count > 1800) charCount.classList.add('warning');
 };
 
-// Load current user info
 async function loadCurrentUserInfo() {
     if (!currentUser) return;
     document.getElementById('current-user-name').textContent = currentUsername;
     document.getElementById('current-user-avatar').src = currentAvatar;
 }
 
-// Reset form
 function resetForm() {
     document.getElementById('upload-form').reset();
     previewContainer.classList.remove('has-image');
     previewImg.src = '';
+    previewVideo.src = '';
+    previewImg.style.display = 'none';
+    previewVideo.style.display = 'none';
     charCount.textContent = '0/2200';
     charCount.classList.remove('warning', 'error');
     uploadLoading.classList.remove('active');
@@ -568,39 +513,40 @@ function resetForm() {
     submitBtn.textContent = 'Share';
 }
 
-// Upload submission
+// Upload submission - supports both image & video
 document.getElementById('upload-form').onsubmit = async (e) => {
     e.preventDefault();
-    
-    if (!imageInput.files[0]) {
-        showToast('Please select an image');
+    const file = imageInput.files[0];
+    if (!file) {
+        showToast('Please select a photo or video');
         return;
     }
-    
+
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sharing...';
     uploadLoading.classList.add('active');
-    
+
     try {
         const formData = new FormData();
-        formData.append("file", imageInput.files[0]);
+        formData.append("file", file);
         formData.append("upload_preset", UPLOAD_PRESET);
 
-        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { 
-            method: "POST", 
-            body: formData 
+        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, {
+            method: "POST",
+            body: formData
         });
-        
+
         if (!res.ok) throw new Error('Upload failed');
-        
-        const imgData = await res.json();
+
+        const data = await res.json();
+        const mediaUrl = data.secure_url;
 
         await set(push(ref(db, 'posts')), {
             authorId: currentUser.uid,
             username: currentUsername,
             avatar: currentAvatar,
-            imageUrl: imgData.secure_url,
-            caption: captionInput.value,
+            imageUrl: mediaUrl,           // now can be image OR video
+            caption: captionInput.value.trim(),
             timestamp: Date.now(),
             likes: {}
         });
@@ -616,33 +562,46 @@ document.getElementById('upload-form').onsubmit = async (e) => {
     }
 };
 
-// ==================== LIGHTBOX ====================
+// ==================== LIGHTBOX - VIDEO SUPPORT ====================
 const lightbox = document.getElementById('lightbox-modal');
 const lightboxImg = document.getElementById('lightbox-img');
+const lightboxVideo = document.getElementById('lightbox-video');
 
-window.openLightbox = (src) => {
-    lightboxImg.src = src;
+window.openLightbox = (src, isVideo = false) => {
+    if (isVideo) {
+        lightboxVideo.src = src;
+        lightboxVideo.style.display = 'block';
+        lightboxImg.style.display = 'none';
+        lightboxVideo.play().catch(() => {});
+    } else {
+        lightboxImg.src = src;
+        lightboxImg.style.display = 'block';
+        lightboxVideo.style.display = 'none';
+        lightboxVideo.pause();
+    }
     lightbox.classList.add('active');
     document.body.style.overflow = 'hidden';
 };
 
 document.getElementById('lightbox-close').onclick = () => {
     lightbox.classList.remove('active');
+    lightboxVideo.pause();
     document.body.style.overflow = '';
 };
 
 lightbox.onclick = (e) => {
     if (e.target === lightbox) {
         lightbox.classList.remove('active');
+        lightboxVideo.pause();
         document.body.style.overflow = '';
     }
 };
 
-// Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         if (lightbox.classList.contains('active')) {
             lightbox.classList.remove('active');
+            lightboxVideo.pause();
             document.body.style.overflow = '';
         }
         if (modal.classList.contains('active')) {
@@ -652,9 +611,8 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ==================== INITIALIZE ====================
-// Store original button texts
 document.querySelectorAll('button').forEach(btn => {
     btn.dataset.originalText = btn.textContent;
 });
 
-console.log('ONA App initialized');
+console.log('ONA App initialized with video support');
