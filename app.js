@@ -2,7 +2,6 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import { getDatabase, ref, push, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-// --- Configs ---
 const firebaseConfig = {
     apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
     authDomain: "fire-b-a8878.firebaseapp.com",
@@ -12,33 +11,27 @@ const firebaseConfig = {
     messagingSenderId: "658673187627",
     appId: "1:658673187627:web:6e4c29af661785f0afa36e"
 };
-const CLOUD_NAME = "dqkujefxj";
-const UPLOAD_PRESET = "banter_box";
-const DEFAULT_AVG = "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
+const CLOUD_NAME = "dqkujefxj", UPLOAD_PRESET = "banter_box", DEFAULT_AVG = "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getDatabase(app);
+const app = initializeApp(firebaseConfig), auth = getAuth(app), db = getDatabase(app);
 let currentUser = null;
 
-// --- Helper: Time Ago ---
-function timeAgo(ts) {
+// --- Time Format ---
+const timeAgo = (ts) => {
     const s = Math.floor((new Date() - new Date(ts)) / 1000);
     if (s < 60) return "just now";
     if (s < 3600) return Math.floor(s/60) + "m";
     if (s < 86400) return Math.floor(s/3600) + "h";
     return Math.floor(s/86400) + "d";
-}
+};
 
-// --- Auth State Logic ---
+// --- Auth Handling ---
 onAuthStateChanged(auth, async (user) => {
     if (user) {
         currentUser = user;
         const userRef = ref(db, `users/${user.uid}`);
-        const snapshot = await get(userRef);
-        if (!snapshot.exists()) {
-            await set(userRef, { username: user.email.split('@')[0], photoURL: DEFAULT_AVG });
-        }
+        const snap = await get(userRef);
+        if (!snap.exists()) await set(userRef, { username: user.email.split('@')[0], photoURL: DEFAULT_AVG });
         document.getElementById('auth-screen').style.display = 'none';
         document.getElementById('main-app').style.display = 'block';
         loadFeed();
@@ -49,37 +42,35 @@ onAuthStateChanged(auth, async (user) => {
     lucide.createIcons();
 });
 
-// --- Auth Form (Login/Signup) ---
-let isLogin = true;
-document.getElementById('toggle-auth').onclick = () => {
-    isLogin = !isLogin;
-    document.getElementById('auth-btn').innerText = isLogin ? "Log In" : "Sign Up";
-    document.getElementById('toggle-auth').innerHTML = isLogin ? "Don't have an account? <b>Sign up</b>" : "Have an account? <b>Log in</b>";
+// --- View Navigation ---
+const showView = (id) => {
+    document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+    document.getElementById(id).style.display = 'block';
+};
+document.getElementById('nav-home').onclick = () => showView('feed-view');
+document.getElementById('nav-search').onclick = () => showView('search-view');
+document.getElementById('nav-profile').onclick = () => { showView('profile-view'); loadUserProfile(); };
+
+// --- Search Logic ---
+document.getElementById('search-input').oninput = async (e) => {
+    const term = e.target.value.toLowerCase();
+    const results = document.getElementById('search-results');
+    if (!term) return results.innerHTML = "";
+    
+    const usersSnap = await get(ref(db, 'users'));
+    results.innerHTML = "";
+    Object.values(usersSnap.val()).forEach(u => {
+        if (u.username.toLowerCase().includes(term)) {
+            results.innerHTML += `
+                <div class="search-item">
+                    <img src="${u.photoURL || DEFAULT_AVG}" class="avatar">
+                    <span class="username">${u.username}</span>
+                </div>`;
+        }
+    });
 };
 
-document.getElementById('auth-form').onsubmit = async (e) => {
-    e.preventDefault();
-    const email = document.getElementById('email').value;
-    const pass = document.getElementById('password').value;
-    try {
-        isLogin ? await signInWithEmailAndPassword(auth, email, pass) : await createUserWithEmailAndPassword(auth, email, pass);
-    } catch (err) { document.getElementById('auth-error').innerText = err.message; }
-};
-
-document.getElementById('logout-btn').onclick = () => signOut(auth);
-
-// --- Navigation ---
-document.getElementById('nav-home').onclick = () => {
-    document.getElementById('feed-view').style.display = 'block';
-    document.getElementById('profile-view').style.display = 'none';
-};
-document.getElementById('nav-profile').onclick = () => {
-    document.getElementById('feed-view').style.display = 'none';
-    document.getElementById('profile-view').style.display = 'block';
-    loadUserProfile();
-};
-
-// --- Post & Upload ---
+// --- Upload Post ---
 const modal = document.getElementById('upload-modal');
 document.getElementById('add-post-btn').onclick = () => modal.style.display = 'block';
 document.getElementById('close-modal').onclick = () => modal.style.display = 'none';
@@ -87,24 +78,20 @@ document.getElementById('close-modal').onclick = () => modal.style.display = 'no
 document.getElementById('upload-form').onsubmit = async (e) => {
     e.preventDefault();
     const btn = document.getElementById('submit-post-btn');
-    const file = document.getElementById('image-file').files[0];
-    const status = document.getElementById('upload-status');
-    btn.disabled = true; status.innerText = "Sharing...";
-
+    btn.disabled = true;
+    
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append("file", document.getElementById('image-file').files[0]);
     formData.append("upload_preset", UPLOAD_PRESET);
 
     const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: "POST", body: formData });
     const imgData = await res.json();
-
     const userSnap = await get(ref(db, `users/${currentUser.uid}`));
-    const userData = userSnap.val();
 
     await set(push(ref(db, 'posts')), {
         authorId: currentUser.uid,
-        username: userData.username,
-        avatar: userData.photoURL,
+        username: userSnap.val().username,
+        avatar: userSnap.val().photoURL,
         imageUrl: imgData.secure_url,
         caption: document.getElementById('caption').value,
         timestamp: Date.now()
@@ -112,46 +99,63 @@ document.getElementById('upload-form').onsubmit = async (e) => {
 
     modal.style.display = 'none';
     document.getElementById('upload-form').reset();
-    btn.disabled = false; status.innerText = "";
+    btn.disabled = false;
 };
 
-// --- Load Content ---
+// --- Load Feed ---
 function loadFeed() {
     onValue(ref(db, 'posts'), (snap) => {
         const feed = document.getElementById('feed');
         feed.innerHTML = "";
         const data = snap.val();
-        if(!data) return feed.innerHTML = '<p class="status-text">No posts yet.</p>';
+        if(!data) return;
 
         Object.keys(data).reverse().forEach(id => {
             const p = data[id];
             const likesCount = p.likes ? Object.keys(p.likes).length : 0;
-            const isLiked = p.likes && p.likes[currentUser.uid] ? 'fill="red" stroke="red"' : '';
+            const isLiked = p.likes && p.likes[currentUser.uid] ? 'liked-anim' : '';
             
             feed.innerHTML += `
                 <div class="post-card">
                     <div class="post-header">
                         <img src="${p.avatar}" class="avatar">
-                        <div class="header-info"><span class="username">${p.username}</span><span class="timestamp">• ${timeAgo(p.timestamp)}</span></div>
+                        <div class="header-text">
+                            <div class="username-row">
+                                <span class="username">${p.username}</span>
+                                <span class="timestamp">• ${timeAgo(p.timestamp)}</span>
+                            </div>
+                            <div class="post-caption-top">${p.caption}</div>
+                        </div>
                     </div>
                     <img src="${p.imageUrl}" class="post-img">
                     <div class="post-actions">
-                        <i data-lucide="heart" onclick="toggleLike('${id}')" ${isLiked}></i>
+                        <i data-lucide="heart" class="${isLiked}" onclick="toggleLike('${id}', this)"></i>
                         <i data-lucide="message-circle"></i>
                     </div>
-                    <div class="post-content"><b>${likesCount} likes</b><br><b>${p.username}</b> ${p.caption}</div>
-                </div>
-            `;
+                    <div class="likes-count">${likesCount} likes</div>
+                </div>`;
         });
         lucide.createIcons();
     });
 }
 
+window.toggleLike = async (id, el) => {
+    const likeRef = ref(db, `posts/${id}/likes/${currentUser.uid}`);
+    const snap = await get(likeRef);
+    
+    if (snap.exists()) {
+        await set(likeRef, null);
+        el.classList.remove('liked-anim');
+    } else {
+        await set(likeRef, true);
+        el.classList.add('liked-anim');
+    }
+};
+
 async function loadUserProfile() {
     const userSnap = await get(ref(db, `users/${currentUser.uid}`));
-    const userData = userSnap.val();
-    document.getElementById('user-profile-img').src = userData.photoURL;
-    document.getElementById('user-profile-name').innerText = userData.username;
+    document.getElementById('user-profile-img').src = userSnap.val().photoURL;
+    document.getElementById('user-profile-name').innerText = userSnap.val().username;
 
     onValue(ref(db, 'posts'), (snap) => {
         const grid = document.getElementById('user-posts-grid');
@@ -164,8 +168,9 @@ async function loadUserProfile() {
     });
 }
 
-window.toggleLike = async (id) => {
-    const likeRef = ref(db, `posts/${id}/likes/${currentUser.uid}`);
-    const snap = await get(likeRef);
-    await set(likeRef, snap.exists() ? null : true);
+document.getElementById('auth-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('email').value, pass = document.getElementById('password').value;
+    try { await signInWithEmailAndPassword(auth, email, pass); } catch(e) { await createUserWithEmailAndPassword(auth, email, pass); }
 };
+document.getElementById('logout-btn').onclick = () => signOut(auth);
