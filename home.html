@@ -2896,7 +2896,8 @@
  <script type="module">
    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
    import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
-   import { getDatabase, ref, push, set, onChildAdded, onValue, get, runTransaction, remove, off, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-database.js";
+   import { getDatabase, ref, push, set, onChildAdded, onValue, get, runTransaction, remove, off, query, orderByChild, limitToLast, endBefore } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-database.js";
+   
    const firebaseConfig = {
      apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
      authDomain: "fire-b-a8878.firebaseapp.com",
@@ -2907,17 +2908,18 @@
      appId: "1:658673187627:web:6e4c29af661785f0afa36e",
      measurementId: "G-V4W97VMSKL"
    };
+   
    const CLOUD_NAME = "dqkujefxj";
    const UPLOAD_PRESET = "banter_box";
    const app = initializeApp(firebaseConfig);
    const auth = getAuth(app);
    const db = getDatabase(app);
+   
    let currentUser = null;
    let currentUsername = null;
    let isProfileLoading = false;
    let activePostIdForComments = null;
    let currentDeletePost = { key: null, element: null };
-   let allPosts = [];
    let feedMode = 'forYou';
    let selectedMedia = null;
    let selectedMediaType = null;
@@ -2926,30 +2928,36 @@
    let unreadNotifications = 0;
    let unreadMessages = 0;
    let verifiedUsers = new Set();
-   // Infinite Scroll State
+   
+   // Pagination State - Key for not loading all posts
    let displayedPosts = [];
    let isLoadingMore = false;
    let hasMorePosts = true;
-   let currentPage = 0;
+   let lastPostTimestamp = null;
+   let firstPostTimestamp = null;
    const POSTS_PER_PAGE = 10;
+   
    let intersectionObserver = null;
    let currentModalPost = null;
    let currentModalVideo = null;
    const postListeners = new Map();
    const commentListeners = new Map();
+   
    // Video Intersection Observer for autoplay
    let videoObserver = null;
+   
    // Enhanced Algorithm Weights
    const ALGORITHM_WEIGHTS = {
      likes: 1,
      comments: 3,
      recency: 6,
      gravity: 1.8,
-     verified: 2.5, // Boost for verified users
-     following: 1.8, // Boost for followed users
-     media: 1.3, // Boost for posts with media
-     randomization: 0.15 // Random factor (0-1)
+     verified: 2.5,
+     following: 1.8,
+     media: 1.3,
+     randomization: 0.15
    };
+   
    const feedStream = document.getElementById('feed-stream');
    const loadingOverlay = document.getElementById('loading-overlay');
    const sheetOverlay = document.getElementById('sheet-overlay');
@@ -2984,12 +2992,14 @@
    const uploadProgressPercent = document.getElementById('upload-progress-percent');
    const suggestedFriendsSection = document.getElementById('suggested-friends-section');
    const suggestedFriendsScroll = document.getElementById('suggested-friends-scroll');
+   
    const avatarCache = new Map();
    const usernameCache = new Map();
-  const displayNameCache = new Map();
+   const displayNameCache = new Map();
    const defaultAvatar = "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png";
    let alertCallback = null;
-   // Sample Ads Data (will be replaced with dashboard management)
+   
+   // Sample Ads Data
    const sampleAds = [
      {
        id: 'ad_1',
@@ -3019,12 +3029,14 @@
        link: '#'
      }
    ];
+   
    window.handleAlertClick = function() {
      if (alertCallback) {
        alertCallback();
        hideNotificationAlert();
      }
    }
+   
    // Initialize Video Intersection Observer for autoplay
    function initVideoObserver() {
      if (videoObserver) {
@@ -3033,34 +3045,31 @@
      const options = {
        root: null,
        rootMargin: '0px',
-       threshold: 0.7 // 70% visible to autoplay
+       threshold: 0.7
      };
      videoObserver = new IntersectionObserver((entries) => {
        entries.forEach(entry => {
          const video = entry.target;
          const container = video.closest('.video-container');
          if (entry.isIntersecting) {
-           // Video is in focus - play it (muted for autoplay policy)
            video.muted = true;
            video.play().then(() => {
-             // Show autoplay indicator
              showVideoIndicator(container, 'Playing');
            }).catch(e => {
              console.log('Autoplay prevented:', e);
              showVideoIndicator(container, 'Click to play');
            });
          } else {
-           // Video is out of focus - pause it
            video.pause();
            hideVideoIndicator(container);
          }
        });
      }, options);
-     // Observe all video containers
      document.querySelectorAll('.video-container video').forEach(video => {
        videoObserver.observe(video);
      });
    }
+   
    function showVideoIndicator(container, text) {
      let indicator = container.querySelector('.video-autoplay-indicator');
      if (!indicator) {
@@ -3070,46 +3079,43 @@
      }
      indicator.innerHTML = `<i data-feather="play-circle" style="width:12px;height:12px;"></i> ${text}`;
      feather.replace();
-     // Hide after 2 seconds
      setTimeout(() => {
        if (indicator) indicator.style.opacity = '0';
      }, 2000);
    }
+   
    function hideVideoIndicator(container) {
      const indicator = container.querySelector('.video-autoplay-indicator');
      if (indicator) {
        indicator.style.opacity = '0';
      }
    }
-   // Show upload progress
+   
    function showUploadProgress() {
      uploadProgress.classList.add('show');
      uploadProgressFill.style.width = '0%';
      uploadProgressPercent.textContent = '0%';
      uploadProgressStatus.textContent = 'Preparing...';
    }
+   
    function updateUploadProgress(percent, status) {
      uploadProgressFill.style.width = `${percent}%`;
      uploadProgressPercent.textContent = `${Math.round(percent)}%`;
      if (status) uploadProgressStatus.textContent = status;
    }
+   
    function hideUploadProgress() {
      uploadProgress.classList.remove('show');
    }
-   // Enhanced Algorithm with Verification Priority and Randomization
+   
    function calculatePostScore(post, mode = 'forYou') {
      const hoursAgo = (Date.now() - post.timestamp) / (1000 * 60 * 60);
      const engagement = (post.likes || 0) + ((post.commentCount || 0) * ALGORITHM_WEIGHTS.comments);
      const timeDecay = Math.pow(hoursAgo + 2, ALGORITHM_WEIGHTS.gravity);
-     // Verified user boost
      const verifiedBoost = post.isVerified ? ALGORITHM_WEIGHTS.verified : 1;
-     // Following boost - ONLY apply in 'forYou' mode, not in 'latest' mode
      const followingBoost = (mode === 'forYou' && followingList.has(post.uid)) ? ALGORITHM_WEIGHTS.following : 1;
-     // Media boost
      const mediaBoost = (post.mediaUrls && post.mediaUrls.length > 0) || post.mediaUrl ? ALGORITHM_WEIGHTS.media : 1;
-     // Randomization factor (prevents same order every time)
      const randomFactor = 1 + (Math.random() * ALGORITHM_WEIGHTS.randomization * 2 - ALGORITHM_WEIGHTS.randomization);
-     // Calculate final score
      const score = (engagement / timeDecay) * verifiedBoost * followingBoost * mediaBoost * randomFactor;
      return {
        score: score,
@@ -3123,13 +3129,14 @@
        }
      };
    }
+   
    async function getUserInfo(uid) {
      const cachedAvatar = avatarCache.get(uid);
      const cachedUsername = usernameCache.get(uid);
      const cachedDisplayName = displayNameCache.get(uid);
      const cachedVerified = verifiedUsers.has(uid);
+     
      if (cachedAvatar && cachedUsername) {
-       // Get cached verified type if available
        const userRef = ref(db, `users/${uid}`);
        const snapshot = await get(userRef);
        let verifiedType = 'standard';
@@ -3145,6 +3152,7 @@
          verifiedType: verifiedType
        };
      }
+     
      try {
        const userRef = ref(db, `users/${uid}`);
        const snapshot = await get(userRef);
@@ -3154,12 +3162,15 @@
          const username = userData.username || 'user_' + uid.substr(0, 6);
          const displayName = userData.displayName || username;
          const verifiedType = userData.verifiedType || 'standard';
+         
          avatarCache.set(uid, avatarUrl);
          usernameCache.set(uid, username);
          displayNameCache.set(uid, displayName);
+         
          if (userData.verified) {
            verifiedUsers.add(uid);
          }
+         
          return {
            avatar: avatarUrl,
            username: username,
@@ -3172,6 +3183,7 @@
      } catch (err) {
        console.error("Error fetching user info:", err);
      }
+     
      return {
        avatar: defaultAvatar,
        username: 'unknown',
@@ -3181,6 +3193,7 @@
        verifiedType: 'standard'
      };
    }
+   
    function showNotificationAlert(title, text, avatar, onClick) {
      const alert = document.getElementById('notification-alert');
      document.getElementById('alert-title').textContent = title;
@@ -3192,11 +3205,13 @@
        hideNotificationAlert();
      }, 5000);
    }
+   
    window.hideNotificationAlert = function(e) {
      if (e) e.stopPropagation();
      document.getElementById('notification-alert').classList.remove('show');
      alertCallback = null;
    }
+   
    // Initialize Intersection Observer for Infinite Scroll
    function initInfiniteScroll() {
      if (intersectionObserver) {
@@ -3216,87 +3231,121 @@
      }, options);
      intersectionObserver.observe(scrollSentinel);
    }
-   // Load More Posts (Infinite Scroll)
+   
+   // Load More Posts (Paginated - Only loads 10 at a time)
    async function loadMorePosts() {
      if (isLoadingMore || !hasMorePosts) return;
+     
      isLoadingMore = true;
      infiniteLoader.classList.remove('hidden');
+     
      try {
-       await new Promise(resolve => setTimeout(resolve, 500));
-       const startIndex = currentPage * POSTS_PER_PAGE;
-       // Get posts that haven't been displayed yet
-       const remainingPosts = allPosts.filter(post =>
-         !displayedPosts.some(dp => dp.key === post.key)
-       );
-       if (remainingPosts.length === 0) {
+       await new Promise(resolve => setTimeout(resolve, 500)); // Debounce
+       
+       const postsRef = ref(db, 'posts');
+       let postsQuery;
+       
+       if (!lastPostTimestamp) {
+         // First load - get the latest 10
+         postsQuery = query(
+           postsRef, 
+           orderByChild('timestamp'), 
+           limitToLast(POSTS_PER_PAGE)
+         );
+       } else {
+         // Subsequent loads - get next 10 older than lastPostTimestamp
+         postsQuery = query(
+           postsRef,
+           orderByChild('timestamp'),
+           endBefore(lastPostTimestamp),
+           limitToLast(POSTS_PER_PAGE)
+         );
+       }
+       
+       const snapshot = await get(postsQuery);
+       
+       if (!snapshot.exists()) {
          hasMorePosts = false;
          feedEndMessage.classList.add('show');
          infiniteLoader.classList.add('hidden');
          return;
        }
-       // For 'forYou' mode, filter to only followed users + self, then sort by algorithm
-       // For 'latest' mode, keep timestamp order (already sorted newest first)
-       let postsToLoad;
+       
+       const newPosts = [];
+       snapshot.forEach(child => {
+         const postData = child.val();
+         const postKey = child.key;
+         
+         // Check if not already displayed
+         if (!displayedPosts.some(dp => dp.key === postKey)) {
+           newPosts.unshift({ key: postKey, data: postData });
+         }
+       });
+       
+       if (newPosts.length === 0) {
+         hasMorePosts = false;
+         feedEndMessage.classList.add('show');
+         return;
+       }
+       
+       // Update last timestamp for next page
+       lastPostTimestamp = newPosts[newPosts.length - 1].data.timestamp;
+       
+       // For 'forYou' mode, filter to followed users only
+       let postsToRender = newPosts;
        if (feedMode === 'forYou') {
-         const relevantPosts = remainingPosts.filter(post => {
+         postsToRender = newPosts.filter(post => {
            return post.data.uid === currentUser?.uid || followingList.has(post.data.uid);
          });
-         if (relevantPosts.length === 0) {
-           if (currentPage === 0) {
-             feedStream.innerHTML = `
-               <div style="text-align:center; padding:4rem 1rem; color:var(--text-light);">
-                 <div style="width:64px;height:64px;background:var(--hover-bg);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-                   <i data-feather="users" style="width:32px;height:32px;color:var(--text-muted);"></i>
-                 </div>
-                 <h3 style="font-size:1.25rem; font-weight:700; color:var(--text-dark); margin-bottom:0.5rem;">No posts from followed users</h3>
-                 <p style="font-size:0.95rem; margin-bottom:1rem;">Follow more people to see their posts here</p>
-                 <button onclick="switchToLatest()" style="padding:0.75rem 1.5rem; background:var(--primary-color); color:white; border:none; border-radius:9999px; cursor:pointer; font-weight:600;">Switch to Latest</button>
+         
+         if (postsToRender.length === 0 && displayedPosts.length === 0) {
+           feedStream.innerHTML = `
+             <div style="text-align:center; padding:4rem 1rem; color:var(--text-light);">
+               <div style="width:64px;height:64px;background:var(--hover-bg);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
+                 <i data-feather="users" style="width:32px;height:32px;color:var(--text-muted);"></i>
                </div>
-             `;
-             feather.replace();
-           }
+               <h3 style="font-size:1.25rem; font-weight:700; color:var(--text-dark); margin-bottom:0.5rem;">No posts from followed users</h3>
+               <p style="font-size:0.95rem; margin-bottom:1rem;">Follow more people to see their posts here</p>
+               <button onclick="switchToLatest()" style="padding:0.75rem 1.5rem; background:var(--primary-color); color:white; border:none; border-radius:9999px; cursor:pointer; font-weight:600;">Switch to Latest</button>
+             </div>
+           `;
+           feather.replace();
            hasMorePosts = false;
            infiniteLoader.classList.add('hidden');
            return;
-         } else {
-           const scoredPosts = relevantPosts.map(post => ({
-             ...post,
-             ...calculatePostScore(post.data, feedMode)
-           }));
-           scoredPosts.sort((a, b) => b.score - a.score);
-           postsToLoad = scoredPosts.slice(0, POSTS_PER_PAGE);
          }
-       } else {
-         // Latest mode - take next batch in chronological order (newest first)
-         postsToLoad = remainingPosts.slice(0, POSTS_PER_PAGE);
        }
+       
        // Insert ad every 5 posts
        let postsWithAds = [];
-       postsToLoad.forEach((post, index) => {
+       postsToRender.forEach((post, index) => {
          postsWithAds.push(post);
-         if ((index + 1) % 5 === 0 && index !== 0) {
+         if ((displayedPosts.length + index + 1) % 5 === 0) {
            const randomAd = sampleAds[Math.floor(Math.random() * sampleAds.length)];
            postsWithAds.push({ isAd: true, data: randomAd, key: `ad_${Date.now()}_${index}` });
          }
        });
-       // Render posts in order (append to bottom since we're loading more)
+       
+       // Render posts
        for (const item of postsWithAds) {
          if (item.isAd) {
            renderAdCard(item.data);
          } else {
-           await renderPost(item.key, item.data, '', false); // false = append to bottom
+           await renderPost(item.key, item.data, '', false);
            displayedPosts.push(item);
          }
        }
-       currentPage++;
-       if (postsToLoad.length < POSTS_PER_PAGE) {
+       
+       if (newPosts.length < POSTS_PER_PAGE) {
          hasMorePosts = false;
          feedEndMessage.classList.add('show');
        }
+       
        feather.replace();
        initializeVideoControls();
        initializeCarousels();
        initVideoObserver();
+       
      } catch (err) {
        console.error("Error loading more posts:", err);
        showToast("Failed to load more posts", "error");
@@ -3305,47 +3354,30 @@
        infiniteLoader.classList.add('hidden');
      }
    }
+   
    // Initial Load - Only load first batch
    async function loadInitialPosts() {
      feedStream.innerHTML = '';
      displayedPosts = [];
-     currentPage = 0;
+     lastPostTimestamp = null;
      hasMorePosts = true;
      feedEndMessage.classList.remove('show');
-     // Show skeleton loaders immediately
+     
      showSkeletonLoaders(POSTS_PER_PAGE);
+     
      try {
-       // Wait for allPosts to be populated
-       if (allPosts.length === 0) {
-         await new Promise(resolve => {
-           const checkPosts = setInterval(() => {
-             if (allPosts.length > 0) {
-               clearInterval(checkPosts);
-               resolve();
-             }
-           }, 100);
-           // Timeout after 5 seconds
-           setTimeout(() => {
-             clearInterval(checkPosts);
-             resolve();
-           }, 5000);
-         });
-       }
-       // Remove skeletons
-       feedStream.innerHTML = '';
-       // Load only first batch (POSTS_PER_PAGE posts)
        await loadMorePosts();
-       // Show suggested friends if in For You mode
+       
        if (feedMode === 'forYou') {
          loadSuggestedFriends();
        }
-       // Initialize intersection observer for infinite scroll
+       
        initInfiniteScroll();
-       // Hide shimmer overlay after initial content loads
+       
+       // Hide shimmer overlay
        const shimmerOverlay = document.getElementById('shimmer-overlay');
        if (shimmerOverlay) {
          shimmerOverlay.classList.add('hidden');
-         // Add reveal animation to main content
          document.querySelectorAll('.feed-header, .tweet-box, .post').forEach((el, index) => {
            el.style.opacity = '0';
            el.style.transform = 'translateY(20px)';
@@ -3356,6 +3388,7 @@
            }, index * 100);
          });
        }
+       
      } catch (err) {
        console.error("Error in initial load:", err);
        feedStream.innerHTML = `
@@ -3370,14 +3403,15 @@
        feather.replace();
      }
    }
+   
    // Load Suggested Friends
    async function loadSuggestedFriends() {
      if (!currentUser) return;
      try {
-       // Get all users except current user and already followed
        const usersRef = ref(db, 'users');
        const snapshot = await get(usersRef);
        if (!snapshot.exists()) return;
+       
        const suggestedUsers = [];
        snapshot.forEach(child => {
          const uid = child.key;
@@ -3391,12 +3425,13 @@
            });
          }
        });
-       // Shuffle and take first 10
+       
        const shuffled = suggestedUsers.sort(() => 0.5 - Math.random()).slice(0, 10);
        if (shuffled.length === 0) {
          suggestedFriendsSection.style.display = 'none';
          return;
        }
+       
        suggestedFriendsScroll.innerHTML = '';
        shuffled.forEach(user => {
          const card = document.createElement('div');
@@ -3415,9 +3450,11 @@
        console.error("Error loading suggested friends:", err);
      }
    }
+   
    window.dismissSuggestedFriends = function() {
      suggestedFriendsSection.style.display = 'none';
    }
+   
    window.followSuggestedUser = async function(uid, btn) {
      if (!currentUser) return;
      try {
@@ -3428,18 +3465,20 @@
          username: currentUsername,
          avatar: avatarCache.get(currentUser.uid) || defaultAvatar
        };
+       
        await set(followingRef, followData);
        await set(followersRef, {
          timestamp: Date.now(),
          username: currentUsername,
          avatar: avatarCache.get(currentUser.uid) || defaultAvatar
        });
+       
        followingList.add(uid);
        btn.textContent = 'Following';
        btn.classList.add('following');
        btn.disabled = true;
        showToast("Now following!", "success");
-       // Refresh feed to show new followed user's posts
+       
        if (feedMode === 'forYou') {
          resetAndReloadFeed();
        }
@@ -3448,6 +3487,7 @@
        showToast("Failed to follow", "error");
      }
    }
+   
    // Render Ad Card
    function renderAdCard(ad) {
      const el = document.createElement('div');
@@ -3468,31 +3508,37 @@
      feedStream.appendChild(el);
      feather.replace();
    }
+   
    onAuthStateChanged(auth, async (user) => {
-     // Ensure shimmer overlay is visible while loading
      const shimmerOverlayInit = document.getElementById('shimmer-overlay');
      if (shimmerOverlayInit) {
        shimmerOverlayInit.classList.remove('hidden');
      }
+     
      if (!user) {
        window.location.href = "signup.html";
        return;
      }
+     
      currentUser = user;
      isProfileLoading = true;
      updateTweetButtonState();
      profileNotice.classList.add('show');
+     
      try {
        const userRef = ref(db, `users/${user.uid}`);
        const snapshot = await get(userRef);
+       
        if (snapshot.exists()) {
          const userData = snapshot.val();
          currentUsername = userData.username || userData.displayName || user.email?.split('@')[0];
          avatarCache.set(user.uid, userData.photoURL || userData.avatarUrl || defaultAvatar);
          usernameCache.set(user.uid, currentUsername);
+         
          if (userData.verified) {
            verifiedUsers.add(user.uid);
          }
+         
          const currentAvatar = userData.photoURL || userData.avatarUrl || defaultAvatar;
          document.getElementById('current-user-avatar').src = currentAvatar;
          showToast(`Welcome, ${currentUsername}!`, "success");
@@ -3505,20 +3551,22 @@
            photoURL: user.photoURL || "",
            verified: false
          });
+         
          const avatarUrl = user.photoURL || defaultAvatar;
          document.getElementById('current-user-avatar').src = avatarUrl;
          avatarCache.set(user.uid, avatarUrl);
-         usernameCache.set(uid, currentUsername);
+         usernameCache.set(user.uid, currentUsername);
          showToast("Profile created!", "success");
        }
+       
        isProfileLoading = false;
        profileNotice.classList.remove('show');
        updateTweetButtonState();
        loadFollowingList();
        loadNotifications();
        loadUnreadMessages();
-       // Start initial load
        loadInitialPosts();
+       
      } catch (error) {
        console.error("Profile load error:", error);
        isProfileLoading = false;
@@ -3529,6 +3577,7 @@
        updateTweetButtonState();
      }
    });
+   
    function loadFollowingList() {
      if (!currentUser) return;
      const followingRef = ref(db, `following/${currentUser.uid}`);
@@ -3539,20 +3588,20 @@
            followingList.add(child.key);
          });
        }
-       // Refresh feed if mode is 'forYou'
        if (feedMode === 'forYou') {
          resetAndReloadFeed();
        }
      });
    }
+   
    function resetAndReloadFeed() {
-     // Clear displayed posts and reload
      displayedPosts = [];
-     currentPage = 0;
+     lastPostTimestamp = null;
      hasMorePosts = true;
      feedEndMessage.classList.remove('show');
      loadInitialPosts();
    }
+   
    function loadNotifications() {
      if (!currentUser) return;
      const notifRef = ref(db, `notifications/${currentUser.uid}`);
@@ -3571,6 +3620,7 @@
        renderNotificationsPanel(notifications);
      });
    }
+   
    function loadUnreadMessages() {
      if (!currentUser) return;
      const chatsRef = ref(db, `userChats/${currentUser.uid}`);
@@ -3587,6 +3637,7 @@
        updateMessageBadges();
      });
    }
+   
    function updateNotificationBadges() {
      const badges = [
        document.getElementById('sidebar-notif-badge'),
@@ -3603,6 +3654,7 @@
        }
      });
    }
+   
    function updateMessageBadges() {
      const badges = [
        document.getElementById('sidebar-msg-badge'),
@@ -3619,25 +3671,15 @@
        }
      });
    }
+   
    async function navigateToPost(postId, notificationType) {
      closeNotifications();
-     // Check if post is already displayed
      const postEl = document.getElementById(`post-${postId}`);
      if (!postEl) {
-       // If not displayed, we need to find and show it
-       const targetPost = allPosts.find(p => p.key === postId);
-       if (targetPost) {
-         // Add to displayed posts if not already there
-         if (!displayedPosts.some(dp => dp.key === postId)) {
-           await renderPost(targetPost.key, targetPost.data, '');
-           displayedPosts.push(targetPost);
-         }
-       } else {
-         showToast("Post not found or has been deleted", "error");
-         return;
-       }
+       showToast("Post not found or has been deleted", "error");
+       return;
      }
-     // Scroll to post
+     
      const element = document.getElementById(`post-${postId}`);
      if (element) {
        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3652,6 +3694,7 @@
        }
      }
    }
+   
    function renderNotificationsPanel(notifications) {
      const list = document.getElementById('notifications-list');
      if (notifications.length === 0) {
@@ -3664,8 +3707,10 @@
        feather.replace();
        return;
      }
+     
      list.innerHTML = '';
      notifications.sort((a, b) => b.timestamp - a.timestamp);
+     
      notifications.forEach(notif => {
        const div = document.createElement('div');
        div.className = `notification-item ${notif.read ? '' : 'unread'}`;
@@ -3679,6 +3724,7 @@
            window.location.href = 'messages.html';
          }
        };
+       
        let icon = 'heart';
        let color = 'var(--like-red)';
        if (notif.type === 'follow') {
@@ -3694,10 +3740,12 @@
          icon = 'repeat';
          color = 'var(--success)';
        }
+       
        let previewText = getNotificationText(notif);
        if (notif.postText) {
          previewText += `: "${notif.postText.substring(0, 40)}${notif.postText.length > 40 ? '...' : ''}"`;
        }
+       
        div.innerHTML = `
          <img src="${notif.senderAvatar || defaultAvatar}" class="notification-avatar" onerror="this.src='${defaultAvatar}'">
          <div class="notification-content">
@@ -3714,6 +3762,7 @@
      });
      feather.replace();
    }
+   
    function getNotificationText(notif) {
      switch(notif.type) {
        case 'like': return 'liked your post';
@@ -3725,11 +3774,13 @@
        default: return 'interacted with your post';
      }
    }
+   
    async function markNotificationRead(notifKey) {
      if (!currentUser) return;
      const notifRef = ref(db, `notifications/${currentUser.uid}/${notifKey}`);
      await set(notifRef, { ...await get(notifRef).then(s => s.val()), read: true });
    }
+   
    window.openNotifications = function() {
      document.getElementById('notifications-panel').classList.add('active');
      document.getElementById('notifications-overlay').classList.add('active');
@@ -3747,12 +3798,15 @@
        });
      }
    }
+   
    window.closeNotifications = function() {
      document.getElementById('notifications-panel').classList.remove('active');
      document.getElementById('notifications-overlay').classList.remove('active');
      document.body.style.overflow = '';
    }
+   
    document.getElementById('logout-btn').addEventListener('click', () => signOut(auth));
+   
    window.clearMediaPreview = function() {
      selectedMedia = null;
      selectedMediaType = null;
@@ -3769,9 +3823,11 @@
      fileUploadVideo.value = '';
      updateTweetButtonState();
    }
+   
    function updateTweetButtonState() {
      const hasContent = tweetText.value.trim().length > 0 || selectedMedia !== null || selectedImages.length > 0;
      const canPost = hasContent && !isProfileLoading && currentUsername !== null;
+     
      if (canPost) {
        tweetBtn.classList.add('active');
        tweetBtn.style.opacity = '1';
@@ -3786,13 +3842,16 @@
        tweetBtn.textContent = isProfileLoading ? 'Loading...' : 'Post';
      }
    }
+   
    function formatDuration(seconds) {
      if (isNaN(seconds)) return '0:00';
      const mins = Math.floor(seconds / 60);
      const secs = Math.floor(seconds % 60);
      return `${mins}:${secs.toString().padStart(2, '0')}`;
    }
+   
    tweetText.addEventListener('input', updateTweetButtonState);
+   
    fileUploadImage.addEventListener('change', (e) => {
      const files = Array.from(e.target.files);
      if (files.length > 0) {
@@ -3803,12 +3862,14 @@
        const previewContainer = document.getElementById('multi-image-preview');
        previewContainer.innerHTML = '';
        previewContainer.style.display = 'grid';
+       
        files.forEach((file, index) => {
          const img = document.createElement('img');
          img.src = URL.createObjectURL(file);
          img.style.opacity = index < 4 ? '1' : '0.5';
          previewContainer.appendChild(img);
        });
+       
        if (files.length > 4) {
          const moreDiv = document.createElement('div');
          moreDiv.style.cssText = 'position: absolute; right: 8px; bottom: 8px; background: rgba(0,0,0,0.7); color: white; padding: 4px 12px; border-radius: 8px; font-size: 0.9rem; font-weight: 600;';
@@ -3816,10 +3877,12 @@
          previewContainer.style.position = 'relative';
          previewContainer.appendChild(moreDiv);
        }
+       
        mediaTypeIndicator.style.display = 'none';
        updateTweetButtonState();
      }
    });
+   
    fileUploadVideo.addEventListener('change', (e) => {
      if (e.target.files[0]) {
        const file = e.target.files[0];
@@ -3827,6 +3890,7 @@
          showToast("Video must be under 100MB", "error");
          return;
        }
+       
        selectedMedia = file;
        selectedMediaType = 'video';
        selectedImages = [];
@@ -3840,30 +3904,37 @@
        updateTweetButtonState();
      }
    });
+   
    function extractHashtags(text) {
      if (!text) return [];
      const hashtagRegex = /#[\w]+/g;
      return text.match(hashtagRegex) || [];
    }
+   
    function matchesSearch(post, query) {
      const lowerQuery = query.toLowerCase().trim();
      if (!lowerQuery) return true;
+     
      const usernamesToCheck = [post.username?.toLowerCase()];
      const cachedUsername = usernameCache.get(post.uid)?.toLowerCase();
      if (cachedUsername && !usernamesToCheck.includes(cachedUsername)) {
        usernamesToCheck.push(cachedUsername);
      }
+     
      const usernameMatch = usernamesToCheck.some(u => u && u.includes(lowerQuery));
      const textMatch = post.text && post.text.toLowerCase().includes(lowerQuery);
      const hashtags = extractHashtags(post.text);
      let hashtagMatch = false;
+     
      if (lowerQuery.startsWith('#')) {
        hashtagMatch = hashtags.some(tag => tag.toLowerCase() === lowerQuery);
      } else {
        hashtagMatch = hashtags.some(tag => tag.toLowerCase().includes('#' + lowerQuery));
      }
+     
      return usernameMatch || textMatch || hashtagMatch;
    }
+   
    function showSkeletonLoaders(count = 5) {
      feedStream.innerHTML = '';
      for (let i = 0; i < count; i++) {
@@ -3881,6 +3952,7 @@
        feedStream.appendChild(skeleton);
      }
    }
+   
    function showToast(message, type = 'success') {
      toastEl.innerHTML = type === 'success' ?
        `<i data-feather="check-circle" style="width:18px;height:18px;"></i> ${message}` :
@@ -3890,6 +3962,7 @@
        toastEl.classList.remove('show');
      }, 2800);
    }
+   
    async function uploadMedia(files) {
     const urls = [];
     for (let file of files) {
@@ -3909,17 +3982,21 @@
     }
     return urls;
   }
+   
    function closeDeleteModal() {
      deleteOverlay.classList.remove('active');
      deleteModal.classList.remove('active');
      currentDeletePost = { key: null, element: null };
    }
+   
    deleteOverlay?.addEventListener('click', closeDeleteModal);
    closeDeleteBtn?.addEventListener('click', closeDeleteModal);
    cancelDeleteBtn?.addEventListener('click', closeDeleteModal);
+   
    confirmDeleteBtn?.addEventListener('click', async () => {
      if (!currentDeletePost.key) return;
      const { key, element } = currentDeletePost;
+     
      try {
        loadingOverlay.style.display = 'flex';
        if (postListeners.has(key)) {
@@ -3927,12 +4004,14 @@
          listeners.forEach(unsubscribe => unsubscribe());
          postListeners.delete(key);
        }
+       
        await remove(ref(db, `posts/${key}`));
        await remove(ref(db, `postLikes/${key}`));
        await remove(ref(db, `postComments/${key}`));
-       // Remove from allPosts and displayedPosts
-       allPosts = allPosts.filter(p => p.key !== key);
+       
+       // Remove from displayedPosts
        displayedPosts = displayedPosts.filter(p => p.key !== key);
+       
        element.remove();
        showToast("Post deleted", "success");
      } catch (err) {
@@ -3942,32 +4021,37 @@
        closeDeleteModal();
      }
    });
+   
    // Background post upload with progress
    tweetBtn.addEventListener('click', async () => {
      if (isProfileLoading || !currentUsername) {
        showToast("Please wait for profile to load", "error");
        return;
      }
+     
      const hasContent = tweetText.value.trim().length > 0 || selectedMedia !== null || selectedImages.length > 0;
      if (!hasContent) return;
-     // Show progress UI
+     
      showUploadProgress();
      updateUploadProgress(10, 'Preparing media...');
-     // Disable button
      tweetBtn.classList.add('loading');
      tweetBtn.textContent = '';
+     
      try {
        let mediaUrls = [];
        let mediaType = "";
+       
        if (selectedImages.length > 0) {
          mediaType = 'images';
          const totalImages = selectedImages.length;
+         
          for (let i = 0; i < selectedImages.length; i++) {
            const image = selectedImages[i];
            updateUploadProgress(10 + ((i / totalImages) * 70), `Uploading image ${i + 1} of ${totalImages}...`);
            const fd = new FormData();
            fd.append("file", image);
            fd.append("upload_preset", UPLOAD_PRESET);
+           
            try {
              const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
                method: "POST",
@@ -3986,6 +4070,7 @@
          const fd = new FormData();
          fd.append("file", selectedMedia);
          fd.append("upload_preset", UPLOAD_PRESET);
+         
          try {
            const resourceType = selectedMediaType === 'video' ? 'video' : 'image';
            const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/${resourceType}/upload`, {
@@ -4002,7 +4087,9 @@
            showToast("Upload failed, posting without media", "error");
          }
        }
+       
        updateUploadProgress(90, 'Publishing post...');
+       
        const postData = {
          uid: currentUser.uid,
          username: currentUsername,
@@ -4015,18 +4102,20 @@
          reachCount: 0,
          repostCount: 0
        };
+       
        const newPostRef = push(ref(db, 'posts'));
        await set(newPostRef, postData);
+       
        updateUploadProgress(100, 'Done!');
-       // Clear form immediately
        clearMediaPreview();
        tweetText.value = '';
        updateTweetButtonState();
-       // Hide progress after delay
+       
        setTimeout(() => {
          hideUploadProgress();
          showToast("Posted successfully!", "success");
        }, 500);
+       
        window.scrollTo({ top: 0, behavior: 'smooth' });
      } catch (err) {
        console.error("Post failed:", err);
@@ -4037,61 +4126,34 @@
        tweetBtn.textContent = 'Post';
      }
    });
-   // ============================================
-   // FIXED: Listen for new posts in real-time - NEWEST FIRST
-   // ============================================
+   
+   // Listen for new posts in real-time (only new ones)
    const postsRef = ref(db, 'posts');
    const postsQuery = query(postsRef, orderByChild('timestamp'));
+   
    onChildAdded(postsQuery, async (snapshot) => {
      const postData = snapshot.val();
      const postKey = snapshot.key;
-     // Check if post already exists in our array
-     const existingIndex = allPosts.findIndex(p => p.key === postKey);
-     if (existingIndex === -1) {
-       // Add to beginning of allPosts (newest first)
-       allPosts.unshift({ key: postKey, data: postData });
-       // Only render if we're on the first page and not searching
-       if (currentPage === 0 && !searchInput.value && !isLoadingMore) {
-         // Check if post matches current feed mode
-         const shouldShow = feedMode === 'latest' ||
-                           (feedMode === 'forYou' && shouldShowInForYou(postData));
+     
+     // Only add if it's new (not already displayed) and user is at top
+     if (!displayedPosts.some(p => p.key === postKey)) {
+       if (window.scrollY < 100 && postData.timestamp > Date.now() - 60000) {
+         // Check if it matches current feed mode
+         const shouldShow = feedMode === 'latest' || 
+                           (feedMode === 'forYou' && (postData.uid === currentUser?.uid || followingList.has(postData.uid)));
+         
          if (shouldShow) {
-           // Only prepend if user is at the top of the feed
-           if (window.scrollY === 0) {
-             await renderPost(postKey, postData, '', true); // true = prepend to top
-             displayedPosts.unshift({ key: postKey, data: postData });
-             feather.replace();
-             initializeVideoControls();
-             initializeCarousels();
-             initVideoObserver();
-           }
+           await renderPost(postKey, postData, '', true);
+           displayedPosts.unshift({ key: postKey, data: postData });
+           feather.replace();
+           initializeVideoControls();
+           initializeCarousels();
+           initVideoObserver();
          }
        }
      }
    });
-   // Helper function to determine if post should show in "For You" feed
-   function shouldShowInForYou(post) {
-     // In For You mode, only show posts from followed users or self
-     if (!currentUser) return false;
-     return post.uid === currentUser.uid || followingList.has(post.uid);
-   }
-   // ============================================
-   // FIXED: Listen for post updates - MAINTAINS NEWEST FIRST ORDER
-   // ============================================
-   onValue(postsQuery, (snapshot) => {
-     const newAllPosts = [];
-     snapshot.forEach(childSnap => {
-       newAllPosts.unshift({ // Unshift instead of push, so newest are first
-         key: childSnap.key,
-         data: childSnap.val()
-       });
-     });
-     allPosts = newAllPosts;
-     // If feed is empty, load initial posts
-     if (displayedPosts.length === 0 && allPosts.length > 0) {
-       loadInitialPosts();
-     }
-   });
+   
    function getTimeAgo(timestamp) {
      if (!timestamp) return '';
      const diff = Math.floor((Date.now() - timestamp) / 1000);
@@ -4101,11 +4163,13 @@
      if (diff < 604800) return Math.floor(diff / 86400) + 'd';
      return new Date(timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
    }
+   
    function parseText(text, searchQuery = '') {
      if (!text) return '';
      const div = document.createElement('div');
      div.textContent = text;
      let parsedText = div.innerHTML;
+     
      if (searchQuery) {
        const lowerQuery = searchQuery.toLowerCase().trim();
        if (lowerQuery) {
@@ -4113,31 +4177,39 @@
          parsedText = parsedText.replace(regex, '<span class="search-highlight">$1</span>');
        }
      }
+     
      const urlRegex = /(https?:\/\/[^\s]+)/g;
      parsedText = parsedText.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer" class="link">$1</a>');
+     
      const hashtagRegex = /(#\w+)/g;
      parsedText = parsedText.replace(hashtagRegex, '<span class="hashtag" data-hashtag="$1">$1</span>');
+     
      const mentionRegex = /(@\w+)/g;
      parsedText = parsedText.replace(mentionRegex, '<span class="mention" style="color:var(--primary-color);font-weight:600;">$1</span>');
+     
      return parsedText;
    }
+   
    // X/Twitter Style Media Modal Functions
    window.openImageModal = function(src, postKey) {
-     currentModalPost = allPosts.find(p => p.key === postKey);
+     currentModalPost = displayedPosts.find(p => p.key === postKey);
      if (!currentModalPost) return;
+     
      renderModalContent(src, 'image');
      mediaModal.classList.add('active');
      document.body.style.overflow = 'hidden';
      updateModalActions();
    }
+   
    window.openVideoModal = function(src, postKey) {
-     currentModalPost = allPosts.find(p => p.key === postKey);
+     currentModalPost = displayedPosts.find(p => p.key === postKey);
      if (!currentModalPost) return;
+     
      renderModalContent(src, 'video');
      mediaModal.classList.add('active');
      document.body.style.overflow = 'hidden';
      updateModalActions();
-     // Auto-play video
+     
      setTimeout(() => {
        const video = document.getElementById('modal-video');
        if (video) {
@@ -4150,6 +4222,7 @@
        }
      }, 100);
    }
+   
    function renderModalContent(src, type) {
      const body = document.getElementById('media-modal-body');
      if (type === 'video') {
@@ -4193,30 +4266,38 @@
      }
      feather.replace();
    }
+   
    function setupVideoListeners() {
      const video = document.getElementById('modal-video');
      const container = document.getElementById('modal-video-container');
      if (!video) return;
+     
      currentModalVideo = video;
-     video.muted = false; // Start unmuted in modal
+     video.muted = false;
+     
      video.addEventListener('timeupdate', () => {
        const progress = (video.currentTime / video.duration) * 100;
        document.getElementById('modal-progress-bar').style.width = progress + '%';
        updateModalTime();
      });
+     
      video.addEventListener('loadedmetadata', updateModalTime);
+     
      video.addEventListener('play', () => {
        updatePlayPauseState(true);
        container.classList.remove('paused');
      });
+     
      video.addEventListener('pause', () => {
        updatePlayPauseState(false);
        container.classList.add('paused');
      });
+     
      video.addEventListener('ended', () => {
        updatePlayPauseState(false);
        container.classList.add('paused');
      });
+     
      video.addEventListener('volumechange', () => {
        const muteIcon = document.getElementById('modal-mute-icon');
        if (muteIcon) {
@@ -4227,6 +4308,7 @@
        }
      });
    }
+   
    window.toggleModalVideoPlay = function() {
      const video = document.getElementById('modal-video');
      if (!video) return;
@@ -4236,9 +4318,11 @@
        video.pause();
      }
    }
+   
    function updatePlayPauseState(isPlaying) {
      const overlay = document.getElementById('modal-play-overlay');
      const icon = document.getElementById('modal-play-icon');
+     
      if (overlay) {
        overlay.classList.toggle('show', !isPlaying);
      }
@@ -4249,12 +4333,14 @@
        feather.replace();
      }
    }
+   
    window.toggleModalMute = function() {
      const video = document.getElementById('modal-video');
      if (video) {
        video.muted = !video.muted;
      }
    }
+   
    window.seekModalVideo = function(e) {
      const video = document.getElementById('modal-video');
      if (!video) return;
@@ -4262,6 +4348,7 @@
      const pos = (e.clientX - rect.left) / rect.width;
      video.currentTime = pos * video.duration;
    }
+   
    function updateModalTime() {
      const video = document.getElementById('modal-video');
      const timeDisplay = document.getElementById('modal-time');
@@ -4271,6 +4358,7 @@
        timeDisplay.textContent = `${current} / ${total}`;
      }
    }
+   
    window.toggleFullscreen = function() {
      const container = document.getElementById('modal-video-container');
      if (!container) return;
@@ -4280,12 +4368,15 @@
        document.exitFullscreen();
      }
    }
+   
    function updateModalActions() {
      if (!currentModalPost) return;
      const post = currentModalPost.data;
+     
      document.getElementById('modal-like-count').textContent = post.likes || 0;
      document.getElementById('modal-comment-count').textContent = post.commentCount || 0;
      document.getElementById('modal-repost-count').textContent = post.repostCount || 0;
+     
      if (currentUser) {
        const likeBtn = document.getElementById('modal-like-btn');
        const userLikeRef = ref(db, `postLikes/${currentModalPost.key}/${currentUser.uid}`);
@@ -4296,20 +4387,24 @@
            likeBtn.classList.remove('liked');
          }
        });
+       
        likeBtn.onclick = () => {
          toggleLike(currentModalPost.key);
          setTimeout(updateModalActions, 100);
        };
+       
        document.getElementById('modal-comment-btn').onclick = () => {
          closeMediaModal();
          setTimeout(() => openComments(currentModalPost.key), 300);
        };
+       
        document.getElementById('modal-repost-btn').onclick = () => {
          toggleRepost(currentModalPost.key);
          setTimeout(updateModalActions, 100);
        };
      }
    }
+   
    window.closeMediaModal = function() {
      const video = document.getElementById('modal-video');
      if (video) {
@@ -4324,6 +4419,7 @@
        document.getElementById('media-modal-body').innerHTML = '';
      }, 300);
    }
+   
    document.addEventListener('keydown', (e) => {
      if (!mediaModal.classList.contains('active')) return;
      if (e.key === 'Escape') {
@@ -4335,26 +4431,30 @@
        toggleModalMute();
      }
    });
+   
    async function renderPost(key, post, searchQuery = '', shouldPrepend = false) {
      // Check if post already exists in DOM
      if (document.getElementById(`post-${key}`)) {
        return;
      }
+     
      const el = document.createElement('div');
      el.className = 'post';
      el.id = `post-${key}`;
+     
      const isOwnPost = currentUser && currentUser.uid === post.uid;
      if (isOwnPost) {
        el.dataset.ownPost = "true";
      }
+     
      const userInfo = await getUserInfo(post.uid);
-     const username = userInfo.username; // For @username
-     const displayName = userInfo.displayName; // For display name (bold)
+     const username = userInfo.username;
+     const displayName = userInfo.displayName;
      const avatarUrl = userInfo.avatar;
      const isVerified = userInfo.verified || verifiedUsers.has(post.uid);
      const verifiedType = userInfo.verifiedType || 'standard';
      const timeAgo = getTimeAgo(post.timestamp);
-     const isOwner = currentUser && currentUser.uid === post.uid;
+     
      let followButtonHtml = '';
      if (currentUser && !isOwnPost) {
        const isFollowing = followingList.has(post.uid);
@@ -4369,10 +4469,12 @@
          `;
        }
      }
+     
      const parsedText = parseText(post.text, searchQuery);
      const highlightedDisplayName = searchQuery ?
        displayName.replace(new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
        '<span class="search-highlight">$1</span>') : displayName;
+       
      let repostIndicator = '';
      if (post.isRepost && post.originalPost) {
        const originalUserInfo = await getUserInfo(post.originalPost.uid);
@@ -4383,6 +4485,7 @@
          </div>
        `;
      }
+     
      let mediaHtml = '';
      if (post.mediaUrls && post.mediaUrls.length > 0) {
        if (post.mediaType === 'video') {
@@ -4445,8 +4548,9 @@
          `;
        }
      }
+     
      const hasReposted = currentUser && post.reposts && post.reposts[currentUser.uid];
-     // Twitter/X Style Verified Badge HTML - FIXED to properly check verifiedType
+     
      const verifiedBadgeHtml = isVerified ? `
        <span class="verified-badge ${verifiedType === 'premium' || verifiedType === 'gold' ? 'premium' : ''}"
              title="${verifiedType === 'premium' || verifiedType === 'gold' ? 'Premium Verified' : 'Verified Account'}">
@@ -4457,6 +4561,7 @@
          </svg>
        </span>
      ` : '';
+     
      el.innerHTML = `
        ${repostIndicator}
        <img src="${avatarUrl}" class="user-avatar" onerror="this.src='${defaultAvatar}'">
@@ -4517,19 +4622,21 @@
              <div class="kebab-item kebab-action" data-action="copy">
                <i data-feather="link" style="width:16px;height:16px;"></i> Copy link
              </div>
-             ${isOwner ? `<div class="kebab-item delete-post"><i data-feather="trash-2" style="width:16px;height:16px;"></i> Delete</div>` : ''}
+             ${isOwnPost ? `<div class="kebab-item delete-post"><i data-feather="trash-2" style="width:16px;height:16px;"></i> Delete</div>` : ''}
              <div class="kebab-item kebab-action" data-action="report">
                <i data-feather="flag" style="width:16px;height:16px;"></i> Report
              </div>
            </div>
          `;
-     // Use prepend or append based on shouldPrepend parameter
+         
      if (shouldPrepend) {
        feedStream.prepend(el);
      } else {
        feedStream.appendChild(el);
      }
+     
      const listeners = [];
+     
      const likesRef = ref(db, `posts/${key}/likes`);
      const likesUnsubscribe = onValue(likesRef, (snapshot) => {
        const count = snapshot.val() || 0;
@@ -4546,6 +4653,7 @@
        }
      });
      listeners.push(likesUnsubscribe);
+     
      const commentsRef = ref(db, `posts/${key}/commentCount`);
      const commentsUnsubscribe = onValue(commentsRef, (snapshot) => {
        const count = snapshot.val() || 0;
@@ -4562,6 +4670,7 @@
        }
      });
      listeners.push(commentsUnsubscribe);
+     
      const reachRef = ref(db, `posts/${key}/reachCount`);
      const reachUnsubscribe = onValue(reachRef, (snapshot) => {
        const count = snapshot.val() || 0;
@@ -4571,6 +4680,7 @@
        }
      });
      listeners.push(reachUnsubscribe);
+     
      const repostRef = ref(db, `posts/${key}/repostCount`);
      const repostUnsubscribe = onValue(repostRef, (snapshot) => {
        const count = snapshot.val() || 0;
@@ -4580,6 +4690,7 @@
        }
      });
      listeners.push(repostUnsubscribe);
+     
      if (currentUser) {
        const userLikeRef = ref(db, `postLikes/${key}/${currentUser.uid}`);
        const userLikeUnsubscribe = onValue(userLikeRef, (snapshot) => {
@@ -4602,6 +4713,7 @@
          }
        });
        listeners.push(userLikeUnsubscribe);
+       
        const userRepostRef = ref(db, `posts/${key}/reposts/${currentUser.uid}`);
        const userRepostUnsubscribe = onValue(userRepostRef, (snapshot) => {
          const repostBtn = document.getElementById(`repost-btn-${key}`);
@@ -4614,6 +4726,7 @@
          }
        });
        listeners.push(userRepostUnsubscribe);
+       
        if (!isOwnPost) {
          const followRef = ref(db, `following/${currentUser.uid}/${post.uid}`);
          const followUnsubscribe = onValue(followRef, (snapshot) => {
@@ -4631,7 +4744,9 @@
          listeners.push(followUnsubscribe);
        }
      }
+     
      postListeners.set(key, listeners);
+     
      if (currentUser && currentUser.uid !== post.uid) {
        const viewRef = ref(db, `postViews/${key}/${currentUser.uid}`);
        get(viewRef).then(snapshot => {
@@ -4646,6 +4761,7 @@
          }
        });
      }
+     
      el.querySelectorAll('.hashtag').forEach(hashtagEl => {
        hashtagEl.addEventListener('click', (e) => {
          e.stopPropagation();
@@ -4655,10 +4771,13 @@
          window.scrollTo({ top: 0, behavior: 'smooth' });
        });
      });
+     
      el.querySelector('.like-trigger')?.addEventListener('click', () => toggleLike(key));
      el.querySelector('.comment-trigger')?.addEventListener('click', () => openComments(key));
+     
      const kebabBtn = el.querySelector('.kebab-menu');
      const dropdown = el.querySelector('.kebab-dropdown');
+     
      kebabBtn?.addEventListener('click', (e) => {
        e.stopPropagation();
        document.querySelectorAll('.kebab-dropdown.show').forEach(d => {
@@ -4666,11 +4785,13 @@
        });
        dropdown.classList.toggle('show');
      });
+     
      dropdown?.querySelectorAll('.kebab-action, .delete-post').forEach(item => {
        item.addEventListener('click', (e) => {
          e.stopPropagation();
          const action = item.dataset.action || (item.classList.contains('delete-post') ? 'delete' : '');
-         if (action === 'delete' && isOwner) {
+         
+         if (action === 'delete' && isOwnPost) {
            currentDeletePost = { key, element: el };
            deleteOverlay.classList.add('active');
            deleteModal.classList.add('active');
@@ -4684,18 +4805,22 @@
        });
      });
    }
+   
    function formatReachCount(count) {
      if (count >= 1000000) return (count / 1000000).toFixed(1) + 'M';
      if (count >= 1000) return (count / 1000).toFixed(1) + 'K';
      return count.toString();
    }
+   
    window.toggleRepost = async function(postId) {
      if (!currentUser) {
        showToast("Please login to repost", "error");
        return;
      }
+     
      const repostRef = ref(db, `posts/${postId}/reposts/${currentUser.uid}`);
      const postRef = ref(db, `posts/${postId}`);
+     
      try {
        const snapshot = await get(repostRef);
        if (snapshot.exists()) {
@@ -4706,12 +4831,13 @@
            }
            return post;
          });
+         
          const userPostsRef = ref(db, 'posts');
          const userPostsSnapshot = await get(userPostsRef);
          if (userPostsSnapshot.exists()) {
            userPostsSnapshot.forEach(child => {
              const postData = child.val();
-             if (postData.isRepost && postData.originalPostId === postId && postData_uid === currentUser.uid) {
+             if (postData.isRepost && postData.originalPostId === postId && postData.uid === currentUser.uid) {
                remove(ref(db, `posts/${child.key}`));
              }
            });
@@ -4720,6 +4846,7 @@
        } else {
          const originalPost = await get(postRef).then(s => s.val());
          if (!originalPost) return;
+         
          await set(repostRef, { timestamp: Date.now() });
          await runTransaction(postRef, (post) => {
            if (post) {
@@ -4727,6 +4854,7 @@
            }
            return post;
          });
+         
          const repostData = {
            uid: currentUser.uid,
            username: currentUsername,
@@ -4746,8 +4874,9 @@
            },
            repostedBy: currentUsername
          };
+         
          await push(ref(db, 'posts'), repostData);
-         // Only notify if not reposting own post
+         
          if (originalPost.uid !== currentUser.uid) {
            await createNotification('repost', originalPost.uid, postId, originalPost.text);
          }
@@ -4758,11 +4887,10 @@
        showToast("Failed to repost", "error");
      }
    }
+   
    async function createNotification(type, recipientId, postId = null, postText = null, commentText = null) {
-     // Don't create notification if user is interacting with their own content
      if (!currentUser || recipientId === currentUser.uid) return;
-     // Don't show alert if owner is the current user (additional safety check)
-     if (recipientId === currentUser.uid) return;
+     
      const notifData = {
        type: type,
        senderId: currentUser.uid,
@@ -4774,12 +4902,14 @@
        timestamp: Date.now(),
        read: false
      };
+     
      await push(ref(db, `notifications/${recipientId}`), notifData);
-     // Only show alert if page is visible AND recipient is not the current user
-     if (document.visibilityState === 'visible' && recipientId !== currentUser.uid) {
+     
+     if (document.visibilityState === 'visible') {
        const title = type === 'message' ? 'New Message' : 'New Notification';
        const text = `${currentUsername} ${getNotificationText({ type })}`;
        let onClick = () => openNotifications();
+       
        if (type === 'message') {
          onClick = () => window.location.href = 'messages.html';
        } else if (type === 'follow') {
@@ -4787,9 +4917,11 @@
        } else if (postId) {
          onClick = () => navigateToPost(postId, type);
        }
+       
        showNotificationAlert(title, text, avatarCache.get(currentUser.uid) || defaultAvatar, onClick);
      }
    }
+   
    window.toggleFollow = async function(targetUid, btnElement) {
      if (!currentUser) {
        showToast("Please login to follow users", "error");
@@ -4799,9 +4931,11 @@
        showToast("You cannot follow yourself", "error");
        return;
      }
+     
      const isCurrentlyFollowing = btnElement.dataset.following === 'true';
      const followingRef = ref(db, `following/${currentUser.uid}/${targetUid}`);
      const followersRef = ref(db, `followers/${targetUid}/${currentUser.uid}`);
+     
      try {
        if (isCurrentlyFollowing) {
          await set(followingRef, null);
@@ -4818,12 +4952,14 @@
            username: currentUsername,
            avatar: avatarCache.get(currentUser.uid) || defaultAvatar
          };
+         
          await set(followingRef, followData);
          await set(followersRef, {
            timestamp: Date.now(),
            username: currentUsername,
            avatar: avatarCache.get(currentUser.uid) || defaultAvatar
          });
+         
          followingList.add(targetUid);
          btnElement.dataset.following = 'true';
          btnElement.classList.add('following');
@@ -4831,23 +4967,24 @@
          if (btnText) btnText.textContent = 'Following';
          btnElement.style.transform = 'scale(1.1)';
          setTimeout(() => btnElement.style.transform = 'scale(1)', 200);
+         
          await createNotification('follow', targetUid);
-         showToast(`Now following ${btnElement.closest('.post').querySelector('.post-name').textContent}`, "success");
+         showToast(`Now following`, "success");
        }
      } catch (err) {
        console.error("Follow action failed:", err);
        showToast("Failed to update follow status", "error");
      }
    };
+   
    function initializeVideoControls() {
-     // Video controls are now handled by Intersection Observer for autoplay
-     // This function is kept for compatibility but observer handles play/pause
      document.querySelectorAll('.video-container').forEach(container => {
        const video = container.querySelector('video');
        if (!video || video.dataset.initialized) return;
        video.dataset.initialized = 'true';
      });
    }
+   
    window.carousels = {};
    function initializeCarousels() {
      document.querySelectorAll('.carousel-container').forEach(container => {
@@ -4859,6 +4996,7 @@
        };
      });
    }
+   
    window.goToSlide = function(carouselId, index) {
      const carousel = window.carousels[carouselId];
      if (!carousel) return;
@@ -4871,25 +5009,30 @@
      });
      container.querySelector('.carousel-counter').textContent = `${index + 1} / ${carousel.total}`;
    }
+   
    window.prevSlide = function(carouselId) {
      const carousel = window.carousels[carouselId];
      if (!carousel) return;
      const newIndex = carousel.index > 0 ? carousel.index - 1 : carousel.total - 1;
      goToSlide(carouselId, newIndex);
    }
+   
    window.nextSlide = function(carouselId) {
      const carousel = window.carousels[carouselId];
      if (!carousel) return;
      const newIndex = carousel.index < carousel.total - 1 ? carousel.index + 1 : 0;
      goToSlide(carouselId, newIndex);
    }
+   
    async function toggleLike(postId) {
      if (!currentUser) {
        showToast("Please login to like posts", "error");
        return;
      }
+     
      const likeRef = ref(db, `postLikes/${postId}/${currentUser.uid}`);
      const postRef = ref(db, `posts/${postId}`);
+     
      try {
        const snapshot = await get(likeRef);
        if (snapshot.exists()) {
@@ -4908,15 +5051,16 @@
            }
            return post;
          });
+         
          const likeBtn = document.getElementById(`like-btn-${postId}`);
          if (likeBtn) {
            likeBtn.style.transform = 'scale(1.2)';
            setTimeout(() => likeBtn.style.transform = 'scale(1)', 200);
          }
+         
          const postSnapshot = await get(postRef);
          if (postSnapshot.exists()) {
            const postData = postSnapshot.val();
-           // Only notify if not liking own post
            if (postData.uid !== currentUser.uid) {
              await createNotification('like', postData.uid, postId, postData.text);
            }
@@ -4927,13 +5071,16 @@
        showToast("Failed to update like", "error");
      }
    }
+   
    async function openComments(postId) {
      activePostIdForComments = postId;
      sheetOverlay.classList.add('active');
      commentSheet.classList.add('active');
      commentsList.innerHTML = '<div style="padding:1rem; text-align:center; display:flex; align-items:center; justify-content:center; gap:0.5rem; color:var(--text-light);"><div class="spinner" style="width:20px;height:20px;"></div> Loading comments...</div>';
+     
      commentListeners.forEach(unsubscribe => unsubscribe());
      commentListeners.clear();
+     
      try {
        const commentsRef = ref(db, `postComments/${postId}`);
        const unsubscribe = onValue(commentsRef, async (snapshot) => {
@@ -4943,6 +5090,7 @@
            snapshot.forEach(child => {
              comments.push({ key: child.key, val: child.val() });
            });
+           
            const commentTree = buildCommentTree(comments);
            for (const comment of commentTree) {
              await renderComment(comment, postId);
@@ -4959,12 +5107,15 @@
        commentsList.innerHTML = '<div style="text-align:center; color:var(--text-muted); margin-top:3rem;">Error loading comments</div>';
      }
    }
+   
    function buildCommentTree(comments) {
      const map = {};
      const roots = [];
+     
      comments.forEach(comment => {
        map[comment.key] = { ...comment, replies: [] };
      });
+     
      comments.forEach(comment => {
        if (comment.val.parentId && map[comment.val.parentId]) {
          map[comment.val.parentId].replies.push(map[comment.key]);
@@ -4972,21 +5123,27 @@
          roots.push(map[comment.key]);
        }
      });
+     
      return roots.sort((a, b) => a.val.timestamp - b.val.timestamp);
    }
+   
    async function renderComment(comment, postId, isReply = false) {
      const c = comment.val;
      const commentUserInfo = await getUserInfo(c.uid);
      const isOwner = currentUser && currentUser.uid === c.uid;
      const postSnapshot = await get(ref(db, `posts/${postId}`));
      const isPostOwner = currentUser && postSnapshot.exists() && currentUser.uid === postSnapshot.val().uid;
+     
      const div = document.createElement('div');
      div.className = 'comment-item';
      div.id = `comment-${comment.key}`;
+     
      if (isReply) {
        div.style.marginLeft = '2.5rem';
      }
+     
      const hasReplies = comment.replies && comment.replies.length > 0;
+     
      div.innerHTML = `
        <img src="${commentUserInfo.avatar}" class="comment-avatar" onerror="this.src='${defaultAvatar}'">
        <div style="flex:1;">
@@ -5028,7 +5185,9 @@
          ${hasReplies ? `<div class="comment-replies" id="replies-${comment.key}"></div>` : ''}
        </div>
      `;
+     
      commentsList.appendChild(div);
+     
      if (hasReplies) {
        for (const reply of comment.replies) {
          await renderComment(reply, postId, true);
@@ -5036,6 +5195,7 @@
      }
      feather.replace();
    }
+   
    window.toggleCommentMenu = function(commentKey) {
      const menu = document.getElementById(`comment-menu-${commentKey}`);
      document.querySelectorAll('.comment-menu-dropdown.show').forEach(m => {
@@ -5043,6 +5203,7 @@
      });
      menu.classList.toggle('show');
    }
+   
    window.deleteComment = async function(postId, commentKey) {
      if (!confirm('Delete this comment?')) return;
      try {
@@ -5059,13 +5220,16 @@
        showToast("Failed to delete comment", "error");
      }
    }
+   
    window.toggleCommentLike = async function(postId, commentKey) {
      if (!currentUser) {
        showToast("Please login to like comments", "error");
        return;
      }
+     
      const likeRef = ref(db, `postComments/${postId}/${commentKey}/likes/${currentUser.uid}`);
      const commentRef = ref(db, `postComments/${postId}/${commentKey}`);
+     
      try {
        const snapshot = await get(likeRef);
        if (snapshot.exists()) {
@@ -5084,10 +5248,10 @@
            }
            return comment;
          });
+         
          const commentSnapshot = await get(commentRef);
          if (commentSnapshot.exists()) {
            const commentData = commentSnapshot.val();
-           // Only notify if not liking own comment
            if (commentData.uid !== currentUser.uid) {
              await createNotification('reply', commentData.uid, postId, null, commentData.text);
            }
@@ -5097,6 +5261,7 @@
        console.error("Like comment failed:", err);
      }
    }
+   
    window.showReplyInput = function(commentKey) {
      const inputContainer = document.getElementById(`reply-input-${commentKey}`);
      inputContainer.classList.toggle('active');
@@ -5104,10 +5269,12 @@
        inputContainer.querySelector('input').focus();
      }
    }
+   
    window.postReply = async function(postId, parentCommentKey) {
      const input = document.getElementById(`reply-text-${parentCommentKey}`);
      const text = input.value.trim();
      if (!text || !currentUser || !currentUsername) return;
+     
      try {
        await push(ref(db, `postComments/${postId}`), {
          uid: currentUser.uid,
@@ -5117,11 +5284,12 @@
          timestamp: Date.now(),
          likeCount: 0
        });
+       
        await runTransaction(ref(db, `posts/${postId}`), (post) => {
          if (post) post.commentCount = (post.commentCount || 0) + 1;
          return post;
        });
-       // Get parent comment to notify author (if not self)
+       
        const parentRef = ref(db, `postComments/${postId}/${parentCommentKey}`);
        const parentSnap = await get(parentRef);
        if (parentSnap.exists()) {
@@ -5130,12 +5298,14 @@
            await createNotification('reply', parentData.uid, postId, null, text);
          }
        }
+       
        input.value = '';
        document.getElementById(`reply-input-${parentCommentKey}`).classList.remove('active');
      } catch (err) {
        showToast("Failed to post reply", "error");
      }
    }
+   
    function closeComments() {
      sheetOverlay.classList.remove('active');
      commentSheet.classList.remove('active');
@@ -5143,12 +5313,15 @@
      commentListeners.forEach(unsubscribe => unsubscribe());
      commentListeners.clear();
    }
+   
    closeSheetBtn.addEventListener('click', closeComments);
    sheetOverlay.addEventListener('click', closeComments);
+   
    commentForm.addEventListener('submit', async (e) => {
      e.preventDefault();
      const text = commentInput.value.trim();
      if (!text || !activePostIdForComments || !currentUser || !currentUsername) return;
+     
      try {
        await push(ref(db, `postComments/${activePostIdForComments}`), {
          uid: currentUser.uid,
@@ -5157,37 +5330,40 @@
          timestamp: Date.now(),
          likeCount: 0
        });
+       
        await runTransaction(ref(db, `posts/${activePostIdForComments}`), (post) => {
          if (post) post.commentCount = (post.commentCount || 0) + 1;
          return post;
        });
+       
        const postRef = ref(db, `posts/${activePostIdForComments}`);
        const postSnapshot = await get(postRef);
        if (postSnapshot.exists()) {
          const postData = postSnapshot.val();
-         // Only notify if not commenting on own post
          if (postData.uid !== currentUser.uid) {
            await createNotification('comment', postData.uid, activePostIdForComments, postData.text, text);
          }
        }
+       
        commentInput.value = '';
      } catch (err) {
        showToast("Failed to post comment", "error");
      }
    });
+   
    // Tab switching with reset
    document.querySelectorAll('.feed-tab').forEach(tab => {
      tab.addEventListener('click', () => {
        document.querySelectorAll('.feed-tab').forEach(t => t.classList.remove('active'));
        tab.classList.add('active');
        feedMode = tab.dataset.mode;
-       // Show/hide suggested friends based on tab
+       
        if (feedMode === 'forYou') {
          loadSuggestedFriends();
        } else {
          suggestedFriendsSection.style.display = 'none';
        }
-       // Reset and reload feed
+       
        resetAndReloadFeed();
        const message = feedMode === 'forYou'
          ? 'Showing posts from people you follow'
@@ -5195,18 +5371,18 @@
        showToast(message, 'success');
      });
    });
+   
    // Search functionality
    searchInput.addEventListener('input', (e) => {
      const query = e.target.value;
      if (query) {
-       // Disable infinite scroll during search
        hasMorePosts = false;
        infiniteLoader.classList.add('hidden');
        suggestedFriendsSection.style.display = 'none';
-       // Filter and show all matching posts
+       
        feedStream.innerHTML = '';
-       displayedPosts = [];
-       const matchingPosts = allPosts.filter(post => matchesSearch(post.data, query));
+       const matchingPosts = displayedPosts.filter(post => matchesSearch(post.data, query));
+       
        if (matchingPosts.length === 0) {
          feedStream.innerHTML = `
            <div style="text-align:center; padding:4rem 1rem; color:var(--text-light);">
@@ -5221,7 +5397,6 @@
        } else {
          matchingPosts.forEach(async (post) => {
            await renderPost(post.key, post.data, query, false);
-           displayedPosts.push(post);
          });
          feather.replace();
          initializeVideoControls();
@@ -5229,10 +5404,10 @@
          initVideoObserver();
        }
      } else {
-       // Clear search, reset to infinite scroll
        resetAndReloadFeed();
      }
    });
+   
    searchInput.addEventListener('keydown', (e) => {
      if (e.key === 'Escape') {
        searchInput.value = '';
@@ -5240,6 +5415,7 @@
        searchInput.blur();
      }
    });
+   
    document.getElementById('fab-new')?.addEventListener('click', () => {
      if (!currentUser) {
        window.location.href = "signup.html";
@@ -5248,7 +5424,9 @@
      tweetText.focus();
      window.scrollTo({ top: 0, behavior: 'smooth' });
    });
+   
    document.querySelector('#top-home')?.classList.add('active');
+   
    document.addEventListener('click', (e) => {
      if (!e.target.closest('.kebab-menu') && !e.target.closest('.kebab-dropdown')) {
        document.querySelectorAll('.kebab-dropdown.show').forEach(dropdown => {
@@ -5261,12 +5439,14 @@
        });
      }
    });
+   
    window.switchToLatest = function() {
      document.querySelectorAll('.feed-tab').forEach(t => t.classList.remove('active'));
      document.querySelector('[data-mode="latest"]').classList.add('active');
      feedMode = 'latest';
      resetAndReloadFeed();
    };
+   
    // Cleanup on page unload
    window.addEventListener('beforeunload', () => {
      if (intersectionObserver) {
@@ -5280,6 +5460,7 @@
      });
      commentListeners.forEach(unsubscribe => unsubscribe());
    });
+   
    feather.replace();
  </script>
 </body>
