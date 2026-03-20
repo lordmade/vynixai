@@ -516,14 +516,13 @@
     }
     loadKey();
 
-    // ── READ VYNIX POST CONTEXT FROM SESSIONSSTORAGE ──
+    // ── READ VYNIX POST CONTEXT FROM SESSIONSTORAGE ──
     function loadVynixContext() {
       try {
         const raw = sessionStorage.getItem('vynix_ai_context');
         if (!raw) return;
         vynixContext = JSON.parse(raw);
-        sessionStorage.removeItem('vynix_ai_context'); // consume once
-        renderContextBanner();
+        sessionStorage.removeItem('vynix_ai_context');
         showBackButton();
       } catch (e) {
         console.error('Failed to load Vynix context', e);
@@ -539,93 +538,33 @@
       window.location.href = 'index.html';
     }
 
-    function renderContextBanner() {
-      if (!vynixContext) return;
-
-      const thumbSrc = vynixContext.mediaUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(vynixContext.author || 'Post')}&background=6366F1&color=fff`;
-      const authorLabel = vynixContext.author ? `by ${vynixContext.author}` : 'Vynix post';
-      const previewText = vynixContext.text
-        ? (vynixContext.text.length > 100 ? vynixContext.text.slice(0, 100) + '…' : vynixContext.text)
-        : 'Image post';
-
-      const banner = document.createElement('div');
-      banner.className = 'vynix-context-banner';
-      banner.id = 'vynix-banner';
-
-      // Build quick-prompt buttons based on what the post has
-      const hasImage = vynixContext.mediaUrl && vynixContext.mediaType !== 'video';
-      const hasText  = vynixContext.text && vynixContext.text.trim().length > 0;
-
-      const quickBtns = [];
-      if (hasText)  quickBtns.push({ label: '💬 Summarise', prompt: `Summarise this post in one sentence: "${vynixContext.text}"` });
-      if (hasText)  quickBtns.push({ label: '🔍 Fact-check', prompt: `Fact-check the claims in this post: "${vynixContext.text}"` });
-      if (hasText)  quickBtns.push({ label: '💡 Explain', prompt: `Explain this to me in simple terms: "${vynixContext.text}"` });
-      if (hasImage) quickBtns.push({ label: '🖼️ Describe image', prompt: `Describe what you see in the image from this post (it was posted by ${authorLabel}). The post caption was: "${vynixContext.text || 'no caption'}"` });
-      quickBtns.push({ label: '✍️ Write reply', prompt: `Help me write a thoughtful reply to this post: "${vynixContext.text || '[image post]'}" by ${authorLabel}` });
-
-      banner.innerHTML = `
-        <img class="ctx-thumb" src="${thumbSrc}" onerror="this.src='https://ui-avatars.com/api/?name=Post&background=6366F1&color=fff'" alt="">
-        <div class="ctx-info">
-          <div class="ctx-label">
-            <span class="material-symbols-rounded" style="font-size:13px;">link</span>
-            From Vynix feed
-          </div>
-          <div class="ctx-author">${escapeHtml(authorLabel)}</div>
-          <div class="ctx-text">${escapeHtml(previewText)}</div>
-          <div class="ctx-actions">
-            ${quickBtns.map(b => `<button class="ctx-quick-btn" onclick="useQuickPrompt(${JSON.stringify(b.prompt)})">${b.label}</button>`).join('')}
-          </div>
-        </div>
-        <button class="ctx-dismiss" onclick="dismissBanner()" title="Dismiss">
-          <span class="material-symbols-rounded" style="font-size:16px;">close</span>
-        </button>
-      `;
-
-      // Insert before welcome screen
-      els.chatWrapper.insertBefore(banner, els.welcome);
-    }
-
-    function dismissBanner() {
-      const banner = document.getElementById('vynix-banner');
-      if (banner) {
-        banner.style.transition = 'opacity 0.2s, transform 0.2s';
-        banner.style.opacity = '0';
-        banner.style.transform = 'scale(0.97)';
-        setTimeout(() => banner.remove(), 220);
-      }
-    }
-
-    // Called when user clicks a quick-prompt button
-    function useQuickPrompt(prompt) {
-      dismissBanner();
-      els.input.value = prompt;
-      handleSend();
-    }
-
-    // Inject post context as a system note on first message
+    // System prompt — context baked in for entire session
     function buildSystemPrompt() {
       let base = "You are Ona AI, a helpful and creative AI assistant with a warm, knowledgeable personality. You excel at conversation, creative writing, analysis, and helping users with a wide range of tasks. Keep responses concise but informative.";
-
-      if (vynixContext && !contextInjected) {
-        contextInjected = true;
-        base += `\n\nCONTEXT: The user is asking about a post from a social media feed called Vynix.`;
-        if (vynixContext.author)   base += ` The post was made by "${vynixContext.author}".`;
+      if (vynixContext) {
+        base += `\n\nCONTEXT: The user long-pressed a post on Vynix (a social media app) and opened it here. You have already given your opening analysis. Continue the conversation naturally.`;
+        if (vynixContext.author)   base += ` Post by: "${vynixContext.author}".`;
         if (vynixContext.text)     base += ` Post text: "${vynixContext.text}"`;
-        if (vynixContext.mediaUrl) base += ` The post also contains an image/media (URL: ${vynixContext.mediaUrl}).`;
-        base += ` Use this context to answer the user's question about the post.`;
+        if (vynixContext.mediaUrl) base += ` The post contains an image (${vynixContext.mediaUrl}).`;
       }
-
       return base;
     }
 
-    // ── RENDER CONTEXT CARD IN CHAT (shown as first ai message) ──
-    function renderContextChatCard() {
-      if (!vynixContext) return;
+    // ── AUTO-ANALYSE: fires on load — no user input needed, like Grok on X ──
+    async function autoAnalysePost() {
+      if (!vynixContext || !XAI_API_KEY) return;
 
-      const thumbSrc = vynixContext.mediaUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(vynixContext.author || 'Post')}&background=6366F1&color=fff`;
+      // Jump straight into chat view
+      els.welcome.style.display = 'none';
+      els.chat.style.display = 'flex';
+
+      // Post context card (visual anchor at top)
+      const thumbSrc = vynixContext.mediaUrl && vynixContext.mediaType !== 'video'
+        ? vynixContext.mediaUrl
+        : `https://ui-avatars.com/api/?name=${encodeURIComponent(vynixContext.author || 'Post')}&background=6366F1&color=fff`;
       const previewText = vynixContext.text
-        ? (vynixContext.text.length > 120 ? vynixContext.text.slice(0, 120) + '…' : vynixContext.text)
-        : '(Image post)';
+        ? (vynixContext.text.length > 160 ? vynixContext.text.slice(0, 160) + '…' : vynixContext.text)
+        : '(Image post — no caption)';
 
       els.chat.innerHTML += `
         <div class="message-row ai">
@@ -638,6 +577,75 @@
           </div>
         </div>
       `;
+
+      // Typing loader
+      const loaderId = 'loader-auto-' + Date.now();
+      els.chat.innerHTML += `
+        <div class="message-row ai" id="${loaderId}">
+          <div class="message-content">
+            <div class="ai-avatar"><span class="material-symbols-rounded">auto_awesome</span></div>
+            <div class="loader">
+              <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+              <span class="thinking-text">Analysing post…</span>
+            </div>
+          </div>
+        </div>
+      `;
+      els.scroll.scrollTop = els.scroll.scrollHeight;
+
+      // Hidden internal prompt — never shown as a user bubble
+      const hasImage = vynixContext.mediaUrl && vynixContext.mediaType !== 'video';
+      const analysisPrompt = [
+        `Analyse this Vynix post by ${vynixContext.author || 'a user'}.`,
+        vynixContext.text ? `Post text: "${vynixContext.text}"` : null,
+        hasImage ? `The post contains an image.` : null,
+        `Give a sharp, engaging opening analysis — 2–4 sentences. Cover what the post is about, any interesting angle, claim, or context worth noting. End with ONE short follow-up question to invite the user into a conversation. Be direct and conversational, like Grok on X. No intro like "Sure!" — just dive in.`
+      ].filter(Boolean).join(' ');
+
+      try {
+        const res = await fetch(`${API_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${XAI_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: "grok-4-1-fast-non-reasoning",
+            messages: [
+              { role: "system", content: buildSystemPrompt() },
+              { role: "user",   content: analysisPrompt }
+            ],
+            stream: false
+          })
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const reply = data.choices[0].message.content;
+
+        // Store in history so follow-ups have full context
+        conversationHistory.push({ role: 'user',      content: analysisPrompt });
+        conversationHistory.push({ role: 'assistant', content: reply });
+        contextInjected = true;
+
+        document.getElementById(loaderId)?.remove();
+        els.chat.innerHTML += `
+          <div class="message-row ai">
+            <div class="message-content">
+              <div class="ai-avatar"><span class="material-symbols-rounded">auto_awesome</span></div>
+              <div class="msg-bubble ai">${formatMessage(reply)}</div>
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        document.getElementById(loaderId)?.remove();
+        els.chat.innerHTML += `
+          <div class="message-row ai">
+            <div class="message-content">
+              <div class="ai-avatar"><span class="material-symbols-rounded">auto_awesome</span></div>
+              <div class="msg-bubble ai" style="color:#d32f2f;">Couldn't analyse the post: ${escapeHtml(err.message)}</div>
+            </div>
+          </div>
+        `;
+      }
+      els.scroll.scrollTop = els.scroll.scrollHeight;
     }
 
     // --- TAB SWITCHING ---
@@ -702,11 +710,6 @@
     function activateChat() {
       els.welcome.style.display = 'none';
       els.chat.style.display = 'flex';
-
-      // First time activating with context → show the context card in chat
-      if (vynixContext && !contextInjected) {
-        renderContextChatCard();
-      }
     }
 
     function setPrompt(t) { els.input.value = t; handleSend(); }
@@ -739,7 +742,6 @@
       if (!prompt || !XAI_API_KEY) return;
 
       activateChat();
-      dismissBanner(); // hide banner once user starts chatting
 
       conversationHistory.push({ role: 'user', content: prompt });
       els.chat.innerHTML += `
@@ -912,13 +914,20 @@
     els.send.onclick = handleSend;
     els.input.onkeypress = e => { if (e.key === 'Enter') handleSend(); };
 
-    // --- INIT: read context from Vynix ---
+    // --- INIT ---
     loadVynixContext();
 
-    // Update placeholder and suggestions if context was loaded
     if (vynixContext) {
-      els.input.placeholder = "Ask something about this post…";
-      updateSuggestions('chat');
+      // Update placeholder for follow-up messages
+      els.input.placeholder = "Reply or ask more about this post…";
+      // Wait for API key to load, then auto-analyse
+      (async () => {
+        const deadline = Date.now() + 5000; // max 5s wait
+        while (!XAI_API_KEY && Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+        await autoAnalysePost();
+      })();
     }
   </script>
 </body>
