@@ -775,71 +775,112 @@ onAuthStateChanged(auth, async user => {
     profileUid    = params.get('id') || currentUser.uid;
     isOwnProfile  = profileUid === currentUser.uid;
 
+    console.log('[profile] uid:', currentUser.uid, '| profileUid:', profileUid, '| own:', isOwnProfile);
+
     try {
         await loadCurrentUser();
+        console.log('[profile] currentUserData loaded:', currentUserData);
     } catch (e) {
-        currentUserData = { uid: currentUser.uid };
+        console.warn('[profile] loadCurrentUser failed, using fallback:', e);
+        currentUserData = {
+            uid: currentUser.uid,
+            username: currentUser.email ? currentUser.email.split('@')[0] : 'user',
+            displayName: currentUser.displayName || 'User',
+            photoURL: currentUser.photoURL || `https://ui-avatars.com/api/?name=U&background=6366F1&color=fff`,
+            verified: false
+        };
     }
 
-    await loadProfile();   // has its own internal try/catch — always un-shimmers
+    await loadProfile();
     setupBadgeListeners();
     setupScrollBehavior();
     feather.replace();
 });
 
+// Mirrors home.html loadUserData exactly — creates user node if missing
 async function loadCurrentUser() {
-    const snap = await get(ref(db, `users/${currentUser.uid}`));
-    currentUserData = snap.val() || { uid: currentUser.uid };
+    const userRef = ref(db, `users/${currentUser.uid}`);
+    const snap = await get(userRef);
+    if (snap.exists()) {
+        currentUserData = snap.val();
+    } else {
+        currentUserData = {
+            uid: currentUser.uid,
+            email: currentUser.email,
+            username: currentUser.email ? currentUser.email.split('@')[0] : 'user',
+            displayName: currentUser.displayName || 'User',
+            photoURL: currentUser.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser.email || 'U')}&background=6366F1&color=fff`,
+            verified: false,
+            createdAt: Date.now()
+        };
+        await set(userRef, currentUserData);
+    }
 }
 
 async function loadProfile() {
+    // Always un-shimmer — no matter what happens below
+    const unshimmer = () => {
+        document.getElementById('skeleton').style.display = 'none';
+        document.getElementById('profile-content').style.display = 'block';
+    };
+
     try {
-        // 1. Load user — most critical, do first so we can bail early
+        // ── Step 1: load the profile user (same pattern as home.html loadUserData) ──
         const userSnap = await get(ref(db, `users/${profileUid}`));
+
         if (!userSnap.exists()) {
-            document.getElementById('skeleton').style.display = 'none';
-            document.getElementById('profile-content').style.display = 'block';
+            unshimmer();
             document.getElementById('tab-posts').innerHTML = emptyTabHtml('user-x', 'User not found', 'This account may have been removed.');
+            feather.replace();
             return;
         }
+
         profileData = { uid: profileUid, ...userSnap.val() };
 
-        // 2. Load counts + follow status in parallel (these are cheap single-node reads)
-        const [followerSnap, followingSnap, followingMeSnap] = await Promise.all([
-            get(ref(db, `followers/${profileUid}`)).catch(() => null),
-            get(ref(db, `following/${profileUid}`)).catch(() => null),
-            get(ref(db, `following/${currentUser.uid}/${profileUid}`)).catch(() => null),
-        ]);
+        // ── Step 2: follow status (simple single-node reads, same as home.html get() pattern) ──
+        let followerCount  = 0;
+        let followingCount = 0;
+        isFollowing = false;
 
-        isFollowing = !!followingMeSnap?.exists();
-        const followerCount  = followerSnap?.exists()  ? followerSnap.numChildren()  : 0;
-        const followingCount = followingSnap?.exists() ? followingSnap.numChildren() : 0;
+        try {
+            const followerSnap = await get(ref(db, `followers/${profileUid}`));
+            followerCount = followerSnap.exists() ? followerSnap.numChildren() : 0;
+        } catch(e) { console.warn('followers read failed', e); }
 
-        // 3. Load ALL posts then filter client-side
-        //    Wrapped in its own try so a posts-read failure doesn't kill the whole page
+        try {
+            const followingSnap = await get(ref(db, `following/${profileUid}`));
+            followingCount = followingSnap.exists() ? followingSnap.numChildren() : 0;
+        } catch(e) { console.warn('following read failed', e); }
+
+        try {
+            const meSnap = await get(ref(db, `following/${currentUser.uid}/${profileUid}`));
+            isFollowing = meSnap.exists();
+        } catch(e) { console.warn('isFollowing read failed', e); }
+
+        // ── Step 3: load posts (exact same call as home.html) ──
         userPosts = [];
         try {
             const postsSnap = await get(ref(db, 'posts'));
             if (postsSnap.exists()) {
-                postsSnap.forEach(c => {
-                    const p = c.val();
-                    if (p.uid === profileUid) userPosts.push({ id: c.key, ...p });
+                postsSnap.forEach(child => {
+                    const p = child.val();
+                    if (p.uid === profileUid) {
+                        userPosts.push({ id: child.key, ...p });
+                    }
                 });
                 userPosts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
             }
-        } catch (postsErr) {
-            console.warn('Could not load posts:', postsErr);
-            // Continue — profile still renders, just with empty posts
-        }
+        } catch(e) { console.warn('posts read failed', e); }
 
         const totalLikes = userPosts.reduce((sum, p) => sum + Object.keys(p.likes || {}).length, 0);
+
+        // ── Step 4: un-shimmer and render ──
+        unshimmer();
         renderProfile(profileData, followerCount, followingCount, totalLikes);
 
     } catch (err) {
-        console.error('loadProfile error:', err);
-        // Always un-shimmer even on error
-        document.getElementById('skeleton').style.display = 'none';
-        document.getElementById('profile-content').style.display = 'block';
+        console.error('loadProfile fatal error:', err);
+        unshimmer();
         document.getElementById('tab-posts').innerHTML = emptyTabHtml('alert-circle', 'Something went wrong', 'Could not load profile. Please go back and try again.');
         feather.replace();
     }
