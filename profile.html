@@ -775,8 +775,13 @@ onAuthStateChanged(auth, async user => {
     profileUid    = params.get('id') || currentUser.uid;
     isOwnProfile  = profileUid === currentUser.uid;
 
-    await loadCurrentUser();
-    await loadProfile();
+    try {
+        await loadCurrentUser();
+    } catch (e) {
+        currentUserData = { uid: currentUser.uid };
+    }
+
+    await loadProfile();   // has its own internal try/catch — always un-shimmers
     setupBadgeListeners();
     setupScrollBehavior();
     feather.replace();
@@ -788,42 +793,60 @@ async function loadCurrentUser() {
 }
 
 async function loadProfile() {
-    const [userSnap, followerSnap, followingSnap, postsSnap, followingMeSnap] = await Promise.all([
-        get(ref(db, `users/${profileUid}`)),
-        get(ref(db, `followers/${profileUid}`)),
-        get(ref(db, `following/${profileUid}`)),
-        get(ref(db, 'posts')),
-        get(ref(db, `following/${currentUser.uid}/${profileUid}`)),
-    ]);
+    try {
+        // 1. Load user — most critical, do first so we can bail early
+        const userSnap = await get(ref(db, `users/${profileUid}`));
+        if (!userSnap.exists()) {
+            document.getElementById('skeleton').style.display = 'none';
+            document.getElementById('profile-content').style.display = 'block';
+            document.getElementById('tab-posts').innerHTML = emptyTabHtml('user-x', 'User not found', 'This account may have been removed.');
+            return;
+        }
+        profileData = { uid: profileUid, ...userSnap.val() };
 
-    if (!userSnap.exists()) {
-        showToast('User not found');
-        setTimeout(() => history.back(), 1500);
-        return;
+        // 2. Load counts + follow status in parallel (these are cheap single-node reads)
+        const [followerSnap, followingSnap, followingMeSnap] = await Promise.all([
+            get(ref(db, `followers/${profileUid}`)).catch(() => null),
+            get(ref(db, `following/${profileUid}`)).catch(() => null),
+            get(ref(db, `following/${currentUser.uid}/${profileUid}`)).catch(() => null),
+        ]);
+
+        isFollowing = !!followingMeSnap?.exists();
+        const followerCount  = followerSnap?.exists()  ? followerSnap.numChildren()  : 0;
+        const followingCount = followingSnap?.exists() ? followingSnap.numChildren() : 0;
+
+        // 3. Load ALL posts then filter client-side
+        //    Wrapped in its own try so a posts-read failure doesn't kill the whole page
+        userPosts = [];
+        try {
+            const postsSnap = await get(ref(db, 'posts'));
+            if (postsSnap.exists()) {
+                postsSnap.forEach(c => {
+                    const p = c.val();
+                    if (p.uid === profileUid) userPosts.push({ id: c.key, ...p });
+                });
+                userPosts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            }
+        } catch (postsErr) {
+            console.warn('Could not load posts:', postsErr);
+            // Continue — profile still renders, just with empty posts
+        }
+
+        const totalLikes = userPosts.reduce((sum, p) => sum + Object.keys(p.likes || {}).length, 0);
+        renderProfile(profileData, followerCount, followingCount, totalLikes);
+
+    } catch (err) {
+        console.error('loadProfile error:', err);
+        // Always un-shimmer even on error
+        document.getElementById('skeleton').style.display = 'none';
+        document.getElementById('profile-content').style.display = 'block';
+        document.getElementById('tab-posts').innerHTML = emptyTabHtml('alert-circle', 'Something went wrong', 'Could not load profile. Please go back and try again.');
+        feather.replace();
     }
-
-    profileData = { uid: profileUid, ...userSnap.val() };
-    isFollowing  = followingMeSnap.exists();
-
-    const followerCount  = followerSnap.exists()  ? followerSnap.numChildren()  : 0;
-    const followingCount = followingSnap.exists() ? followingSnap.numChildren() : 0;
-
-    // Filter posts for this user
-    userPosts = [];
-    if (postsSnap.exists()) {
-        postsSnap.forEach(c => {
-            if (c.val().uid === profileUid) userPosts.push({ id: c.key, ...c.val() });
-        });
-        userPosts.sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
-    }
-
-    const totalLikes = userPosts.reduce((sum, p) => sum + Object.keys(p.likes||{}).length, 0);
-
-    renderProfile(profileData, followerCount, followingCount, totalLikes);
 }
 
 function renderProfile(u, followers, following, likes) {
-    // Hide skeleton, show content
+    // Always un-shimmer first, before anything else can throw
     document.getElementById('skeleton').style.display = 'none';
     document.getElementById('profile-content').style.display = 'block';
 
