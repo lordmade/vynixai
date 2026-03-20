@@ -767,7 +767,85 @@
         }
         
         .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-        
+
+        /* Rich text highlights in posts */
+        .post-text .mention, .post-text .hashtag, .post-text .post-link {
+            color: var(--primary);
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .post-text .mention:hover, .post-text .hashtag:hover, .post-text .post-link:hover {
+            text-decoration: underline;
+        }
+
+        /* See more / less */
+        .post-text {
+            font-size: 16px;
+            line-height: 1.6;
+            margin: 12px 0;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .post-text.collapsed {
+            display: -webkit-box;
+            -webkit-line-clamp: 4;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            white-space: normal;
+        }
+        .see-more-btn {
+            color: var(--primary);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            background: none;
+            border: none;
+            padding: 2px 0 8px;
+            display: inline-block;
+            font-family: inherit;
+        }
+        .see-more-btn:hover { text-decoration: underline; }
+
+        /* Mention dropdown */
+        .mention-dropdown {
+            position: absolute;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            z-index: 400;
+            min-width: 240px;
+            max-height: 240px;
+            overflow-y: auto;
+            display: none;
+            top: calc(100% + 4px);
+            left: 0;
+        }
+        .mention-dropdown.active { display: block; }
+        .mention-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .mention-item:hover, .mention-item.selected { background: var(--background); }
+        .mention-item img {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+        .mention-item-info { display: flex; flex-direction: column; }
+        .mention-item-name { font-weight: 600; font-size: 14px; }
+        .mention-item-handle { font-size: 12px; color: var(--text-muted); }
+
+        /* Compose wrapper needs relative positioning for dropdown */
+        .compose-input-wrapper { position: relative; flex: 1; }
+
         @media (min-width: 1024px) {
             .bottom-nav { display: none; }
             body { padding-bottom: 0; }
@@ -854,7 +932,10 @@
     
     <div style="display: flex; gap: 12px; margin-bottom: 16px;">
         <img src="" id="compose-avatar" class="avatar" style="width: 40px; height: 40px;">
-        <textarea id="compose-text" placeholder="What's happening?" style="flex: 1; border: none; outline: none; font-size: 18px; resize: none; height: 120px; font-family: inherit;" oninput="updatePostButton()"></textarea>
+        <div class="compose-input-wrapper">
+            <textarea id="compose-text" placeholder="What's happening? Use @ to tag someone" style="width: 100%; border: none; outline: none; font-size: 18px; resize: none; height: 120px; font-family: inherit;" oninput="updatePostButton(); handleMentionInput(event);" onkeydown="handleMentionKeydown(event);"></textarea>
+            <div class="mention-dropdown" id="mention-dropdown"></div>
+        </div>
     </div>
     
     <div id="media-preview" style="display: none; position: relative; margin-bottom: 16px; border-radius: 16px; overflow: hidden;">
@@ -1230,7 +1311,7 @@
                 </div>
             </div>
 
-            <div class="post-text">${escapeHtml(post.text || '')}</div>
+            ${renderPostText(post.text || '', post.id)}
 
             ${post.mediaUrl ? `
                 <div class="post-media">
@@ -1873,7 +1954,221 @@
         }
     };
 
-    // Utilities
+    // ── UTILITIES ──
+
+    const POST_TRUNCATE_CHARS = 280;
+
+    // Render post text with rich formatting + see more/less
+    function renderPostText(rawText, postId) {
+        const escaped = escapeHtml(rawText);
+        const rich = enrichText(escaped);
+        const isLong = rawText.length > POST_TRUNCATE_CHARS;
+
+        if (!isLong) {
+            return `<div class="post-text" id="post-text-${postId}">${rich}</div>`;
+        }
+
+        // Truncate the escaped rich text at a word boundary near the char limit
+        const truncated = truncateRich(rich, POST_TRUNCATE_CHARS);
+
+        return `
+            <div class="post-text collapsed" id="post-text-${postId}">${truncated}</div>
+            <button class="see-more-btn" id="see-more-${postId}" onclick="toggleSeeMore('${postId}', ${JSON.stringify(rich).replace(/'/g, "\\'")})">See more</button>
+        `;
+    }
+
+    window.toggleSeeMore = (postId, fullRich) => {
+        const el = document.getElementById(`post-text-${postId}`);
+        const btn = document.getElementById(`see-more-${postId}`);
+        if (!el || !btn) return;
+
+        if (el.classList.contains('collapsed')) {
+            el.innerHTML = fullRich;
+            el.classList.remove('collapsed');
+            btn.textContent = 'See less';
+        } else {
+            el.innerHTML = truncateRich(fullRich, POST_TRUNCATE_CHARS);
+            el.classList.add('collapsed');
+            btn.textContent = 'See more';
+        }
+    };
+
+    // Truncate HTML-safe rich text near char limit at word boundary
+    function truncateRich(rich, limit) {
+        // Strip tags to count real chars, then cut at word boundary
+        const stripped = rich.replace(/<[^>]+>/g, '');
+        if (stripped.length <= limit) return rich;
+
+        // Find a cut point in the original rich string that corresponds to ~limit real chars
+        let realCount = 0;
+        let i = 0;
+        while (i < rich.length && realCount < limit) {
+            if (rich[i] === '<') {
+                while (i < rich.length && rich[i] !== '>') i++;
+            } else {
+                realCount++;
+            }
+            i++;
+        }
+        // Walk back to last space
+        let cut = i;
+        while (cut > 0 && rich[cut] !== ' ' && rich[cut] !== '\n') cut--;
+        return rich.slice(0, cut) + '…';
+    }
+
+    // Turn @mentions, #hashtags, and URLs into highlighted spans/links
+    function enrichText(escapedHtml) {
+        return escapedHtml
+            // URLs
+            .replace(/(https?:\/\/[^\s<]+)/g, '<a class="post-link" href="$1" target="_blank" rel="noopener">$1</a>')
+            // @mentions
+            .replace(/@([a-zA-Z0-9_]+)/g, '<span class="mention" onclick="goToProfileByUsername(\'$1\')">@$1</span>')
+            // #hashtags
+            .replace(/#([a-zA-Z0-9_]+)/g, '<span class="hashtag">#$1</span>');
+    }
+
+    window.goToProfileByUsername = async (username) => {
+        // Look up uid by username
+        try {
+            const snap = await get(ref(db, 'users'));
+            if (snap.exists()) {
+                snap.forEach(child => {
+                    if (child.val().username === username) {
+                        window.location.href = `profile.html?id=${child.key}`;
+                    }
+                });
+            }
+        } catch {
+            showToast('Could not find user');
+        }
+    };
+
+    // ── MENTION AUTOCOMPLETE ──
+    let mentionQuery = '';
+    let mentionStart = -1;
+    let mentionResults = [];
+    let mentionSelected = 0;
+    let allUsersCache = null;
+
+    async function getAllUsers() {
+        if (allUsersCache) return allUsersCache;
+        try {
+            const snap = await get(ref(db, 'users'));
+            allUsersCache = [];
+            if (snap.exists()) {
+                snap.forEach(child => {
+                    const u = child.val();
+                    if (child.key !== currentUser.uid) {
+                        allUsersCache.push({ uid: child.key, ...u });
+                    }
+                });
+            }
+        } catch {
+            allUsersCache = [];
+        }
+        return allUsersCache;
+    }
+
+    window.handleMentionInput = async (e) => {
+        const ta = e.target;
+        const val = ta.value;
+        const pos = ta.selectionStart;
+
+        // Find the @ before the cursor
+        let start = pos - 1;
+        while (start >= 0 && val[start] !== '@' && val[start] !== ' ' && val[start] !== '\n') start--;
+
+        if (start >= 0 && val[start] === '@') {
+            mentionStart = start;
+            mentionQuery = val.slice(start + 1, pos).toLowerCase();
+            const users = await getAllUsers();
+            mentionResults = users.filter(u =>
+                u.username?.toLowerCase().includes(mentionQuery) ||
+                u.displayName?.toLowerCase().includes(mentionQuery)
+            ).slice(0, 6);
+            mentionSelected = 0;
+            renderMentionDropdown();
+        } else {
+            closeMentionDropdown();
+        }
+    };
+
+    window.handleMentionKeydown = (e) => {
+        const dropdown = document.getElementById('mention-dropdown');
+        if (!dropdown.classList.contains('active')) return;
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            mentionSelected = Math.min(mentionSelected + 1, mentionResults.length - 1);
+            renderMentionDropdown();
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            mentionSelected = Math.max(mentionSelected - 1, 0);
+            renderMentionDropdown();
+        } else if (e.key === 'Enter' || e.key === 'Tab') {
+            if (mentionResults.length > 0) {
+                e.preventDefault();
+                insertMention(mentionResults[mentionSelected]);
+            }
+        } else if (e.key === 'Escape') {
+            closeMentionDropdown();
+        }
+    };
+
+    function renderMentionDropdown() {
+        const dropdown = document.getElementById('mention-dropdown');
+        if (mentionResults.length === 0) { closeMentionDropdown(); return; }
+
+        dropdown.innerHTML = mentionResults.map((u, i) => `
+            <div class="mention-item ${i === mentionSelected ? 'selected' : ''}" onclick="insertMentionByIndex(${i})">
+                <img src="${u.photoURL || `https://ui-avatars.com/api/?name=${u.username}&background=random`}" alt="">
+                <div class="mention-item-info">
+                    <span class="mention-item-name">${escapeHtml(u.displayName || u.username)}</span>
+                    <span class="mention-item-handle">@${escapeHtml(u.username || '')}</span>
+                </div>
+            </div>
+        `).join('');
+
+        dropdown.classList.add('active');
+    }
+
+    window.insertMentionByIndex = (i) => insertMention(mentionResults[i]);
+
+    function insertMention(user) {
+        const ta = document.getElementById('compose-text');
+        const val = ta.value;
+        const pos = ta.selectionStart;
+
+        const before = val.slice(0, mentionStart);
+        const after = val.slice(pos);
+        const insert = `@${user.username} `;
+
+        ta.value = before + insert + after;
+
+        const newPos = mentionStart + insert.length;
+        ta.setSelectionRange(newPos, newPos);
+        ta.focus();
+
+        closeMentionDropdown();
+        updatePostButton();
+    }
+
+    function closeMentionDropdown() {
+        const dropdown = document.getElementById('mention-dropdown');
+        if (dropdown) dropdown.classList.remove('active');
+        mentionResults = [];
+        mentionStart = -1;
+    }
+
+    // Close mention dropdown on outside click
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.compose-input-wrapper')) closeMentionDropdown();
+        if (!e.target.closest('.post-menu')) {
+            document.querySelectorAll('.post-dropdown').forEach(d => d.classList.remove('active'));
+        }
+    });
+
+    // ── ORIGINAL UTILITIES ──
     function formatTime(timestamp) {
         if (!timestamp) return 'now';
         const secs = Math.floor((Date.now() - timestamp) / 1000);
@@ -1902,12 +2197,6 @@
 
     window.goToNotifications = () => { window.location.href = 'notifications.html'; };
     window.goToMessages = () => { window.location.href = 'messages.html'; };
-
-    document.addEventListener('click', (e) => {
-        if (!e.target.closest('.post-menu')) {
-            document.querySelectorAll('.post-dropdown').forEach(d => d.classList.remove('active'));
-        }
-    });
 
     feather.replace();
 </script>
