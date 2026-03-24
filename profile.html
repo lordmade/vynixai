@@ -447,17 +447,28 @@ async function loadProfile() {
         }
         profileData={uid:profileUid,...userSnap.val()};
         isFollowing=false;
-        try { const ms=await get(ref(db,`following/${currentUser.uid}/${profileUid}`)); isFollowing=ms.exists(); } catch(e) {}
+
+        // Fetch followers, following, and follow-status in parallel
+        const [followerSnap, followingSnap, isFollowingSnap, postsSnap] = await Promise.all([
+            get(ref(db,`followers/${profileUid}`)),
+            get(ref(db,`following/${profileUid}`)),
+            get(ref(db,`following/${currentUser.uid}/${profileUid}`)),
+            get(ref(db,'posts'))
+        ]);
+
+        const followerCount  = followerSnap.exists()   ? followerSnap.numChildren()  : 0;
+        const followingCount = followingSnap.exists()  ? followingSnap.numChildren() : 0;
+        isFollowing          = isFollowingSnap.exists();
 
         userPosts=[];
-        try {
-            const ps=await get(ref(db,'posts'));
-            if (ps.exists()) { ps.forEach(c=>{ if(c.val().uid===profileUid) userPosts.push({id:c.key,...c.val()}); }); userPosts.sort((a,b)=>(b.timestamp||0)-(a.timestamp||0)); }
-        } catch(e) {}
+        if (postsSnap.exists()) {
+            postsSnap.forEach(c=>{ if(c.val().uid===profileUid) userPosts.push({id:c.key,...c.val()}); });
+            userPosts.sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+        }
 
         const totalLikes=userPosts.reduce((s,p)=>s+Object.keys(p.likes||{}).length,0);
         unshimmer();
-        renderProfile(profileData, totalLikes);
+        renderProfile(profileData, followerCount, followingCount, totalLikes);
     } catch(err) {
         console.error(err);
         document.getElementById('skeleton').style.display='none';
@@ -467,9 +478,9 @@ async function loadProfile() {
     }
 }
 
-// Note: follower/following counts are NOT passed here —
-// they are driven entirely by the onValue listeners above.
-function renderProfile(u, likes) {
+// Note: follower/following counts fetched in loadProfile and passed here directly,
+// then kept live by the onValue listeners set up after loadProfile completes.
+function renderProfile(u, followers, following, likes) {
     document.getElementById('header-username').textContent=u.displayName||u.username||'User';
     document.getElementById('header-post-count').textContent=`${userPosts.length} post${userPosts.length!==1?'s':''}`;
 
@@ -501,7 +512,9 @@ function renderProfile(u, likes) {
     if (u.createdAt) meta.push(`<span class="meta-item"><i data-feather="calendar" style="width:13px;height:13px;"></i>Joined ${new Date(u.createdAt).toLocaleDateString('en-US',{month:'long',year:'numeric'})}</span>`);
     document.getElementById('meta-row').innerHTML=meta.join('');
 
-    // Posts & likes only — followers/following come from live listeners
+    // Set all four stats immediately from the fetched data
+    document.getElementById('stat-followers').textContent=fmt(followers);
+    document.getElementById('stat-following').textContent=fmt(following);
     document.getElementById('stat-posts').textContent=fmt(userPosts.length);
     document.getElementById('stat-likes').textContent=fmt(likes);
 
@@ -625,10 +638,17 @@ window.toggleFollow=async()=>{
 };
 
 window.goToMessage=async()=>{
-    const ids=[currentUser.uid,profileUid].sort();const chatId=ids.join('_');const u={};
-    u[`userChats/${currentUser.uid}/${chatId}/otherUid`]=profileUid;u[`userChats/${currentUser.uid}/${chatId}/unreadCount`]=0;
-    u[`userChats/${profileUid}/${chatId}/otherUid`]=currentUser.uid;u[`userChats/${profileUid}/${chatId}/unreadCount`]=0;
-    await update(ref(db),u);window.location.href='messages.html';
+    // Pre-create the chat entry so messages.html can open it directly via ?uid=
+    const ids=[currentUser.uid,profileUid].sort(); const chatId=ids.join('_');
+    const u={};
+    u[`userChats/${currentUser.uid}/${chatId}/otherUid`]=profileUid;
+    u[`userChats/${currentUser.uid}/${chatId}/unreadCount`]=0;
+    u[`userChats/${profileUid}/${chatId}/otherUid`]=currentUser.uid;
+    const otherSnap=await get(ref(db,`userChats/${profileUid}/${chatId}/unreadCount`));
+    u[`userChats/${profileUid}/${chatId}/unreadCount`]=otherSnap.val()||0;
+    await update(ref(db),u);
+    // Pass the otherUid so messages.html auto-opens the right chat
+    window.location.href=`messages.html?uid=${profileUid}`;
 };
 
 window.showFollowers=async()=>{
