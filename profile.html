@@ -22,6 +22,7 @@
         @keyframes spin{to{transform:rotate(360deg);}}
         @keyframes scaleIn{from{transform:scale(0.9);opacity:0;}to{transform:scale(1);opacity:1;}}
         @keyframes avatarPop{0%{transform:scale(1);}50%{transform:scale(1.06);}100%{transform:scale(1);}}
+        /* Number pop when count updates */
         @keyframes countPop{0%{transform:scale(1);}40%{transform:scale(1.22);}100%{transform:scale(1);}}
 
         .shimmer{background:linear-gradient(90deg,var(--surface2) 25%,var(--border) 50%,var(--surface2) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:6px;}
@@ -88,6 +89,7 @@
         .meta-item a{color:var(--primary);text-decoration:none;}
         .meta-item a:hover{text-decoration:underline;}
 
+        /* ── Stats — counts animate in when Firebase responds ── */
         .stats-row{display:flex;gap:0;padding:0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);transition:background 0.3s;}
         .stat-item{display:flex;flex-direction:column;align-items:center;cursor:pointer;flex:1;padding:14px 8px;border-right:1px solid var(--border);transition:background 0.15s;}
         .stat-item:last-child{border-right:none;}
@@ -272,13 +274,12 @@
         </div>
 
         <div class="stats-row">
-            <!-- ✅ FIX: Start with 0 instead of — so onValue updates are always visible -->
             <div class="stat-item" onclick="showFollowers()">
-                <span class="stat-num" id="stat-followers">0</span>
+                <span class="stat-num" id="stat-followers">—</span>
                 <span class="stat-label">Followers</span>
             </div>
             <div class="stat-item" onclick="showFollowing()">
-                <span class="stat-num" id="stat-following">0</span>
+                <span class="stat-num" id="stat-following">—</span>
                 <span class="stat-label">Following</span>
             </div>
             <div class="stat-item">
@@ -385,24 +386,6 @@ let isOwnProfile=false, isFollowing=false;
 let userPosts=[], activeTab='posts';
 let editAvatarFile=null, confirmCallback=null;
 
-// ─────────────────────────────────────────────
-// ✅ FIX 1: updateStatCount — removed equality
-// guard that silently skipped updates, and added
-// a force-reflow so the pop animation always fires.
-// ─────────────────────────────────────────────
-function updateStatCount(id, value) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const formatted = fmt(value);
-    // Always write — never skip based on current displayed text
-    el.textContent = formatted;
-    // Force reflow so CSS animation replays even for same value
-    el.classList.remove('pop');
-    void el.offsetWidth;
-    el.classList.add('pop');
-    setTimeout(() => el.classList.remove('pop'), 350);
-}
-
 onAuthStateChanged(auth, async user => {
     if (!user) { window.location.href='signup.html'; return; }
     currentUser=user;
@@ -414,43 +397,37 @@ onAuthStateChanged(auth, async user => {
         currentUserData={uid:currentUser.uid,username:currentUser.email?currentUser.email.split('@')[0]:'user',displayName:currentUser.displayName||'User',photoURL:currentUser.photoURL||`https://ui-avatars.com/api/?name=U&background=6366F1&color=fff`,verified:false};
     }
 
-    // ─────────────────────────────────────────────────────────
-    // ✅ FIX 2: Real-time onValue listeners for followers and
-    // following — now with error callbacks so failures surface
-    // instead of leaving the counts silently stuck on "0".
-    // These fire immediately on first connect and on every
-    // subsequent change, giving true real-time counts.
-    // ─────────────────────────────────────────────────────────
-    onValue(
-        ref(db, `followers/${profileUid}`),
-        snap => {
-            const count = snap.exists() ? snap.numChildren() : 0;
-            updateStatCount('stat-followers', count);
-        },
-        err => {
-            console.error('Followers listener error:', err);
-            // Keep showing 0 rather than a broken dash
-            document.getElementById('stat-followers').textContent = '0';
-        }
-    );
-
-    onValue(
-        ref(db, `following/${profileUid}`),
-        snap => {
-            const count = snap.exists() ? snap.numChildren() : 0;
-            updateStatCount('stat-following', count);
-        },
-        err => {
-            console.error('Following listener error:', err);
-            document.getElementById('stat-following').textContent = '0';
-        }
-    );
+    // ══════════════════════════════════════════════════════
+    // KEY FIX: attach live onValue listeners for followers
+    // and following IMMEDIATELY — these fire as soon as
+    // Firebase responds, independently of the rest of the
+    // profile load. The stat cells show "—" until the first
+    // snapshot arrives (usually < 200 ms on a real device).
+    // ══════════════════════════════════════════════════════
+    onValue(ref(db, `followers/${profileUid}`), snap => {
+        updateStatCount('stat-followers', snap.exists() ? snap.numChildren() : 0);
+    });
+    onValue(ref(db, `following/${profileUid}`), snap => {
+        updateStatCount('stat-following', snap.exists() ? snap.numChildren() : 0);
+    });
 
     await loadProfile();
     setupBadgeListeners();
     setupScrollBehavior();
     feather.replace();
 });
+
+// Animate the number in when it changes
+function updateStatCount(id, value) {
+    const el=document.getElementById(id); if (!el) return;
+    const formatted=fmt(value);
+    if (el.textContent===formatted) return;
+    el.textContent=formatted;
+    el.classList.remove('pop');
+    void el.offsetWidth; // reflow
+    el.classList.add('pop');
+    setTimeout(()=>el.classList.remove('pop'), 350);
+}
 
 async function loadCurrentUser() {
     const userRef=ref(db,`users/${currentUser.uid}`);
@@ -493,8 +470,8 @@ async function loadProfile() {
     }
 }
 
-// Note: followers/following counts are driven entirely by
-// the onValue listeners above — NOT set here.
+// Note: follower/following counts are NOT passed here —
+// they are driven entirely by the onValue listeners above.
 function renderProfile(u, likes) {
     document.getElementById('header-username').textContent=u.displayName||u.username||'User';
     document.getElementById('header-post-count').textContent=`${userPosts.length} post${userPosts.length!==1?'s':''}`;
@@ -632,33 +609,23 @@ window.togglePostText=(postId,fr)=>{
     if(btn.textContent==='See more'){el.innerHTML=fr;btn.textContent='See less';}else{el.innerHTML=truncateRich(fr,240);btn.textContent='See more';}
 };
 
-// ─────────────────────────────────────────────────────────
-// ✅ FIX 3: toggleFollow no longer manually updates the
-// stat-followers display. The onValue listener handles it
-// automatically the moment Firebase writes succeed.
-// ─────────────────────────────────────────────────────────
 window.toggleFollow=async()=>{
     const btn=document.getElementById('follow-btn');if(!btn)return;
     if(isFollowing){
         showConfirm(`Unfollow ${profileData.displayName||profileData.username}?`,"They won't be notified.",async()=>{
             await remove(ref(db,`following/${currentUser.uid}/${profileUid}`));
             await remove(ref(db,`followers/${profileUid}/${currentUser.uid}`));
-            isFollowing=false;
-            btn.textContent='Follow';
-            btn.className='follow-btn follow-action';
-            // onValue fires automatically → stat-followers updates on its own
+            isFollowing=false;btn.textContent='Follow';btn.className='follow-btn follow-action';
+            // onValue listener automatically updates stat-followers
         });
     }else{
         await set(ref(db,`following/${currentUser.uid}/${profileUid}`),true);
         await set(ref(db,`followers/${profileUid}/${currentUser.uid}`),true);
         const nr=push(ref(db,`notifications/${profileUid}`));
         await set(nr,{type:'follow',actorId:currentUser.uid,actorName:currentUserData.displayName||currentUserData.username||'Someone',actorPhoto:currentUserData.photoURL||'',timestamp:serverTimestamp(),read:false});
-        isFollowing=true;
-        btn.textContent='Following';
-        btn.className='follow-btn following-action';
-        // onValue fires automatically → stat-followers updates on its own
-        showToast('Following!');
-        if(navigator.vibrate)navigator.vibrate(40);
+        isFollowing=true;btn.textContent='Following';btn.className='follow-btn following-action';
+        // onValue listener automatically updates stat-followers
+        showToast('Following!');if(navigator.vibrate)navigator.vibrate(40);
     }
 };
 
@@ -698,8 +665,18 @@ async function renderUserList(uids,containerId){
 
 window.quickFollow=async(e,uid,btn)=>{
     e.stopPropagation();const isF=btn.classList.contains('following');
-    if(isF){await remove(ref(db,`following/${currentUser.uid}/${uid}`));await remove(ref(db,`followers/${uid}/${currentUser.uid}`));btn.textContent='Follow';btn.classList.remove('following');}
-    else{await set(ref(db,`following/${currentUser.uid}/${uid}`),true);await set(ref(db,`followers/${uid}/${currentUser.uid}`),true);btn.textContent='Following';btn.classList.add('following');}
+    if(isF){
+        await remove(ref(db,`following/${currentUser.uid}/${uid}`));
+        await remove(ref(db,`followers/${uid}/${currentUser.uid}`));
+        btn.textContent='Follow';btn.classList.remove('following');
+    }else{
+        await set(ref(db,`following/${currentUser.uid}/${uid}`),true);
+        await set(ref(db,`followers/${uid}/${currentUser.uid}`),true);
+        // Notify the followed user — same pattern as toggleFollow
+        const nr=push(ref(db,`notifications/${uid}`));
+        await set(nr,{type:'follow',actorId:currentUser.uid,actorName:currentUserData.displayName||currentUserData.username||'Someone',actorPhoto:currentUserData.photoURL||'',timestamp:serverTimestamp(),read:false});
+        btn.textContent='Following';btn.classList.add('following');
+    }
 };
 
 function openListSheet(){document.getElementById('list-overlay').classList.add('active');feather.replace();}
