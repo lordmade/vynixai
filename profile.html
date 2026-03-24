@@ -402,12 +402,7 @@ let userPosts = [],
 let editAvatarFile = null, 
     confirmCallback = null;
 
-// Debug logging
-console.log("Profile page initializing...");
-
 onAuthStateChanged(auth, async user => {
-    console.log("Auth state changed:", user ? `User: ${user.uid}` : "No user");
-    
     if (!user) { 
         window.location.href = 'auth.html'; 
         return; 
@@ -417,13 +412,10 @@ onAuthStateChanged(auth, async user => {
     const params = new URLSearchParams(window.location.search);
     profileUid = params.get('id') || currentUser.uid;
     isOwnProfile = profileUid === currentUser.uid;
-    
-    console.log("Loading profile for:", profileUid, "Own profile:", isOwnProfile);
 
     try { 
         await loadCurrentUser(); 
     } catch(e) {
-        console.warn("Failed to load current user data, using defaults:", e);
         currentUserData = {
             uid: currentUser.uid,
             username: currentUser.email ? currentUser.email.split('@')[0] : 'user',
@@ -435,13 +427,19 @@ onAuthStateChanged(auth, async user => {
 
     await loadProfile();
 
-    // Attach live count listeners
+    // FIXED: Only update stats if data exists, don't overwrite with 0
     onValue(ref(db, `followers/${profileUid}`), snap => {
-        updateStatCount('stat-followers', snap.exists() ? snap.numChildren() : 0);
+        if (snap.exists()) {
+            updateStatCount('stat-followers', snap.numChildren());
+        }
+        // If no data exists, leave the current value (from loadProfile) alone
     }, err => console.error("Followers listener error:", err));
     
     onValue(ref(db, `following/${profileUid}`), snap => {
-        updateStatCount('stat-following', snap.exists() ? snap.numChildren() : 0);
+        if (snap.exists()) {
+            updateStatCount('stat-following', snap.numChildren());
+        }
+        // If no data exists, leave the current value (from loadProfile) alone
     }, err => console.error("Following listener error:", err));
 
     setupBadgeListeners();
@@ -486,9 +484,7 @@ async function loadProfile() {
         document.getElementById('profile-content').style.display = 'block';
     };
     
-    // Validate profileUid
     if (!profileUid) {
-        console.error("No profile UID specified");
         unshimmer();
         document.getElementById('tab-posts').innerHTML = 
             emptyTabHtml('alert-circle', 'Invalid Profile', 'No user ID specified.');
@@ -496,12 +492,9 @@ async function loadProfile() {
     }
 
     try {
-        // Fetch user data first (required)
-        console.log("Fetching user data for:", profileUid);
         const userSnap = await get(ref(db, `users/${profileUid}`));
         
         if (!userSnap.exists()) {
-            console.error("User not found:", profileUid);
             unshimmer();
             document.getElementById('tab-posts').innerHTML = 
                 emptyTabHtml('user-x', 'User not found', 'This account may have been removed.');
@@ -510,51 +503,37 @@ async function loadProfile() {
         }
         
         profileData = { uid: profileUid, ...userSnap.val() };
-        console.log("Profile data loaded:", profileData.displayName || profileData.username);
-        
         isFollowing = false;
         userPosts = [];
 
-        // Initialize stats with defaults
         let followerCount = 0, 
             followingCount = 0, 
             totalLikes = 0;
 
-        // Fetch followers (separate try-catch so one failure doesn't break all)
         try {
-            console.log("Fetching followers...");
             const followerSnap = await get(ref(db, `followers/${profileUid}`));
             followerCount = followerSnap.exists() ? followerSnap.numChildren() : 0;
-            console.log("Followers:", followerCount);
         } catch (e) { 
             console.warn('Followers fetch failed:', e); 
         }
 
-        // Fetch following
         try {
-            console.log("Fetching following...");
             const followingSnap = await get(ref(db, `following/${profileUid}`));
             followingCount = followingSnap.exists() ? followingSnap.numChildren() : 0;
-            console.log("Following:", followingCount);
         } catch (e) { 
             console.warn('Following fetch failed:', e); 
         }
 
-        // Check if current user follows this profile
         if (!isOwnProfile) {
             try {
-                console.log("Checking follow status...");
                 const isFollowingSnap = await get(ref(db, `following/${currentUser.uid}/${profileUid}`));
                 isFollowing = isFollowingSnap.exists();
-                console.log("Is following:", isFollowing);
             } catch (e) { 
                 console.warn('Follow status fetch failed:', e); 
             }
         }
 
-        // Fetch posts (this often fails due to permissions or large data)
         try {
-            console.log("Fetching posts...");
             const postsSnap = await get(ref(db, 'posts'));
             if (postsSnap.exists()) {
                 postsSnap.forEach(c => {
@@ -564,11 +543,9 @@ async function loadProfile() {
                 });
                 userPosts.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
                 totalLikes = userPosts.reduce((s, p) => s + Object.keys(p.likes || {}).length, 0);
-                console.log("Posts loaded:", userPosts.length);
             }
         } catch (e) {
             console.warn('Posts fetch failed:', e);
-            // Don't fail entirely if posts can't load
         }
 
         unshimmer();
@@ -632,7 +609,7 @@ function renderProfile(u, followers, following, likes) {
     if (u.createdAt) meta.push(`<span class="meta-item"><i data-feather="calendar" style="width:13px;height:13px;"></i>Joined ${new Date(u.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</span>`);
     document.getElementById('meta-row').innerHTML = meta.join('');
 
-    // Set all four stats immediately from the fetched data
+    // Set stats directly (updateStatCount handles animation)
     document.getElementById('stat-followers').textContent = fmt(followers);
     document.getElementById('stat-following').textContent = fmt(following);
     document.getElementById('stat-posts').textContent = fmt(userPosts.length);
@@ -849,6 +826,13 @@ window.toggleFollow = async () => {
             isFollowing = false;
             btn.textContent = 'Follow';
             btn.className = 'follow-btn follow-action';
+            
+            // Update follower count display
+            const currentCount = parseInt(document.getElementById('stat-followers').textContent.replace(/[KM]/g, '')) || 0;
+            if (currentCount > 0) {
+                updateStatCount('stat-followers', currentCount - 1);
+            }
+            
             showToast('Unfollowed');
         } else {
             await set(ref(db, `following/${currentUser.uid}/${profileUid}`), true);
@@ -865,6 +849,19 @@ window.toggleFollow = async () => {
             isFollowing = true;
             btn.textContent = 'Following';
             btn.className = 'follow-btn following-action';
+            
+            // Update follower count display
+            const currentText = document.getElementById('stat-followers').textContent;
+            let currentCount = 0;
+            if (currentText.includes('K')) {
+                currentCount = parseFloat(currentText) * 1000;
+            } else if (currentText.includes('M')) {
+                currentCount = parseFloat(currentText) * 1000000;
+            } else {
+                currentCount = parseInt(currentText) || 0;
+            }
+            updateStatCount('stat-followers', currentCount + 1);
+            
             showToast('Following!');
             if (navigator.vibrate) navigator.vibrate(40);
         }
@@ -1255,9 +1252,10 @@ function formatTime(ts) {
 }
 
 function fmt(n) {
+    if (!n && n !== 0) return '0';
     if (n >= 1e6) return (n / 1e6).toFixed(1).replace('.0', '') + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1).replace('.0', '') + 'K';
-    return String(n || 0);
+    return String(n);
 }
 
 function enrichText(h) {
