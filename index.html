@@ -9,7 +9,7 @@
   
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#000000">
-  <meta name="description" content="AI-powered educational assistant for students">
+  <meta name="description" content="mzansi's social platform ">
   
   <title>Vynix Chat</title>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
@@ -232,10 +232,34 @@
       cursor: pointer;
       transition: all 0.2s;
       white-space: nowrap;
+      position: relative;
     }
     
     .install-btn:hover {
       transform: scale(1.05);
+    }
+
+    /* Spinner inside install button while waiting for prompt */
+    .install-btn.loading {
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .install-btn.loading::after {
+      content: '';
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #00000033;
+      border-top-color: #000000;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
     
     .install-close {
@@ -377,7 +401,6 @@
   <div class="install-banner" id="installBanner">
     <div class="install-banner-content">
       <div class="install-icon">
-        <!-- Redesigned V logo: two diagonal bars with angled precision cuts, X-style construction -->
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M 2 3 L 8 1 L 15 20 L 9 22 Z M 16 1 L 22 3 L 15 22 L 9 20 Z"/>
         </svg>
@@ -398,7 +421,6 @@
   <div class="splash-container" id="splashContainer">
     <div class="logo-wrapper">
       <div class="v-logo">
-        <!-- Redesigned V logo: two diagonal bars with angled precision cuts, X-style construction -->
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M 2 3 L 8 1 L 15 20 L 9 22 Z M 16 1 L 22 3 L 15 22 L 9 20 Z"/>
         </svg>
@@ -426,6 +448,12 @@
     // ==================== PWA INSTALLATION ====================
     let deferredPrompt = null;
     let installBannerDismissed = false;
+
+    // Promise that resolves as soon as beforeinstallprompt fires.
+    // If the button is clicked before the event arrives we await this
+    // instead of falling through to the manual-steps alert.
+    let promptReadyResolve;
+    const promptReady = new Promise(resolve => { promptReadyResolve = resolve; });
     
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -446,6 +474,7 @@
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       deferredPrompt = e;
+      promptReadyResolve();   // unblock any pending installPWA() call
       setTimeout(() => {
         if (!installBannerDismissed && !isAppInstalled()) showInstallBanner();
       }, 1500);
@@ -477,18 +506,42 @@
     }
     
     async function installPWA() {
+      // iOS: always show manual share-sheet instructions
       if (isIOS()) {
         showIOSModal();
         return;
       }
+
+      const btn = document.getElementById('installBtn');
+
+      // If the native prompt hasn't arrived yet, wait up to 4 s for it
       if (!deferredPrompt) {
-        alert(/Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor)
-          ? 'To install: Tap the menu (⋮) in the top right, then "Install app" or "Add to home screen"'
-          : 'To install this app, use your browser menu and select "Add to home screen"');
-        return;
+        btn.classList.add('loading');
+        btn.textContent = 'Installing';
+
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 4000)
+        );
+
+        try {
+          await Promise.race([promptReady, timeout]);
+        } catch {
+          // Prompt never arrived — browser likely already considers it installed
+          // or the PWA criteria aren't met. Fall back gracefully.
+          btn.classList.remove('loading');
+          btn.textContent = 'Install';
+          return;
+        }
+
+        btn.classList.remove('loading');
+        btn.textContent = 'Install';
       }
-      deferredPrompt.prompt();
+
+      // At this point deferredPrompt must be set
+      if (!deferredPrompt) return;
+
       try {
+        await deferredPrompt.prompt();
         const { outcome } = await deferredPrompt.userChoice;
         if (outcome === 'accepted') {
           deferredPrompt = null;
