@@ -112,10 +112,8 @@
             -moz-user-select: none;
             -ms-user-select: none;
             user-select: none;
-            /* Prevent iOS magnifier + context menu */
             -webkit-user-drag: none;
         }
-        /* Re-allow selection inside text and inputs */
         .post-card .post-text,
         .post-card input,
         .post-card textarea {
@@ -213,6 +211,7 @@
         .algo-label.trending { background: #FEF3C7; color: #92400E; }
         .algo-label.suggested { background: #EDE9FE; color: #5B21B6; }
         .algo-label.popular { background: #FCE7F3; color: #9D174D; }
+        .algo-label.rising { background: #DCFCE7; color: #166534; }
 
         .actions { display: flex; justify-content: space-between; max-width: 400px; margin-top: 12px; padding-top: 12px; }
         .action-btn { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 13px; font-weight: 600; padding: 8px; border-radius: 50%; cursor: pointer; transition: all 0.2s; background: none; border: none; font-family: inherit; }
@@ -385,13 +384,17 @@
         .story-progress-container { display: flex; gap: 4px; padding: 12px; padding-top: calc(12px + env(safe-area-inset-top)); }
         .story-progress-bar { flex: 1; height: 3px; background: rgba(255,255,255,0.3); border-radius: 3px; overflow: hidden; }
         .story-progress-fill { height: 100%; background: white; width: 0%; }
-        .story-media-container { flex: 1; display: flex; align-items: center; justify-content: center; }
-        .story-media { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .story-video { width: 100%; height: 100%; object-fit: contain; }
+        .story-media-container { flex: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; -webkit-user-select: none; user-select: none; }
+        .story-media { max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; }
+        .story-video { width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
         .story-controls { position: absolute; bottom: 40px; left: 0; right: 0; display: flex; justify-content: center; gap: 16px; padding: 0 24px; }
-        .story-control-btn { background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 12px 24px; border-radius: 24px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); }
+        .story-control-btn { background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 12px 24px; border-radius: 24px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); display: flex; align-items: center; gap: 6px; font-size: 14px; transition: background 0.2s; }
+        .story-control-btn:hover { background: rgba(255,255,255,0.3); }
+        .story-control-btn.liked-story { background: rgba(244,63,94,0.35); border-color: rgba(244,63,94,0.6); color: #fb7185; }
         .story-header { position: absolute; top: calc(60px + env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; align-items: center; gap: 12px; color: white; z-index: 10; }
         .story-header img { width: 40px; height: 40px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); }
+        .story-hold-indicator { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); background: rgba(0,0,0,0.55); color: white; padding: 10px 20px; border-radius: 20px; font-size: 13px; font-weight: 600; backdrop-filter: blur(8px); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 15; }
+        .story-hold-indicator.visible { opacity: 1; }
         .story-nav { position: absolute; top: 0; bottom: 0; width: 30%; z-index: 5; }
         .story-nav.prev { left: 0; } .story-nav.next { right: 0; }
 
@@ -576,9 +579,14 @@
     <div class="story-nav prev" onclick="navigateStory(-1)"></div>
     <div class="story-nav next" onclick="navigateStory(1)"></div>
     <div class="story-media-container" id="story-media-container"></div>
+    <div class="story-hold-indicator" id="story-hold-indicator">Hold to pause</div>
     <div class="story-controls">
+        <button class="story-control-btn" id="story-like-btn" onclick="toggleStoryLike()">
+            <span id="story-like-icon">♡</span>
+            <span id="story-like-count"></span>
+        </button>
         <button class="story-control-btn" onclick="closeStoryViewer()">Close</button>
-        <button class="story-control-btn" id="delete-story-btn" onclick="deleteCurrentStory()" style="display:none;background:var(--like);">Delete</button>
+        <button class="story-control-btn" id="delete-story-btn" onclick="deleteCurrentStory()" style="display:none;background:rgba(244,63,94,0.3);border-color:rgba(244,63,94,0.5);">Delete</button>
     </div>
 </div>
 
@@ -634,12 +642,23 @@ let pendingNewPosts = [], isUserAtTop = true;
 const postListeners = new Map();
 const commentListeners = new Map();
 
+// ── ALGORITHM SEED — refreshed periodically for feed diversity ──
+let shuffleSeed = Date.now() % 9999;
+// Reshuffle every 90 seconds to surface new content and boost engagement
+setInterval(() => {
+    shuffleSeed = Date.now() % 9999;
+    if (currentTab === 'foryou' && allPostsCache.length > 0) {
+        // Show reshuffle pill instead of jarring full re-render
+        pendingNewPosts = [...allPostsCache.slice(0, 3)]; // surface top picks
+        showPill('↻ Refreshed for you');
+    }
+}, 90000);
+
 // ── THEME ──
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme || 'light');
     localStorage.setItem('vynix_theme', theme || 'light');
 }
-// Load saved theme immediately
 applyTheme(localStorage.getItem('vynix_theme') || 'light');
 
 window.addEventListener('scroll', () => {
@@ -647,11 +666,11 @@ window.addEventListener('scroll', () => {
     if (isUserAtTop) hidePill();
 }, { passive: true });
 
-function showPill() {
+function showPill(label) {
     const count = pendingNewPosts.length;
-    if (count === 0) return;
-    document.getElementById('new-posts-count').textContent = count;
-    document.getElementById('new-posts-label').textContent = count === 1 ? 'New post' : 'New posts';
+    if (count === 0 && !label) return;
+    document.getElementById('new-posts-count').textContent = count || '';
+    document.getElementById('new-posts-label').textContent = label || (count === 1 ? 'New post' : 'New posts');
     document.getElementById('new-posts-pill').classList.add('visible');
 }
 function hidePill() { document.getElementById('new-posts-pill').classList.remove('visible'); }
@@ -664,25 +683,89 @@ window.showNewPosts = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
-// ── ALGORITHM ──
+// ── IMPROVED ALGORITHM ──
+// Scores posts using engagement velocity, recency decay, media richness,
+// diversity nudges and a deterministic-but-rotating shuffle seed.
 function scorePost(post) {
-    const ageHours = (Date.now() - (post.timestamp || Date.now())) / 3600000;
-    const likeCount = Object.keys(post.likes || {}).length;
+    const now = Date.now();
+    const ageMs = now - (post.timestamp || now);
+    const ageHours = ageMs / 3600000;
+
+    const likeCount    = Object.keys(post.likes    || {}).length;
     const commentCount = Object.keys(post.comments || {}).length;
-    const repostCount = Object.keys(post.reposts || {}).length;
-    const eng = (likeCount * 3) + (commentCount * 5) + (repostCount * 4);
-    const decay = Math.pow(0.5, ageHours / 12);
-    return (eng + (post.mediaUrl ? 10 : 0) + (post.isVerified ? 8 : 0) + (post.uid === currentUser?.uid ? 30 : 0)) * decay + (post.isRepost ? -5 : 0);
+    const repostCount  = Object.keys(post.reposts  || {}).length;
+
+    // Raw engagement weighted by interaction value
+    const rawEng = likeCount * 3 + commentCount * 6 + repostCount * 5;
+
+    // Velocity: engagement per hour since post (floor at 0.5h to avoid Infinity)
+    const velocity = rawEng / Math.max(ageHours, 0.5);
+
+    // Exponential time decay — half-life 10h balances freshness vs quality
+    const decay = Math.pow(0.5, ageHours / 10);
+
+    // Freshness boost: very new posts get extra push regardless of engagement
+    const freshnessBoost = ageHours < 0.5 ? 25 : ageHours < 2 ? 14 : ageHours < 6 ? 5 : 0;
+
+    // Content richness bonuses
+    const hasGallery = post.mediaUrls && post.mediaUrls.length > 1;
+    const mediaBonus = hasGallery ? 18 : (post.mediaUrl ? 12 : 0);
+    const verifiedBonus = post.isVerified ? 10 : 0;
+
+    // Own posts always near top so creator sees their content immediately
+    const ownBoost = post.uid === currentUser?.uid ? 20 : 0;
+
+    // Reposts slight penalty to favour originals in For You
+    const repostPenalty = post.isRepost ? -10 : 0;
+
+    // Long-form text bonus (rewards substantive posts)
+    const textLen = (post.text || '').length;
+    const textBonus = textLen > 200 ? 6 : textLen > 80 ? 3 : 0;
+
+    // Deterministic diversity nudge — rotates with shuffleSeed so the same
+    // post bubbles up at different times, preventing feed stagnation.
+    // Uses a simple hash of the post id + seed so it's stable per render pass.
+    const idNum = parseInt((post.id || '0').replace(/\D/g,'').slice(-6)) || 1;
+    const nudge = Math.sin(idNum * 0.0137 + shuffleSeed * 0.001) * 8;
+
+    const base = (rawEng + velocity * 1.5 + freshnessBoost + mediaBonus + verifiedBonus + ownBoost + textBonus) * decay;
+    return base + repostPenalty + nudge;
 }
+
 function getSortedPosts(tab) {
     const posts = [...allPostsCache];
-    if (tab === 'foryou') return posts.sort((a, b) => scorePost(b) - scorePost(a));
+    if (tab === 'foryou') {
+        // Sort by score, then inject a "rising" post every 5 slots to surface
+        // hidden gems and keep the feed feeling dynamic.
+        const sorted = posts.sort((a, b) => scorePost(b) - scorePost(a));
+        const result = [];
+        const rising = posts.filter(p => {
+            const likeCount = Object.keys(p.likes || {}).length;
+            const commentCount = Object.keys(p.comments || {}).length;
+            const ageHours = (Date.now() - (p.timestamp || Date.now())) / 3600000;
+            return ageHours < 4 && (likeCount + commentCount) > 0;
+        }).sort((a, b) => {
+            const va = Object.keys(a.likes||{}).length * 3 + Object.keys(a.comments||{}).length * 6;
+            const vb = Object.keys(b.likes||{}).length * 3 + Object.keys(b.comments||{}).length * 6;
+            return vb - va;
+        });
+        let ri = 0;
+        sorted.forEach((post, i) => {
+            result.push(post);
+            // Every 5 posts, inject the next "rising" post if it isn't already shown
+            if ((i + 1) % 5 === 0 && ri < rising.length) {
+                const rp = rising[ri++];
+                if (!result.find(p => p.id === rp.id)) result.push(rp);
+            }
+        });
+        return result;
+    }
     if (tab === 'following') return posts.filter(p => !p.isRepost).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     if (tab === 'trending') {
         const cutoff = Date.now() - 48 * 3600 * 1000;
         return posts.filter(p => (p.timestamp || 0) > cutoff).sort((a, b) => {
-            const ea = Object.keys(a.likes || {}).length + Object.keys(a.comments || {}).length * 2;
-            const eb = Object.keys(b.likes || {}).length + Object.keys(b.comments || {}).length * 2;
+            const ea = Object.keys(a.likes || {}).length * 3 + Object.keys(a.comments || {}).length * 6;
+            const eb = Object.keys(b.likes || {}).length * 3 + Object.keys(b.comments || {}).length * 6;
             return eb - ea;
         });
     }
@@ -721,6 +804,7 @@ onAuthStateChanged(auth, async (user) => {
     setupStoriesListeners();
     setupNotificationsListener();
     setupMessagesListener();
+    setupStoryHold();
     loadPosts();
 });
 
@@ -898,9 +982,15 @@ function cleanupPostListeners(postId) {
 }
 
 function getAlgoLabel(post) {
-    const likeCount = Object.keys(post.likes || {}).length; const commentCount = Object.keys(post.comments || {}).length; const total = likeCount + commentCount;
+    const likeCount = Object.keys(post.likes || {}).length;
+    const commentCount = Object.keys(post.comments || {}).length;
+    const repostCount = Object.keys(post.reposts || {}).length;
+    const total = likeCount + commentCount;
     const ageHours = (Date.now() - (post.timestamp || Date.now())) / 3600000;
+    const velocity = (likeCount * 3 + commentCount * 6) / Math.max(ageHours, 0.5);
+
     if (currentTab === 'trending' && total > 5) return `<div class="algo-label trending">🔥 Trending</div>`;
+    if (currentTab === 'foryou' && ageHours < 3 && velocity > 8) return `<div class="algo-label rising">📈 Rising</div>`;
     if (currentTab === 'foryou' && ageHours < 2 && total > 3) return `<div class="algo-label popular">⚡ Popular now</div>`;
     if (currentTab === 'foryou' && post.uid !== currentUser?.uid && total === 0) return `<div class="algo-label suggested">✨ Suggested</div>`;
     return '';
@@ -1182,7 +1272,7 @@ function attachLongPress(el, post) {
     el.addEventListener('touchstart', e => { const t = e.touches[0]; start(t.clientX, t.clientY); }, {passive:true});
     el.addEventListener('touchmove', e => { const t = e.touches[0]; cancel(t.clientX, t.clientY); }, {passive:true});
     el.addEventListener('touchend', clear);
-    el.addEventListener('contextmenu', e => { e.preventDefault(); }); // Suppress native menu
+    el.addEventListener('contextmenu', e => { e.preventDefault(); });
     el.addEventListener('mousedown', e => { if (e.button!==0) return; start(e.clientX, e.clientY); });
     el.addEventListener('mousemove', e => cancel(e.clientX, e.clientY));
     el.addEventListener('mouseup', clear);
@@ -1313,17 +1403,37 @@ function removeStoryFromGroup(storyId) {
         if(i!==-1){group.stories.splice(i,1); if(!group.stories.length)storyGroups.delete(uid); renderStoryGroups(); break;}
     }
 }
+
 function renderStoryGroups() {
     const container=document.getElementById('stories-container'); const addBtn=container.firstElementChild;
     container.innerHTML=''; container.appendChild(addBtn);
-    for (const [uid,group] of storyGroups) {
-        const hasUnseen=group.stories.some(s=>!s.viewed?.[currentUser.uid]);
-        const isOwn=uid===currentUser.uid;
+
+    // ── Sort: current user's stories always first, then unseen before seen,
+    //    then by most recent story timestamp for maximum freshness.
+    const sortedEntries = Array.from(storyGroups.entries()).sort(([uidA, groupA], [uidB, groupB]) => {
+        // Current user always pinned first
+        if (uidA === currentUser?.uid) return -1;
+        if (uidB === currentUser?.uid) return 1;
+        // Unseen before seen
+        const hasUnseenA = groupA.stories.some(s => !s.viewed?.[currentUser?.uid]);
+        const hasUnseenB = groupB.stories.some(s => !s.viewed?.[currentUser?.uid]);
+        if (hasUnseenA && !hasUnseenB) return -1;
+        if (!hasUnseenA && hasUnseenB) return 1;
+        // Then by most recent story
+        const latestA = Math.max(...groupA.stories.map(s => s.timestamp || 0));
+        const latestB = Math.max(...groupB.stories.map(s => s.timestamp || 0));
+        return latestB - latestA;
+    });
+
+    for (const [uid, group] of sortedEntries) {
+        const hasUnseen=group.stories.some(s=>!s.viewed?.[currentUser?.uid]);
+        const isOwn=uid===currentUser?.uid;
         const el=document.createElement('div'); el.className='story-group'; el.onclick=()=>openStoryViewer(uid);
         el.innerHTML=`<div class="story-ring-group ${hasUnseen?'':'all-seen'}"><img src="${group.user.photoURL}" class="story-img-group">${group.stories.length>1?`<div class="story-count">${group.stories.length}</div>`:''}</div><span class="story-label">${isOwn?'Your Story':group.user.username}</span>`;
         container.appendChild(el);
     }
 }
+
 window.triggerStoryUpload=()=>document.getElementById('story-input').click();
 window.validateAndUploadStory=async e=>{
     const file=e.target.files[0]; if(!file) return;
@@ -1341,20 +1451,32 @@ async function uploadStory(file) {
         showToast('Story added!');
     } catch { showToast('Upload failed'); }
 }
+
 window.openStoryViewer=uid=>{
     const group=storyGroups.get(uid); if(!group||!group.stories.length) return;
-    const ids=Array.from(storyGroups.keys()); currentStoryGroupIndex=ids.indexOf(uid); currentStoryIndex=0;
-    const first=group.stories.findIndex(s=>!s.viewed?.[currentUser.uid]); if(first!==-1)currentStoryIndex=first;
+    const ids=Array.from(storyGroups.keys()).sort((a,b)=>{
+        if(a===currentUser?.uid)return -1; if(b===currentUser?.uid)return 1; return 0;
+    });
+    currentStoryGroupIndex=ids.indexOf(uid); currentStoryIndex=0;
+    const first=group.stories.findIndex(s=>!s.viewed?.[currentUser?.uid]); if(first!==-1)currentStoryIndex=first;
     displayCurrentStory();
 };
+
 function displayCurrentStory() {
-    const ids=Array.from(storyGroups.keys()); const group=storyGroups.get(ids[currentStoryGroupIndex]);
+    const ids=Array.from(storyGroups.keys()).sort((a,b)=>{
+        if(a===currentUser?.uid)return -1; if(b===currentUser?.uid)return 1; return 0;
+    });
+    const group=storyGroups.get(ids[currentStoryGroupIndex]);
     const story=group?.stories[currentStoryIndex]; if(!story){closeStoryViewer();return;}
     document.getElementById('story-viewer-avatar').src=group.user.photoURL;
     document.getElementById('story-viewer-name').textContent=group.user.username;
     document.getElementById('story-viewer-time').textContent=formatTime(story.timestamp);
-    document.getElementById('delete-story-btn').style.display=story.uid===currentUser.uid?'block':'none';
-    if(story.uid!==currentUser.uid)update(ref(db,`stories/${story.id}/viewed`),{[currentUser.uid]:true});
+    document.getElementById('delete-story-btn').style.display=story.uid===currentUser?.uid?'block':'none';
+    if(story.uid!==currentUser?.uid)update(ref(db,`stories/${story.id}/viewed`),{[currentUser.uid]:true});
+
+    // Update like UI for this story
+    updateStoryLikeUI(story);
+
     const pc=document.getElementById('story-progress-container'); pc.innerHTML='';
     group.stories.forEach((_,idx)=>{
         const bar=document.createElement('div');bar.className='story-progress-bar';
@@ -1362,10 +1484,12 @@ function displayCurrentStory() {
         if(idx===currentStoryIndex){fill.id='current-progress';setTimeout(()=>{fill.style.transition='width 5s linear';fill.style.width='100%';},50);}
         bar.appendChild(fill);pc.appendChild(bar);
     });
+
     const mc=document.getElementById('story-media-container'); mc.innerHTML='';
     if(currentVideoElement){currentVideoElement.pause();currentVideoElement=null;}
     if(storyTimeout)clearTimeout(storyTimeout);
     storyTimeout=setTimeout(()=>navigateStory(1),5000);
+
     if(story.mediaType==='video'){
         const v=document.createElement('video');v.className='story-video';v.src=story.mediaUrl;v.autoplay=true;v.playsInline=true;v.onended=()=>navigateStory(1);mc.appendChild(v);currentVideoElement=v;
     }else{
@@ -1373,16 +1497,115 @@ function displayCurrentStory() {
     }
     document.getElementById('story-viewer').classList.add('active');
 }
+
+// ── STORY LIKES ──
+window.toggleStoryLike = async () => {
+    const ids = Array.from(storyGroups.keys()).sort((a,b)=>{if(a===currentUser?.uid)return -1;if(b===currentUser?.uid)return 1;return 0;});
+    const group = storyGroups.get(ids[currentStoryGroupIndex]);
+    const story = group?.stories[currentStoryIndex];
+    if (!story || !currentUser) return;
+    const likeRef = ref(db, `stories/${story.id}/likes/${currentUser.uid}`);
+    const snap = await get(likeRef);
+    if (snap.exists()) {
+        await remove(likeRef);
+        story.likes = story.likes || {}; delete story.likes[currentUser.uid];
+    } else {
+        await set(likeRef, true);
+        story.likes = story.likes || {}; story.likes[currentUser.uid] = true;
+        if (navigator.vibrate) navigator.vibrate(50);
+    }
+    updateStoryLikeUI(story);
+};
+
+function updateStoryLikeUI(story) {
+    const likes = story.likes || {};
+    const userLiked = !!likes[currentUser?.uid];
+    const count = Object.keys(likes).length;
+    const icon = document.getElementById('story-like-icon');
+    const countEl = document.getElementById('story-like-count');
+    const btn = document.getElementById('story-like-btn');
+    if (icon) icon.textContent = userLiked ? '♥' : '♡';
+    if (countEl) countEl.textContent = count > 0 ? count : '';
+    if (btn) btn.classList.toggle('liked-story', userLiked);
+}
+
+// ── STORY HOLD TO PAUSE ──
+function setupStoryHold() {
+    const mc = document.getElementById('story-media-container');
+    const holdIndicator = document.getElementById('story-hold-indicator');
+    let holdActive = false;
+    let storyElapsedMs = 0;   // how many ms had elapsed when hold started
+    let storyHoldStartTime = 0;
+
+    const startHold = (e) => {
+        // Don't trigger if tapping the story nav zones
+        if (e.target.closest('.story-nav') || e.target.closest('.story-controls') || e.target.closest('.story-header')) return;
+        if (!document.getElementById('story-viewer').classList.contains('active')) return;
+        holdActive = true;
+        storyHoldStartTime = Date.now();
+
+        // Pause progress bar
+        const fill = document.getElementById('current-progress');
+        if (fill) {
+            const computed = getComputedStyle(fill).width;
+            const parent = fill.parentElement;
+            const pct = parent ? (parseFloat(computed) / parent.offsetWidth * 100) : parseFloat(fill.style.width);
+            storyElapsedMs = pct / 100 * 5000;
+            fill.style.transition = 'none';
+            fill.style.width = pct + '%';
+        }
+
+        // Pause video if any
+        if (currentVideoElement) currentVideoElement.pause();
+
+        // Clear auto-advance timer
+        if (storyTimeout) { clearTimeout(storyTimeout); storyTimeout = null; }
+
+        // Show hold indicator
+        if (holdIndicator) holdIndicator.classList.add('visible');
+    };
+
+    const endHold = () => {
+        if (!holdActive) return;
+        holdActive = false;
+        if (holdIndicator) holdIndicator.classList.remove('visible');
+        if (!document.getElementById('story-viewer').classList.contains('active')) return;
+
+        // Calculate remaining time
+        const fill = document.getElementById('current-progress');
+        const remainingMs = Math.max(0, 5000 - storyElapsedMs);
+
+        if (fill && remainingMs > 0) {
+            fill.style.transition = `width ${remainingMs}ms linear`;
+            fill.style.width = '100%';
+        }
+
+        // Resume video
+        if (currentVideoElement) currentVideoElement.play().catch(()=>{});
+
+        // Restart auto-advance for remaining time
+        storyTimeout = setTimeout(() => navigateStory(1), remainingMs);
+    };
+
+    mc.addEventListener('touchstart', startHold, { passive: true });
+    mc.addEventListener('touchend', endHold);
+    mc.addEventListener('touchcancel', endHold);
+    mc.addEventListener('mousedown', startHold);
+    mc.addEventListener('mouseup', endHold);
+    mc.addEventListener('mouseleave', endHold);
+}
+
 window.navigateStory=dir=>{
     if(storyTimeout)clearTimeout(storyTimeout);
-    const ids=Array.from(storyGroups.keys()); const cg=storyGroups.get(ids[currentStoryGroupIndex]);
+    const ids=Array.from(storyGroups.keys()).sort((a,b)=>{if(a===currentUser?.uid)return -1;if(b===currentUser?.uid)return 1;return 0;});
+    const cg=storyGroups.get(ids[currentStoryGroupIndex]);
     currentStoryIndex+=dir;
     if(currentStoryIndex>=cg.stories.length){currentStoryGroupIndex++;currentStoryIndex=0;if(currentStoryGroupIndex>=ids.length){closeStoryViewer();return;}}
     else if(currentStoryIndex<0){currentStoryGroupIndex--;if(currentStoryGroupIndex<0){closeStoryViewer();return;}const pg=storyGroups.get(ids[currentStoryGroupIndex]);currentStoryIndex=pg.stories.length-1;}
     displayCurrentStory();
 };
 window.closeStoryViewer=()=>{if(storyTimeout)clearTimeout(storyTimeout);if(currentVideoElement){currentVideoElement.pause();currentVideoElement=null;}document.getElementById('story-viewer').classList.remove('active');};
-window.deleteCurrentStory=()=>{const ids=Array.from(storyGroups.keys());const g=storyGroups.get(ids[currentStoryGroupIndex]);const s=g.stories[currentStoryIndex];deleteType='story';deleteData=s.id;confirmCallback=null;showConfirmModal('Delete Story?','This story will be permanently removed.','Delete',false);};
+window.deleteCurrentStory=()=>{const ids=Array.from(storyGroups.keys()).sort((a,b)=>{if(a===currentUser?.uid)return -1;if(b===currentUser?.uid)return 1;return 0;});const g=storyGroups.get(ids[currentStoryGroupIndex]);const s=g.stories[currentStoryIndex];deleteType='story';deleteData=s.id;confirmCallback=null;showConfirmModal('Delete Story?','This story will be permanently removed.','Delete',false);};
 
 // ── COMPOSE ──
 window.openCompose=()=>document.querySelector('.modal-overlay').classList.add('active');
