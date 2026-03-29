@@ -233,33 +233,16 @@
       transition: all 0.2s;
       white-space: nowrap;
       position: relative;
+      min-width: 80px;
     }
     
-    .install-btn:hover {
+    .install-btn:hover:not(:disabled) {
       transform: scale(1.05);
     }
 
-    /* Spinner inside install button while waiting for prompt */
-    .install-btn.loading {
-      pointer-events: none;
+    .install-btn:disabled {
       opacity: 0.7;
-    }
-
-    .install-btn.loading::after {
-      content: '';
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border: 2px solid #00000033;
-      border-top-color: #000000;
-      border-radius: 50%;
-      animation: spin 0.6s linear infinite;
-      margin-left: 6px;
-      vertical-align: middle;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
+      cursor: not-allowed;
     }
     
     .install-close {
@@ -448,12 +431,7 @@
     // ==================== PWA INSTALLATION ====================
     let deferredPrompt = null;
     let installBannerDismissed = false;
-
-    // Promise that resolves as soon as beforeinstallprompt fires.
-    // If the button is clicked before the event arrives we await this
-    // instead of falling through to the manual-steps alert.
-    let promptReadyResolve;
-    const promptReady = new Promise(resolve => { promptReadyResolve = resolve; });
+    let isPromptReady = false;
     
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -474,7 +452,15 @@
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       deferredPrompt = e;
-      promptReadyResolve();   // unblock any pending installPWA() call
+      isPromptReady = true;
+      
+      // Update button if it was waiting
+      const btn = document.getElementById('installBtn');
+      if (btn && btn.disabled && btn.textContent === 'Preparing...') {
+        btn.textContent = 'Install';
+        btn.disabled = false;
+      }
+      
       setTimeout(() => {
         if (!installBannerDismissed && !isAppInstalled()) showInstallBanner();
       }, 1500);
@@ -482,8 +468,10 @@
     
     window.addEventListener('appinstalled', () => {
       deferredPrompt = null;
+      isPromptReady = false;
       hideInstallBanner();
       localStorage.setItem('vynix_installed', 'true');
+      console.log('PWA was installed');
     });
     
     function showInstallBanner() {
@@ -505,8 +493,8 @@
       localStorage.setItem('vynix_install_banner_dismissed', Date.now().toString());
     }
     
-    async function installPWA() {
-      // iOS: always show manual share-sheet instructions
+    // Synchronous install handler - MUST NOT use async/await to preserve user gesture
+    function installPWA() {
       if (isIOS()) {
         showIOSModal();
         return;
@@ -514,42 +502,66 @@
 
       const btn = document.getElementById('installBtn');
 
-      // If the native prompt hasn't arrived yet, wait up to 4 s for it
-      if (!deferredPrompt) {
-        btn.classList.add('loading');
-        btn.textContent = 'Installing';
-
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 4000)
-        );
-
-        try {
-          await Promise.race([promptReady, timeout]);
-        } catch {
-          // Prompt never arrived — browser likely already considers it installed
-          // or the PWA criteria aren't met. Fall back gracefully.
-          btn.classList.remove('loading');
-          btn.textContent = 'Install';
-          return;
-        }
-
-        btn.classList.remove('loading');
-        btn.textContent = 'Install';
+      // If prompt not ready yet, show preparing state and wait
+      if (!deferredPrompt || !isPromptReady) {
+        btn.textContent = 'Preparing...';
+        btn.disabled = true;
+        
+        // Wait for beforeinstallprompt and retry automatically
+        const checkPrompt = setInterval(() => {
+          if (deferredPrompt && isPromptReady) {
+            clearInterval(checkPrompt);
+            btn.textContent = 'Install';
+            btn.disabled = false;
+            // Auto-trigger the install now that it's ready
+            installPWA();
+          }
+        }, 500);
+        
+        // Timeout after 4 seconds if prompt never comes
+        setTimeout(() => {
+          clearInterval(checkPrompt);
+          if (!deferredPrompt) {
+            btn.textContent = 'Install';
+            btn.disabled = false;
+            // Browser likely considers it already installed or criteria not met
+            alert('Installation not available. You may have already installed the app, or your browser doesn\'t support PWA installation.');
+          }
+        }, 4000);
+        
+        return;
       }
 
-      // At this point deferredPrompt must be set
-      if (!deferredPrompt) return;
-
-      try {
-        await deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        if (outcome === 'accepted') {
-          deferredPrompt = null;
+      // Trigger immediately while we still have the user gesture context
+      btn.textContent = 'Installing...';
+      btn.disabled = true;
+      
+      // Use local reference and clear immediately to prevent double-clicks
+      const promptEvent = deferredPrompt;
+      deferredPrompt = null;
+      isPromptReady = false;
+      
+      // Show the browser install prompt
+      promptEvent.prompt();
+      
+      // Handle user choice
+      promptEvent.userChoice.then((choiceResult) => {
+        if (choiceResult.outcome === 'accepted') {
+          console.log('User accepted the install prompt');
           hideInstallBanner();
+          localStorage.setItem('vynix_installed', 'true');
+        } else {
+          console.log('User dismissed the install prompt');
+          btn.textContent = 'Install';
+          btn.disabled = false;
+          // Re-store the prompt if they dismissed so they can try again
+          // Note: Chrome usually only allows one prompt per event, but we try
         }
-      } catch (err) {
-        console.error('Install error:', err);
-      }
+      }).catch((err) => {
+        console.error('Install prompt error:', err);
+        btn.textContent = 'Install';
+        btn.disabled = false;
+      });
     }
     
     function showIOSModal() {
