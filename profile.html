@@ -371,7 +371,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import { getDatabase, ref, get, set, update, remove, push, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
-const CLOUDINARY_CLOUD = 'dqkujefxj', 
+const CLOUDINARY_CLOUD = 'dqkujefxj',
       CLOUDINARY_PRESET = 'banter_box';
 
 const firebaseConfig = {
@@ -391,15 +391,15 @@ const db = getDatabase(app);
 // Apply theme immediately
 document.documentElement.setAttribute('data-theme', localStorage.getItem('vynix_theme') || 'light');
 
-let currentUser = null, 
+let currentUser = null,
     currentUserData = null;
-let profileUid = null, 
+let profileUid = null,
     profileData = null;
-let isOwnProfile = false, 
+let isOwnProfile = false,
     isFollowing = false;
-let userPosts = [], 
+let userPosts = [],
     activeTab = 'posts';
-let editAvatarFile = null, 
+let editAvatarFile = null,
     confirmCallback = null;
 
 // ─── Track active onValue unsubscribers so we can clean up on re-navigate ───
@@ -407,19 +407,14 @@ let unsubFollowers = null;
 let unsubFollowing = null;
 
 onAuthStateChanged(auth, async user => {
-    if (!user) { 
-        window.location.href = 'signup.html'; 
-        return; 
-    }
-    
+    if (!user) { window.location.href = 'signup.html'; return; }
+
     currentUser = user;
     const params = new URLSearchParams(window.location.search);
     profileUid = params.get('id') || currentUser.uid;
     isOwnProfile = profileUid === currentUser.uid;
 
-    try { 
-        await loadCurrentUser(); 
-    } catch(e) {
+    try { await loadCurrentUser(); } catch(e) {
         currentUserData = {
             uid: currentUser.uid,
             username: currentUser.email ? currentUser.email.split('@')[0] : 'user',
@@ -435,13 +430,11 @@ onAuthStateChanged(auth, async user => {
     if (unsubFollowers) { unsubFollowers(); unsubFollowers = null; }
     if (unsubFollowing) { unsubFollowing(); unsubFollowing = null; }
 
-    // ── Live-update the stats card with real-time follower / following counts.
-    //    We always write the count (even when 0) so a renderProfile() pass that
-    //    used a stale/failed get() is immediately corrected.
+    // ── Live-update stat cards using Object.keys() — consistent with showFollowers/showFollowing ──
     unsubFollowers = onValue(
         ref(db, `followers/${profileUid}`),
         snap => {
-            const count = snap.exists() ? snap.numChildren() : 0;
+            const count = snap.exists() ? Object.keys(snap.val() || {}).length : 0;
             setStatDirect('stat-followers', count);
         },
         err => console.error('Followers listener error:', err)
@@ -450,7 +443,7 @@ onAuthStateChanged(auth, async user => {
     unsubFollowing = onValue(
         ref(db, `following/${profileUid}`),
         snap => {
-            const count = snap.exists() ? snap.numChildren() : 0;
+            const count = snap.exists() ? Object.keys(snap.val() || {}).length : 0;
             setStatDirect('stat-following', count);
         },
         err => console.error('Following listener error:', err)
@@ -462,7 +455,6 @@ onAuthStateChanged(auth, async user => {
 });
 
 // ── Writes a formatted count to the stat card WITHOUT the pop animation.
-//    Use this for the live onValue updates so the card silently corrects itself.
 function setStatDirect(id, value) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -471,7 +463,7 @@ function setStatDirect(id, value) {
 
 // ── Writes a count WITH the pop animation (used for interactive follow/unfollow).
 function updateStatCount(id, value) {
-    const el = document.getElementById(id); 
+    const el = document.getElementById(id);
     if (!el) return;
     el.textContent = fmt(value);
     el.classList.remove('pop');
@@ -483,9 +475,9 @@ function updateStatCount(id, value) {
 async function loadCurrentUser() {
     const userRef = ref(db, `users/${currentUser.uid}`);
     const snap = await get(userRef);
-    
-    if (snap.exists()) { 
-        currentUserData = snap.val(); 
+
+    if (snap.exists()) {
+        currentUserData = snap.val();
     } else {
         currentUserData = {
             uid: currentUser.uid,
@@ -505,57 +497,54 @@ async function loadProfile() {
         document.getElementById('skeleton').style.display = 'none';
         document.getElementById('profile-content').style.display = 'block';
     };
-    
+
     if (!profileUid) {
         unshimmer();
-        document.getElementById('tab-posts').innerHTML = 
+        document.getElementById('tab-posts').innerHTML =
             emptyTabHtml('alert-circle', 'Invalid Profile', 'No user ID specified.');
         return;
     }
 
     try {
         const userSnap = await get(ref(db, `users/${profileUid}`));
-        
+
         if (!userSnap.exists()) {
             unshimmer();
-            document.getElementById('tab-posts').innerHTML = 
+            document.getElementById('tab-posts').innerHTML =
                 emptyTabHtml('user-x', 'User not found', 'This account may have been removed.');
             feather.replace();
             return;
         }
-        
+
         profileData = { uid: profileUid, ...userSnap.val() };
         isFollowing = false;
         userPosts = [];
 
-        // ── Fetch follower / following counts for the initial render.
-        //    The onValue listeners (attached after this function returns) will
-        //    immediately fire and correct these values if the get() calls below
-        //    fail or return stale data — so a silent failure here is harmless.
-        let followerCount = 0, 
-            followingCount = 0, 
+        // ── Use Object.keys() for consistent counts across stat cards and bottom sheet ──
+        let followerCount = 0,
+            followingCount = 0,
             totalLikes = 0;
 
         try {
             const followerSnap = await get(ref(db, `followers/${profileUid}`));
-            followerCount = followerSnap.exists() ? followerSnap.numChildren() : 0;
-        } catch (e) { 
-            console.warn('Followers fetch failed (will be corrected by live listener):', e); 
+            followerCount = followerSnap.exists() ? Object.keys(followerSnap.val() || {}).length : 0;
+        } catch (e) {
+            console.warn('Followers fetch failed (will be corrected by live listener):', e);
         }
 
         try {
             const followingSnap = await get(ref(db, `following/${profileUid}`));
-            followingCount = followingSnap.exists() ? followingSnap.numChildren() : 0;
-        } catch (e) { 
-            console.warn('Following fetch failed (will be corrected by live listener):', e); 
+            followingCount = followingSnap.exists() ? Object.keys(followingSnap.val() || {}).length : 0;
+        } catch (e) {
+            console.warn('Following fetch failed (will be corrected by live listener):', e);
         }
 
         if (!isOwnProfile) {
             try {
                 const isFollowingSnap = await get(ref(db, `following/${currentUser.uid}/${profileUid}`));
                 isFollowing = isFollowingSnap.exists();
-            } catch (e) { 
-                console.warn('Follow status fetch failed:', e); 
+            } catch (e) {
+                console.warn('Follow status fetch failed:', e);
             }
         }
 
@@ -576,12 +565,16 @@ async function loadProfile() {
 
         unshimmer();
         renderProfile(profileData, followerCount, followingCount, totalLikes);
-        
+
     } catch (err) {
         console.error('Profile load error:', err);
-        unshimmer();
-        document.getElementById('tab-posts').innerHTML = 
-            emptyTabHtml('alert-circle', 'Something went wrong', 
+        const unshimmer2 = () => {
+            document.getElementById('skeleton').style.display = 'none';
+            document.getElementById('profile-content').style.display = 'block';
+        };
+        unshimmer2();
+        document.getElementById('tab-posts').innerHTML =
+            emptyTabHtml('alert-circle', 'Something went wrong',
             `Error: ${err.message || 'Could not load profile. Check console for details.'}`);
         feather.replace();
     }
@@ -592,9 +585,9 @@ function renderProfile(u, followers, following, likes) {
     document.getElementById('header-post-count').textContent = `${userPosts.length} post${userPosts.length !== 1 ? 's' : ''}`;
 
     const coverImg = document.getElementById('cover-img');
-    if (u.coverPhoto) { 
-        coverImg.src = u.coverPhoto; 
-        coverImg.style.display = 'block'; 
+    if (u.coverPhoto) {
+        coverImg.src = u.coverPhoto;
+        coverImg.style.display = 'block';
     } else {
         coverImg.style.display = 'none';
     }
@@ -602,19 +595,19 @@ function renderProfile(u, followers, following, likes) {
     if (isOwnProfile) {
         document.getElementById('cover-wrap').addEventListener('click', () => document.getElementById('cover-input').click());
         document.getElementById('cover-overlay').style.display = 'flex';
-    } else { 
-        document.getElementById('cover-overlay').style.display = 'none'; 
+    } else {
+        document.getElementById('cover-overlay').style.display = 'none';
     }
 
     const avatarEl = document.getElementById('profile-avatar');
     const photoURL = u.photoURL || avatarUrl(u);
-    avatarEl.src = photoURL; 
+    avatarEl.src = photoURL;
     avatarEl.classList.add('clickable');
-    
-    if (isOwnProfile) { 
-        document.getElementById('avatar-edit-btn').classList.add('own'); 
-    } else { 
-        avatarEl.addEventListener('click', () => openAvatarLightbox(photoURL, u.displayName || u.username || 'User')); 
+
+    if (isOwnProfile) {
+        document.getElementById('avatar-edit-btn').classList.add('own');
+    } else {
+        avatarEl.addEventListener('click', () => openAvatarLightbox(photoURL, u.displayName || u.username || 'User'));
     }
 
     renderActions();
@@ -623,10 +616,10 @@ function renderProfile(u, followers, following, likes) {
     if (u.verified) document.getElementById('verified-badge').style.display = 'inline-flex';
     document.getElementById('username-text').textContent = `@${u.username || ''}`;
 
-    if (u.bio) { 
-        const b = document.getElementById('bio-text'); 
-        b.innerHTML = enrichText(esc(u.bio)); 
-        b.style.display = 'block'; 
+    if (u.bio) {
+        const b = document.getElementById('bio-text');
+        b.innerHTML = enrichText(esc(u.bio));
+        b.style.display = 'block';
     }
 
     const meta = [];
@@ -635,17 +628,14 @@ function renderProfile(u, followers, following, likes) {
     if (u.createdAt) meta.push(`<span class="meta-item"><i data-feather="calendar" style="width:13px;height:13px;"></i>Joined ${new Date(u.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</span>`);
     document.getElementById('meta-row').innerHTML = meta.join('');
 
-    // ── Set the four stat card values.
-    //    followers / following are written here from the initial get() results,
-    //    then immediately overwritten by the onValue callbacks once they fire.
     document.getElementById('stat-followers').textContent = fmt(followers);
     document.getElementById('stat-following').textContent = fmt(following);
     document.getElementById('stat-posts').textContent = fmt(userPosts.length);
     document.getElementById('stat-likes').textContent = fmt(likes);
 
-    if (!isOwnProfile) { 
-        document.getElementById('block-btn').style.display = 'flex'; 
-        document.getElementById('report-btn').style.display = 'flex'; 
+    if (!isOwnProfile) {
+        document.getElementById('block-btn').style.display = 'flex';
+        document.getElementById('report-btn').style.display = 'flex';
     }
 
     renderTab(activeTab);
@@ -654,10 +644,10 @@ function renderProfile(u, followers, following, likes) {
 
 function renderActions() {
     const c = document.getElementById('profile-actions');
-    if (isOwnProfile) { 
-        c.innerHTML = `<button class="edit-profile-btn" onclick="openEditSheet()">Edit profile</button>`; 
-    } else { 
-        c.innerHTML = `<button class="follow-btn ${isFollowing ? 'following-action' : 'follow-action'}" id="follow-btn" onclick="toggleFollow()">${isFollowing ? 'Following' : 'Follow'}</button><button class="msg-btn" onclick="goToMessage()" title="Message"><i data-feather="mail" style="width:16px;height:16px;"></i></button>`; 
+    if (isOwnProfile) {
+        c.innerHTML = `<button class="edit-profile-btn" onclick="openEditSheet()">Edit profile</button>`;
+    } else {
+        c.innerHTML = `<button class="follow-btn ${isFollowing ? 'following-action' : 'follow-action'}" id="follow-btn" onclick="toggleFollow()">${isFollowing ? 'Following' : 'Follow'}</button><button class="msg-btn" onclick="goToMessage()" title="Message"><i data-feather="mail" style="width:16px;height:16px;"></i></button>`;
     }
     feather.replace();
 }
@@ -703,31 +693,31 @@ function renderMediaTab() {
 async function renderLikedTab() {
     const el = document.getElementById('tab-liked');
     el.innerHTML = loadingSpinnerHtml();
-    
+
     try {
         const snap = await get(ref(db, 'posts'));
         const liked = [];
-        
+
         if (snap.exists()) {
             snap.forEach(c => {
                 if (c.val().likes?.[profileUid]) liked.push({ id: c.key, ...c.val() });
             });
             liked.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         }
-        
+
         if (!liked.length) {
             el.innerHTML = emptyTabHtml('heart', 'No liked posts', isOwnProfile ? 'Posts you like will appear here.' : 'No liked posts yet.');
             feather.replace();
             return;
         }
-        
+
         const uids = [...new Set(liked.map(p => p.uid))];
         const userMap = {};
         await Promise.all(uids.map(async uid => {
             const s = await get(ref(db, `users/${uid}`));
             userMap[uid] = s.val() || {};
         }));
-        
+
         el.innerHTML = liked.map((p, i) => postCardHtml(p, userMap[p.uid] || {}, i * 40)).join('');
         feather.replace();
     } catch (e) {
@@ -789,7 +779,7 @@ window.toggleLike = async postId => {
     const ce = document.getElementById(`plc-${postId}`);
     const ic = btn?.querySelector('i');
     let cnt = parseInt(ce?.textContent || '0');
-    
+
     if (s.exists()) {
         await remove(lr);
         btn?.classList.remove('liked');
@@ -824,10 +814,10 @@ window.deletePost = (postId, e) => {
 window.togglePostText = (postId, btn) => {
     const el = document.getElementById(`pt-${postId}`);
     if (!el || !btn) return;
-    
+
     const fullText = userPosts.find(p => p.id === postId)?.text || '';
     const isExpanded = btn.textContent === 'See less';
-    
+
     if (isExpanded) {
         el.textContent = truncateText(fullText, 240);
         btn.textContent = 'See more';
@@ -839,14 +829,14 @@ window.togglePostText = (postId, btn) => {
 
 function truncateText(text, maxLength) {
     if (!text || text.length <= maxLength) return text;
-    return text.substring(0, maxLength).replace(/[\s\n]+$/,'') + '…';
+    return text.substring(0, maxLength).replace(/[\s\n]+$/, '') + '…';
 }
 
 window.toggleFollow = async () => {
     if (!currentUser || isOwnProfile) return;
     const btn = document.getElementById('follow-btn');
     if (!btn) return;
-    
+
     try {
         if (isFollowing) {
             await remove(ref(db, `following/${currentUser.uid}/${profileUid}`));
@@ -855,7 +845,7 @@ window.toggleFollow = async () => {
             btn.textContent = 'Follow';
             btn.className = 'follow-btn follow-action';
             showToast('Unfollowed');
-            // onValue will automatically update stat-followers
+            // onValue listener will automatically update stat-followers
         } else {
             await set(ref(db, `following/${currentUser.uid}/${profileUid}`), true);
             await set(ref(db, `followers/${profileUid}/${currentUser.uid}`), true);
@@ -873,7 +863,7 @@ window.toggleFollow = async () => {
             btn.className = 'follow-btn following-action';
             showToast('Following!');
             if (navigator.vibrate) navigator.vibrate(40);
-            // onValue will automatically update stat-followers
+            // onValue listener will automatically update stat-followers
         }
     } catch (err) {
         console.error("Follow toggle failed:", err);
@@ -886,11 +876,11 @@ window.goToMessage = async () => {
     const ids = [currentUser.uid, profileUid].sort();
     const chatId = ids.join('_');
     const u = {};
-    
+
     u[`userChats/${currentUser.uid}/${chatId}/otherUid`] = profileUid;
     u[`userChats/${currentUser.uid}/${chatId}/unreadCount`] = 0;
     u[`userChats/${profileUid}/${chatId}/otherUid`] = currentUser.uid;
-    
+
     try {
         const otherSnap = await get(ref(db, `userChats/${profileUid}/${chatId}/unreadCount`));
         u[`userChats/${profileUid}/${chatId}/unreadCount`] = otherSnap.val() || 0;
@@ -906,10 +896,10 @@ window.showFollowers = async () => {
     document.getElementById('list-sheet-title').textContent = 'Followers';
     document.getElementById('list-sheet-body').innerHTML = loadingSpinnerHtml();
     openListSheet();
-    
+
     try {
         const snap = await get(ref(db, `followers/${profileUid}`));
-        const uids = snap.exists() ? Object.keys(snap.val()) : [];
+        const uids = snap.exists() ? Object.keys(snap.val() || {}) : [];
         document.getElementById('list-sheet-title').textContent = `Followers (${fmt(uids.length)})`;
         await renderUserList(uids, 'list-sheet-body');
     } catch (err) {
@@ -922,10 +912,10 @@ window.showFollowing = async () => {
     document.getElementById('list-sheet-title').textContent = 'Following';
     document.getElementById('list-sheet-body').innerHTML = loadingSpinnerHtml();
     openListSheet();
-    
+
     try {
         const snap = await get(ref(db, `following/${profileUid}`));
-        const uids = snap.exists() ? Object.keys(snap.val()) : [];
+        const uids = snap.exists() ? Object.keys(snap.val() || {}) : [];
         document.getElementById('list-sheet-title').textContent = `Following (${fmt(uids.length)})`;
         await renderUserList(uids, 'list-sheet-body');
     } catch (err) {
@@ -940,14 +930,14 @@ async function renderUserList(uids, containerId) {
         c.innerHTML = `<div style="padding:32px;text-align:center;color:var(--text-muted);">No users yet</div>`;
         return;
     }
-    
+
     let fs;
     try {
         fs = await get(ref(db, `following/${currentUser?.uid}`));
     } catch(e) { fs = { exists: () => false }; }
-    
+
     const mf = fs.exists() ? fs.val() : {};
-    
+
     try {
         const htmls = await Promise.all(uids.map(async uid => {
             try {
@@ -971,7 +961,7 @@ window.quickFollow = async (e, uid, btn) => {
     e.stopPropagation();
     if (!currentUser) return;
     const isF = btn.classList.contains('following');
-    
+
     try {
         if (isF) {
             await remove(ref(db, `following/${currentUser.uid}/${uid}`));
@@ -1038,7 +1028,7 @@ window.saveProfile = async () => {
     const sb = document.querySelector('.edit-save');
     sb.textContent = 'Saving…';
     sb.disabled = true;
-    
+
     try {
         const u = {
             displayName: document.getElementById('edit-display-name').value.trim(),
@@ -1047,30 +1037,30 @@ window.saveProfile = async () => {
             location: document.getElementById('edit-location').value.trim(),
             website: document.getElementById('edit-website').value.trim()
         };
-        
+
         if (editAvatarFile) {
             const url = await uploadToCloudinary(editAvatarFile, 'avatars');
             u.photoURL = url;
         }
-        
+
         await update(ref(db, `users/${currentUser.uid}`), u);
         Object.assign(profileData, u);
-        
+
         document.getElementById('display-name').textContent = u.displayName || u.username || 'User';
         document.getElementById('username-text').textContent = `@${u.username}`;
         document.getElementById('header-username').textContent = u.displayName || u.username;
-        
+
         if (u.bio) {
             const b = document.getElementById('bio-text');
             b.innerHTML = enrichText(esc(u.bio));
             b.style.display = 'block';
         }
-        
+
         if (u.photoURL) {
             document.getElementById('profile-avatar').src = u.photoURL;
             document.getElementById('edit-avatar-preview').src = u.photoURL;
         }
-        
+
         closeEditSheet();
         showToast('Profile updated!');
     } catch(err) {
@@ -1086,7 +1076,7 @@ window.uploadCoverPhoto = async e => {
     const f = e.target.files[0];
     if (!f) return;
     showToast('Uploading cover…');
-    
+
     try {
         const url = await uploadToCloudinary(f, 'covers');
         await update(ref(db, `users/${currentUser.uid}`), { coverPhoto: url });
@@ -1105,7 +1095,7 @@ window.uploadAvatar = async e => {
     const f = e.target.files[0];
     if (!f || !isOwnProfile) return;
     showToast('Uploading…');
-    
+
     try {
         const url = await uploadToCloudinary(f, 'avatars');
         await update(ref(db, `users/${currentUser.uid}`), { photoURL: url });
@@ -1191,13 +1181,13 @@ function setupScrollBehavior() {
 
 function setupBadgeListeners() {
     if (!currentUser) return;
-    
+
     onValue(ref(db, `notifications/${currentUser.uid}`), snap => {
         let c = 0;
         if (snap.exists()) snap.forEach(ch => { if (!ch.val().read) c++; });
         updateBadge('badge-notifications', c);
     }, err => console.error("Notifications listener error:", err));
-    
+
     onValue(ref(db, `userChats/${currentUser.uid}`), snap => {
         let c = 0;
         if (snap.exists()) snap.forEach(ch => { c += ch.val().unreadCount || 0; });
