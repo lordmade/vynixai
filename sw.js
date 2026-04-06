@@ -1,5 +1,5 @@
 const CACHE_NAME = 'vynix-lingua-cache-v2';
-const ICON_URL = 'https://i.postimg.cc/rs518Rdn/Screenshot-20260301-105006.jpg';
+const ICON_URL = 'https://i.postimg.cc/XJ0PKgRx/Screenshot-20260407-010610-removebg-preview.png';
 
 const ASSETS_TO_CACHE = [
   '/',
