@@ -502,12 +502,35 @@ import {
     get, update, remove, set
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
+// Exact same DEFAULT_AVATAR as home.html
 const DEFAULT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='background-color:%23F1F5F9'%3E%3Cpath d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E";
+const VERIFIED_BADGE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" style="color:var(--verified);flex-shrink:0;"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.22l1.41-1.41 2.83 2.83 5.66-5.66 1.41 1.41-7.07 7.22z"/></svg>`;
 
-// Pre-set all avatar img elements to DEFAULT_AVATAR immediately on load
-document.querySelectorAll('.notif-avatar, #nav-profile-avatar').forEach(img => {
-    if (!img.src || img.src === window.location.href) img.src = DEFAULT_AVATAR;
-});
+// Cache fetched users/posts — same pattern as home.html's allPostsCache
+const userCache = {};   // uid    → users/${uid} node data
+const postCache = {};   // postId → posts/${postId} node data
+
+// Fetch users/${uid} — same path home.html uses: get(ref(db, `users/${post.uid}`))
+async function fetchUser(uid) {
+    if (!uid) return {};
+    if (userCache[uid]) return userCache[uid];
+    try {
+        const snap = await get(ref(db, `users/${uid}`));
+        userCache[uid] = snap.exists() ? snap.val() : {};
+    } catch { userCache[uid] = {}; }
+    return userCache[uid];
+}
+
+// Fetch posts/${postId} — same path home.html uses: get(ref(db, `posts/${id}`))
+async function fetchPost(postId) {
+    if (!postId) return null;
+    if (postCache[postId] !== undefined) return postCache[postId];
+    try {
+        const snap = await get(ref(db, `posts/${postId}`));
+        postCache[postId] = snap.exists() ? snap.val() : null;
+    } catch { postCache[postId] = null; }
+    return postCache[postId];
+}
 
 const firebaseConfig = {
     apiKey: "AIzaSyBOyZ3As4GTuNvjemvPF_SpsC6m6vqtNhc",
@@ -542,16 +565,20 @@ onAuthStateChanged(auth, async user => {
     if (!user) { window.location.href = 'signup.html'; return; }
     currentUser = user;
 
-    // Nav avatar — swap from default once real photo is confirmed
+    // Fetch from users/${uid} — same node home.html reads for currentUserData
+    const myData = await fetchUser(currentUser.uid);
+    const myPhoto = myData.photoURL || user.photoURL || DEFAULT_AVATAR;
+
+    // Nav avatar: show DEFAULT_AVATAR immediately, swap to real photo once loaded
     const navAv = document.getElementById('nav-profile-avatar');
-    if (navAv && user.photoURL) {
+    if (navAv && myPhoto && myPhoto !== DEFAULT_AVATAR) {
         const realImg = new Image();
-        realImg.onload  = () => { navAv.src = user.photoURL; };
-        realImg.onerror = () => { /* keep default */ };
-        realImg.src = user.photoURL;
+        realImg.onload  = () => { navAv.src = myPhoto; };
+        realImg.onerror = () => {};
+        realImg.src = myPhoto;
     }
 
-    // Load who the user follows
+    // Load who the current user follows from following/${uid}
     try {
         const fs = await get(ref(db, `following/${currentUser.uid}`));
         if (fs.exists()) fs.forEach(c => followingSet.add(c.key));
@@ -562,17 +589,37 @@ onAuthStateChanged(auth, async user => {
 
 /* ─────────────────────────────────────────────
    REAL-TIME SUBSCRIPTION
+   Mirrors home.html: onChildAdded fires for existing + future children.
+   For each notification we fetch users/${actorId} and posts/${postId}
+   — the same nodes home.html reads for post author data.
    ───────────────────────────────────────────── */
 function subscribeToNotifications() {
     const notifRef = ref(db, `notifications/${currentUser.uid}`);
 
-    // onChildAdded fires for ALL existing + future children
-    onChildAdded(notifRef, snap => {
+    onChildAdded(notifRef, async snap => {
         const data = snap.val();
         const id   = snap.key;
-        // Skip if we already know this one (shouldn't happen but be safe)
         if (notifMap[id]) return;
-        notifMap[id] = { id, ...data };
+
+        // Fetch actor from users/${actorId} — same as home.html's get(ref(db,`users/${post.uid}`))
+        const actorUser = data.actorId ? await fetchUser(data.actorId) : {};
+
+        // Fetch post from posts/${postId} — same as home.html's get(ref(db,`posts/${id}`))
+        const post = data.postId ? await fetchPost(data.postId) : null;
+
+        // Merge fetched live data on top of stored data
+        notifMap[id] = {
+            id,
+            ...data,
+            // Always use live users/ node values — displayName, username, photoURL, verified
+            _actorDisplayName : actorUser.displayName || actorUser.username || 'Someone',
+            _actorUsername    : actorUser.username || '',
+            _actorPhoto       : actorUser.photoURL || DEFAULT_AVATAR,
+            _actorVerified    : actorUser.verified || false,
+            // Always use live posts/ node values
+            _postText         : post ? (post.text || '') : (data.snippet || ''),
+            _postThumb        : post ? (post.mediaUrl || null) : (data.postThumb || null),
+        };
 
         document.getElementById('skeletons').style.display = 'none';
 
@@ -586,12 +633,21 @@ function subscribeToNotifications() {
         refreshCounts();
     });
 
-    // Live read/unread updates
-    onChildChanged(notifRef, snap => {
+    onChildChanged(notifRef, async snap => {
         const data = snap.val();
         const id   = snap.key;
-        notifMap[id] = { id, ...data };
-        // Update read state on existing card if present
+        // Re-fetch so live user data stays current
+        const actorUser = data.actorId ? await fetchUser(data.actorId) : {};
+        const post      = data.postId  ? await fetchPost(data.postId)  : null;
+        notifMap[id] = {
+            id, ...data,
+            _actorDisplayName : actorUser.displayName || actorUser.username || 'Someone',
+            _actorUsername    : actorUser.username || '',
+            _actorPhoto       : actorUser.photoURL || DEFAULT_AVATAR,
+            _actorVerified    : actorUser.verified || false,
+            _postText         : post ? (post.text || '') : (data.snippet || ''),
+            _postThumb        : post ? (post.mediaUrl || null) : (data.postThumb || null),
+        };
         const card = document.getElementById(`notif-${id}`);
         if (card) {
             card.classList.toggle('unread', !data.read);
@@ -601,7 +657,6 @@ function subscribeToNotifications() {
         refreshCounts();
     });
 
-    // Deletion
     onChildRemoved(notifRef, snap => {
         const id = snap.key;
         delete notifMap[id];
@@ -655,11 +710,19 @@ function buildCard(notif, isNew = false) {
     card.dataset.type = notif.type || 'unknown';
     card.onclick = () => handleNotifClick(notif.id, getRedirectUrl(notif));
 
-    const actorName   = esc(notif.actorName   || 'Someone');
-    const actorAvatar = notif.actorPhoto && notif.actorPhoto.startsWith('http')
-        ? notif.actorPhoto
-        : DEFAULT_AVATAR;
-    const extraActors = notif.extraActors || 0; // for grouped like notifs
+    // Use live-fetched users/ node data (_actor* fields set in subscribeToNotifications)
+    const displayName  = esc(notif._actorDisplayName || 'Someone');
+    const username     = notif._actorUsername ? `@${esc(notif._actorUsername)}` : '';
+    const actorPhoto   = notif._actorPhoto || DEFAULT_AVATAR;
+    const isVerified   = notif._actorVerified || false;
+    const extraActors  = notif.extraActors || 0;
+
+    // Use live-fetched posts/ node data
+    const snippet  = notif._postText ? notif._postText.slice(0, 100) : '';
+    const postThumb = notif._postThumb || null;
+
+    // Actor name label: "DisplayName @handle" + verified badge — same as home.html post-author-row
+    const actorLabel = `${displayName}${isVerified ? ` ${VERIFIED_BADGE}` : ''}`;
 
     let iconHtml = '', textHtml = '', extraHtml = '';
 
@@ -670,8 +733,8 @@ function buildCard(notif, isNew = false) {
                     <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
                 </svg></div>`;
             textHtml = extraActors > 0
-                ? `<b>${actorName}</b> <span class="actor-extra">and ${extraActors} other${extraActors > 1 ? 's' : ''}</span> liked your post.`
-                : `<b>${actorName}</b> liked your post.`;
+                ? `<b>${actorLabel}</b> <span class="actor-extra">and ${extraActors} other${extraActors > 1 ? 's' : ''}</span> liked your post.`
+                : `<b>${actorLabel}</b> liked your post.`;
             break;
 
         case 'comment':
@@ -679,7 +742,7 @@ function buildCard(notif, isNew = false) {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="white" stroke="none">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                 </svg></div>`;
-            textHtml = `<b>${actorName}</b> commented on your post.`;
+            textHtml = `<b>${actorLabel}</b> commented on your post.`;
             break;
 
         case 'follow':
@@ -687,7 +750,7 @@ function buildCard(notif, isNew = false) {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="white" stroke="none">
                     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"/>
                 </svg></div>`;
-            textHtml = `<b>${actorName}</b> started following you.`;
+            textHtml = `<b>${actorLabel}</b> started following you.`;
             const isFollowing = followingSet.has(notif.actorId);
             extraHtml = `<button
                 class="follow-back-btn${isFollowing ? ' following' : ''}"
@@ -702,7 +765,7 @@ function buildCard(notif, isNew = false) {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round">
                     <circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/>
                 </svg></div>`;
-            textHtml = `<b>${actorName}</b> mentioned you in a post.`;
+            textHtml = `<b>${actorLabel}</b> mentioned you in a post.`;
             break;
 
         case 'repost':
@@ -711,7 +774,7 @@ function buildCard(notif, isNew = false) {
                     <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
                     <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
                 </svg></div>`;
-            textHtml = `<b>${actorName}</b> reposted your post.`;
+            textHtml = `<b>${actorLabel}</b> reposted your post.`;
             break;
 
         case 'comment_like':
@@ -719,32 +782,34 @@ function buildCard(notif, isNew = false) {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="white" stroke="none">
                     <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
                 </svg></div>`;
-            textHtml = `<b>${actorName}</b> liked your comment.`;
+            textHtml = `<b>${actorLabel}</b> liked your comment.`;
             break;
 
         default:
             iconHtml = `<div class="notif-icon" style="background:var(--text-secondary)">
                 <i data-feather="bell" style="width:11px;height:11px;"></i></div>`;
-            textHtml = `<b>${actorName}</b> interacted with you.`;
+            textHtml = `<b>${actorLabel}</b> interacted with you.`;
     }
 
     const nowTs = Date.now();
     const age = nowTs - (notif.timestamp || nowTs);
     const isLive = age < 30000;
 
-    const thumbHtml = notif.postThumb && notif.type !== 'follow'
-        ? `<img class="notif-thumb" src="${notif.postThumb}" alt="" loading="lazy" onerror="this.style.display='none'">`
+    // Thumbnail only for post-related notifications, same as home.html post-media img
+    const thumbHtml = postThumb && notif.type !== 'follow'
+        ? `<img class="notif-thumb" src="${postThumb}" alt="" loading="lazy" onerror="this.style.display='none'">`
         : '';
 
     card.innerHTML = `
         <div class="notif-card-inner">
             <div class="notif-avatar-wrap">
-                <img src="${DEFAULT_AVATAR}" data-src="${actorAvatar}" alt="${actorName}" class="notif-avatar" loading="lazy" onerror="this.src='${DEFAULT_AVATAR}'">
+                <img src="${DEFAULT_AVATAR}" data-real="${actorPhoto}" alt="${displayName}" class="notif-avatar" onerror="this.src='${DEFAULT_AVATAR}'">
                 ${iconHtml}
             </div>
             <div class="notif-body">
                 <div class="notif-text">${textHtml}</div>
-                ${notif.snippet ? `<div class="notif-snippet">${esc(notif.snippet)}</div>` : ''}
+                ${username ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${username}</div>` : ''}
+                ${snippet ? `<div class="notif-snippet">${esc(snippet)}</div>` : ''}
                 ${extraHtml}
                 <div class="notif-time">
                     ${isLive ? `<span class="live-badge"><span class="live-dot"></span>live</span>` : ''}
@@ -755,13 +820,13 @@ function buildCard(notif, isNew = false) {
             ${!notif.read ? `<div class="unread-dot"></div>` : ''}
         </div>`;
 
-    // Lazy-swap avatar: show DEFAULT_AVATAR instantly, then load real photo
-    if (actorAvatar !== DEFAULT_AVATAR) {
+    // Lazy-swap avatar: DEFAULT_AVATAR shows immediately, real photo swaps in after load
+    if (actorPhoto && actorPhoto !== DEFAULT_AVATAR) {
         const imgEl = card.querySelector('.notif-avatar');
         const realImg = new Image();
-        realImg.onload  = () => { if (imgEl) imgEl.src = actorAvatar; };
-        realImg.onerror = () => { /* keep DEFAULT_AVATAR */ };
-        realImg.src = actorAvatar;
+        realImg.onload  = () => { if (imgEl) imgEl.src = actorPhoto; };
+        realImg.onerror = () => {};
+        realImg.src = actorPhoto;
     }
 
     return card;
